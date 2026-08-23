@@ -12,6 +12,10 @@ class MigrationError(RuntimeError):
     """A durable schema migration could not be applied safely."""
 
 
+def _sha256_sql(value: object) -> str:
+    return hashlib.sha256(str(value).encode()).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class Migration:
     id: int
@@ -81,6 +85,70 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        3,
+        "branching and payload integrity",
+        """
+        DROP TRIGGER events_no_update;
+        DROP TRIGGER events_no_delete;
+        DROP INDEX events_session_sequence_idx;
+        DROP INDEX events_run_idx;
+
+        ALTER TABLE events RENAME TO events_m00;
+
+        CREATE TABLE events (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            session_id TEXT NOT NULL REFERENCES sessions(id),
+            run_id TEXT,
+            agent_id TEXT,
+            type TEXT NOT NULL,
+            schema_version INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            causation_id TEXT,
+            correlation_id TEXT,
+            payload_json TEXT,
+            blob_hash TEXT,
+            payload_hash TEXT NOT NULL,
+            redaction_state TEXT NOT NULL CHECK (redaction_state IN ('none', 'redacted')),
+            CHECK ((payload_json IS NOT NULL) != (blob_hash IS NOT NULL))
+        );
+
+        INSERT INTO events(
+            sequence, id, session_id, run_id, agent_id, type, schema_version,
+            created_at, causation_id, correlation_id, payload_json, blob_hash,
+            payload_hash, redaction_state
+        )
+        SELECT
+            sequence, id, session_id, run_id, agent_id, type, schema_version,
+            created_at, causation_id, correlation_id, payload_json, NULL,
+            sha256(payload_json), 'none'
+        FROM events_m00;
+
+        DROP TABLE events_m00;
+
+        CREATE INDEX events_session_sequence_idx ON events(session_id, sequence);
+        CREATE INDEX events_run_idx ON events(run_id) WHERE run_id IS NOT NULL;
+
+        CREATE TRIGGER events_no_update
+        BEFORE UPDATE ON events
+        BEGIN
+            SELECT RAISE(ABORT, 'events are append-only');
+        END;
+
+        CREATE TRIGGER events_no_delete
+        BEFORE DELETE ON events
+        BEGIN
+            SELECT RAISE(ABORT, 'events are append-only');
+        END;
+
+        ALTER TABLE sessions
+            ADD COLUMN parent_session_id TEXT REFERENCES sessions(id);
+        ALTER TABLE sessions
+            ADD COLUMN fork_event_id TEXT REFERENCES events(id);
+        CREATE INDEX sessions_parent_idx ON sessions(parent_session_id);
+        """,
+    ),
 )
 
 
@@ -94,6 +162,12 @@ class Database:
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10, isolation_level=None)
         connection.row_factory = sqlite3.Row
+        connection.create_function(
+            "sha256",
+            1,
+            _sha256_sql,
+            deterministic=True,
+        )
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 10000")
         return connection

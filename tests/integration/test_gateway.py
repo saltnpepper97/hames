@@ -41,7 +41,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             health = await client.get("/v1/health")
             assert health.status_code == 200
-            assert response_object(health)["protocol_version"] == 1
+            assert response_object(health)["protocol_version"] == 2
             assert (await client.get("/v1/sessions")).status_code == 401
 
             created = await client.post(

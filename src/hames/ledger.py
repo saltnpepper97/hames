@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -14,6 +15,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from hames.database import Database
+from hames.event_types import validate_payload
 
 
 def utc_now() -> str:
@@ -39,6 +41,8 @@ class Session(LedgerModel):
     provider: str
     model: str
     reasoning_effort: str
+    parent_session_id: str | None
+    fork_event_id: str | None
 
 
 class Event(LedgerModel):
@@ -53,6 +57,9 @@ class Event(LedgerModel):
     causation_id: str | None
     correlation_id: str | None
     payload: dict[str, Any]
+    blob_hash: str | None
+    payload_hash: str
+    redaction_state: str
 
 
 class Ledger:
@@ -158,13 +165,16 @@ class Ledger:
     ) -> Event:
         event_id = new_id()
         created_at = utc_now()
-        encoded = json.dumps(dict(payload), separators=(",", ":"), sort_keys=True)
+        validated = validate_payload(event_type, dict(payload))
+        encoded = json.dumps(validated, separators=(",", ":"), sort_keys=True)
+        payload_hash = hashlib.sha256(encoded.encode()).hexdigest()
         cursor = connection.execute(
             """
             INSERT INTO events(
                 id, session_id, run_id, agent_id, type, schema_version,
-                created_at, causation_id, correlation_id, payload_json
-            ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                created_at, causation_id, correlation_id, payload_json, blob_hash,
+                payload_hash, redaction_state
+            ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, NULL, ?, 'none')
             """,
             (
                 event_id,
@@ -176,6 +186,7 @@ class Ledger:
                 causation_id,
                 correlation_id,
                 encoded,
+                payload_hash,
             ),
         )
         sequence = cursor.lastrowid
@@ -192,7 +203,10 @@ class Ledger:
             created_at=created_at,
             causation_id=causation_id,
             correlation_id=correlation_id,
-            payload=dict(payload),
+            payload=validated,
+            blob_hash=None,
+            payload_hash=payload_hash,
+            redaction_state="none",
         )
 
     def get_session(self, session_id: str) -> Session:
@@ -278,6 +292,9 @@ class Ledger:
     @staticmethod
     def _event_from_row(row: sqlite3.Row) -> Event:
         values = dict(row)
-        payload = json.loads(values.pop("payload_json"))
+        payload_json = values.pop("payload_json")
+        if payload_json is None:
+            raise RuntimeError("blob-backed payload support is not initialized")
+        payload = json.loads(payload_json)
         values["payload"] = payload
         return Event.model_validate(values)
