@@ -149,6 +149,38 @@ MIGRATIONS = (
         CREATE INDEX sessions_parent_idx ON sessions(parent_session_id);
         """,
     ),
+    Migration(
+        4,
+        "trusted roots and approvals",
+        """
+        CREATE TABLE trusted_roots (
+            id TEXT PRIMARY KEY,
+            path TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE approvals (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(id),
+            run_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            working_directory TEXT NOT NULL,
+            tool_call_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            arguments_json TEXT NOT NULL,
+            request_hash TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (
+                status IN ('pending', 'approved', 'denied', 'cancelled')
+            ),
+            created_at TEXT NOT NULL,
+            resolved_at TEXT
+        );
+
+        CREATE INDEX approvals_run_idx ON approvals(run_id);
+        CREATE INDEX approvals_pending_idx ON approvals(status) WHERE status = 'pending';
+        """,
+    ),
 )
 
 

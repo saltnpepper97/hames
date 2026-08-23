@@ -24,10 +24,10 @@ def test_default_and_overridden_home(tmp_path: Path) -> None:
 
 
 def test_core_contract_keeps_model_and_harness_authority_separate() -> None:
-    assert "no tools are exposed" in CORE_CONTRACT
-    assert "working-directory path is context, not evidence" in CORE_CONTRACT
-    assert "do not describe\nyourself as necessarily stateless per turn" in CORE_CONTRACT
-    assert "Do not guess about Hames features" in CORE_CONTRACT
+    assert "Use only the supplied tools" in CORE_CONTRACT
+    assert "a path in context is\nnot evidence" in CORE_CONTRACT
+    assert "do not describe yourself as stateless per turn" in CORE_CONTRACT
+    assert "Do not claim hidden\nmemory, Skills" in CORE_CONTRACT
 
 
 def test_foundation_is_private_and_does_not_overwrite(hames_paths: HamesPaths) -> None:
@@ -98,6 +98,22 @@ def test_blob_threshold_environment_override(hames_paths: HamesPaths) -> None:
         environ={"HAMES_LEDGER__BLOB_THRESHOLD_BYTES": "131072"},
     )
     assert config.ledger.blob_threshold_bytes == 131_072
+
+
+def test_agent_runtime_limits_are_configurable(hames_paths: HamesPaths) -> None:
+    config = load_config(
+        hames_paths,
+        environ={
+            "HAMES_RUNTIME__MAX_MODEL_TURNS_PER_USER_MESSAGE": "8",
+            "HAMES_RUNTIME__MAX_TOOL_CALLS_PER_RUN": "20",
+            "HAMES_RUNTIME__MAX_ACTIVE_SECONDS_PER_RUN": "90",
+            "HAMES_TOOLS__SHELL_TIMEOUT_SECONDS": "30",
+        },
+    )
+    assert config.runtime.max_model_turns_per_user_message == 8
+    assert config.runtime.max_tool_calls_per_run == 20
+    assert config.runtime.max_active_seconds_per_run == 90
+    assert config.tools.shell_timeout_seconds == 30
 
 
 def test_legacy_config_is_translated_without_rewriting(hames_paths: HamesPaths) -> None:

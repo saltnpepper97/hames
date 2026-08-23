@@ -96,9 +96,7 @@ class OllamaProvider:
             return set()
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
-        messages = [
-            message.model_dump(exclude={"reasoning_content"}) for message in request.messages
-        ]
+        messages = [_ollama_message(message) for message in request.messages]
         if request.system:
             messages.insert(0, {"role": "system", "content": request.system})
         options: dict[str, object] = {"num_predict": request.max_tokens}
@@ -203,6 +201,30 @@ class OllamaProvider:
 
 def _optional_str(value: object) -> str | None:
     return str(value) if value is not None else None
+
+
+def _ollama_message(message: object) -> dict[str, object]:
+    from hames.providers.base import ProviderMessage
+
+    value = ProviderMessage.model_validate(message)
+    result: dict[str, object] = {"role": value.role, "content": value.content}
+    if value.reasoning_content:
+        result["thinking"] = value.reasoning_content
+    if value.tool_calls:
+        result["tool_calls"] = [
+            {
+                "type": "function",
+                "function": {
+                    "index": index,
+                    "name": call.name,
+                    "arguments": call.arguments,
+                },
+            }
+            for index, call in enumerate(value.tool_calls)
+        ]
+    if value.tool_name is not None:
+        result["tool_name"] = value.tool_name
+    return result
 
 
 def _tool_call_deltas(value: JsonValue) -> list[ToolCallDelta]:

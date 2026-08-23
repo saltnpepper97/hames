@@ -16,10 +16,19 @@ class ProviderBoundary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ToolCall(ProviderBoundary):
+    id: str
+    name: str
+    arguments: dict[str, JsonValue]
+
+
 class ProviderMessage(ProviderBoundary):
     role: str
     content: str
     reasoning_content: str = ""
+    tool_calls: list[ToolCall] = Field(default_factory=lambda: list[ToolCall]())
+    tool_call_id: str | None = None
+    tool_name: str | None = None
 
 
 class ToolDefinition(ProviderBoundary):
@@ -36,7 +45,7 @@ class ModelRequest(ProviderBoundary):
     max_tokens: int = Field(default=4096, gt=0)
     temperature: float | None = Field(default=None, ge=0, le=2)
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
-    tools: list[ToolDefinition] = []
+    tools: list[ToolDefinition] = Field(default_factory=lambda: list[ToolDefinition]())
 
 
 class ProviderModel(ProviderBoundary):
@@ -46,10 +55,10 @@ class ProviderModel(ProviderBoundary):
     context_length: int | None = None
     parameter_size: str | None = None
     quantization: str | None = None
-    input_modalities: list[str] = []
-    output_modalities: list[str] = []
+    input_modalities: list[str] = Field(default_factory=list)
+    output_modalities: list[str] = Field(default_factory=list)
     reasoning_supported: bool | None = None
-    reasoning_efforts: list[str] = []
+    reasoning_efforts: list[str] = Field(default_factory=list)
 
 
 class Usage(ProviderBoundary):

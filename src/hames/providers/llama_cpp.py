@@ -111,9 +111,7 @@ class LlamaCppProvider:
             return {}
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
-        messages: list[dict[str, object]] = [
-            message.model_dump(exclude={"reasoning_content"}) for message in request.messages
-        ]
+        messages = [_openai_message(message) for message in request.messages]
         if request.system:
             messages.insert(0, {"role": "system", "content": request.system})
         body: dict[str, object] = {
@@ -138,6 +136,7 @@ class LlamaCppProvider:
                 }
                 for tool in request.tools
             ]
+            body["parallel_tool_calls"] = False
         if request.reasoning_effort == "off":
             body["chat_template_kwargs"] = {"enable_thinking": False}
         elif request.reasoning_effort:
@@ -250,6 +249,32 @@ def _usage_from_openai(value: JsonValue) -> Usage | None:
         reasoning_tokens=_optional_int(reasoning),
         provider_reported_cost=_optional_float(value.get("cost")),
     )
+
+
+def _openai_message(message: object) -> dict[str, object]:
+    from hames.providers.base import ProviderMessage
+
+    value = ProviderMessage.model_validate(message)
+    result: dict[str, object] = {"role": value.role, "content": value.content}
+    if value.reasoning_content:
+        result["reasoning_content"] = value.reasoning_content
+    if value.tool_calls:
+        result["tool_calls"] = [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {
+                    "name": call.name,
+                    "arguments": json.dumps(call.arguments, separators=(",", ":")),
+                },
+            }
+            for call in value.tool_calls
+        ]
+    if value.tool_call_id is not None:
+        result["tool_call_id"] = value.tool_call_id
+    if value.tool_name is not None:
+        result["name"] = value.tool_name
+    return result
 
 
 def _tool_call_deltas(value: JsonValue) -> list[ToolCallDelta]:

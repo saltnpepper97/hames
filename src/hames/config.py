@@ -21,6 +21,24 @@ class StrictModel(BaseModel):
 class RuntimeConfig(StrictModel):
     default_agent: str = "default"
     default_provider: str = "llama_cpp"
+    max_model_turns_per_user_message: int = Field(default=24, ge=1)
+    max_tool_calls_per_run: int = Field(default=96, ge=1)
+    max_active_seconds_per_run: float = Field(default=1800.0, gt=0)
+
+
+class ToolsConfig(StrictModel):
+    shell_timeout_seconds: float = Field(default=120.0, gt=0)
+    shell_max_timeout_seconds: float = Field(default=600.0, gt=0)
+    model_result_char_limit: int = Field(default=32_000, ge=1024)
+    capture_byte_limit: int = Field(default=16_777_216, ge=65_536)
+    read_byte_limit: int = Field(default=1_048_576, ge=4096)
+    list_entry_limit: int = Field(default=1000, ge=1)
+
+    @model_validator(mode="after")
+    def valid_shell_timeouts(self) -> ToolsConfig:
+        if self.shell_timeout_seconds > self.shell_max_timeout_seconds:
+            raise ValueError("shell_timeout_seconds exceeds shell_max_timeout_seconds")
+        return self
 
 
 class GatewayConfig(StrictModel):
@@ -112,6 +130,7 @@ class LedgerConfig(StrictModel):
 
 class HamesConfig(StrictModel):
     runtime: RuntimeConfig = RuntimeConfig()
+    tools: ToolsConfig = ToolsConfig()
     gateway: GatewayConfig = GatewayConfig()
     providers: dict[str, ProviderProfileConfig] = Field(default_factory=_default_provider_profiles)
     logging: LoggingConfig = LoggingConfig()

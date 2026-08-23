@@ -49,7 +49,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 3
+            assert health_body["protocol_version"] == 4
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -65,6 +65,9 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             )
             assert created.status_code == 201
             session_id = str(response_object(created)["id"])
+            assert (
+                await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            ).status_code == 200
             accepted = await client.post(
                 f"/v1/sessions/{session_id}/messages",
                 headers=headers,
@@ -78,12 +81,14 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                 response = await client.get(f"/v1/sessions/{session_id}/events", headers=headers)
                 events = EVENT_LIST.validate_python(cast(object, response.json()))
                 event_types = [str(event["type"]) for event in events]
-                if "model.response.completed" in event_types:
+                if "run.completed" in event_types:
                     break
                 await asyncio.sleep(0.01)
             assert event_types == [
                 "session.opened",
+                "trust.granted",
                 "user.message",
+                "run.started",
                 "context.compiled",
                 "model.requested",
                 "model.response.started",
@@ -91,6 +96,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                 "assistant.reasoning",
                 "assistant.message",
                 "model.response.completed",
+                "run.completed",
             ]
             reasoning = next(event for event in events if event["type"] == "assistant.reasoning")
             answer = next(event for event in events if event["type"] == "assistant.message")
@@ -249,6 +255,7 @@ async def test_explicit_cancellation_persists_partial_reasoning(tmp_path: Path) 
                 },
             )
             session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
             accepted = await client.post(
                 f"/v1/sessions/{session_id}/messages",
                 headers=headers,
@@ -319,6 +326,7 @@ async def test_runtime_failure_is_durable_and_terminal(tmp_path: Path) -> None:
                 },
             )
             session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
             accepted = await client.post(
                 f"/v1/sessions/{session_id}/messages",
                 headers=headers,
@@ -330,13 +338,13 @@ async def test_runtime_failure_is_durable_and_terminal(tmp_path: Path) -> None:
             for _ in range(100):
                 response = await client.get(f"/v1/sessions/{session_id}/events", headers=headers)
                 events = EVENT_LIST.validate_python(cast(object, response.json()))
-                if any(event["type"] == "model.response.failed" for event in events):
+                if any(event["type"] == "run.failed" for event in events):
                     break
                 await asyncio.sleep(0.01)
 
             assert [event["type"] for event in events][-2:] == [
                 "runtime.error",
-                "model.response.failed",
+                "run.failed",
             ]
             failure = events[-1]["payload"]
             assert isinstance(failure, dict)
@@ -369,12 +377,13 @@ async def test_runtime_rejects_malformed_provider_order(tmp_path: Path) -> None:
                 },
             )
             session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
             await client.post(
                 f"/v1/sessions/{session_id}/messages",
                 headers=headers,
                 json={"content": "Trigger malformed order"},
             )
-            events = await _wait_for_event(client, headers, session_id, "model.response.failed")
+            events = await _wait_for_event(client, headers, session_id, "run.failed")
             failure = events[-1]["payload"]
             assert isinstance(failure, dict)
             assert failure["code"] == "provider_protocol_error"
@@ -384,22 +393,31 @@ async def test_runtime_rejects_malformed_provider_order(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_records_but_does_not_execute_tool_calls(tmp_path: Path) -> None:
+async def test_runtime_executes_tool_and_continues_model_loop(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
+    (tmp_path / "README.md").write_text("fixture readme", encoding="utf-8")
     fake = FakeProvider(
-        [
-            StreamEvent(kind=StreamEventKind.STARTED),
-            StreamEvent(
-                kind=StreamEventKind.TOOL_CALL_DELTA,
-                tool_call=ToolCallDelta(
-                    index=0,
-                    provider_call_id="call-1",
-                    name="read_file",
-                    arguments_delta='{"path":"README.md"}',
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="call-1",
+                        name="read_file",
+                        arguments_delta='{"path":"README.md"}',
+                    ),
                 ),
-            ),
-            StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
-        ]
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="I read the fixture."),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
     )
     state = GatewayState.create(paths, providers={"fake": fake})
     headers = {"Authorization": f"Bearer {state.token}"}
@@ -416,21 +434,153 @@ async def test_runtime_records_but_does_not_execute_tool_calls(tmp_path: Path) -
                 },
             )
             session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
             await client.post(
                 f"/v1/sessions/{session_id}/messages",
                 headers=headers,
                 json={"content": "Inspect README"},
             )
-            events = await _wait_for_event(client, headers, session_id, "model.response.failed")
+            events = await _wait_for_event(client, headers, session_id, "run.completed")
             call = next(event for event in events if event["type"] == "model.tool_call")
             payload = call["payload"]
             assert isinstance(payload, dict)
             assert payload["name"] == "read_file"
             assert payload["arguments"] == {"path": "README.md"}
-            failure = events[-1]["payload"]
-            assert isinstance(failure, dict)
-            assert failure["code"] == "unexpected_tool_call"
-            assert "model.response.completed" not in [event["type"] for event in events]
+            result = next(event for event in events if event["type"] == "tool.completed")
+            result_payload = result["payload"]
+            assert isinstance(result_payload, dict)
+            assert result_payload["content"] == "fixture readme"
+            assert len(fake.requests) == 2
+            assert [message.role for message in fake.requests[1].messages][-2:] == [
+                "assistant",
+                "tool",
+            ]
+            assert fake.requests[1].messages[-1].tool_name == "read_file"
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_trust_gate_persists_exact_root_and_can_be_revoked(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            blocked = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "not yet"},
+            )
+            assert blocked.status_code == 409
+            assert response_object(blocked)["error"]["code"] == "working_directory_untrusted"  # type: ignore[index]
+
+            trusted = await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            assert response_object(trusted)["trusted"] is True
+            second = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            second_id = str(response_object(second)["id"])
+            status = await client.get(f"/v1/sessions/{second_id}/trust", headers=headers)
+            assert response_object(status)["trusted"] is True
+            revoked = await client.delete(f"/v1/sessions/{second_id}/trust", headers=headers)
+            assert response_object(revoked)["trusted"] is False
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_destructive_shell_waits_for_exact_one_shot_denial(tmp_path: Path) -> None:
+    fake = FakeProvider(
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="danger-1",
+                        name="shell",
+                        arguments_delta='{"command":"rm -rf target"}',
+                    ),
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="The action was denied."),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
+    )
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "delete target"},
+            )
+            events = await _wait_for_event(client, headers, session_id, "approval.requested")
+            requested = next(event for event in events if event["type"] == "approval.requested")
+            payload = requested["payload"]
+            assert isinstance(payload, dict)
+            approval_id = str(payload["approval_id"])
+            request_hash = str(payload["request_hash"])
+            stale = await client.post(
+                f"/v1/approvals/{approval_id}",
+                headers=headers,
+                json={"decision": "denied", "request_hash": "0" * 64},
+            )
+            assert stale.status_code == 409
+            denied = await client.post(
+                f"/v1/approvals/{approval_id}",
+                headers=headers,
+                json={"decision": "denied", "request_hash": request_hash},
+            )
+            assert denied.status_code == 200
+            events = await _wait_for_event(client, headers, session_id, "run.completed")
+            assert any(event["type"] == "tool.rejected" for event in events)
+            repeated = await client.post(
+                f"/v1/approvals/{approval_id}",
+                headers=headers,
+                json={"decision": "approved", "request_hash": request_hash},
+            )
+            assert repeated.status_code == 409
+            assert fake.requests[1].messages[-1].role == "tool"
+            assert "human denied" in fake.requests[1].messages[-1].content
     finally:
         await state.runs.close()
 

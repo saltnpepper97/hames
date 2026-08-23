@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from hames import PROTOCOL_VERSION, __version__
 from hames.broker import EventBroker
 from hames.config import HamesConfig, ProviderProfileConfig, load_config
+from hames.control import ControlStore
 from hames.database import Database
 from hames.ledger import Event, EventIntegrityError, IntegrityResult, Ledger, Session
 from hames.paths import HamesPaths
@@ -53,6 +54,24 @@ class UpdateSessionRequest(ApiModel):
 
 class RunAccepted(ApiModel):
     run_id: str
+
+
+class TrustStatus(ApiModel):
+    path: str
+    trusted: bool
+    grant_id: str | None = None
+    created_at: str | None = None
+
+
+class ApprovalDecisionRequest(ApiModel):
+    decision: Literal["approved", "denied"]
+    request_hash: str = Field(min_length=64, max_length=64)
+
+
+class ApprovalResolution(ApiModel):
+    approval_id: str
+    request_hash: str
+    status: str
 
 
 class ForkSessionRequest(ApiModel):
@@ -116,6 +135,7 @@ class GatewayState:
     paths: HamesPaths
     config: HamesConfig
     ledger: Ledger
+    controls: ControlStore
     providers: dict[str, Provider]
     broker: EventBroker
     runs: RunManager
@@ -133,16 +153,26 @@ class GatewayState:
         database = Database(paths.database)
         database.migrate()
         ledger = Ledger(database, blob_threshold_bytes=config.ledger.blob_threshold_bytes)
+        controls = ControlStore(database)
         broker = EventBroker()
         selected_providers = providers or configured_providers(config)
         runs = RunManager(
             ledger=ledger,
             paths=paths,
+            config=config,
+            controls=controls,
             providers=selected_providers,
             broker=broker,
         )
         return cls(
-            paths, config, ledger, selected_providers, broker, runs, paths.read_gateway_token()
+            paths,
+            config,
+            ledger,
+            controls,
+            selected_providers,
+            broker,
+            runs,
+            paths.read_gateway_token(),
         )
 
     def provider_profile(self, profile_id: str) -> ProviderProfileConfig | None:
@@ -319,6 +349,64 @@ def create_app(state: GatewayState) -> FastAPI:
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
 
+    async def session_trust(session_id: str) -> tuple[Session, object | None]:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+        grant = await asyncio.to_thread(state.controls.get_trust, Path(session.working_directory))
+        return session, grant
+
+    @app.get("/v1/sessions/{session_id}/trust", dependencies=auth, response_model=TrustStatus)
+    async def get_session_trust(session_id: str) -> TrustStatus:
+        session, grant_value = await session_trust(session_id)
+        from hames.control import TrustGrant
+
+        grant = grant_value if isinstance(grant_value, TrustGrant) else None
+        return TrustStatus(
+            path=session.working_directory,
+            trusted=grant is not None,
+            grant_id=grant.id if grant else None,
+            created_at=grant.created_at if grant else None,
+        )
+
+    @app.put("/v1/sessions/{session_id}/trust", dependencies=auth, response_model=TrustStatus)
+    async def trust_session_root(session_id: str) -> TrustStatus:
+        session, existing = await session_trust(session_id)
+        grant = await asyncio.to_thread(state.controls.grant_trust, Path(session.working_directory))
+        if existing is None:
+            await asyncio.to_thread(
+                state.ledger.append,
+                session_id=session.id,
+                agent_id=session.agent_id,
+                event_type="trust.granted",
+                payload={"path": session.working_directory},
+                correlation_id=session.id,
+            )
+        return TrustStatus(
+            path=session.working_directory,
+            trusted=True,
+            grant_id=grant.id,
+            created_at=grant.created_at,
+        )
+
+    @app.delete("/v1/sessions/{session_id}/trust", dependencies=auth, response_model=TrustStatus)
+    async def revoke_session_root(session_id: str) -> TrustStatus:
+        session, existing = await session_trust(session_id)
+        if state.runs.is_session_active(session_id):
+            raise ApiError(409, "session_run_active", "cannot revoke trust during an active run")
+        if existing is not None:
+            await asyncio.to_thread(state.controls.revoke_trust, Path(session.working_directory))
+            await asyncio.to_thread(
+                state.ledger.append,
+                session_id=session.id,
+                agent_id=session.agent_id,
+                event_type="trust.revoked",
+                payload={"path": session.working_directory},
+                correlation_id=session.id,
+            )
+        return TrustStatus(path=session.working_directory, trusted=False)
+
     @app.patch("/v1/sessions/{session_id}", dependencies=auth, response_model=Session)
     async def update_session(session_id: str, request: UpdateSessionRequest) -> Session:
         model, reasoning_effort = await resolve_selection(
@@ -408,12 +496,40 @@ def create_app(state: GatewayState) -> FastAPI:
             raise ApiError(404, "session_or_provider_not_found", str(exc)) from exc
         except ValueError as exc:
             raise ApiError(409, "session_not_open", str(exc)) from exc
+        except PermissionError as exc:
+            raise ApiError(409, "working_directory_untrusted", str(exc)) from exc
 
     @app.post("/v1/runs/{run_id}/cancel", dependencies=auth)
     async def cancel_run(run_id: str) -> dict[str, bool]:
         if not await state.runs.cancel(run_id):
             raise ApiError(404, "run_not_active", f"run is not active: {run_id}")
         return {"cancelled": True}
+
+    @app.post(
+        "/v1/approvals/{approval_id}",
+        dependencies=auth,
+        response_model=ApprovalResolution,
+    )
+    async def resolve_approval(
+        approval_id: str, request: ApprovalDecisionRequest
+    ) -> ApprovalResolution:
+        try:
+            approval = await state.runs.resolve_approval(
+                approval_id,
+                request_hash=request.request_hash,
+                decision=request.decision,
+            )
+        except KeyError as exc:
+            raise ApiError(404, "approval_not_found", f"unknown approval: {approval_id}") from exc
+        except ValueError as exc:
+            raise ApiError(409, "approval_hash_mismatch", str(exc)) from exc
+        except RuntimeError as exc:
+            raise ApiError(409, "approval_not_pending", str(exc)) from exc
+        return ApprovalResolution(
+            approval_id=approval.id,
+            request_hash=approval.request_hash,
+            status=approval.status,
+        )
 
     @app.get("/v1/events", dependencies=auth)
     async def stream_events(
