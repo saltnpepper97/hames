@@ -71,6 +71,39 @@ class RunManager:
             await provider.aclose()
 
     async def _run(self, run_id: str, session_id: str, user_event: Event) -> None:
+        try:
+            await self._execute_run(run_id, session_id, user_event)
+        except asyncio.CancelledError:
+            # Cancellation can arrive before provider streaming begins. The
+            # provider-loop path records partial output itself; this path still
+            # guarantees a terminal event for early cancellation.
+            await self._append(
+                session_id=session_id,
+                run_id=run_id,
+                event_type="run.cancelled",
+                payload={},
+                causation_id=user_event.id,
+                correlation_id=run_id,
+            )
+        except Exception as exc:
+            error = await self._append(
+                session_id=session_id,
+                run_id=run_id,
+                event_type="runtime.error",
+                payload={"code": "runtime_error", "message": str(exc), "retryable": False},
+                causation_id=user_event.id,
+                correlation_id=run_id,
+            )
+            await self._append(
+                session_id=session_id,
+                run_id=run_id,
+                event_type="model.response.failed",
+                payload={"code": "runtime_error", "message": str(exc), "retryable": False},
+                causation_id=error.id,
+                correlation_id=run_id,
+            )
+
+    async def _execute_run(self, run_id: str, session_id: str, user_event: Event) -> None:
         reasoning_parts: list[str] = []
         answer_parts: list[str] = []
         session = await asyncio.to_thread(self.ledger.get_session, session_id)

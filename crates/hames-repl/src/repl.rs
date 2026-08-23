@@ -382,7 +382,21 @@ fn process_envelope(
                     io::stdout().flush()?;
                 }
             }
-            "model.response.completed" | "model.response.failed" | "run.cancelled" => {
+            "model.response.failed" => {
+                let code = event
+                    .payload
+                    .get("code")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("model_response_failed");
+                let message = event
+                    .payload
+                    .get("message")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("the model run failed");
+                eprintln!("\nerror: {code}: {message}");
+                return Ok(true);
+            }
+            "model.response.completed" | "run.cancelled" => {
                 return Ok(true);
             }
             _ => {}

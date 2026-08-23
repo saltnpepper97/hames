@@ -181,3 +181,48 @@ async def test_explicit_cancellation_persists_partial_reasoning(tmp_path: Path) 
             assert payload == {"content": "partial", "status": "interrupted"}
     finally:
         await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_failure_is_durable_and_terminal(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    paths.default_agent.write_text("invalid capsule", encoding="utf-8")
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            accepted = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Trigger invalid capsule"},
+            )
+            assert accepted.status_code == 202
+
+            events: list[dict[str, JsonValue]] = []
+            for _ in range(100):
+                response = await client.get(f"/v1/sessions/{session_id}/events", headers=headers)
+                events = EVENT_LIST.validate_python(cast(object, response.json()))
+                if any(event["type"] == "model.response.failed" for event in events):
+                    break
+                await asyncio.sleep(0.01)
+
+            assert [event["type"] for event in events][-2:] == [
+                "runtime.error",
+                "model.response.failed",
+            ]
+            failure = events[-1]["payload"]
+            assert isinstance(failure, dict)
+            assert failure["code"] == "runtime_error"
+    finally:
+        await state.runs.close()
