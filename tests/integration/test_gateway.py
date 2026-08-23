@@ -178,6 +178,26 @@ async def test_provider_listing_is_offline_and_probe_is_explicit(tmp_path: Path)
             assert probed.status_code == 200
             assert probed.json()["reachable"] is True
             assert fake.probes == 1
+
+            conflict = await client.get(
+                "/v1/events",
+                headers={**headers, "Last-Event-ID": "5"},
+                params={"session_id": "fixture", "after_sequence": 4},
+            )
+            assert conflict.status_code == 400
+            conflict_error = response_object(conflict)["error"]
+            assert isinstance(conflict_error, dict)
+            assert conflict_error["code"] == "conflicting_event_cursor"
+
+            invalid = await client.get(
+                "/v1/events",
+                headers={**headers, "Last-Event-ID": "event-id"},
+                params={"session_id": "fixture"},
+            )
+            assert invalid.status_code == 400
+            invalid_error = response_object(invalid)["error"]
+            assert isinstance(invalid_error, dict)
+            assert invalid_error["code"] == "invalid_event_cursor"
     finally:
         await state.runs.close()
 
@@ -259,6 +279,23 @@ async def test_explicit_cancellation_persists_partial_reasoning(tmp_path: Path) 
             payload = reasoning["payload"]
             assert isinstance(payload, dict)
             assert payload == {"content": "partial", "status": "interrupted"}
+            assert sum(event["type"] == "run.cancelled" for event in events) == 1
+            for _ in range(100):
+                if state.runs.active_run_count == 0:
+                    break
+                await asyncio.sleep(0.01)
+            assert state.runs.active_run_count == 0
+
+            restarted = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "The session lock was released"},
+            )
+            assert restarted.status_code == 202
+            second_run_id = str(response_object(restarted)["run_id"])
+            assert (
+                await client.post(f"/v1/runs/{second_run_id}/cancel", headers=headers)
+            ).status_code == 200
     finally:
         await state.runs.close()
 

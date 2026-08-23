@@ -283,7 +283,8 @@ impl GatewayClient {
         let after_text = after.to_string();
         let response = self
             .get("/v1/events")
-            .query(&[("session_id", session_id), ("after_sequence", &after_text)])
+            .query(&[("session_id", session_id)])
+            .header("Last-Event-ID", after_text)
             .send()
             .await?;
         ensure_success(response).await

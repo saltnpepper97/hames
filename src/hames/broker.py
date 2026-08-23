@@ -17,7 +17,14 @@ class EventBroker:
         async with self._lock:
             subscribers = tuple(self._subscribers.get(session_id, ()))
         for queue in subscribers:
-            queue.put_nowait(event)
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                # Live deltas are best effort and durable events can be replayed.
+                # Evict the oldest item so a slow client cannot fail model work
+                # and still has a chance to observe the newest terminal event.
+                _ = queue.get_nowait()
+                queue.put_nowait(event)
 
     @asynccontextmanager
     async def subscribe(self, session_id: str) -> AsyncGenerator[asyncio.Queue[dict[str, object]]]:

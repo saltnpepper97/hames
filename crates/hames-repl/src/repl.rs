@@ -285,14 +285,56 @@ async fn handle_command(
             }
         ),
         "/reasoning" => {
-            let effort = parts
-                .get(1)
-                .context("usage: /reasoning off|low|medium|xhigh")?;
+            let probe = client.probe_provider(provider).await?;
+            let selected = probe
+                .models
+                .iter()
+                .find(|item| item.id == *model)
+                .with_context(|| format!("provider {provider} does not report model {model}"))?;
+            let Some(requested) = parts.get(1) else {
+                println!(
+                    "reasoning: {}\nsupported: default/off{}",
+                    if reasoning.is_empty() {
+                        "provider default"
+                    } else {
+                        reasoning
+                    },
+                    if selected.reasoning_efforts.is_empty() {
+                        String::new()
+                    } else {
+                        format!("/{}", selected.reasoning_efforts.join("/"))
+                    }
+                );
+                return Ok(CommandOutcome::Continue);
+            };
+            let effort = if *requested == "default" {
+                ""
+            } else {
+                *requested
+            };
+            if effort != "off"
+                && !effort.is_empty()
+                && !selected
+                    .reasoning_efforts
+                    .iter()
+                    .any(|supported| supported == effort)
+            {
+                bail!(
+                    "model {model} does not advertise reasoning effort {effort}; use /reasoning for its supported values"
+                );
+            }
             *session = client
                 .update_session(&session.id, provider, model, effort)
                 .await?;
-            *reasoning = (*effort).to_owned();
-            println!("reasoning effort: {reasoning}");
+            *reasoning = effort.to_owned();
+            println!(
+                "reasoning effort: {}",
+                if reasoning.is_empty() {
+                    "provider default"
+                } else {
+                    reasoning
+                }
+            );
         }
         "/status" => print_statuses(client).await?,
         unknown => bail!("unknown command: {unknown}; use /help"),
@@ -456,30 +498,49 @@ fn print_session(session: &Session) {
 
 async fn stream_message(client: &GatewayClient, session: &Session, content: &str) -> Result<()> {
     let events = client.events(&session.id).await?;
-    let after = events.iter().map(|event| event.sequence).max().unwrap_or(0);
+    let mut after = events.iter().map(|event| event.sequence).max().unwrap_or(0);
     let response = client.event_stream(&session.id, after).await?;
     let accepted = client.send_message(&session.id, content).await?;
     let run_id = accepted.run_id;
-    let mut stream = response.bytes_stream();
+    let mut stream = Box::pin(response.bytes_stream());
     let mut decoder = SseDecoder::default();
-    let mut showed_reasoning = false;
-    let mut showed_answer = false;
+    let mut output = RenderedOutput::default();
     let mut cancelled = false;
+    let mut reconnects = 0_u8;
 
     loop {
         tokio::select! {
             chunk = stream.next() => {
-                let Some(chunk) = chunk else { bail!("gateway event stream ended") };
-                let bytes = chunk?;
+                let bytes = match chunk {
+                    Some(Ok(bytes)) => bytes,
+                    Some(Err(error)) => {
+                        reconnects += 1;
+                        if reconnects > 3 {
+                            return Err(error).context("gateway event stream repeatedly failed");
+                        }
+                        let response = client.event_stream(&session.id, after).await?;
+                        stream = Box::pin(response.bytes_stream());
+                        decoder = SseDecoder::default();
+                        continue;
+                    }
+                    None => {
+                        reconnects += 1;
+                        if reconnects > 3 {
+                            bail!("gateway event stream repeatedly ended before the run completed");
+                        }
+                        let response = client.event_stream(&session.id, after).await?;
+                        stream = Box::pin(response.bytes_stream());
+                        decoder = SseDecoder::default();
+                        continue;
+                    }
+                };
                 for data in decoder.push(&bytes) {
                     let envelope: LiveEnvelope = serde_json::from_str(&data)
                         .context("gateway emitted malformed SSE data")?;
-                    if process_envelope(
-                        &envelope,
-                        &run_id,
-                        &mut showed_reasoning,
-                        &mut showed_answer,
-                    )? {
+                    if let Some(event) = &envelope.event {
+                        after = after.max(event.sequence);
+                    }
+                    if process_envelope(&envelope, &run_id, &mut output)? {
                         println!();
                         return Ok(());
                     }
@@ -497,8 +558,7 @@ async fn stream_message(client: &GatewayClient, session: &Session, content: &str
 fn process_envelope(
     envelope: &LiveEnvelope,
     run_id: &str,
-    showed_reasoning: &mut bool,
-    showed_answer: &mut bool,
+    output: &mut RenderedOutput,
 ) -> Result<bool> {
     if envelope.durable {
         let Some(event) = &envelope.event else {
@@ -508,24 +568,22 @@ fn process_envelope(
             return Ok(false);
         }
         match event.event_type.as_str() {
-            "assistant.reasoning" if !*showed_reasoning => {
+            "assistant.reasoning" => {
                 if let Some(content) = event
                     .payload
                     .get("content")
                     .and_then(|value| value.as_str())
                 {
-                    print!("thinking> {content}");
-                    io::stdout().flush()?;
+                    output.reconcile_reasoning(content)?;
                 }
             }
-            "assistant.message" if !*showed_answer => {
+            "assistant.message" => {
                 if let Some(content) = event
                     .payload
                     .get("content")
                     .and_then(|value| value.as_str())
                 {
-                    print!("assistant> {content}");
-                    io::stdout().flush()?;
+                    output.reconcile_answer(content)?;
                 }
             }
             "model.response.failed" => {
@@ -560,27 +618,65 @@ fn process_envelope(
         .unwrap_or("");
     match envelope.event_type.as_deref() {
         Some("response.reasoning_delta") => {
-            if !*showed_reasoning {
-                print!("thinking> ");
-                *showed_reasoning = true;
-            }
-            print!("{text}");
-            io::stdout().flush()?;
+            output.push_reasoning(text)?;
         }
         Some("response.text_delta") => {
-            if !*showed_answer {
-                if *showed_reasoning {
-                    println!();
-                }
-                print!("assistant> ");
-                *showed_answer = true;
-            }
-            print!("{text}");
-            io::stdout().flush()?;
+            output.push_answer(text)?;
         }
         _ => {}
     }
     Ok(false)
+}
+
+#[derive(Default)]
+struct RenderedOutput {
+    reasoning: String,
+    answer: String,
+    reasoning_started: bool,
+    answer_started: bool,
+}
+
+impl RenderedOutput {
+    fn push_reasoning(&mut self, text: &str) -> Result<()> {
+        if !self.reasoning_started {
+            print!("thinking> ");
+            self.reasoning_started = true;
+        }
+        print!("{text}");
+        self.reasoning.push_str(text);
+        io::stdout().flush()?;
+        Ok(())
+    }
+
+    fn push_answer(&mut self, text: &str) -> Result<()> {
+        if !self.answer_started {
+            if self.reasoning_started {
+                println!();
+            }
+            print!("assistant> ");
+            self.answer_started = true;
+        }
+        print!("{text}");
+        self.answer.push_str(text);
+        io::stdout().flush()?;
+        Ok(())
+    }
+
+    fn reconcile_reasoning(&mut self, content: &str) -> Result<()> {
+        let suffix = content
+            .strip_prefix(&self.reasoning)
+            .unwrap_or(content)
+            .to_owned();
+        self.push_reasoning(&suffix)
+    }
+
+    fn reconcile_answer(&mut self, content: &str) -> Result<()> {
+        let suffix = content
+            .strip_prefix(&self.answer)
+            .unwrap_or(content)
+            .to_owned();
+        self.push_answer(&suffix)
+    }
 }
 
 #[derive(Default)]
@@ -613,7 +709,7 @@ fn print_help() {
     println!(
         "/help\n/new\n/session\n/sessions\n/resume <id>\n/events [count]\n\
          /fork [event-id-or-sequence]\n/provider [provider] [model]\n/model\n/status\n\
-         /reasoning off|low|medium|xhigh\n/quit"
+         /reasoning [default|off|on|level]\n/quit"
     );
 }
 

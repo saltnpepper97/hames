@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 import socket
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 
 import httpx
@@ -13,7 +13,7 @@ import uvicorn
 
 from hames.gateway import GatewayState, create_app
 from hames.paths import HamesPaths
-from hames.providers import StreamEvent, StreamEventKind, Usage
+from hames.providers import ModelRequest, StreamEvent, StreamEventKind, Usage
 from hames.providers.fake import FakeProvider
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -139,6 +139,109 @@ async def test_rust_repl_through_gateway_and_ledger(tmp_path: Path) -> None:
         code, created, error = await run_hames(environment, "session", "new", "--json")
         assert code == 0, error
         assert json.loads(created)["parent_session_id"] is None
+    finally:
+        server.should_exit = True
+        await server_task
+
+
+class GatedProvider(FakeProvider):
+    def __init__(self) -> None:
+        super().__init__([])
+        self.ready = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+        self.requests.append(request)
+        yield StreamEvent(kind=StreamEventKind.STARTED, provider_request_id="disconnect-test")
+        yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="still running")
+        self.ready.set()
+        await self.release.wait()
+        yield StreamEvent(kind=StreamEventKind.USAGE, usage=Usage(input_tokens=2, output_tokens=2))
+        yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
+
+
+@pytest.mark.asyncio
+async def test_sse_disconnect_does_not_cancel_and_durable_events_resume(tmp_path: Path) -> None:
+    provider = GatedProvider()
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": provider})
+    port = available_port()
+    server = uvicorn.Server(
+        uvicorn.Config(create_app(state), host="127.0.0.1", port=port, log_level="error")
+    )
+    server_task = asyncio.create_task(server.serve())
+    try:
+        await wait_for_server(port)
+        headers = {"Authorization": f"Bearer {state.token}"}
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            created.raise_for_status()
+            session_id = str(created.json()["id"])
+            cursor = int(created.json().get("sequence", 1))
+
+            async with client.stream(
+                "GET",
+                "/v1/events",
+                headers={**headers, "Last-Event-ID": str(cursor)},
+                params={"session_id": session_id},
+            ) as response:
+                response.raise_for_status()
+                lines = response.aiter_lines()
+                assert await anext(lines) == ": connected"
+                accepted = await client.post(
+                    f"/v1/sessions/{session_id}/messages",
+                    headers=headers,
+                    json={"content": "continue after disconnect"},
+                )
+                accepted.raise_for_status()
+                await asyncio.wait_for(provider.ready.wait(), timeout=2)
+
+            provider.release.set()
+            events: list[dict[str, object]] = []
+            for _ in range(100):
+                events_response = await client.get(
+                    f"/v1/sessions/{session_id}/events", headers=headers
+                )
+                events_response.raise_for_status()
+                events = events_response.json()
+                if any(event["type"] == "model.response.completed" for event in events):
+                    break
+                await asyncio.sleep(0.01)
+            assert any(event["type"] == "model.response.completed" for event in events)
+            assert not any(event["type"] == "run.cancelled" for event in events)
+
+            resumed: list[dict[str, object]] = []
+            async with client.stream(
+                "GET",
+                "/v1/events",
+                headers={**headers, "Last-Event-ID": str(cursor)},
+                params={"session_id": session_id},
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    envelope = json.loads(line.removeprefix("data: "))
+                    if not envelope.get("durable"):
+                        continue
+                    event = envelope["event"]
+                    resumed.append(event)
+                    if event["type"] == "model.response.completed":
+                        break
+            assert resumed
+            assert all(
+                isinstance(event["sequence"], int) and event["sequence"] > cursor
+                for event in resumed
+            )
+            assert resumed[-1]["type"] == "model.response.completed"
     finally:
         server.should_exit = True
         await server_task

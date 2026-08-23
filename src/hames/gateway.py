@@ -419,8 +419,11 @@ def create_app(state: GatewayState) -> FastAPI:
     async def stream_events(
         request: Request,
         session_id: str,
-        after_sequence: Annotated[int, Query(ge=0)] = 0,
+        after_sequence: Annotated[int | None, Query(ge=0)] = None,
+        last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
     ) -> StreamingResponse:
+        resume_after = _resume_sequence(after_sequence, last_event_id)
+
         async def generate() -> AsyncIterator[str]:
             async with state.broker.subscribe(session_id) as queue:
                 # Send headers only after the subscriber is registered.  Clients can
@@ -428,9 +431,9 @@ def create_app(state: GatewayState) -> FastAPI:
                 # side waiting for the other or losing the first transient delta.
                 yield ": connected\n\n"
                 replay = await asyncio.to_thread(
-                    state.ledger.list_events, session_id, after_sequence=after_sequence
+                    state.ledger.list_events, session_id, after_sequence=resume_after
                 )
-                seen = after_sequence
+                seen = resume_after
                 for event in replay:
                     seen = max(seen, event.sequence)
                     yield _sse({"durable": True, "event": event.model_dump(mode="json")})
@@ -450,7 +453,11 @@ def create_app(state: GatewayState) -> FastAPI:
                             seen = sequence
                     yield _sse(item)
 
-        return StreamingResponse(generate(), media_type="text/event-stream")
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     return app
 
@@ -465,6 +472,24 @@ def _sse(item: dict[str, object]) -> str:
             event_id = f"id: {event_data['sequence']}\n"
         event_type = str(event_data.get("type", "event"))
     return f"{event_id}event: {event_type}\ndata: {json.dumps(item, separators=(',', ':'))}\n\n"
+
+
+def _resume_sequence(after_sequence: int | None, last_event_id: str | None) -> int:
+    if last_event_id is None:
+        return after_sequence or 0
+    try:
+        header_sequence = int(last_event_id)
+    except ValueError as exc:
+        raise ApiError(400, "invalid_event_cursor", "Last-Event-ID must be an integer") from exc
+    if header_sequence < 0:
+        raise ApiError(400, "invalid_event_cursor", "Last-Event-ID must not be negative")
+    if after_sequence is not None and after_sequence != header_sequence:
+        raise ApiError(
+            400,
+            "conflicting_event_cursor",
+            "Last-Event-ID and after_sequence must match when both are supplied",
+        )
+    return header_sequence
 
 
 def _public_profile(state: GatewayState, profile_id: str, provider: Provider) -> ProviderProfile:
