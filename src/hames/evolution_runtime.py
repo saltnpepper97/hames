@@ -44,6 +44,13 @@ FAILURE_EVENT_TYPES = {
 
 _TERMINAL_TYPES = {"run.completed", "run.failed", "run.cancelled"}
 
+MODEL_BEHAVIOR_REPAIR_LAYERS = {
+    "semantic_memory",
+    "relationship_memory",
+    "episodic_memory",
+    "skill",
+}
+
 REVIEWER_SYSTEM = """You classify one user message sent to a coding agent. Decide whether the
 message corrects a previous result, contradicting earlier output or instructing a different
 approach for next time. Ordinary new tasks, questions, and praise are not corrections. Submit
@@ -231,8 +238,121 @@ class EvolutionManager:
         skill_scars, skill_emitted = await self._skill_regressions(session, run_id, events)
         created.extend(skill_scars)
         pending.extend(skill_emitted)
+        guard_events = await self._update_guards(session, run_id, events, terminal, task_text)
+        pending.extend(guard_events)
         await self._publish(pending)
         return created
+
+    async def _update_guards(
+        self,
+        session: Session,
+        run_id: str,
+        events: list[Event],
+        terminal: Event,
+        task_text: str,
+    ) -> list[Event]:
+        """Count comparable guard successes and reopen regressed scars."""
+        completed = terminal.type == "run.completed"
+        run_signatures = {
+            signature
+            for signature in (normalize_failure_signature(event) for event in events)
+            if signature is not None
+        }
+        guarded = await asyncio.to_thread(self.store.list_scars, session, status="guarded")
+        healed = await asyncio.to_thread(self.store.list_scars, session, status="healed")
+        failing_versions: set[str] = set()
+        if any(event.type == "skill.loaded" for event in events):
+            failing_versions = {
+                item.version_id
+                for item in await asyncio.to_thread(self.skills.repeated_failure_versions, 1)
+            }
+        pending_events: list[Event] = []
+        for scar in [*guarded, *healed]:
+            if not scar.trigger.matches_session(
+                working_directory=session.working_directory, agent_id=session.agent_id
+            ):
+                continue
+            recurred = scar.failure_signature in run_signatures or (
+                scar.detection == "skill_outcome_regression"
+                and bool(set(scar.trigger.skill_ids) & failing_versions)
+            )
+            if recurred:
+                mutation = await asyncio.to_thread(
+                    self.store.mark_regressed,
+                    session=session,
+                    scar_id=scar.id,
+                    reason="failure returned during a matching run",
+                )
+                pending_events.extend(mutation.events)
+                requeued = await self._requeue_repair(session, mutation.scar)
+                pending_events.extend(requeued)
+                continue
+            if not completed or scar.status != "guarded":
+                continue
+            counted, guard_event = await asyncio.to_thread(
+                self.store.record_guard_success,
+                session=session,
+                scar_id=scar.id,
+                run_id=run_id,
+                held=True,
+            )
+            pending_events.append(guard_event)
+            if (
+                counted.status == "guarded"
+                and counted.successful_guard_count >= self.config.evolution.healing_threshold
+            ):
+                healed_mutation = await asyncio.to_thread(
+                    self.store.mark_healed,
+                    session=session,
+                    scar_id=scar.id,
+                    reason=(
+                        f"healing_threshold={self.config.evolution.healing_threshold} "
+                        "comparable successes"
+                    ),
+                )
+                pending_events.extend(healed_mutation.events)
+        return pending_events
+
+    async def _requeue_repair(self, session: Session, scar: Scar) -> list[Event]:
+        """Open a fresh repair candidate version for an autonomously repairable scar."""
+        if scar.detection == "repeated_failure" and plan_repair(scar) is None:
+            return []
+        plan = plan_repair(scar)
+        if plan is None and scar.repair_layer is not None:
+            try:
+                plan = override_plan(scar, scar.repair_layer)
+            except ValueError:
+                return []
+        if plan is None:
+            return []
+        try:
+            _, mutation = await asyncio.to_thread(
+                self.store.propose_repair,
+                session=session,
+                scar_id=scar.id,
+                repair_layer=plan.repair_layer,
+                proposal=plan.proposal,
+                rationale=plan.rationale,
+                risk=plan.risk,
+                required_authority=plan.required_authority,
+                evidence_event_ids=list(scar.evidence_event_ids),
+                created_by="automatic",
+            )
+        except ValueError:
+            return []
+        executed = await self._execute_repair(session, scar, plan, mutation.events[0].id)
+        if executed is None:
+            return list(mutation.events)
+        promoted = await asyncio.to_thread(
+            self.store.decide_repair,
+            session=session,
+            repair_id=mutation.events[0].payload["repair_id"],
+            promote=True,
+            reason=executed.reason,
+            checks=executed.checks,
+            causation_id=mutation.events[-1].id,
+        )
+        return [*mutation.events, *promoted.events]
 
     async def submit_correction(
         self,
@@ -261,6 +381,13 @@ class EvolutionManager:
             )
             signature = f"explicit-correction:{content.strip().casefold()[:120]}"
             existing = self.store.find_active_by_signature(session, signature)
+            if existing is not None and existing.status in {"guarded", "healed"}:
+                mutation = self.store.mark_regressed(
+                    session=session,
+                    scar_id=existing.id,
+                    reason="the same correction returned after its repair",
+                )
+                return mutation.scar, mutation.events
             if existing is not None:
                 triggered, trigger_event = self.store.record_trigger(
                     session=session,
@@ -293,6 +420,9 @@ class EvolutionManager:
             return opened.scar, (*mutation.events, *opened.events)
 
         scar, events = await asyncio.to_thread(_record)
+        if scar.status == "regressed":
+            requeued = await self._requeue_repair(session, scar)
+            events = (*events, *requeued)
         await self._publish(events)
         return scar
 
@@ -325,6 +455,13 @@ class EvolutionManager:
         def _record() -> tuple[tuple[Scar, tuple[Event, ...]], bool]:
             signature = f"conversational-correction:{task_text.strip().casefold()[:120]}"
             existing = self.store.find_active_by_signature(session, signature)
+            if existing is not None and existing.status in {"guarded", "healed"}:
+                mutation = self.store.mark_regressed(
+                    session=session,
+                    scar_id=existing.id,
+                    reason="the same correction returned after its repair",
+                )
+                return (mutation.scar, mutation.events), True
             if existing is not None:
                 triggered, trigger_event = self.store.record_trigger(
                     session=session,
@@ -362,6 +499,9 @@ class EvolutionManager:
         if not created:
             return None, ()
         scar, emitted = result
+        if scar.status == "regressed":
+            requeued = await self._requeue_repair(session, scar)
+            emitted = (*emitted, *requeued)
         return scar, emitted
 
     async def _reviewer_classification(

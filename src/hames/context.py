@@ -29,7 +29,7 @@ supplied, so do not describe yourself as stateless per turn. Do not claim hidden
 memory, Skills, or capabilities that the supplied context does not define.
 """
 
-COMPILER_VERSION = 1
+COMPILER_VERSION = 2
 ESTIMATOR_VERSION = "utf8-bytes-div-4-v1"
 
 
@@ -146,6 +146,8 @@ def compile_context(
     skill_catalog_budget_tokens: int = 2048,
     loaded_skill_budget_tokens: int = 8192,
     context_rules: list[ContextRule] | None = None,
+    active_scars: list[tuple[str, str, str]] | None = None,
+    scar_budget_tokens: int = 512,
 ) -> CompiledContext:
     input_budget = session.context_window_tokens - config.output_reserve_tokens
     if input_budget <= 0:
@@ -268,6 +270,19 @@ def compile_context(
         source.skill_version = skill.version
         source.skill_scope = skill.scope
         selected.append(source)
+    scar_items = active_scars or []
+    if scar_items:
+        guard_content = _canonical_json(
+            [
+                {"id": scar_id, "title": title, "expected_behavior": expected}
+                for scar_id, title, expected in scar_items
+            ]
+        )
+        guard_tokens = _estimate_text(guard_content)
+        _require_category("active scar guards", guard_tokens, scar_budget_tokens)
+        guard_source = _source("evolution.scar", "scar", guard_content, 85)
+        guard_source.origin = "evolution"
+        selected.append(guard_source)
 
     fixed_tokens = (
         stable_tokens + agent_tokens + tool_tokens + memory_tokens + catalog_tokens + loaded_tokens

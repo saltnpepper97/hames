@@ -6,6 +6,7 @@ from typing import cast
 
 import pytest
 
+from hames.agent import load_agent
 from hames.broker import EventBroker
 from hames.config import load_config
 from hames.database import MIGRATIONS, Database
@@ -1030,3 +1031,133 @@ async def test_reviewer_classification_creates_candidate_when_enabled(
     assert created[0].detection == "reviewer_classification"
     assert created[0].severity == "low"
     assert store.get(created[0].id).detection == "reviewer_classification"
+
+
+async def test_guarded_scar_heals_after_threshold_of_clean_runs(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    config = load_config(hames_paths)
+    manager, store = _manager(hames_paths, ledger, tmp_path)
+    session = _session(ledger, tmp_path)
+    scar = await manager.submit_correction(session.id, content="cite docs/architecture.md")
+    routed, _ = await manager.propose_repair(session.id, scar.id)
+    assert routed.status == "guarded"
+
+    for index in range(config.evolution.healing_threshold):
+        _run_with_assistant(ledger, session, f"clean-{index}", f"normal task {index}")
+        await manager.observe_run(session.id, f"clean-{index}")
+
+    healed = store.get(scar.id)
+    assert healed.status == "healed"
+    assert healed.successful_guard_count >= config.evolution.healing_threshold
+
+
+async def test_repeated_correction_after_repair_regresses_and_requeues(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    manager, store = _manager(hames_paths, ledger, tmp_path)
+    session = _session(ledger, tmp_path)
+    scar = await manager.submit_correction(session.id, content="always cite docs/plan.md")
+    routed, first_repair = await manager.propose_repair(session.id, scar.id)
+    assert routed.status == "guarded"
+
+    again = await manager.submit_correction(session.id, content="ALWAYS cite docs/plan.md")
+    assert again.status == "regressed"
+    regressed_scar = store.get(scar.id)
+    assert regressed_scar.regression_count == 1
+    repairs = store.repairs_for_scar(scar.id)
+    assert len(repairs) == 2
+    assert repairs[0].version == 2
+    assert first_repair.version == 1
+
+
+def test_guarded_scars_injected_into_context_only_when_matching(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    from hames.context import compile_context as compile_ctx
+
+    ledger = Ledger.open(hames_paths.database)
+    _, _store = _manager(hames_paths, ledger, tmp_path)
+    del _store
+    session = _session(ledger, tmp_path)
+    hames_paths.ensure_foundation()
+    capsule = load_agent(hames_paths.default_agent)
+
+    def _compile(scars: list[tuple[str, str, str]]):
+        return compile_ctx(
+            ledger.get_session(session.id),
+            ledger.replay(session.id),
+            capsule,
+            [],
+            "safe",
+            load_config(hames_paths).context,
+            run_id="ctx-run",
+            active_scars=scars,
+        )
+
+    empty = _compile([])
+    assert not any(s.source_id == "evolution.scar" for s in empty.manifest.selected_sources)
+    guarded = _compile([("scar-1", "Cite the plan", "Always cite docs/plan.md")])
+    scar_sources = [s for s in guarded.manifest.selected_sources if s.source_id == "evolution.scar"]
+    assert len(scar_sources) == 1
+    assert scar_sources[0].source_type == "scar"
+    assert scar_sources[0].origin == "evolution"
+
+
+def test_run_manager_selects_only_model_behavior_guards(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    from hames.control import ControlStore
+    from hames.providers.registry import configured_providers
+    from hames.runtime import RunManager
+
+    ledger = Ledger.open(hames_paths.database)
+    config = load_config(hames_paths)
+    paths = hames_paths
+    runs = RunManager(
+        ledger=ledger,
+        paths=paths,
+        config=config,
+        controls=ControlStore(Database(hames_paths.database)),
+        providers={name: p for name, p in configured_providers(config).items()},
+        broker=EventBroker(),
+    )
+    session = _session(ledger, tmp_path)
+    evidence = ledger.append(
+        session_id=session.id,
+        agent_id=session.agent_id,
+        event_type="user.message",
+        payload={"content": "fix"},
+    )
+    mutation = runs.scar_store.record_candidate(
+        session=session,
+        title="Model-behavior guard",
+        severity="medium",
+        failure_signature="explicit-correction:model behavior",
+        description="d",
+        expected_behavior="e",
+        evidence_event_ids=[evidence.id],
+        detection="explicit_correction",
+        causation_id=evidence.id,
+    )
+    runs.scar_store.open(session=session, scar_id=mutation.scar.id, reason="evidence sufficient")
+    runs.scar_store.propose_repair(
+        session=session,
+        scar_id=mutation.scar.id,
+        repair_layer="semantic_memory",
+        proposal={"kind": "memory_record", "subject": "s", "predicate": "p"},
+        rationale="r",
+        risk="low",
+        required_authority="memory_write",
+        evidence_event_ids=[evidence.id],
+    )
+    repair = runs.scar_store.repairs_for_scar(mutation.scar.id)[0]
+    runs.scar_store.decide_repair(session=session, repair_id=repair.id, promote=True, reason="ok")
+
+    selected = runs.guarded_scars_for_context(ledger.get_session(session.id), [])
+    assert [item[0] for item in selected] == [mutation.scar.id]
+
+    runs.scar_store.mark_healed(session=session, scar_id=mutation.scar.id, reason="done")
+    assert runs.guarded_scars_for_context(ledger.get_session(session.id), []) == []

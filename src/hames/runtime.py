@@ -21,6 +21,8 @@ from hames.context import (
     compile_context,
 )
 from hames.control import Approval, ControlStore
+from hames.evolution import ScarStore
+from hames.evolution_runtime import MODEL_BEHAVIOR_REPAIR_LAYERS
 from hames.ledger import Event, Ledger, Session, new_id
 from hames.memory import MemoryStore, RetrievedMemory, retrieval_query_hash
 from hames.paths import HamesPaths
@@ -164,6 +166,7 @@ class RunManager:
         self.policy = PolicyGate(paths.root)
         self.context_rules = ContextRuleStore(ledger)
         self.policy_rules = PolicyRuleStore(ledger)
+        self.scar_store = ScarStore(ledger)
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._session_runs: dict[str, str] = {}
         self._approval_waiters: dict[str, asyncio.Future[str]] = {}
@@ -185,6 +188,31 @@ class RunManager:
 
     def attach_evolution_manager(self, manager: EvolutionManager) -> None:
         self.evolution_manager = manager
+
+    def guarded_scars_for_context(
+        self, session: Session, history: list[Event]
+    ) -> list[tuple[str, str, str]]:
+        """Guarded scars whose repair depends on model behavior and trigger matches."""
+        if not self.config.evolution.enabled:
+            return []
+        loaded_skill_ids = {
+            str(event.payload.get("skill_id"))
+            for event in history
+            if event.type == "skill.loaded" and event.payload.get("skill_id")
+        }
+        selected: list[tuple[str, str, str]] = []
+        for scar in self.scar_store.list_scars(session, status="guarded"):
+            if scar.repair_layer not in MODEL_BEHAVIOR_REPAIR_LAYERS:
+                continue
+            triggered = scar.trigger.matches_session(
+                working_directory=session.working_directory, agent_id=session.agent_id
+            ) or bool(set(scar.trigger.skill_ids) & loaded_skill_ids)
+            if not triggered:
+                continue
+            selected.append((scar.id, scar.title, scar.expected_behavior))
+            if len(selected) >= self.config.evolution.max_active_context_scars:
+                break
+        return selected
 
     async def start(self, session_id: str, content: str, *, remember: bool = False) -> str:
         session = await asyncio.to_thread(self.ledger.get_session, session_id)
@@ -520,6 +548,7 @@ class RunManager:
             working_directory=session.working_directory,
             agent_id=session.agent_id,
         )
+        guard_scars = await asyncio.to_thread(self.guarded_scars_for_context, session, history)
         context = compile_context(
             session,
             history,
@@ -534,6 +563,8 @@ class RunManager:
             skill_catalog_budget_tokens=self.config.skills.catalog_budget_tokens,
             loaded_skill_budget_tokens=self.config.skills.loaded_budget_tokens,
             context_rules=active_context_rules,
+            active_scars=guard_scars,
+            scar_budget_tokens=self.config.evolution.scar_context_budget_tokens,
         )
         snapshot = canonical_request_snapshot(
             model=session.model,

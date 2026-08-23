@@ -317,6 +317,13 @@ class ScarTrigger(EvolutionModel):
             )
         )
 
+    def matches_session(self, *, working_directory: str, agent_id: str) -> bool:
+        if self.workspace_paths and working_directory not in self.workspace_paths:
+            return False
+        if self.agent_ids and agent_id not in self.agent_ids:
+            return False
+        return True
+
 
 class Scar(EvolutionModel):
     id: str
