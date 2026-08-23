@@ -8,8 +8,8 @@ use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 
 use crate::api::{
-    GatewayClient, LiveEnvelope, PROTOCOL_VERSION, ProviderModel, ProviderProbe, ProviderProfile,
-    Session,
+    Event, GatewayClient, LiveEnvelope, PROTOCOL_VERSION, ProviderModel, ProviderProbe,
+    ProviderProfile, Session,
 };
 use crate::local::{LocalPaths, start_backend};
 
@@ -65,6 +65,7 @@ pub async fn run() -> Result<()> {
         bail!("gateway database is not ready");
     }
     println!("Type /help for commands. The Python gateway remains running after exit.");
+    ensure_trust(&client, &mut editor, &session).await?;
 
     loop {
         let Some(input) = read_input(&mut editor)? else {
@@ -93,7 +94,7 @@ pub async fn run() -> Result<()> {
             }
             continue;
         }
-        if let Err(error) = stream_message(&client, &session, &input).await {
+        if let Err(error) = stream_message(&client, &mut editor, &session, &input).await {
             eprintln!("error: {error:#}");
         }
     }
@@ -182,6 +183,7 @@ async fn handle_command(
             *session = client
                 .create_session(cwd, provider, model, reasoning)
                 .await?;
+            ensure_trust(client, editor, session).await?;
             println!("new session {}", session.id);
         }
         "/sessions" => {
@@ -203,6 +205,7 @@ async fn handle_command(
             }
         }
         "/session" => print_session(session),
+        "/project" => println!("{}", session.working_directory),
         "/events" => {
             let count = parts
                 .get(1)
@@ -239,6 +242,7 @@ async fn handle_command(
             *provider = session.provider.clone();
             *model = session.model.clone();
             *reasoning = session.reasoning_effort.clone();
+            ensure_trust(client, editor, session).await?;
             println!(
                 "forked session {} from {}",
                 session.id,
@@ -251,6 +255,7 @@ async fn handle_command(
             *provider = session.provider.clone();
             *model = session.model.clone();
             *reasoning = session.reasoning_effort.clone();
+            ensure_trust(client, editor, session).await?;
             println!("resumed session {}", session.id);
         }
         "/provider" => {
@@ -337,6 +342,16 @@ async fn handle_command(
             );
         }
         "/status" => print_statuses(client).await?,
+        "/usage" => print_usage(client, session).await?,
+        "/cancel" => println!("no active run; press Ctrl-C while a run is active to cancel it"),
+        "/trust" => match parts.get(1).copied() {
+            None | Some("status") => print_trust(client, session).await?,
+            Some("revoke") => {
+                let status = client.revoke_trust(&session.id).await?;
+                println!("trust revoked for {}", status.path);
+            }
+            Some(_) => bail!("usage: /trust [status|revoke]"),
+        },
         unknown => bail!("unknown command: {unknown}; use /help"),
     }
     Ok(CommandOutcome::Continue)
@@ -496,7 +511,75 @@ fn print_session(session: &Session) {
     );
 }
 
-async fn stream_message(client: &GatewayClient, session: &Session, content: &str) -> Result<()> {
+async fn ensure_trust(
+    client: &GatewayClient,
+    editor: &mut DefaultEditor,
+    session: &Session,
+) -> Result<()> {
+    let status = client.trust_status(&session.id).await?;
+    if status.trusted {
+        return Ok(());
+    }
+    println!("Hames needs permission to work in this exact folder:");
+    println!("  {}", status.path);
+    let answer = editor.readline("Trust and remember this folder? [y/N] ")?;
+    if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        bail!("working directory was not trusted");
+    }
+    let granted = client.trust_session(&session.id).await?;
+    println!("trusted {}", granted.path);
+    Ok(())
+}
+
+async fn print_trust(client: &GatewayClient, session: &Session) -> Result<()> {
+    let status = client.trust_status(&session.id).await?;
+    println!(
+        "{}: {}{}{}",
+        status.path,
+        if status.trusted {
+            "trusted"
+        } else {
+            "not trusted"
+        },
+        status
+            .grant_id
+            .as_ref()
+            .map(|id| format!(" · {id}"))
+            .unwrap_or_default(),
+        status
+            .created_at
+            .as_ref()
+            .map(|created| format!(" · {created}"))
+            .unwrap_or_default(),
+    );
+    Ok(())
+}
+
+async fn print_usage(client: &GatewayClient, session: &Session) -> Result<()> {
+    let history = client.history(&session.id).await?;
+    let mut input = 0_u64;
+    let mut output = 0_u64;
+    let mut cached = 0_u64;
+    let mut reasoning = 0_u64;
+    for event in history
+        .iter()
+        .filter(|event| event.event_type == "model.usage")
+    {
+        input += event.payload["input_tokens"].as_u64().unwrap_or(0);
+        output += event.payload["output_tokens"].as_u64().unwrap_or(0);
+        cached += event.payload["cached_input_tokens"].as_u64().unwrap_or(0);
+        reasoning += event.payload["reasoning_tokens"].as_u64().unwrap_or(0);
+    }
+    println!("input: {input} · output: {output} · cached: {cached} · reasoning: {reasoning}");
+    Ok(())
+}
+
+async fn stream_message(
+    client: &GatewayClient,
+    editor: &mut DefaultEditor,
+    session: &Session,
+    content: &str,
+) -> Result<()> {
     let events = client.events(&session.id).await?;
     let mut after = events.iter().map(|event| event.sequence).max().unwrap_or(0);
     let response = client.event_stream(&session.id, after).await?;
@@ -539,6 +622,11 @@ async fn stream_message(client: &GatewayClient, session: &Session, content: &str
                         .context("gateway emitted malformed SSE data")?;
                     if let Some(event) = &envelope.event {
                         after = after.max(event.sequence);
+                        if event.run_id.as_deref() == Some(run_id.as_str())
+                            && event.event_type == "approval.requested"
+                        {
+                            handle_approval(client, editor, event).await?;
+                        }
                     }
                     if process_envelope(&envelope, &run_id, &mut output)? {
                         println!();
@@ -555,6 +643,38 @@ async fn stream_message(client: &GatewayClient, session: &Session, content: &str
     }
 }
 
+async fn handle_approval(
+    client: &GatewayClient,
+    editor: &mut DefaultEditor,
+    event: &Event,
+) -> Result<()> {
+    let approval_id = event.payload["approval_id"]
+        .as_str()
+        .context("approval event omitted its ID")?;
+    let request_hash = event.payload["request_hash"]
+        .as_str()
+        .context("approval event omitted its request hash")?;
+    let name = event.payload["name"].as_str().unwrap_or("unknown tool");
+    let reason = event.payload["reason"]
+        .as_str()
+        .unwrap_or("policy confirmation");
+    let arguments = serde_json::to_string_pretty(&event.payload["arguments"])?;
+    println!("\napproval> {name}: {reason}");
+    println!("{arguments}");
+    println!("request hash: {request_hash}");
+    let answer = editor.readline("Approve this exact action once? [y/N] ")?;
+    let decision = if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        "approved"
+    } else {
+        "denied"
+    };
+    let resolved = client
+        .resolve_approval(approval_id, request_hash, decision)
+        .await?;
+    println!("approval> {}", resolved.status);
+    Ok(())
+}
+
 fn process_envelope(
     envelope: &LiveEnvelope,
     run_id: &str,
@@ -568,6 +688,7 @@ fn process_envelope(
             return Ok(false);
         }
         match event.event_type.as_str() {
+            "model.requested" => output.begin_turn()?,
             "assistant.reasoning" => {
                 if let Some(content) = event
                     .payload
@@ -583,8 +704,23 @@ fn process_envelope(
                     .get("content")
                     .and_then(|value| value.as_str())
                 {
-                    output.reconcile_answer(content)?;
+                    if !content.is_empty() {
+                        output.reconcile_answer(content)?;
+                    }
                 }
+            }
+            "tool.requested" => {
+                let name = event.payload["name"].as_str().unwrap_or("unknown");
+                eprintln!("\ntool> requested {name}");
+            }
+            "tool.started" => {
+                let name = event.payload["name"].as_str().unwrap_or("unknown");
+                eprintln!("tool> running {name}");
+            }
+            "tool.completed" | "tool.failed" | "tool.rejected" => {
+                let name = event.payload["name"].as_str().unwrap_or("unknown");
+                let summary = event.payload["summary"].as_str().unwrap_or("");
+                eprintln!("tool> {name}: {summary}");
             }
             "model.response.failed" => {
                 let code = event
@@ -598,9 +734,16 @@ fn process_envelope(
                     .and_then(|value| value.as_str())
                     .unwrap_or("the model run failed");
                 eprintln!("\nerror: {code}: {message}");
+            }
+            "run.failed" => {
+                let code = event.payload["code"].as_str().unwrap_or("run_failed");
+                let message = event.payload["message"]
+                    .as_str()
+                    .unwrap_or("the agent run failed");
+                eprintln!("\nerror: {code}: {message}");
                 return Ok(true);
             }
-            "model.response.completed" | "run.cancelled" => {
+            "run.completed" | "run.cancelled" => {
                 return Ok(true);
             }
             _ => {}
@@ -637,6 +780,14 @@ struct RenderedOutput {
 }
 
 impl RenderedOutput {
+    fn begin_turn(&mut self) -> Result<()> {
+        if self.reasoning_started || self.answer_started {
+            println!();
+        }
+        *self = Self::default();
+        Ok(())
+    }
+
     fn push_reasoning(&mut self, text: &str) -> Result<()> {
         if !self.reasoning_started {
             print!("thinking> ");
@@ -708,8 +859,9 @@ impl SseDecoder {
 fn print_help() {
     println!(
         "/help\n/new\n/session\n/sessions\n/resume <id>\n/events [count]\n\
-         /fork [event-id-or-sequence]\n/provider [provider] [model]\n/model\n/status\n\
-         /reasoning [default|off|on|level]\n/quit"
+         /fork [event-id-or-sequence]\n/project\n/trust [status|revoke]\n\
+         /provider [provider] [model]\n/model\n/reasoning [default|off|on|level]\n\
+         /usage\n/status\n/cancel (Ctrl-C during a run)\n/quit"
     );
 }
 

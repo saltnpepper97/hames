@@ -100,7 +100,7 @@ async def test_rust_repl_through_gateway_and_ledger(tmp_path: Path) -> None:
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(
-            process.communicate(b"hello\n/fork\n/session\n/events\n/quit\n"), timeout=10
+            process.communicate(b"y\nhello\n/fork\n/session\n/events\n/quit\n"), timeout=10
         )
         output = stdout.decode()
         assert process.returncode == 0, stderr.decode()
@@ -185,6 +185,8 @@ async def test_sse_disconnect_does_not_cancel_and_durable_events_resume(tmp_path
             )
             created.raise_for_status()
             session_id = str(created.json()["id"])
+            trusted = await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            trusted.raise_for_status()
             cursor = int(created.json().get("sequence", 1))
 
             async with client.stream(
@@ -212,10 +214,10 @@ async def test_sse_disconnect_does_not_cancel_and_durable_events_resume(tmp_path
                 )
                 events_response.raise_for_status()
                 events = events_response.json()
-                if any(event["type"] == "model.response.completed" for event in events):
+                if any(event["type"] == "run.completed" for event in events):
                     break
                 await asyncio.sleep(0.01)
-            assert any(event["type"] == "model.response.completed" for event in events)
+            assert any(event["type"] == "run.completed" for event in events)
             assert not any(event["type"] == "run.cancelled" for event in events)
 
             resumed: list[dict[str, object]] = []
@@ -234,14 +236,14 @@ async def test_sse_disconnect_does_not_cancel_and_durable_events_resume(tmp_path
                         continue
                     event = envelope["event"]
                     resumed.append(event)
-                    if event["type"] == "model.response.completed":
+                    if event["type"] == "run.completed":
                         break
             assert resumed
             assert all(
                 isinstance(event["sequence"], int) and event["sequence"] > cursor
                 for event in resumed
             )
-            assert resumed[-1]["type"] == "model.response.completed"
+            assert resumed[-1]["type"] == "run.completed"
     finally:
         server.should_exit = True
         await server_task

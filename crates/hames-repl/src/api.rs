@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 #[derive(Clone)]
 pub struct GatewayClient {
@@ -110,6 +110,19 @@ pub struct IntegrityResult {
 #[derive(Clone, Debug, Deserialize)]
 pub struct RunAccepted {
     pub run_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct TrustStatus {
+    pub path: String,
+    pub trusted: bool,
+    pub grant_id: Option<String>,
+    pub created_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApprovalResolution {
+    pub status: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -273,6 +286,55 @@ impl GatewayClient {
         decode(
             self.post(&format!("/v1/sessions/{session_id}/messages"))
                 .json(&serde_json::json!({"content": content}))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn trust_status(&self, session_id: &str) -> Result<TrustStatus> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/trust"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn trust_session(&self, session_id: &str) -> Result<TrustStatus> {
+        decode(
+            self.http
+                .put(format!("{}/v1/sessions/{session_id}/trust", self.base_url))
+                .bearer_auth(&self.token)
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn revoke_trust(&self, session_id: &str) -> Result<TrustStatus> {
+        decode(
+            self.http
+                .delete(format!("{}/v1/sessions/{session_id}/trust", self.base_url))
+                .bearer_auth(&self.token)
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn resolve_approval(
+        &self,
+        approval_id: &str,
+        request_hash: &str,
+        decision: &str,
+    ) -> Result<ApprovalResolution> {
+        decode(
+            self.post(&format!("/v1/approvals/{approval_id}"))
+                .json(&serde_json::json!({
+                    "request_hash": request_hash,
+                    "decision": decision,
+                }))
                 .send()
                 .await?,
         )
