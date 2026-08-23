@@ -247,7 +247,7 @@ Until M04, context includes only:
 - current project root and policy summary;
 - tool schemas.
 
-Do not build hidden memory or flow injection yet.
+Do not build hidden memory or skill injection yet.
 
 ## Tests
 

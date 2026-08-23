@@ -17,7 +17,7 @@ Chat
 Runs
 Agents
 Memory
-Flows
+Skills
 Scars
 Plugins
 Settings
@@ -57,7 +57,7 @@ Preserve/extend M04:
 - approvals;
 - agent attribution;
 - memory retrieval;
-- flows loaded;
+- skills loaded;
 - Scars triggered;
 - plugin calls.
 
@@ -113,7 +113,7 @@ Episodic:
 
 Memory detail shows why a record was retrieved for selected model request when retrieval events exist.
 
-## 5. Flows
+## 5. Skills
 
 Implement:
 
@@ -235,7 +235,7 @@ Add versioned endpoints required for:
 - agents;
 - memory;
 - work items;
-- flows/proposals;
+- skills/proposals;
 - Scars/repairs/evaluations;
 - plugins;
 - settings;
@@ -252,7 +252,7 @@ Frontend:
 - approval;
 - agent edit validation;
 - memory correction;
-- flow proposal diff/approval;
+- skill proposal diff/approval;
 - Scar evidence/repair;
 - plugin permission screen;
 - reconnect;
@@ -273,7 +273,7 @@ E2E with fake provider:
 4. approve action;
 5. create/select agent;
 6. inspect memory;
-7. approve flow proposal;
+7. approve skill proposal;
 8. inspect Scar;
 9. enable test plugin;
 10. refresh browser and reconstruct state.
@@ -284,7 +284,7 @@ Use web UI for an entire small coding task without REPL.
 
 Then open run inspector and verify every meaningful action can be traced.
 
-Repeat one workflow that triggers flow proposal and one correction that creates Scar. Review both entirely through web UI.
+Repeat one workflow that triggers skill proposal and one correction that creates Scar. Review both entirely through web UI.
 
 ## Commit expectations
 
@@ -295,7 +295,7 @@ Suggested slices:
 1. chat + approvals;
 2. agents;
 3. memory;
-4. flows;
+4. skills;
 5. Scars/evolution;
 6. plugins;
 7. settings/security;

@@ -59,8 +59,8 @@ class HamesPaths:
         return self.root / "blobs"
 
     @property
-    def flows(self) -> Path:
-        return self.root / "flows"
+    def skills(self) -> Path:
+        return self.root / "skills"
 
     @property
     def logs(self) -> Path:

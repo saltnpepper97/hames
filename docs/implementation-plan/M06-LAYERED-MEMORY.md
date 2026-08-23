@@ -13,7 +13,7 @@ The three memory layers are:
 3. **Episodic:** compact provenance-backed accounts of what happened, including
    actions, outcomes, failures, and lessons.
 
-Procedural knowledge belongs to Flows in M07.
+Procedural knowledge belongs to Skills in M07.
 
 ## Flexible anchors and visibility
 

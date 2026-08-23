@@ -8,7 +8,7 @@ REPL, editable default agent capsule, llama.cpp and Ollama streaming, and durabl
 session provenance.
 
 M0 deliberately has no model-callable tools. It proves the foundation before file
-mutation, shell execution, memory, named-agent delegation, or autonomous Flows.
+mutation, shell execution, memory, named-agent delegation, or autonomous Skills.
 
 ## Required user-visible outcome
 

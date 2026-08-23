@@ -10,7 +10,7 @@ the same event and gateway contracts.
 
 All model calls pass through one deterministic compiler. Sources return attributed
 candidates with stable IDs, content hashes, priority, token estimates, visibility,
-and truncation behavior. Later memory, Flows, agents, and Scars extend this source
+and truncation behavior. Later memory, Skills, agents, and Scars extend this source
 model without bypassing it.
 
 Use explicit budgets for stable instructions, agent identity, recent conversation,

@@ -29,7 +29,7 @@ The live run demonstrated:
 - a clean REPL exit while the gateway remained independently controllable.
 
 An initial boundary probe correctly separated model output from harness authority,
-but guessed definitions for future memory and Flow features that were not present
+but guessed definitions for future memory and Skill features that were not present
 in its context. M0's core contract was tightened to forbid inventing unspecified
 Hames behavior and to clarify that a working-directory path is not evidence of
 file access. On the repeated probe, Qwen correctly stated that it had no tools or

@@ -20,6 +20,7 @@ def test_default_and_overridden_home(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(environ={"HAMES_HOME": str(expected)})
     assert paths.root == expected
     assert paths.database == expected / "hames.db"
+    assert paths.skills == expected / "skills"
 
 
 def test_core_contract_keeps_model_and_harness_authority_separate() -> None:

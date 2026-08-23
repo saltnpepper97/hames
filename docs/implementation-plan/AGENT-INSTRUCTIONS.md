@@ -41,7 +41,7 @@ feat(events): add append-only event store
 feat(gateway): stream session events over SSE
 feat(policy): require approval for destructive shell operations
 test(memory): cover scope visibility and supersession
-fix(flows): reject stale compare-and-swap patches
+fix(skills): reject stale compare-and-swap patches
 docs(m06): document memory provenance model
 ```
 
@@ -115,7 +115,7 @@ Examples:
 - plugin RPC messages;
 - plugin manifests;
 - `AGENT.md` frontmatter;
-- flow metadata;
+- skill metadata;
 - export bundles.
 
 Internal helper objects do not need serialization ceremony.
@@ -142,7 +142,7 @@ All side effects initiated through Hames must pass through the same policy decis
 
 - main agent tools;
 - child agents;
-- flows;
+- skills;
 - plugin tools;
 - automatic evaluators;
 - evolution/repair jobs.
@@ -153,7 +153,7 @@ Agent-authored code must never be activated merely because it was generated succ
 
 Do not pull in LangChain, AutoGen, CrewAI, or another agent orchestration framework as the runtime.
 
-Libraries for focused problems are fine. The Hames loop, event semantics, policy gate, context compiler, memory scopes, flows, and Scars are product behavior and must remain owned by Hames.
+Libraries for focused problems are fine. The Hames loop, event semantics, policy gate, context compiler, memory scopes, skills, and Scars are product behavior and must remain owned by Hames.
 
 ## 11. Avoid speculative abstraction
 

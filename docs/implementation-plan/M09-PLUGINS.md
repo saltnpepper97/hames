@@ -4,7 +4,7 @@
 
 Add genuine extensibility without turning the trusted Hames process into arbitrary third-party Python execution.
 
-Plugins add capabilities. Flows add procedures. The distinction must remain visible in code and UI.
+Plugins add capabilities. Skills add procedures. The distinction must remain visible in code and UI.
 
 For v0.1, third-party and agent-authored plugins run as subprocess workers. They do not import into the Hames controller.
 
@@ -218,7 +218,7 @@ It may not:
 - enable itself;
 - request newly granted host permissions without user approval.
 
-Promotion uses same installation flow as external plugins.
+Promotion uses the same installation flow as external plugins.
 
 ## Plugin versioning
 

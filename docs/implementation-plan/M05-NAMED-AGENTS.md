@@ -49,7 +49,7 @@ memory:
     - agent:researcher
     - proposals
 
-flows:
+skills:
   scopes:
     - global
     - workspace

@@ -1,17 +1,17 @@
-# M07 — Flows, Progressive Disclosure, Autonomous Flow Proposals, and Curation
+# M07 — Skills, Progressive Disclosure, Autonomous Skill Proposals, and Curation
 
 ## Goal
 
 Implement procedural memory.
 
-A flow captures a reusable method the agent should follow. Hames can recognize when a repeated workflow, correction, or recovered failure is worth turning into a flow and autonomously draft/test a proposal. Activation remains versioned and controlled.
+A skill captures a reusable method the agent should follow. Hames can recognize when a repeated workflow, correction, or recovered failure is worth turning into a skill and autonomously draft/test a proposal. Activation remains versioned and controlled.
 
-## Flow package
+## Skill package
 
-A flow is a directory:
+A skill is a directory:
 
 ```text
-flows/<flow-id>/
+skills/<skill-id>/
 ├── SKILL.md
 ├── references/ optional
 ├── scripts/ optional
@@ -68,14 +68,14 @@ References/scripts are not loaded with body unless individually requested/execut
 Emit:
 
 ```text
-flow.catalogued
-flow.loaded
-flow.executed
+skill.catalogued
+skill.loaded
+skill.executed
 ```
 
 as appropriate.
 
-## Flow registry and scopes
+## Skill registry and scopes
 
 Support:
 
@@ -90,16 +90,16 @@ Duplicate ambiguous IDs are rejected under one documented shadowing/uniqueness r
 CLI:
 
 ```bash
-hames flow list
-hames flow show <id>
-hames flow validate <path-or-id>
-hames flow install <path>
-hames flow archive <id>
+hames skill list
+hames skill show <id>
+hames skill validate <path-or-id>
+hames skill install <path>
+hames skill archive <id>
 ```
 
 ## Immutable versions
 
-Durable flow metadata tracks:
+Durable skill metadata tracks:
 
 ```text
 flow_id
@@ -126,7 +126,7 @@ quarantined
 superseded
 ```
 
-An active flow version is immutable.
+An active skill version is immutable.
 
 Editing creates candidate new version.
 
@@ -134,7 +134,7 @@ Compare-and-swap activation requires expected base content hash still matches cu
 
 ## Script execution
 
-Flow scripts are executable helpers, not instructions.
+Skill scripts are executable helpers, not instructions.
 
 They must:
 
@@ -142,9 +142,9 @@ They must:
 - execute through same policy gate;
 - never receive more authority than current agent;
 - have bounded output/time;
-- emit tool/flow events.
+- emit tool/skill events.
 
-A flow cannot smuggle unrestricted subprocess execution around `shell`.
+A skill cannot smuggle unrestricted subprocess execution around `shell`.
 
 ## Usage tracking
 
@@ -153,7 +153,7 @@ Track:
 - catalog appearances;
 - full loads;
 - associated tool calls;
-- runs in which flow was active;
+- runs in which skill was active;
 - successful task outcomes;
 - failed task outcomes;
 - corrections after use;
@@ -161,7 +161,7 @@ Track:
 - patches;
 - estimated context cost.
 
-Do not define “success” solely as “model loaded flow.” Use settled run outcome signals.
+Do not define “success” solely as “model loaded skill.” Use settled run outcome signals.
 
 ## Autonomous candidate detector
 
@@ -189,16 +189,16 @@ Create candidate when configured rule is satisfied, including:
 - high-cost workflow has strong project recurrence evidence;
 - user explicitly asks Hames to do method consistently.
 
-Reject as flow material when:
+Reject as skill material when:
 
 - primarily a fact;
 - hard safety invariant;
 - one-off/transient;
-- active flow already covers it;
+- active skill already covers it;
 - workflow did not settle successfully;
 - evidence includes secrets that cannot be safely abstracted.
 
-Detector emits `flow.proposal_triggered` with evidence IDs.
+Detector emits `skill.proposal_triggered` with evidence IDs.
 
 ## Autonomous drafting
 
@@ -207,7 +207,7 @@ When auto-drafting is enabled, Hames may run a reviewer/drafter model call after
 Drafter receives:
 
 - exact evidence trace subset;
-- relevant current flow if patching;
+- relevant current skill if patching;
 - required tool/policy boundaries;
 - no unrelated conversation history.
 
@@ -217,7 +217,7 @@ It outputs:
 - rationale;
 - evidence links;
 - acceptance tests;
-- new flow vs patch decision.
+- new skill vs patch decision.
 
 This is proposal, not activation.
 
@@ -235,7 +235,7 @@ Validation includes:
 - references resolve;
 - content-size bounds.
 
-Flow tests may include:
+Skill tests may include:
 
 1. deterministic script/unit tests;
 2. trace assertions;
@@ -249,21 +249,21 @@ Proposal cannot become `verified` if deterministic validation fails.
 CLI:
 
 ```bash
-hames flow proposal list
-hames flow proposal show <id>
-hames flow proposal approve <id>
-hames flow proposal reject <id>
+hames skill proposal list
+hames skill proposal show <id>
+hames skill proposal approve <id>
+hames skill proposal reject <id>
 ```
 
 Approval:
 
-1. re-read current base flow;
+1. re-read current base skill;
 2. verify base hash;
 3. reject stale proposal on mismatch;
 4. rerun deterministic validation/tests;
 5. atomically activate new version;
 6. preserve old version as superseded;
-7. emit `flow.promoted`.
+7. emit `skill.promoted`.
 
 No silent global activation.
 
@@ -271,20 +271,20 @@ No silent global activation.
 
 Implement deterministic curation metrics.
 
-A flow can become `stale` when:
+A skill can become `stale` when:
 
 - unused for configured period;
 - repeatedly loaded but never used;
 - poor outcome rate;
-- superseded by another flow.
+- superseded by another skill.
 
 Archival is reversible and does not delete versions.
 
-Automatic merging of flow bodies is not required. Hames may propose consolidation, but promotion uses same proposal path.
+Automatic merging of skill bodies is not required. Hames may propose consolidation, but promotion uses same proposal path.
 
 ## Context and Inspector
 
-Context manifest shows catalog and loaded flows separately.
+Context manifest shows catalog and loaded skills separately.
 
 Inspector adds:
 
@@ -314,7 +314,7 @@ Cover:
 - validation failure;
 - approval/rejection;
 - archive/restore;
-- flow script cannot bypass policy;
+- skill script cannot bypass policy;
 - migration from M06.
 
 ## Manual smoke test
@@ -324,18 +324,18 @@ Perform same nontrivial coding workflow twice.
 Verify:
 
 1. detector creates candidate;
-2. auto-drafter produces flow proposal;
+2. auto-drafter produces skill proposal;
 3. proposal references exact runs;
 4. proposal inactive before approval;
 5. inspect and approve;
-6. matching third task sees catalog and progressively loads flow;
+6. matching third task sees catalog and progressively loads skill;
 7. context inspector shows estimated token contribution.
 
 ## Commit expectations
 
 Suggested slices:
 
-1. flow package/parser/registry;
+1. skill package/parser/registry;
 2. catalog/progressive loading;
 3. versioning and usage;
 4. detector;
@@ -346,6 +346,6 @@ Suggested slices:
 
 ## Acceptance gate
 
-M07 is complete when Hames can notice reusable workflow on its own, draft grounded flow proposal, validate it, preserve version history, require controlled promotion, and later load active flow only when relevant.
+M07 is complete when Hames can notice reusable workflow on its own, draft grounded skill proposal, validate it, preserve version history, require controlled promotion, and later load active skill only when relevant.
 
 Finish clean and tag `m07`.

@@ -6,7 +6,7 @@ refinement as the harness proves its concepts.
 
 Hames is a proper local agent harness built around a small trusted Python kernel,
 an append-only event ledger, named agents, layered memory, progressively disclosed
-Flows, evidence-backed self-correction, optional isolated plugins, and first-class
+Skills, evidence-backed self-correction, optional isolated plugins, and first-class
 observability.
 
 ## Product direction
@@ -20,7 +20,7 @@ observability.
 4. **Local models come first.** llama.cpp and Ollama are first-class M0 providers.
    Hosted OpenAI API, Codex/ChatGPT, and other services come later.
 5. **One historical truth.** Material model input, provider activity, tools,
-   approvals, memory, Flows, agents, corrections, and evaluations emit events.
+   approvals, memory, Skills, agents, corrections, and evaluations emit events.
 6. **Agents work where invoked.** A session records the current directory as a
    loose work context; Hames does not require a registered project object.
 7. **Scratch work is disposable.** Later tool-capable agents may prototype under
@@ -28,8 +28,8 @@ observability.
    in the actual working directory.
 8. **Memory has three layers.** Relationship memory covers the user, Semantic
    memory covers known facts, and Episodic memory covers what happened.
-9. **Flows are procedural knowledge.** A Flow is not a plugin or permission.
-   Models may propose Flows, but activation is versioned, evaluated, inspectable,
+9. **Skills are procedural knowledge.** A Skill is not a plugin or permission.
+   Models may propose Skills, but activation is versioned, evaluated, inspectable,
    and controlled.
 10. **Corrections become tests.** Scars connect failures and corrections to
     evidence, repairs, and regression checks.
@@ -70,7 +70,7 @@ Persistent state defaults to:
 ├── hames.db
 ├── agents/
 ├── blobs/
-├── flows/
+├── skills/
 ├── logs/
 └── runtime/
 ```
@@ -89,7 +89,7 @@ Directories are created lazily and user files are never silently overwritten.
 | [M4](M04-CONTEXT-WEB-INSPECTOR.md) | Context manifests and usage accounting become complete; the interface portion will be re-gated after REPL validation. |
 | [M5](M05-NAMED-AGENTS.md) | Human-readable agent capsules, capability separation, and bounded delegation mature. |
 | [M6](M06-LAYERED-MEMORY.md) | Relationship, Semantic, and Episodic memories become scoped, correctable, and observable. |
-| [M7](M07-FLOWS.md) | Portable Flows gain progressive disclosure, proposals, evaluation, versioning, and controlled promotion. |
+| [M7](M07-SKILLS.md) | Portable Skills gain progressive disclosure, proposals, evaluation, versioning, and controlled promotion. |
 | [M8](M08-SCARS-EVOLUTION.md) | Scars provide evidence-backed repair routing and regression protection. |
 | [M9](M09-PLUGINS.md) | Optional isolated plugins add genuine capabilities without bypassing policy. |
 | [M10](M10-WEB-CONTROL.md) | Rich interfaces are designed from proven gateway behavior; Ratatui precedes or accompanies web work. |
