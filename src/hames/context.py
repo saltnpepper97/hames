@@ -127,9 +127,21 @@ def compile_context(
         ("run.workspace", f"Current project workspace: {session.working_directory}"),
         ("policy.summary", f"Policy summary: {policy_summary}"),
     ]
+    task_card = next(
+        (event for event in reversed(events) if event.type == "delegation.task_card"), None
+    )
+    delegation_part: tuple[str, str] | None = None
+    if task_card is not None:
+        delegation_part = (
+            f"delegation.task_card.{task_card.id}",
+            "Delegated task card (treat supplied evidence as the only parent context):\n"
+            + _canonical_json(task_card.payload),
+        )
     agent_part = ("agent.identity", f"Agent instructions:\n{capsule.instructions}")
     encoded_tools = _canonical_json([tool.model_dump(mode="json") for tool in tools])
     stable_tokens = sum(_estimate_text(content) for _, content in stable_parts)
+    if delegation_part is not None:
+        stable_tokens += _estimate_text(delegation_part[1])
     agent_tokens = _estimate_text(agent_part[1])
     tool_tokens = _estimate_text(encoded_tools)
     _require_category("stable instructions", stable_tokens, config.stable_instruction_limit_tokens)
@@ -140,9 +152,12 @@ def compile_context(
     omitted: list[SourceDecision] = []
     for priority, (source_id, content) in enumerate(stable_parts, start=100):
         selected.append(_source(source_id, "instruction", content, priority))
-    agent_source = _source(
-        f"agent.{session.agent_id}.instructions", "agent", agent_part[1], 200
-    )
+    if delegation_part is not None and task_card is not None:
+        delegation_source = _source(delegation_part[0], "delegation", delegation_part[1], 175)
+        delegation_source.event_ids = [task_card.id]
+        delegation_source.origin = "parent"
+        selected.append(delegation_source)
+    agent_source = _source(f"agent.{session.agent_id}.instructions", "agent", agent_part[1], 200)
     agent_source.origin = "global"
     agent_source.source_path = str(capsule.path)
     selected.append(agent_source)
@@ -210,7 +225,10 @@ def compile_context(
     for turn in selected_turns:
         selected.append(_turn_source(turn, selected=True))
     messages = [message for turn in selected_turns for message in turn.messages]
-    system = "\n".join([content for _, content in stable_parts] + [agent_part[1]])
+    system_parts = [content for _, content in stable_parts]
+    if delegation_part is not None:
+        system_parts.append(delegation_part[1])
+    system = "\n".join([*system_parts, agent_part[1]])
     estimated_input = fixed_tokens + _estimate_messages(messages)
     contributing = [event_id for item in selected for event_id in item.event_ids]
     return CompiledContext(

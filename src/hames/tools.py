@@ -65,6 +65,14 @@ class ShellArguments(WorkspaceArguments):
     timeout_seconds: float | None = Field(default=None, gt=0)
 
 
+class SpawnAgentArguments(ToolArguments):
+    agent_id: str
+    task: str = Field(min_length=1)
+    evidence_event_ids: list[str] = Field(default_factory=list, max_length=8)
+    project_scope: Literal["current_workspace"] = "current_workspace"
+    requested_result_format: Literal["summary", "markdown", "json"] = "summary"
+
+
 class ToolResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -353,6 +361,13 @@ class ShellTool(ToolBase):
             return _failure(self.name, exc, started)
 
 
+class SpawnAgentTool(ToolBase):
+    name = "spawn_agent"
+    description = "Delegate a bounded task to an allowed child agent with explicit evidence."
+    side_effect_class = "delegation"
+    arguments_type: ClassVar[type[ToolArguments]] = SpawnAgentArguments
+
+
 class ToolRegistry:
     def __init__(self) -> None:
         values: list[ToolBase] = [
@@ -361,6 +376,7 @@ class ToolRegistry:
             WriteFileTool(),
             EditFileTool(),
             ShellTool(),
+            SpawnAgentTool(),
         ]
         self._tools = {tool.name: tool for tool in values}
 

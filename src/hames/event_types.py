@@ -205,6 +205,44 @@ class RuntimeNoticePayload(EventPayload):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class DelegationEvidencePayload(EventPayload):
+    event_id: str
+    event_type: str
+    payload_hash: str
+    content: str
+
+
+def _empty_delegation_evidence() -> list[DelegationEvidencePayload]:
+    return []
+
+
+class DelegationRequestedPayload(EventPayload):
+    tool_call_id: str
+    target_agent_id: str
+    task: str
+    evidence: list[DelegationEvidencePayload] = Field(default_factory=_empty_delegation_evidence)
+    delegation_depth: int
+
+
+class DelegationTaskCardPayload(EventPayload):
+    parent_session_id: str
+    parent_run_id: str
+    parent_event_id: str
+    target_agent_id: str
+    task: str
+    evidence: list[DelegationEvidencePayload] = Field(default_factory=_empty_delegation_evidence)
+    delegation_depth: int
+
+
+class DelegationTerminalPayload(EventPayload):
+    child_session_id: str
+    child_run_id: str
+    target_agent_id: str
+    status: str
+    summary: str
+    duration_seconds: float = 0.0
+
+
 EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "session.opened": SessionOpenedPayload,
     "session.closed": SessionClosedPayload,
@@ -237,6 +275,10 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "trust.revoked": TrustPayload,
     "runtime.error": FailurePayload,
     "runtime.notice": RuntimeNoticePayload,
+    "delegation.requested": DelegationRequestedPayload,
+    "delegation.task_card": DelegationTaskCardPayload,
+    "delegation.completed": DelegationTerminalPayload,
+    "delegation.failed": DelegationTerminalPayload,
 }
 
 

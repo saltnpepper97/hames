@@ -52,7 +52,13 @@ pub async fn run() -> Result<()> {
     let probe = client.probe_provider(&provider).await?;
     model = select_model(&mut editor, &probe, &model)?;
     let mut session = client
-        .create_session(&cwd.to_string_lossy(), &provider, &model, &reasoning)
+        .create_session(
+            &cwd.to_string_lossy(),
+            "default",
+            &provider,
+            &model,
+            &reasoning,
+        )
         .await?;
     println!(
         "Hames {} · gateway {} · {} / {} · {}",
@@ -182,7 +188,7 @@ async fn handle_command(
         "/quit" | "/exit" => return Ok(CommandOutcome::Exit),
         "/new" => {
             *session = client
-                .create_session(cwd, provider, model, reasoning)
+                .create_session(cwd, &session.agent_id, provider, model, reasoning)
                 .await?;
             ensure_trust(client, editor, session).await?;
             println!("new session {}", session.id);
@@ -238,7 +244,7 @@ async fn handle_command(
         }
         "/fork" => {
             *session = client
-                .fork_session(&session.id, parts.get(1).copied())
+                .fork_session(&session.id, parts.get(1).copied(), None)
                 .await?;
             *provider = session.provider.clone();
             *model = session.model.clone();
@@ -249,6 +255,38 @@ async fn handle_command(
                 session.id,
                 session.fork_event_id.as_deref().unwrap_or("unknown event")
             );
+        }
+        "/fork-agent" => {
+            let agent_id = parts
+                .get(1)
+                .context("usage: /fork-agent <agent-id> [event-id-or-sequence]")?;
+            *session = client
+                .fork_session(&session.id, parts.get(2).copied(), Some(agent_id))
+                .await?;
+            *provider = session.provider.clone();
+            *model = session.model.clone();
+            *reasoning = session.reasoning_effort.clone();
+            ensure_trust(client, editor, session).await?;
+            println!(
+                "forked session {} as agent {}",
+                session.id, session.agent_id
+            );
+        }
+        "/agent" => {
+            if let Some(agent_id) = parts.get(1) {
+                *session = client
+                    .create_session(cwd, agent_id, provider, model, reasoning)
+                    .await?;
+                ensure_trust(client, editor, session).await?;
+                println!(
+                    "started fresh session {} as agent {}",
+                    session.id, session.agent_id
+                );
+            } else {
+                for agent in client.agents().await? {
+                    println!("{:<20} {:<10} {}", agent.id, agent.authority, agent.name);
+                }
+            }
         }
         "/resume" => {
             let id = parts.get(1).context("usage: /resume <session-id>")?;
@@ -968,7 +1006,7 @@ impl SseDecoder {
 fn print_help() {
     println!(
         "/help\n/new\n/session\n/sessions\n/resume <id>\n/events [count]\n\
-         /fork [event-id-or-sequence]\n/project\n/trust [status|revoke]\n\
+         /fork [event-id-or-sequence]\n/fork-agent <agent-id> [event-id-or-sequence]\n/agent [agent-id]\n/project\n/trust [status|revoke]\n\
          /provider [provider] [model]\n/model\n/reasoning [default|off|on|level]\n\
          /usage\n/inspect [run-id]\n/context [context-event-id]\n\
          /export <path> [markdown|jsonl]\n/status\n/cancel (Ctrl-C during a run)\n/quit"

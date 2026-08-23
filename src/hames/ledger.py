@@ -158,6 +158,70 @@ class Ledger:
             connection.commit()
         return self.get_session(session_id)
 
+    def create_delegated_session(
+        self,
+        parent_session_id: str,
+        *,
+        parent_event_id: str,
+        agent_id: str,
+        title: str | None = None,
+    ) -> Session:
+        """Create a child with inherited execution settings but no conversation replay."""
+
+        parent = self.get_session(parent_session_id)
+        event = self.get_event(parent_event_id)
+        if event.session_id != parent.id or event.type != "delegation.requested":
+            raise ValueError("delegation source event must belong to the parent session")
+        session_id = new_id()
+        created_at = utc_now()
+        child_title = title or f"Delegation of {parent.title or parent.id}"
+        depth = parent.delegation_depth + 1
+        with self._write_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO sessions(
+                    id, created_at, status, title, working_directory, agent_id,
+                    provider, model, reasoning_effort, context_window_tokens,
+                    context_window_source, parent_session_id, fork_event_id,
+                    lineage_kind, delegation_depth
+                ) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'delegation', ?)
+                """,
+                (
+                    session_id,
+                    created_at,
+                    child_title,
+                    parent.working_directory,
+                    agent_id,
+                    parent.provider,
+                    parent.model,
+                    parent.reasoning_effort,
+                    parent.context_window_tokens,
+                    parent.context_window_source,
+                    parent.id,
+                    parent_event_id,
+                    depth,
+                ),
+            )
+            self._append_on_connection(
+                connection,
+                session_id=session_id,
+                event_type="session.opened",
+                agent_id=agent_id,
+                payload={
+                    "working_directory": parent.working_directory,
+                    "provider": parent.provider,
+                    "model": parent.model,
+                    "reasoning_effort": parent.reasoning_effort,
+                    "context_window_tokens": parent.context_window_tokens,
+                    "context_window_source": parent.context_window_source,
+                },
+                causation_id=parent_event_id,
+                correlation_id=session_id,
+            )
+            connection.commit()
+        return self.get_session(session_id)
+
     def append(
         self,
         *,
@@ -400,7 +464,7 @@ class Ledger:
                 connection,
                 session_id=session_id,
                 event_type="session.forked",
-                agent_id=parent.agent_id,
+                agent_id=agent_id or parent.agent_id,
                 payload={
                     "parent_session_id": parent.id,
                     "fork_event_id": target.id,

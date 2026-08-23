@@ -505,6 +505,110 @@ async def test_runtime_executes_tool_and_continues_model_loop(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_runtime_delegates_with_an_explicit_task_card(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    fake = FakeProvider(
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="delegate-1",
+                        name="spawn_agent",
+                        arguments_delta=(
+                            '{"agent_id":"reviewer","task":"Review the request",'
+                            '"evidence_event_ids":[]}'
+                        ),
+                    ),
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="Child review complete."),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="Parent answer."),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
+    )
+    state = GatewayState.create(paths, providers={"fake": fake})
+    parent_capsule = paths.agents / "default" / "AGENT.md"
+    parent_capsule.write_text(
+        "---\n"
+        "id: default\n"
+        "name: Default\n"
+        "delegation:\n"
+        "  allow: true\n"
+        "  allowed_agents: [reviewer]\n"
+        "---\n"
+        "Delegate only focused review tasks.\n",
+        encoding="utf-8",
+    )
+    state.agents.create("reviewer", "Reviewer", authority="read_only")
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            parent_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{parent_id}/trust", headers=headers)
+            accepted = await client.post(
+                f"/v1/sessions/{parent_id}/messages",
+                headers=headers,
+                json={"content": "Please have a reviewer check this."},
+            )
+            run_id = str(response_object(accepted)["run_id"])
+            events = await _wait_for_event(client, headers, parent_id, "run.completed")
+            delegated = next(event for event in events if event["type"] == "delegation.completed")
+            delegation = delegated["payload"]
+            assert isinstance(delegation, dict)
+            child_id = str(delegation["child_session_id"])
+            child = response_object(await client.get(f"/v1/sessions/{child_id}", headers=headers))
+            assert child["lineage_kind"] == "delegation"
+            assert child["delegation_depth"] == 1
+            child_events = EVENT_LIST.validate_python(
+                cast(
+                    object,
+                    (await client.get(f"/v1/sessions/{child_id}/events", headers=headers)).json(),
+                )
+            )
+            assert "delegation.task_card" in [event["type"] for event in child_events]
+            child_history = EVENT_LIST.validate_python(
+                cast(
+                    object,
+                    (await client.get(f"/v1/sessions/{child_id}/history", headers=headers)).json(),
+                )
+            )
+            assert [event["type"] for event in child_history][:2] == [
+                "session.opened",
+                "delegation.task_card",
+            ]
+            result = next(event for event in events if event["type"] == "tool.completed")
+            assert result["payload"]["name"] == "spawn_agent"  # type: ignore[index]
+            assert len(fake.requests) == 3
+            assert [tool.name for tool in fake.requests[1].tools] == ["read_file", "list_dir"]
+            assert fake.requests[2].messages[-1].tool_name == "spawn_agent"
+            assert run_id
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
 async def test_trust_gate_persists_exact_root_and_can_be_revoked(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     state = GatewayState.create(paths, providers={"fake": FakeProvider([])})

@@ -79,6 +79,29 @@ pub struct Session {
     pub context_window_source: String,
     pub parent_session_id: Option<String>,
     pub fork_event_id: Option<String>,
+    pub lineage_kind: String,
+    pub delegation_depth: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Agent {
+    pub id: String,
+    pub name: String,
+    pub authority: String,
+    pub path: String,
+    pub content_hash: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AgentDetail {
+    #[serde(flatten)]
+    pub agent: Agent,
+    pub instructions: String,
+    pub tools_allow: Vec<String>,
+    pub tools_deny: Vec<String>,
+    pub delegation_allowed: bool,
+    pub delegation_targets: Vec<String>,
+    pub deprecated_fields: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -256,6 +279,14 @@ struct UpdateSession<'a> {
 struct ForkSession<'a> {
     at: Option<&'a str>,
     title: Option<&'a str>,
+    agent_id: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct CreateAgent<'a> {
+    id: &'a str,
+    name: &'a str,
+    authority: &'a str,
 }
 
 impl GatewayClient {
@@ -297,6 +328,7 @@ impl GatewayClient {
     pub async fn create_session(
         &self,
         working_directory: &str,
+        agent_id: &str,
         provider: &str,
         model: &str,
         reasoning_effort: &str,
@@ -305,7 +337,7 @@ impl GatewayClient {
             self.post("/v1/sessions")
                 .json(&CreateSession {
                     working_directory,
-                    agent_id: "default",
+                    agent_id,
                     provider,
                     model,
                     reasoning_effort,
@@ -340,6 +372,48 @@ impl GatewayClient {
 
     pub async fn sessions(&self) -> Result<Vec<Session>> {
         decode(self.get("/v1/sessions").send().await?).await
+    }
+
+    pub async fn agents(&self) -> Result<Vec<Agent>> {
+        decode(self.get("/v1/agents").send().await?).await
+    }
+
+    pub async fn agent(&self, id: &str) -> Result<AgentDetail> {
+        decode(self.get(&format!("/v1/agents/{id}")).send().await?).await
+    }
+
+    pub async fn create_agent(&self, id: &str, name: &str, authority: &str) -> Result<AgentDetail> {
+        decode(
+            self.post("/v1/agents")
+                .json(&CreateAgent {
+                    id,
+                    name,
+                    authority,
+                })
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn validate_agent(&self, id: &str) -> Result<AgentDetail> {
+        decode(
+            self.post(&format!("/v1/agents/{id}/validate"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn retire_agent(&self, id: &str) -> Result<Value> {
+        decode(
+            self.http
+                .delete(format!("{}/v1/agents/{id}", self.base_url))
+                .bearer_auth(&self.token)
+                .send()
+                .await?,
+        )
+        .await
     }
 
     pub async fn session(&self, id: &str) -> Result<Session> {
@@ -408,10 +482,19 @@ impl GatewayClient {
         .context("gateway returned an invalid transcript")
     }
 
-    pub async fn fork_session(&self, session_id: &str, at: Option<&str>) -> Result<Session> {
+    pub async fn fork_session(
+        &self,
+        session_id: &str,
+        at: Option<&str>,
+        agent_id: Option<&str>,
+    ) -> Result<Session> {
         decode(
             self.post(&format!("/v1/sessions/{session_id}/fork"))
-                .json(&ForkSession { at, title: None })
+                .json(&ForkSession {
+                    at,
+                    title: None,
+                    agent_id,
+                })
                 .send()
                 .await?,
         )

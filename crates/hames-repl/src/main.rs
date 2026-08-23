@@ -33,6 +33,11 @@ enum Command {
         #[command(subcommand)]
         action: SessionAction,
     },
+    /// Manage portable agent capsules.
+    Agent {
+        #[command(subcommand)]
+        action: AgentAction,
+    },
     /// Inspect durable events.
     Event {
         #[command(subcommand)]
@@ -45,6 +50,53 @@ enum GatewayAction {
     Start,
     Stop,
     Status,
+}
+
+#[derive(Clone, Debug, Subcommand)]
+enum AgentAction {
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    Show {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Create {
+        id: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, value_enum, default_value_t = AgentAuthority::Standard)]
+        authority: AgentAuthority,
+        #[arg(long)]
+        json: bool,
+    },
+    Validate {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Delete {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum AgentAuthority {
+    Standard,
+    ReadOnly,
+}
+
+impl AgentAuthority {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::ReadOnly => "read_only",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Subcommand)]
@@ -125,8 +177,77 @@ async fn main() -> Result<()> {
             local::run_backend([action, "--json"])
         }
         Some(Command::Session { action }) => run_session_command(action).await,
+        Some(Command::Agent { action }) => run_agent_command(action).await,
         Some(Command::Event { action }) => run_event_command(action).await,
         None => repl::run().await,
+    }
+}
+
+async fn run_agent_command(action: AgentAction) -> Result<()> {
+    let (_, client) = connected_client().await?;
+    match action {
+        AgentAction::List { json } => {
+            let agents = client.agents().await?;
+            if json {
+                print_json(&agents)
+            } else {
+                for agent in agents {
+                    println!("{:<20} {:<10} {}", agent.id, agent.authority, agent.name);
+                }
+                Ok(())
+            }
+        }
+        AgentAction::Show { id, json } => {
+            let agent = client.agent(&id).await?;
+            if json {
+                print_json(&agent)
+            } else {
+                println!(
+                    "{}  {}\n{}",
+                    agent.agent.id, agent.agent.authority, agent.instructions
+                );
+                Ok(())
+            }
+        }
+        AgentAction::Create {
+            id,
+            name,
+            authority,
+            json,
+        } => {
+            let default_name = id.clone();
+            let agent = client
+                .create_agent(
+                    &id,
+                    name.as_deref().unwrap_or(&default_name),
+                    authority.as_str(),
+                )
+                .await?;
+            if json {
+                print_json(&agent)
+            } else {
+                println!("created agent {}", agent.agent.id);
+                Ok(())
+            }
+        }
+        AgentAction::Validate { id, json } => {
+            let agent = client.validate_agent(&id).await?;
+            if json {
+                print_json(&agent)
+            } else {
+                println!("{} is valid", agent.agent.id);
+                Ok(())
+            }
+        }
+        AgentAction::Delete { id, json } => {
+            let result = client.retire_agent(&id).await?;
+            if json {
+                print_json(&result)
+            } else {
+                println!("retired agent {id}");
+                Ok(())
+            }
+        }
     }
 }
 
@@ -156,7 +277,13 @@ async fn run_session_command(action: SessionAction) -> Result<()> {
             let reasoning = reasoning.unwrap_or(paths.configured_reasoning(&provider)?);
             let cwd = env::current_dir()?.canonicalize()?;
             let session = client
-                .create_session(&cwd.to_string_lossy(), &provider, &model, &reasoning)
+                .create_session(
+                    &cwd.to_string_lossy(),
+                    "default",
+                    &provider,
+                    &model,
+                    &reasoning,
+                )
                 .await?;
             if json {
                 print_json(&session)
@@ -213,7 +340,7 @@ async fn run_session_command(action: SessionAction) -> Result<()> {
             }
         }
         SessionAction::Fork { id, at, json } => {
-            let session = client.fork_session(&id, at.as_deref()).await?;
+            let session = client.fork_session(&id, at.as_deref(), None).await?;
             if json {
                 print_json(&session)
             } else {

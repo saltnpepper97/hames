@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from hames.agent import load_agent, permitted_tools
+from hames.agent import AgentCapsule, AgentRegistry, load_agent, permitted_tools
 from hames.broker import EventBroker
 from hames.config import HamesConfig
 from hames.context import ContextBudgetError, canonical_request_snapshot, compile_context
@@ -19,7 +20,7 @@ from hames.paths import HamesPaths
 from hames.policy import PolicyDecisionKind, PolicyGate, approval_request_hash
 from hames.providers import ModelRequest, Provider, ProviderError, StreamEvent, StreamEventKind
 from hames.providers.base import JSON_OBJECT, JsonValue
-from hames.tools import ToolContext, ToolRegistry, ToolResult
+from hames.tools import SpawnAgentArguments, ToolArguments, ToolContext, ToolRegistry, ToolResult
 
 POLICY_SUMMARY = (
     "Reads, writes, deterministic edits, and ordinary Bash commands are allowed inside the "
@@ -106,6 +107,7 @@ class ModelTurn:
     finish_reason: str
     tool_calls: list[ToolInvocation]
     allowed_tools: frozenset[str]
+    capsule: AgentCapsule
 
 
 class RunManager:
@@ -126,10 +128,13 @@ class RunManager:
         self.providers = providers
         self.broker = broker
         self.tools = ToolRegistry()
+        self.agents = AgentRegistry(paths.agents)
         self.policy = PolicyGate(paths.root)
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._session_runs: dict[str, str] = {}
         self._approval_waiters: dict[str, asyncio.Future[str]] = {}
+        self._children_by_parent: dict[str, set[str]] = {}
+        self._child_count_by_parent: dict[str, int] = {}
         self._scratch_base = Path("/tmp/hames/runs")
         self._prune_scratch()
 
@@ -150,6 +155,9 @@ class RunManager:
             payload={"content": content},
             agent_id=session.agent_id,
         )
+        return self._launch(session_id, user_event)
+
+    def _launch(self, session_id: str, user_event: Event) -> str:
         run_id = new_id()
         task = asyncio.create_task(
             self._run(run_id, session_id, user_event), name=f"hames-run-{run_id}"
@@ -162,6 +170,8 @@ class RunManager:
     def _finish(self, run_id: str, session_id: str) -> None:
         self._tasks.pop(run_id, None)
         self._session_runs.pop(session_id, None)
+        self._children_by_parent.pop(run_id, None)
+        self._child_count_by_parent.pop(run_id, None)
 
     def is_session_active(self, session_id: str) -> bool:
         return session_id in self._session_runs
@@ -223,6 +233,7 @@ class RunManager:
             scratch_root = self._scratch_base / run_id / session.agent_id / "workspace"
             await self._execute_run(run_id, session, user_event, scratch_root)
         except asyncio.CancelledError:
+            await self._cancel_children(run_id)
             await self._cancel_approvals(run_id)
             await self._append(
                 session_id=session_id,
@@ -346,7 +357,13 @@ class RunManager:
                     raise RunFailure("tool_call_limit", "run tool-call limit was exhausted")
                 tool_count += 1
                 await self._handle_tool(
-                    run_id, session, invocation, context, clock, turn.allowed_tools
+                    run_id,
+                    session,
+                    invocation,
+                    context,
+                    clock,
+                    turn.allowed_tools,
+                    turn.capsule,
                 )
 
     async def _model_turn(
@@ -360,6 +377,11 @@ class RunManager:
         )
         history = await asyncio.to_thread(self.ledger.replay, session.id)
         allowed_tools = permitted_tools(capsule, set(self.tools.names()))
+        if (
+            not capsule.metadata.delegation.allow
+            or session.delegation_depth >= self.config.runtime.max_delegation_depth
+        ):
+            allowed_tools = frozenset(allowed_tools - {"spawn_agent"})
         definitions = self.tools.definitions(allowed_tools)
         context = compile_context(
             session,
@@ -517,7 +539,7 @@ class RunManager:
                 causation_id=request_event.id,
                 correlation_id=run_id,
             )
-            return ModelTurn(request_event.id, finish_reason, invocations, allowed_tools)
+            return ModelTurn(request_event.id, finish_reason, invocations, allowed_tools, capsule)
         except asyncio.CancelledError:
             await self._persist_output(
                 session,
@@ -561,6 +583,7 @@ class RunManager:
         context: ToolContext,
         clock: ActiveClock,
         allowed_tools: frozenset[str],
+        capsule: AgentCapsule,
     ) -> None:
         requested = await self._append(
             session_id=session.id,
@@ -642,6 +665,26 @@ class RunManager:
                     policy_decided.id,
                 )
                 return
+        if invocation.name == "spawn_agent":
+            started = await self._append(
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                event_type="tool.started",
+                payload={"tool_call_id": invocation.tool_call_id, "name": invocation.name},
+                causation_id=policy_decided.id,
+                correlation_id=run_id,
+            )
+            result = await self._delegate(
+                run_id,
+                session,
+                invocation,
+                arguments,
+                capsule,
+                started.id,
+            )
+            await self._persist_tool_result(session, run_id, invocation, result, started.id)
+            return
         tool = self.tools.get(invocation.name)
         if tool is None:
             raise RuntimeError(f"tool disappeared from registry: {invocation.name}")
@@ -656,6 +699,165 @@ class RunManager:
         )
         result = await clock.measure(tool.execute(context, arguments))
         await self._persist_tool_result(session, run_id, invocation, result, started.id)
+
+    async def _delegate(
+        self,
+        run_id: str,
+        session: Session,
+        invocation: ToolInvocation,
+        arguments: ToolArguments,
+        capsule: AgentCapsule,
+        causation_id: str,
+    ) -> ToolResult:
+        """Run one explicitly-scoped child and return its durable terminal outcome."""
+
+        if not isinstance(arguments, SpawnAgentArguments):
+            return ToolResult(status="failed", summary="invalid spawn_agent arguments")
+        if not capsule.metadata.delegation.allow:
+            return ToolResult(status="rejected", summary="agent delegation is not permitted")
+        if session.delegation_depth >= self.config.runtime.max_delegation_depth:
+            return ToolResult(status="rejected", summary="delegation depth limit was reached")
+        if arguments.agent_id not in capsule.metadata.delegation.allowed_agents:
+            return ToolResult(status="rejected", summary="target agent is not permitted")
+        count = self._child_count_by_parent.get(run_id, 0)
+        if count >= self.config.runtime.max_child_runs_per_parent_run:
+            return ToolResult(status="rejected", summary="child-run limit was reached")
+        try:
+            await asyncio.to_thread(self.agents.load, arguments.agent_id)
+        except (FileNotFoundError, ValueError) as exc:
+            return ToolResult(status="rejected", summary=f"unknown child agent: {exc}")
+
+        evidence: list[dict[str, str]] = []
+        for event_ref in arguments.evidence_event_ids:
+            try:
+                event = await asyncio.to_thread(
+                    self.ledger.resolve_visible_event, session.id, event_ref
+                )
+            except KeyError:
+                return ToolResult(
+                    status="rejected",
+                    summary=f"evidence event is not visible: {event_ref}",
+                )
+            if event.type not in {
+                "user.message",
+                "assistant.message",
+                "tool.completed",
+                "tool.failed",
+                "tool.rejected",
+            }:
+                return ToolResult(
+                    status="rejected",
+                    summary=f"event {event.id} is not valid delegation evidence",
+                )
+            evidence.append(
+                {
+                    "event_id": event.id,
+                    "event_type": event.type,
+                    "payload_hash": event.payload_hash,
+                    "content": json.dumps(event.payload, separators=(",", ":"), sort_keys=True),
+                }
+            )
+
+        requested = await self._append(
+            session_id=session.id,
+            run_id=run_id,
+            agent_id=session.agent_id,
+            event_type="delegation.requested",
+            payload={
+                "tool_call_id": invocation.tool_call_id,
+                "target_agent_id": arguments.agent_id,
+                "task": arguments.task,
+                "evidence": evidence,
+                "delegation_depth": session.delegation_depth + 1,
+            },
+            causation_id=causation_id,
+            correlation_id=run_id,
+        )
+        child = await asyncio.to_thread(
+            self.ledger.create_delegated_session,
+            session.id,
+            parent_event_id=requested.id,
+            agent_id=arguments.agent_id,
+        )
+        await self._append(
+            session_id=child.id,
+            agent_id=child.agent_id,
+            event_type="delegation.task_card",
+            payload={
+                "parent_session_id": session.id,
+                "parent_run_id": run_id,
+                "parent_event_id": requested.id,
+                "target_agent_id": child.agent_id,
+                "task": arguments.task,
+                "evidence": evidence,
+                "delegation_depth": child.delegation_depth,
+            },
+            causation_id=requested.id,
+            correlation_id=child.id,
+        )
+        self._child_count_by_parent[run_id] = count + 1
+        child_run_id = await self.start(child.id, arguments.task)
+        self._children_by_parent.setdefault(run_id, set()).add(child_run_id)
+        child_task = self._tasks[child_run_id]
+        started = time.monotonic()
+        try:
+            await asyncio.shield(child_task)
+        except asyncio.CancelledError:
+            await self._cancel_children(run_id)
+            raise
+
+        events = await asyncio.to_thread(self.ledger.list_run_events, child_run_id)
+        completed = any(event.type == "run.completed" for event in events)
+        message = next(
+            (
+                str(event.payload.get("content", ""))
+                for event in reversed(events)
+                if event.type == "assistant.message" and event.payload.get("status") == "completed"
+            ),
+            "",
+        )
+        status = "completed" if completed else "failed"
+        summary = "child agent completed" if completed else "child agent did not complete"
+        terminal = "delegation.completed" if completed else "delegation.failed"
+        await self._append(
+            session_id=session.id,
+            run_id=run_id,
+            agent_id=session.agent_id,
+            event_type=terminal,
+            payload={
+                "child_session_id": child.id,
+                "child_run_id": child_run_id,
+                "target_agent_id": child.agent_id,
+                "status": status,
+                "summary": summary,
+                "duration_seconds": time.monotonic() - started,
+            },
+            causation_id=requested.id,
+            correlation_id=run_id,
+        )
+        return ToolResult(
+            status=status,
+            summary=summary,
+            content=message,
+            structured_data={
+                "child_session_id": child.id,
+                "child_run_id": child_run_id,
+                "agent_id": child.agent_id,
+                "requested_result_format": arguments.requested_result_format,
+            },
+            duration_seconds=time.monotonic() - started,
+        )
+
+    async def _cancel_children(self, parent_run_id: str) -> None:
+        child_run_ids = tuple(self._children_by_parent.get(parent_run_id, set()))
+        tasks: list[asyncio.Task[None]] = []
+        for child_run_id in child_run_ids:
+            task = self._tasks.get(child_run_id)
+            if task is not None and not task.done():
+                task.cancel()
+                tasks.append(task)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _request_approval(
         self,

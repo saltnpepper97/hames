@@ -6,7 +6,7 @@ import hashlib
 import json
 from typing import Literal, cast
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from hames.context import ContextManifest
 from hames.ledger import Event, Ledger, Session
@@ -25,6 +25,16 @@ class UsageProjection(InspectionModel):
     reasoning_tokens: int = 0
     provider_reported_cost: float = 0.0
     model_requests: int = 0
+
+
+class AgentUsageProjection(InspectionModel):
+    agent_id: str
+    session_count: int = 0
+    usage: UsageProjection = Field(default_factory=UsageProjection)
+    tool_calls: int = 0
+    tool_duration_seconds: float = 0.0
+    child_wall_seconds: float = 0.0
+    errors: int = 0
 
 
 class TimelineItem(InspectionModel):
@@ -71,6 +81,39 @@ def session_runs(ledger: Ledger, session_id: str) -> list[RunSummary]:
 
 def session_usage(ledger: Ledger, session_id: str) -> UsageProjection:
     return _usage(ledger.replay(session_id))
+
+
+def agent_usage(ledger: Ledger, agent_id: str) -> AgentUsageProjection:
+    """Aggregate only locally-owned events so branch replay cannot double count usage."""
+
+    events = [
+        event
+        for session in ledger.list_sessions()
+        if session.agent_id == agent_id
+        for event in ledger.list_events(session.id)
+    ]
+    usage = _usage(events)
+    tool_events = [
+        event
+        for event in events
+        if event.type in {"tool.completed", "tool.failed", "tool.rejected"}
+    ]
+    delegation_events = [event for event in events if event.type == "delegation.completed"]
+    return AgentUsageProjection(
+        agent_id=agent_id,
+        session_count=len({event.session_id for event in events}),
+        usage=usage,
+        tool_calls=len(tool_events),
+        tool_duration_seconds=sum(
+            float(event.payload.get("duration_seconds", 0.0)) for event in tool_events
+        ),
+        child_wall_seconds=sum(
+            float(event.payload.get("duration_seconds", 0.0)) for event in delegation_events
+        ),
+        errors=sum(
+            event.type in {"run.failed", "runtime.error", "delegation.failed"} for event in events
+        ),
+    )
 
 
 def inspect_run(ledger: Ledger, run_id: str) -> RunInspection:

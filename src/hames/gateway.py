@@ -24,10 +24,12 @@ from hames.config import HamesConfig, ProviderProfileConfig, load_config
 from hames.control import ControlStore
 from hames.database import Database
 from hames.inspection import (
+    AgentUsageProjection,
     ContextInspection,
     RunInspection,
     RunSummary,
     UsageProjection,
+    agent_usage,
     export_transcript,
     inspect_context,
     inspect_run,
@@ -422,6 +424,14 @@ def create_app(state: GatewayState) -> FastAPI:
     @app.post("/v1/agents/{agent_id}/validate", dependencies=auth, response_model=AgentDetail)
     async def validate_agent(agent_id: str) -> AgentDetail:
         return await get_agent(agent_id)
+
+    @app.get("/v1/agents/{agent_id}/usage", dependencies=auth, response_model=AgentUsageProjection)
+    async def get_agent_usage(agent_id: str) -> AgentUsageProjection:
+        try:
+            await asyncio.to_thread(state.agents.load, agent_id)
+        except (FileNotFoundError, ValueError) as exc:
+            raise ApiError(404, "agent_not_found", str(exc)) from exc
+        return await asyncio.to_thread(agent_usage, state.ledger, agent_id)
 
     @app.delete("/v1/agents/{agent_id}", dependencies=auth)
     async def retire_agent(agent_id: str) -> dict[str, str]:
