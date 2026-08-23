@@ -34,13 +34,24 @@ class ContextConfig(StrictModel):
     stable_instruction_limit_tokens: int = Field(default=8_192, ge=1_024)
     agent_identity_limit_tokens: int = Field(default=4_096, ge=512)
     tool_schema_limit_tokens: int = Field(default=8_192, ge=1_024)
-    retrieved_context_limit_tokens: int = Field(default=0, ge=0)
+    retrieved_context_limit_tokens: int = Field(default=2_048, ge=0)
 
     @model_validator(mode="after")
     def reserve_fits_fallback(self) -> ContextConfig:
         if self.output_reserve_tokens >= self.fallback_window_tokens:
             raise ValueError("output_reserve_tokens must be smaller than fallback_window_tokens")
         return self
+
+
+class MemoryConfig(StrictModel):
+    enabled: bool = True
+    automatic_extraction: bool = True
+    provider: str = ""
+    model: str = ""
+    reasoning_effort: str = ""
+    max_proposals_per_pass: int = Field(default=4, ge=1, le=16)
+    max_retrieved_records: int = Field(default=8, ge=1, le=32)
+    max_extraction_retries: int = Field(default=2, ge=0, le=5)
 
 
 class ToolsConfig(StrictModel):
@@ -149,6 +160,7 @@ class LedgerConfig(StrictModel):
 class HamesConfig(StrictModel):
     runtime: RuntimeConfig = RuntimeConfig()
     context: ContextConfig = ContextConfig()
+    memory: MemoryConfig = MemoryConfig()
     tools: ToolsConfig = ToolsConfig()
     gateway: GatewayConfig = GatewayConfig()
     providers: dict[str, ProviderProfileConfig] = Field(default_factory=_default_provider_profiles)

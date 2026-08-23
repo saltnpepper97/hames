@@ -94,6 +94,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                 "trust.granted",
                 "user.message",
                 "run.started",
+                "memory.retrieved",
                 "context.compiled",
                 "model.requested",
                 "model.response.started",
@@ -133,9 +134,10 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             assert inspection["usage"]["input_tokens"] == 10
             assert inspection["usage"]["estimated_input_tokens"] > 0
             assert [item["channel"] for item in inspection["timeline"]] == [
-                "user",
-                "lifecycle",
-                "context",
+                    "user",
+                    "lifecycle",
+                    "memory",
+                    "context",
                 "lifecycle",
                 "lifecycle",
                 "usage",
@@ -428,7 +430,7 @@ async def test_runtime_rejects_malformed_provider_order(tmp_path: Path) -> None:
                 json={"content": "Trigger malformed order"},
             )
             events = await _wait_for_event(client, headers, session_id, "run.failed")
-            failure = events[-1]["payload"]
+            failure = next(event for event in events if event["type"] == "run.failed")["payload"]
             assert isinstance(failure, dict)
             assert failure["code"] == "provider_protocol_error"
             assert "model.response.completed" not in [event["type"] for event in events]
@@ -844,7 +846,7 @@ async def test_agent_loop_limits_are_typed(
                 json={"content": "keep going"},
             )
             events = await _wait_for_event(client, headers, session_id, "run.failed")
-            failure = events[-1]["payload"]
+            failure = next(event for event in events if event["type"] == "run.failed")["payload"]
             assert isinstance(failure, dict)
             assert failure["code"] == expected_code
     finally:
@@ -878,7 +880,7 @@ async def test_agent_active_time_limit_is_typed(tmp_path: Path) -> None:
                 json={"content": "wait forever"},
             )
             events = await _wait_for_event(client, headers, session_id, "run.failed")
-            failure = events[-1]["payload"]
+            failure = next(event for event in events if event["type"] == "run.failed")["payload"]
             assert isinstance(failure, dict)
             assert failure["code"] == "active_time_limit"
     finally:

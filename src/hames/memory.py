@@ -231,6 +231,113 @@ class MemoryStore:
             connection.commit()
         return MemoryMutation(self.get(memory_id), tuple(events))
 
+    def project_episode(self, session: Session, run_id: str) -> MemoryMutation | None:
+        events = self.ledger.list_run_events(run_id)
+        if not events:
+            return None
+        notable_types = {
+            "tool.completed",
+            "tool.failed",
+            "tool.rejected",
+            "run.failed",
+            "run.cancelled",
+            "delegation.completed",
+            "delegation.failed",
+            "memory.accepted",
+            "memory.retracted",
+            "memory.superseded",
+        }
+        notable = [event for event in events if event.type in notable_types]
+        if not notable:
+            return None
+        started = next((event for event in events if event.type == "run.started"), None)
+        user_event: Event | None = None
+        if started is not None and started.causation_id is not None:
+            candidate = self.ledger.get_event(started.causation_id)
+            if candidate.type == "user.message":
+                user_event = candidate
+        request = str(user_event.payload.get("content", "")) if user_event else ""
+        assistant = next(
+            (
+                str(event.payload.get("content", ""))
+                for event in reversed(events)
+                if event.type == "assistant.message" and event.payload.get("status") == "completed"
+            ),
+            "",
+        )
+        actions = [
+            str(event.payload.get("summary", event.type))
+            for event in events
+            if event.type in {"tool.completed", "tool.failed", "tool.rejected"}
+        ]
+        failures = [
+            str(event.payload.get("message", event.payload.get("summary", event.type)))
+            for event in events
+            if event.type in {"run.failed", "run.cancelled", "delegation.failed"}
+        ]
+        terminal = next(
+            (event for event in reversed(events) if event.type.startswith("run.")), events[-1]
+        )
+        summary_parts = [f"Request: {request[:500] or '(unavailable)'}"]
+        if actions:
+            summary_parts.append("Actions: " + "; ".join(actions)[:700])
+        if failures:
+            summary_parts.append("Failures: " + "; ".join(failures)[:500])
+        if assistant:
+            summary_parts.append("Outcome: " + assistant[:700])
+        summary = " ".join(summary_parts)[:2000]
+        provenance = [event.id for event in notable]
+        if user_event is not None:
+            provenance.insert(0, user_event.id)
+        if terminal.id not in provenance:
+            provenance.append(terminal.id)
+        episode_value = JSON_OBJECT.validate_python(
+            {
+                "request": request[:1000],
+                "actions": actions,
+                "outcome": assistant[:1000],
+                "failures": failures,
+                "agents": sorted(
+                    {event.agent_id for event in events if event.agent_id is not None}
+                ),
+            }
+        )
+        candidate = MemoryCandidate(
+            layer="episodic",
+            visibility="workspace",
+            subject=f"run:{run_id}",
+            predicate="recorded_outcome",
+            value=episode_value,
+            summary=summary,
+            confidence=1.0,
+            importance=0.9 if failures else 0.75,
+            anchors=[],
+            provenance_event_ids=provenance,
+            evidence_basis="successful_tool",
+        )
+        mutation = self.create_candidate(
+            session=session,
+            candidate=candidate,
+            run_id=run_id,
+            origin_kind="episode",
+            activate=True,
+            causation_id=terminal.id,
+        )
+        projected = self.ledger.append(
+            session_id=session.id,
+            run_id=run_id,
+            agent_id=session.agent_id,
+            event_type="memory.episode.projected",
+            payload={
+                "memory_id": mutation.record.id,
+                "source_run_id": run_id,
+                "reason": "notable_run",
+            },
+            causation_id=mutation.events[-1].id,
+            correlation_id=run_id,
+        )
+        return MemoryMutation(mutation.record, (*mutation.events, projected))
+
     def transition(
         self,
         *,

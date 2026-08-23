@@ -57,6 +57,10 @@ class AssistantOutputPayload(EventPayload):
     status: str
 
 
+def _empty_anchor_dicts() -> list[dict[str, str]]:
+    return []
+
+
 class ContextSourcePayload(EventPayload):
     source_id: str
     source_type: str
@@ -70,6 +74,12 @@ class ContextSourcePayload(EventPayload):
     event_ids: list[str] = Field(default_factory=list)
     origin: str = ""
     source_path: str = ""
+    memory_id: str = ""
+    memory_layer: str = ""
+    memory_visibility: str = ""
+    memory_anchors: list[dict[str, str]] = Field(default_factory=_empty_anchor_dicts)
+    retrieval_score: float = 0.0
+    provenance_event_ids: list[str] = Field(default_factory=list)
 
 
 class ContextCompiledPayload(EventPayload):

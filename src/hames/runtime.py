@@ -16,6 +16,7 @@ from hames.config import HamesConfig
 from hames.context import ContextBudgetError, canonical_request_snapshot, compile_context
 from hames.control import Approval, ControlStore
 from hames.ledger import Event, Ledger, Session, new_id
+from hames.memory import MemoryStore, RetrievedMemory, retrieval_query_hash
 from hames.paths import HamesPaths
 from hames.policy import PolicyDecisionKind, PolicyGate, approval_request_hash
 from hames.providers import ModelRequest, Provider, ProviderError, StreamEvent, StreamEventKind
@@ -129,6 +130,7 @@ class RunManager:
         self.broker = broker
         self.tools = ToolRegistry()
         self.agents = AgentRegistry(paths.agents)
+        self.memory = MemoryStore(ledger)
         self.policy = PolicyGate(paths.root)
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._session_runs: dict[str, str] = {}
@@ -277,6 +279,8 @@ class RunManager:
             )
             await self._append_failure(session_id, run_id, error.id, "runtime_error", str(exc), {})
         finally:
+            if self.config.memory.enabled:
+                await self._project_episode(session_id, run_id)
             if scratch_root is not None:
                 await asyncio.to_thread(self._remove_scratch, scratch_root)
 
@@ -322,6 +326,9 @@ class RunManager:
             causation_id=user_event.id,
             correlation_id=run_id,
         )
+        memories, retrieval_event = await self._retrieve_memories(
+            session, run_id, str(user_event.payload.get("content", "")), run_started.id
+        )
         tool_count = 0
         model_turns = 0
         while True:
@@ -329,7 +336,16 @@ class RunManager:
                 raise RunFailure("model_turn_limit", "run model-turn limit was exhausted")
             model_turns += 1
             turn = await clock.measure(
-                self._model_turn(run_id, session, run_started.id if model_turns == 1 else None)
+                self._model_turn(
+                    run_id,
+                    session,
+                    retrieval_event.id
+                    if model_turns == 1 and retrieval_event is not None
+                    else run_started.id
+                    if model_turns == 1
+                    else None,
+                    memories,
+                )
             )
             if not turn.tool_calls:
                 await self._append(
@@ -367,7 +383,11 @@ class RunManager:
                 )
 
     async def _model_turn(
-        self, run_id: str, session: Session, initial_causation_id: str | None
+        self,
+        run_id: str,
+        session: Session,
+        initial_causation_id: str | None,
+        memories: list[RetrievedMemory],
     ) -> ModelTurn:
         reasoning_parts: list[str] = []
         answer_parts: list[str] = []
@@ -391,6 +411,7 @@ class RunManager:
             POLICY_SUMMARY,
             self.config.context,
             run_id=run_id,
+            memories=memories,
         )
         snapshot = canonical_request_snapshot(
             model=session.model,
@@ -574,6 +595,74 @@ class RunManager:
                 correlation_id=run_id,
             )
             raise
+
+    async def _retrieve_memories(
+        self,
+        session: Session,
+        run_id: str,
+        query: str,
+        causation_id: str,
+    ) -> tuple[list[RetrievedMemory], Event | None]:
+        if (
+            not self.config.memory.enabled
+            or self.config.context.retrieved_context_limit_tokens == 0
+        ):
+            return [], None
+        selected, omitted, eligible_count = await asyncio.to_thread(
+            self.memory.retrieve,
+            session,
+            query,
+            limit=self.config.memory.max_retrieved_records,
+            token_budget=self.config.context.retrieved_context_limit_tokens,
+        )
+
+        def item(value: RetrievedMemory) -> dict[str, object]:
+            return {
+                "memory_id": value.record.id,
+                "layer": value.record.layer,
+                "score": value.score,
+                "estimated_tokens": value.estimated_tokens,
+                "provenance_event_ids": value.record.provenance_event_ids,
+            }
+
+        event = await self._append(
+            session_id=session.id,
+            run_id=run_id,
+            agent_id=session.agent_id,
+            event_type="memory.retrieved",
+            payload={
+                "query_hash": retrieval_query_hash(query),
+                "selected": [item(value) for value in selected],
+                "omitted": [item(value) for value in omitted],
+                "eligible_count": eligible_count,
+            },
+            causation_id=causation_id,
+            correlation_id=run_id,
+        )
+        return selected, event
+
+    async def _project_episode(self, session_id: str, run_id: str) -> None:
+        try:
+            session = await asyncio.to_thread(self.ledger.get_session, session_id)
+            mutation = await asyncio.to_thread(self.memory.project_episode, session, run_id)
+            if mutation is not None:
+                for event in mutation.events:
+                    await self.broker.publish(
+                        event.session_id,
+                        {"durable": True, "event": event.model_dump(mode="json")},
+                    )
+        except (KeyError, ValueError) as exc:
+            await self._append(
+                session_id=session_id,
+                run_id=run_id,
+                event_type="runtime.notice",
+                payload={
+                    "code": "episode_projection_skipped",
+                    "message": str(exc),
+                    "details": {},
+                },
+                correlation_id=run_id,
+            )
 
     async def _handle_tool(
         self,

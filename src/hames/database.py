@@ -284,6 +284,8 @@ MIGRATIONS = (
         CREATE INDEX memory_workspace_idx ON memory_records(workspace_path);
         CREATE INDEX memory_agent_idx ON memory_records(owner_agent_id);
         CREATE INDEX memory_lineage_idx ON memory_records(lineage_root_session_id);
+        CREATE UNIQUE INDEX memory_episode_run_idx ON memory_records(source_run_id)
+            WHERE origin_kind = 'episode';
         CREATE INDEX memory_jobs_status_idx ON memory_jobs(status, created_at);
 
         CREATE TRIGGER memory_records_no_delete

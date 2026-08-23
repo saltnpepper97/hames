@@ -161,3 +161,87 @@ def test_workspace_visibility_and_supersession(hames_paths: HamesPaths, tmp_path
     assert replacement.record.status == "active"
     assert store.get(original.id).status == "superseded"
     assert replacement.events[-1].type == "memory.superseded"
+
+
+def test_episode_projection_is_deterministic_and_skips_routine_chat(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    session = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    user = ledger.append(
+        session_id=session.id,
+        agent_id=session.agent_id,
+        event_type="user.message",
+        payload={"content": "Inspect the README."},
+    )
+    started = ledger.append(
+        session_id=session.id,
+        run_id="notable-run",
+        agent_id=session.agent_id,
+        event_type="run.started",
+        payload={"max_model_turns": 2, "max_tool_calls": 2, "max_active_seconds": 30.0},
+        causation_id=user.id,
+    )
+    tool = ledger.append(
+        session_id=session.id,
+        run_id="notable-run",
+        agent_id=session.agent_id,
+        event_type="tool.completed",
+        payload={
+            "tool_call_id": "call-1",
+            "name": "read_file",
+            "status": "completed",
+            "summary": "read README.md",
+            "content": "",
+        },
+        causation_id=started.id,
+    )
+    ledger.append(
+        session_id=session.id,
+        run_id="notable-run",
+        agent_id=session.agent_id,
+        event_type="assistant.message",
+        payload={"content": "The README was inspected.", "status": "completed"},
+        causation_id=tool.id,
+    )
+    ledger.append(
+        session_id=session.id,
+        run_id="notable-run",
+        agent_id=session.agent_id,
+        event_type="run.completed",
+        payload={"model_turns": 2, "tool_calls": 1, "active_seconds": 1.0},
+        causation_id=tool.id,
+    )
+    projected = MemoryStore(ledger).project_episode(session, "notable-run")
+    assert projected is not None
+    assert projected.record.layer == "episodic"
+    assert projected.events[-1].type == "memory.episode.projected"
+    assert "read README.md" in projected.record.summary
+
+    routine_user = ledger.append(
+        session_id=session.id,
+        agent_id=session.agent_id,
+        event_type="user.message",
+        payload={"content": "Hello"},
+    )
+    ledger.append(
+        session_id=session.id,
+        run_id="routine-run",
+        agent_id=session.agent_id,
+        event_type="run.started",
+        payload={"max_model_turns": 1, "max_tool_calls": 1, "max_active_seconds": 30.0},
+        causation_id=routine_user.id,
+    )
+    ledger.append(
+        session_id=session.id,
+        run_id="routine-run",
+        agent_id=session.agent_id,
+        event_type="run.completed",
+        payload={"model_turns": 1, "tool_calls": 0, "active_seconds": 0.1},
+    )
+    assert MemoryStore(ledger).project_episode(session, "routine-run") is None
