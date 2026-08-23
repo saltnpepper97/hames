@@ -10,7 +10,7 @@ for the milestone plan.
 
 ## Status
 
-M7 is implemented. In addition to the local conversation and branching slices, Hames provides
+M8 is implemented. In addition to the local conversation and branching slices, Hames provides
 immutable session branching, ancestry-aware replay, typed and integrity-checked
 events, irreversible secret redaction, and content-addressed payload blobs. Hames
 also has named local-provider profiles, explicit health probes, strict normalized
@@ -44,6 +44,16 @@ Only compact relevant catalog entries enter normal context; the model must load 
 Skill before its full procedure is supplied. Declared scripts self-test and run in
 an offline Bubblewrap sandbox. Pinning, archive, history, quarantine, rollback,
 jobs, evidence, and typed ledger events keep evolution inspectable and reversible.
+
+Self-correction is now evidence-backed. Corrections (`/correct` in the REPL),
+conversational correction language, repeated failure signatures, and failing Skill
+versions open Scars: durable, inspectable records linking evidence to expected
+behavior. A repair router picks the weakest sufficient layer — memory records for
+user corrections, the Skill pipeline for procedures, approval-gated context and
+policy rules otherwise — evaluates candidates with deterministic replay checks and
+optional budgeted model evaluation, then guards future runs until the fix heals or
+regresses. Approved context rules are enforced at compile time and approved policy
+rules can only add protection.
 
 ## Quick start
 
@@ -198,6 +208,13 @@ same autonomous pipeline explicitly. `pin`, `unpin`, `archive`, `restore`, and
 `rollback` are overrides rather than an approval workflow. Script helpers run with
 networking disabled, no real home, a read-only project, and only disposable run
 scratch writable. See [`docs/architecture/skills.md`](docs/architecture/skills.md).
+
+Corrections become tests. `/correct <explanation>` records an explicit correction
+linked to the offending event; `/evolution` lists Scars by state (`open`,
+`guarded`, `healed`, `regressed`) and shows full lineage — evidence timeline,
+repair candidates, evaluations, guard counts, and why the Scar triggered. Scar
+events stream live during runs. See
+[`docs/architecture/evolution.md`](docs/architecture/evolution.md).
 
 The same ledger is scriptable outside the REPL:
 

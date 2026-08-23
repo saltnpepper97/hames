@@ -763,6 +763,24 @@ impl GatewayClient {
         .await
     }
 
+    pub async fn scars(&self, session_id: &str) -> Result<Vec<Scar>> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/scars"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn scar(&self, session_id: &str, scar_id: &str) -> Result<Scar> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/scars/{scar_id}"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
     pub async fn transition_memory(
         &self,
         session_id: &str,

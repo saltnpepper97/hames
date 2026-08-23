@@ -10,7 +10,7 @@ use rustyline::error::ReadlineError;
 
 use crate::api::{
     ContextInspection, Event, GatewayClient, LiveEnvelope, MemoryJob, MemoryRecord,
-    PROTOCOL_VERSION, ProviderModel, ProviderProbe, ProviderProfile, RunInspection, Session,
+    PROTOCOL_VERSION, ProviderModel, ProviderProbe, ProviderProfile, RunInspection, Scar, Session,
     SkillJob, SkillSummary, SkillVersion,
 };
 use crate::local::{LocalPaths, start_backend, write_private_export};
@@ -430,6 +430,7 @@ async fn handle_command(
         }
         "/memory" => handle_memory_command(client, session, &parts).await?,
         "/skills" => handle_skills_command(client, session, &parts).await?,
+        "/evolution" => handle_evolution_command(client, session, &parts).await?,
         "/correct" => {
             let content = input.strip_prefix("/correct").unwrap_or("").trim();
             if content.is_empty() {
@@ -849,6 +850,70 @@ async fn handle_memory_command(
     Ok(())
 }
 
+async fn handle_evolution_command(
+    client: &GatewayClient,
+    session: &Session,
+    parts: &[&str],
+) -> Result<()> {
+    match parts.get(1).copied() {
+        None | Some("list") => {
+            print_scars(&client.scars(&session.id).await?);
+        }
+        Some("show") => {
+            let id = parts.get(2).context("usage: /evolution show <scar-id>")?;
+            print_scar_detail(&client.scar(&session.id, id).await?);
+        }
+        Some("open" | "guarded" | "healed" | "regressed") => {
+            let status = parts[1];
+            let scars = client.scars(&session.id).await?;
+            let filtered: Vec<Scar> = scars
+                .into_iter()
+                .filter(|scar| scar.status == status)
+                .collect();
+            print_scars(&filtered);
+        }
+        Some(_) => bail!("usage: /evolution [list|open|guarded|healed|regressed|show <scar-id>]"),
+    }
+    Ok(())
+}
+
+fn print_scars(scars: &[Scar]) {
+    if scars.is_empty() {
+        println!("evolution> no scars recorded");
+        return;
+    }
+    for scar in scars {
+        println!(
+            "{}  {:<10} {:<8} {:<9} g{} r{}  {}",
+            &scar.id[..8.min(scar.id.len())],
+            scar.status,
+            scar.severity,
+            scar.detection,
+            scar.successful_guard_count,
+            scar.regression_count,
+            scar.title
+        );
+    }
+}
+
+fn print_scar_detail(scar: &Scar) {
+    println!("evolution> scar {}", scar.id);
+    println!("  title:       {}", scar.title);
+    println!(
+        "  status:      {} (severity {})",
+        scar.status, scar.severity
+    );
+    println!("  detection:   {}", scar.detection);
+    println!("  signature:   {}", scar.failure_signature);
+    println!("  description: {}", scar.description);
+    println!("  expected:    {}", scar.expected_behavior);
+    println!(
+        "  guards:      {} clean, {} regressions",
+        scar.successful_guard_count, scar.regression_count
+    );
+    println!("  updated:     {}", scar.updated_at);
+}
+
 fn print_memories(records: &[MemoryRecord]) {
     if records.is_empty() {
         println!("memory> no matching records");
@@ -1236,6 +1301,21 @@ fn process_envelope(
             "run.completed" | "run.cancelled" => {
                 return Ok(true);
             }
+            "scar.recorded" | "scar.opened" | "scar.regressed" | "scar.healed" => {
+                let title = event.payload["title"].as_str().unwrap_or("scar");
+                let status = event
+                    .payload
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                eprintln!("evolution> scar {status}: {title}");
+            }
+            "scar.guard.succeeded" => {
+                let count = event.payload["successful_guard_count"]
+                    .as_u64()
+                    .unwrap_or(0);
+                eprintln!("evolution> guard pass recorded ({count} clean)");
+            }
             _ => {}
         }
         return Ok(false);
@@ -1358,6 +1438,7 @@ fn print_help() {
          /skills author <goal>|correct <id> <change>|retry <job-id>\n\
          /skills pin|unpin|archive|restore|rollback <id>\n\
          /correct <short explanation>\n\
+         /evolution [list|open|guarded|healed|regressed|show <scar-id>]\n\
          /usage\n/inspect [run-id]\n/context [context-event-id]\n\
          /export <path> [markdown|jsonl]\n/status\n/cancel (Ctrl-C during a run)\n/quit"
     );

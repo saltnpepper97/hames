@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -73,6 +73,65 @@ class RunInspection(RunSummary):
     contexts: list[ContextInspection]
 
 
+class ScarRepairView(InspectionModel):
+    id: str
+    version: int
+    repair_layer: str
+    risk: str
+    required_authority: str
+    status: str
+    previous_scar_status: str
+    rationale: str
+    proposal: dict[str, JsonValue]
+    created_by: str
+    created_at: str
+    decided_at: str | None
+
+
+class ScarEvaluationView(InspectionModel):
+    event_id: str
+    repair_id: str
+    kind: str
+    status: str
+    score: float
+    report: dict[str, JsonValue]
+    created_at: str
+
+
+class ScarTransitionView(InspectionModel):
+    event_id: str
+    event_type: str
+    previous_status: str | None
+    status: str
+    reason: str
+    created_at: str
+
+
+class ScarInspection(InspectionModel):
+    scar_id: str
+    session_id: str
+    title: str
+    scope: str
+    status: str
+    severity: str
+    detection: str
+    failure_signature: str
+    description: str
+    expected_behavior: str
+    trigger: dict[str, JsonValue]
+    repair_layer: str | None
+    repair_reference: str | None
+    successful_guard_count: int
+    regression_count: int
+    created_at: str
+    updated_at: str
+    evidence_timeline: list[TimelineItem]
+    transitions: list[ScarTransitionView]
+    repairs: list[ScarRepairView]
+    evaluations: list[ScarEvaluationView]
+    explanation: str
+
+
 def session_runs(ledger: Ledger, session_id: str) -> list[RunSummary]:
     history = ledger.replay(session_id)
     run_ids = list(dict.fromkeys(event.run_id for event in history if event.run_id is not None))
@@ -138,6 +197,129 @@ def inspect_run(ledger: Ledger, run_id: str) -> RunInspection:
         **summary.model_dump(),
         timeline=[_timeline(event) for event in timeline_events],
         contexts=contexts,
+    )
+
+
+def inspect_scar(
+    ledger: Ledger,
+    store: Any,
+    session_id: str,
+    scar_id: str,
+) -> ScarInspection:
+    """Full lineage of one scar: evidence, transitions, repairs, evaluations."""
+    from hames.evolution import Scar, ScarStore  # local import avoids module cycles
+
+    assert isinstance(store, ScarStore)
+    session = ledger.get_session(session_id)
+    scar = store.get_visible(session, scar_id)
+    assert isinstance(scar, Scar)
+    evidence: list[TimelineItem] = []
+    for event_id in scar.evidence_event_ids:
+        try:
+            event = ledger.get_event(event_id)
+        except KeyError:
+            continue
+        evidence.append(_timeline(event))
+    scar_events = [
+        event
+        for event in ledger.list_events(session.id)
+        if event.type.startswith("scar.") and event.payload.get("scar_id") == scar_id
+    ]
+    transitions = [
+        ScarTransitionView(
+            event_id=event.id,
+            event_type=event.type,
+            previous_status=cast(str | None, event.payload.get("previous_status")),
+            status=str(event.payload.get("status", "")),
+            reason=str(event.payload.get("reason", "")),
+            created_at=event.created_at,
+        )
+        for event in scar_events
+        if event.type
+        in {
+            "scar.recorded",
+            "scar.opened",
+            "scar.dismissed",
+            "scar.repair_proposed",
+            "scar.guarded",
+            "scar.healed",
+            "scar.regressed",
+        }
+    ]
+    evaluations = [
+        ScarEvaluationView(
+            event_id=event.id,
+            repair_id=str(event.payload.get("repair_id", "")),
+            kind=str(event.payload.get("kind", "")),
+            status=str(event.payload.get("status", "")),
+            score=float(event.payload.get("score", 0.0)),
+            report=JSON_OBJECT.validate_python(event.payload.get("report", {})),
+            created_at=event.created_at,
+        )
+        for event in scar_events
+        if event.type == "scar.repair.evaluated"
+    ]
+    repairs = [
+        ScarRepairView(
+            id=repair.id,
+            version=repair.version,
+            repair_layer=repair.repair_layer,
+            risk=repair.risk,
+            required_authority=repair.required_authority,
+            status=repair.status,
+            previous_scar_status=repair.previous_scar_status,
+            rationale=repair.rationale,
+            proposal=repair.proposal,
+            created_by=repair.created_by,
+            created_at=repair.created_at,
+            decided_at=repair.decided_at,
+        )
+        for repair in store.repairs_for_scar(scar_id)
+    ]
+    detection_reasons = {
+        "explicit_correction": (
+            "The user explicitly corrected Hames with /correct; the user's own statement is "
+            "the authoritative diagnosis."
+        ),
+        "conversational_correction": (
+            "The user's message contained explicit contradiction or correction language "
+            "referring to the prior result."
+        ),
+        "reviewer_classification": (
+            "The reviewer model classified the user message as correcting a prior result "
+            "(low severity pending stronger evidence)."
+        ),
+        "repeated_failure": (
+            "The same normalized failure signature recurred past the configured threshold "
+            "in this workspace."
+        ),
+        "skill_outcome_regression": (
+            "A loaded Skill version was repeatedly associated with failed or corrected runs."
+        ),
+    }
+    return ScarInspection(
+        scar_id=scar.id,
+        session_id=session.id,
+        title=scar.title,
+        scope=scar.scope,
+        status=scar.status,
+        severity=scar.severity,
+        detection=scar.detection,
+        failure_signature=scar.failure_signature,
+        description=scar.description,
+        expected_behavior=scar.expected_behavior,
+        trigger=JSON_OBJECT.validate_python(scar.trigger.model_dump(mode="json")),
+        repair_layer=scar.repair_layer,
+        repair_reference=scar.repair_reference,
+        successful_guard_count=scar.successful_guard_count,
+        regression_count=scar.regression_count,
+        created_at=scar.created_at,
+        updated_at=scar.updated_at,
+        evidence_timeline=evidence,
+        transitions=transitions,
+        repairs=repairs,
+        evaluations=evaluations,
+        explanation=detection_reasons.get(scar.detection, f"Detected via {scar.detection}."),
     )
 
 
@@ -286,6 +468,14 @@ def _channel(event_type: str) -> str:
         return "memory"
     if event_type.startswith("skill."):
         return "skill"
+    if (
+        event_type.startswith("scar.")
+        or event_type.startswith("context.rule.")
+        or event_type.startswith("policy.rule.")
+        or event_type == "correction.verdict"
+        or event_type == "user.correction"
+    ):
+        return "evolution"
     if event_type == "model.usage":
         return "usage"
     if event_type.endswith("failed") or event_type == "runtime.error":

@@ -1104,3 +1104,91 @@ async def _wait_for_event(
             return events
         await asyncio.sleep(0.01)
     raise AssertionError(f"event did not arrive: {event_type}")
+
+
+@pytest.mark.asyncio
+async def test_correction_scar_and_rule_lifecycle_over_gateway(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+
+            corrected = await client.post(
+                f"/v1/sessions/{session_id}/correct",
+                headers=headers,
+                json={"content": "the milestone file is docs/plan.md"},
+            )
+            assert corrected.status_code == 201
+            scar = response_object(corrected)
+            assert scar["status"] == "open"
+            assert scar["detection"] == "explicit_correction"
+            scar_id = str(scar["id"])
+
+            listed = await client.get(f"/v1/sessions/{session_id}/scars", headers=headers)
+            assert [item["id"] for item in listed.json()] == [scar_id]
+
+            inspection = await client.get(
+                f"/v1/sessions/{session_id}/scars/{scar_id}/inspection", headers=headers
+            )
+            lineage = response_object(inspection)
+            assert str(lineage["explanation"]).startswith("The user explicitly corrected")
+            transitions = cast(list[dict[str, JsonValue]], lineage["transitions"])
+            assert any(item.get("event_type") == "scar.recorded" for item in transitions)
+
+            # context rule lifecycle: propose -> inactive until approved -> activate
+            proposed = await client.post(
+                f"/v1/sessions/{session_id}/context-rules",
+                headers=headers,
+                json={
+                    "description": "Status questions must include the current milestone.",
+                    "require_source_types": ["memory"],
+                    "workspace_paths": [str(tmp_path)],
+                },
+            )
+            assert proposed.status_code == 201
+            rule = response_object(proposed)
+            assert rule["status"] == "proposed"
+            rule_id = str(rule["id"])
+
+            activated = await client.post(
+                f"/v1/context-rules/{rule_id}/activate",
+                headers=headers,
+                json={"reason": "approved by user"},
+            )
+            assert response_object(activated)["status"] == "active"
+
+            # policy rule lifecycle
+            policy_proposed = await client.post(
+                f"/v1/sessions/{session_id}/policy-rules",
+                headers=headers,
+                json={
+                    "action": "deny",
+                    "pattern": r"curl[^|]*\|\s*(?:ba)?sh",
+                    "reason": "no piping remote scripts",
+                },
+            )
+            assert policy_proposed.status_code == 201
+            policy_rule = response_object(policy_proposed)
+            policy_activated = await client.post(
+                f"/v1/policy-rules/{policy_rule['id']}/activate",
+                headers=headers,
+                json={"reason": "approved"},
+            )
+            assert response_object(policy_activated)["status"] == "active"
+            active_rules = await client.get("/v1/policy-rules?status=active", headers=headers)
+            assert len(active_rules.json()) == 1
+    finally:
+        await state.runs.close()

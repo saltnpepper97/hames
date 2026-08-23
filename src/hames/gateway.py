@@ -30,11 +30,13 @@ from hames.inspection import (
     ContextInspection,
     RunInspection,
     RunSummary,
+    ScarInspection,
     UsageProjection,
     agent_usage,
     export_transcript,
     inspect_context,
     inspect_run,
+    inspect_scar,
     session_runs,
     session_usage,
 )
@@ -1047,6 +1049,19 @@ def create_app(state: GatewayState) -> FastAPI:
         try:
             session = await asyncio.to_thread(state.ledger.get_session, session_id)
             return await asyncio.to_thread(state.evolution.store.get_visible, session, scar_id)
+        except KeyError as exc:
+            raise ApiError(404, "scar_not_found", f"unknown visible Scar: {scar_id}") from exc
+
+    @app.get(
+        "/v1/sessions/{session_id}/scars/{scar_id}/inspection",
+        dependencies=auth,
+        response_model=ScarInspection,
+    )
+    async def inspect_scar_lineage(session_id: str, scar_id: str) -> ScarInspection:
+        try:
+            return await asyncio.to_thread(
+                inspect_scar, state.ledger, state.evolution.store, session_id, scar_id
+            )
         except KeyError as exc:
             raise ApiError(404, "scar_not_found", f"unknown visible Scar: {scar_id}") from exc
 
