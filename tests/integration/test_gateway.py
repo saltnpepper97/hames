@@ -89,7 +89,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                 if "run.completed" in event_types:
                     break
                 await asyncio.sleep(0.01)
-            assert event_types == [
+            assert event_types[:13] == [
                 "session.opened",
                 "trust.granted",
                 "user.message",
@@ -104,6 +104,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                 "model.response.completed",
                 "run.completed",
             ]
+            events = await _wait_for_event(client, headers, session_id, "memory.job.queued")
             reasoning = next(event for event in events if event["type"] == "assistant.reasoning")
             answer = next(event for event in events if event["type"] == "assistant.message")
             reasoning_payload = reasoning["payload"]
@@ -134,10 +135,10 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             assert inspection["usage"]["input_tokens"] == 10
             assert inspection["usage"]["estimated_input_tokens"] > 0
             assert [item["channel"] for item in inspection["timeline"]] == [
-                    "user",
-                    "lifecycle",
-                    "memory",
-                    "context",
+                "user",
+                "lifecycle",
+                "memory",
+                "context",
                 "lifecycle",
                 "lifecycle",
                 "usage",
@@ -145,6 +146,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                 "answer",
                 "lifecycle",
                 "lifecycle",
+                "memory",
             ]
             context_response = await client.get(
                 f"/v1/contexts/{context_event['id']}", headers=headers

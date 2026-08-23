@@ -37,9 +37,11 @@ from hames.inspection import (
     session_usage,
 )
 from hames.ledger import Event, EventIntegrityError, IntegrityResult, Ledger, Session
+from hames.memory_runtime import MemoryManager
 from hames.paths import HamesPaths
 from hames.providers import Provider, ProviderError, ProviderModel
 from hames.providers.registry import configured_providers
+from hames.providers.scheduled import SerializedProvider
 from hames.runtime import RunManager
 
 
@@ -181,6 +183,7 @@ class GatewayState:
     providers: dict[str, Provider]
     broker: EventBroker
     runs: RunManager
+    memory: MemoryManager
     token: str
 
     @classmethod
@@ -197,7 +200,11 @@ class GatewayState:
         ledger = Ledger(database, blob_threshold_bytes=config.ledger.blob_threshold_bytes)
         controls = ControlStore(database)
         broker = EventBroker()
-        selected_providers = providers or configured_providers(config)
+        raw_providers = providers or configured_providers(config)
+        selected_providers: dict[str, Provider] = {
+            profile_id: SerializedProvider(provider)
+            for profile_id, provider in raw_providers.items()
+        }
         runs = RunManager(
             ledger=ledger,
             paths=paths,
@@ -206,6 +213,13 @@ class GatewayState:
             providers=selected_providers,
             broker=broker,
         )
+        memory = MemoryManager(
+            ledger=ledger,
+            config=config,
+            providers=selected_providers,
+            broker=broker,
+        )
+        runs.attach_memory_manager(memory)
         return cls(
             paths,
             config,
@@ -214,6 +228,7 @@ class GatewayState:
             selected_providers,
             broker,
             runs,
+            memory,
             paths.read_gateway_token(),
         )
 
@@ -533,7 +548,7 @@ def create_app(state: GatewayState) -> FastAPI:
 
     @app.put("/v1/sessions/{session_id}/agent", dependencies=auth, response_model=Session)
     async def update_session_agent(session_id: str, request: UpdateSessionAgentRequest) -> Session:
-        if state.runs.is_session_active(session_id):
+        if not await state.runs.finish_terminal_session(session_id):
             raise ApiError(409, "session_run_active", "cannot change agent during an active run")
         try:
             await asyncio.to_thread(state.agents.load, request.agent_id)

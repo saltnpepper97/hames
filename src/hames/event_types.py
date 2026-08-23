@@ -110,6 +110,7 @@ class ModelRequestedPayload(EventPayload):
     model: str
     reasoning_effort: str
     agent_capsule_hash: str
+    purpose: str = "agent_turn"
 
 
 class ModelStartedPayload(EventPayload):

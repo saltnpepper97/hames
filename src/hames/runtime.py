@@ -8,7 +8,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from hames.agent import AgentCapsule, AgentRegistry, load_agent, permitted_tools
 from hames.broker import EventBroker
@@ -22,6 +22,9 @@ from hames.policy import PolicyDecisionKind, PolicyGate, approval_request_hash
 from hames.providers import ModelRequest, Provider, ProviderError, StreamEvent, StreamEventKind
 from hames.providers.base import JSON_OBJECT, JsonValue
 from hames.tools import SpawnAgentArguments, ToolArguments, ToolContext, ToolRegistry, ToolResult
+
+if TYPE_CHECKING:
+    from hames.memory_runtime import MemoryManager
 
 POLICY_SUMMARY = (
     "Reads, writes, deterministic edits, and ordinary Bash commands are allowed inside the "
@@ -138,7 +141,11 @@ class RunManager:
         self._children_by_parent: dict[str, set[str]] = {}
         self._child_count_by_parent: dict[str, int] = {}
         self._scratch_base = Path("/tmp/hames/runs")
+        self.memory_manager: MemoryManager | None = None
         self._prune_scratch()
+
+    def attach_memory_manager(self, manager: MemoryManager) -> None:
+        self.memory_manager = manager
 
     async def start(self, session_id: str, content: str) -> str:
         session = await asyncio.to_thread(self.ledger.get_session, session_id)
@@ -177,6 +184,23 @@ class RunManager:
 
     def is_session_active(self, session_id: str) -> bool:
         return session_id in self._session_runs
+
+    async def finish_terminal_session(self, session_id: str) -> bool:
+        """Wait for post-terminal bookkeeping, but never wait on a live model/tool run."""
+
+        run_id = self._session_runs.get(session_id)
+        if run_id is None:
+            return True
+        terminal = any(
+            event.type in {"run.completed", "run.failed", "run.cancelled"}
+            for event in await asyncio.to_thread(self.ledger.list_run_events, run_id)
+        )
+        if not terminal:
+            return False
+        task = self._tasks.get(run_id)
+        if task is not None:
+            await asyncio.shield(task)
+        return True
 
     def is_working_directory_active(self, working_directory: str) -> bool:
         return any(
@@ -225,6 +249,8 @@ class RunManager:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        if self.memory_manager is not None:
+            await self.memory_manager.close()
         for provider in self.providers.values():
             await provider.aclose()
 
@@ -281,6 +307,8 @@ class RunManager:
         finally:
             if self.config.memory.enabled:
                 await self._project_episode(session_id, run_id)
+            if self.memory_manager is not None:
+                await self.memory_manager.enqueue_run(session_id, run_id)
             if scratch_root is not None:
                 await asyncio.to_thread(self._remove_scratch, scratch_root)
 

@@ -97,6 +97,21 @@ class RetrievedMemory(MemoryModel):
     estimated_tokens: int
 
 
+class MemoryJob(MemoryModel):
+    id: str
+    kind: Literal["extraction", "explicit_capture"]
+    status: Literal["pending", "running", "completed", "failed", "cancelled"]
+    session_id: str
+    run_id: str | None
+    source_event_id: str
+    content: str | None
+    attempts: int
+    error_code: str | None
+    error_message: str | None
+    created_at: str
+    updated_at: str
+
+
 @dataclass(frozen=True, slots=True)
 class MemoryMutation:
     record: MemoryRecord
@@ -376,6 +391,143 @@ class MemoryStore:
             )
             connection.commit()
         return MemoryMutation(self.get(memory_id), (event,))
+
+    def queue_job(
+        self,
+        *,
+        session: Session,
+        kind: Literal["extraction", "explicit_capture"],
+        source_event_id: str,
+        run_id: str | None,
+        content: str | None = None,
+    ) -> tuple[MemoryJob, Event]:
+        job_id = new_id()
+        now = utc_now()
+        with self.ledger.transaction_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO memory_jobs(
+                    id, kind, status, session_id, run_id, source_event_id,
+                    content, attempts, created_at, updated_at
+                ) VALUES (?, ?, 'pending', ?, ?, ?, ?, 0, ?, ?)
+                """,
+                (job_id, kind, session.id, run_id, source_event_id, content, now, now),
+            )
+            event = self.ledger.append_in_transaction(
+                connection,
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                event_type="memory.job.queued",
+                payload={"job_id": job_id, "kind": kind, "status": "pending", "attempts": 0},
+                causation_id=source_event_id,
+                correlation_id=job_id,
+            )
+            connection.commit()
+        return self.get_job(job_id), event
+
+    def start_job(self, job_id: str) -> tuple[MemoryJob, Event]:
+        job = self.get_job(job_id)
+        if job.status not in {"pending", "running"}:
+            raise ValueError("memory job is not pending")
+        session = self.ledger.get_session(job.session_id)
+        now = utc_now()
+        attempts = job.attempts + 1
+        with self.ledger.transaction_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "UPDATE memory_jobs SET status = 'running', attempts = ?, updated_at = ?, "
+                "error_code = NULL, error_message = NULL WHERE id = ?",
+                (attempts, now, job_id),
+            )
+            event = self.ledger.append_in_transaction(
+                connection,
+                session_id=job.session_id,
+                run_id=job.run_id,
+                agent_id=session.agent_id,
+                event_type="memory.job.started",
+                payload={
+                    "job_id": job.id,
+                    "kind": job.kind,
+                    "status": "running",
+                    "attempts": attempts,
+                },
+                causation_id=job.source_event_id,
+                correlation_id=job.id,
+            )
+            connection.commit()
+        return self.get_job(job_id), event
+
+    def finish_job(
+        self,
+        job_id: str,
+        *,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        retry: bool = False,
+    ) -> tuple[MemoryJob, Event]:
+        job = self.get_job(job_id)
+        if job.status != "running":
+            raise ValueError("memory job is not running")
+        session = self.ledger.get_session(job.session_id)
+        status = "pending" if retry else "failed" if error_code else "completed"
+        event_type = "memory.job.failed" if error_code else "memory.job.completed"
+        now = utc_now()
+        with self.ledger.transaction_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "UPDATE memory_jobs SET status = ?, error_code = ?, error_message = ?, "
+                "updated_at = ? WHERE id = ?",
+                (status, error_code, error_message, now, job_id),
+            )
+            event = self.ledger.append_in_transaction(
+                connection,
+                session_id=job.session_id,
+                run_id=job.run_id,
+                agent_id=session.agent_id,
+                event_type=event_type,
+                payload={
+                    "job_id": job.id,
+                    "kind": job.kind,
+                    "status": status,
+                    "attempts": job.attempts,
+                    "error_code": error_code,
+                    "error_message": error_message,
+                },
+                causation_id=job.source_event_id,
+                correlation_id=job.id,
+            )
+            connection.commit()
+        return self.get_job(job_id), event
+
+    def get_job(self, job_id: str) -> MemoryJob:
+        with self.database.connect() as connection:
+            row = connection.execute("SELECT * FROM memory_jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        return MemoryJob.model_validate(dict(row))
+
+    def list_jobs(self, session_id: str, *, limit: int = 50) -> list[MemoryJob]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM memory_jobs WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+        return [MemoryJob.model_validate(dict(row)) for row in rows]
+
+    def recover_jobs(self) -> list[MemoryJob]:
+        now = utc_now()
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE memory_jobs SET status = 'pending', updated_at = ? "
+                "WHERE status = 'running'",
+                (now,),
+            )
+            rows = connection.execute(
+                "SELECT * FROM memory_jobs WHERE status = 'pending' ORDER BY created_at"
+            ).fetchall()
+        return [MemoryJob.model_validate(dict(row)) for row in rows]
 
     def get(self, memory_id: str) -> MemoryRecord:
         with self.database.connect() as connection:
