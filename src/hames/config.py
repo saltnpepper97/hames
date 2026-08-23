@@ -75,6 +75,21 @@ class SkillsConfig(StrictModel):
     stale_after_days: int = Field(default=90, ge=1)
 
 
+class EvolutionConfig(StrictModel):
+    enabled: bool = True
+    conversational_detection: bool = True
+    reviewer_model_enabled: bool = False
+    provider: str = ""
+    model: str = ""
+    reasoning_effort: str = ""
+    recurrence_threshold: int = Field(default=3, ge=2, le=20)
+    healing_threshold: int = Field(default=3, ge=1, le=20)
+    max_background_model_calls_per_day: int = Field(default=8, ge=1, le=100)
+    auto_promote_memory_repairs: bool = True
+    max_active_context_scars: int = Field(default=4, ge=0, le=16)
+    scar_context_budget_tokens: int = Field(default=512, ge=64)
+
+
 class ToolsConfig(StrictModel):
     shell_timeout_seconds: float = Field(default=120.0, gt=0)
     shell_max_timeout_seconds: float = Field(default=600.0, gt=0)
@@ -183,6 +198,7 @@ class HamesConfig(StrictModel):
     context: ContextConfig = ContextConfig()
     memory: MemoryConfig = MemoryConfig()
     skills: SkillsConfig = SkillsConfig()
+    evolution: EvolutionConfig = EvolutionConfig()
     tools: ToolsConfig = ToolsConfig()
     gateway: GatewayConfig = GatewayConfig()
     providers: dict[str, ProviderProfileConfig] = Field(default_factory=_default_provider_profiles)

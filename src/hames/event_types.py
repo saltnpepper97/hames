@@ -451,6 +451,66 @@ class SkillControlPayload(EventPayload):
     reason: str
 
 
+def _empty_trigger_conditions() -> list[str]:
+    return []
+
+
+class ScarRecordPayload(EventPayload):
+    scar_id: str
+    title: str
+    scope: str
+    status: str
+    severity: str
+    failure_signature: str
+    description: str
+    trigger: dict[str, JsonValue] = Field(default_factory=dict)
+    expected_behavior: str
+    evidence_event_ids: list[str] = Field(default_factory=list)
+    detection: str = "explicit_correction"
+
+
+class ScarTransitionPayload(EventPayload):
+    scar_id: str
+    previous_status: str
+    status: str
+    reason: str
+    repair_id: str | None = None
+
+
+class ScarTriggerPayload(EventPayload):
+    scar_id: str
+    run_id: str
+    matched_on: list[str] = Field(default_factory=_empty_trigger_conditions)
+    regression: bool = False
+
+
+class ScarGuardPayload(EventPayload):
+    scar_id: str
+    run_id: str
+    successful_guard_count: int
+    held: bool
+
+
+class ScarRepairPayload(EventPayload):
+    scar_id: str
+    repair_id: str
+    version: int
+    repair_layer: str
+    risk: str
+    required_authority: str
+    rationale: str
+    proposal: dict[str, JsonValue] = Field(default_factory=dict)
+    evidence_event_ids: list[str] = Field(default_factory=list)
+
+
+class ScarRepairDecisionPayload(EventPayload):
+    scar_id: str
+    repair_id: str
+    decision: str
+    reason: str
+    checks: dict[str, JsonValue] = Field(default_factory=dict)
+
+
 EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "session.opened": SessionOpenedPayload,
     "session.closed": SessionClosedPayload,
@@ -527,6 +587,18 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "skill.restored": SkillControlPayload,
     "skill.pinned": SkillControlPayload,
     "skill.unpinned": SkillControlPayload,
+    "scar.recorded": ScarRecordPayload,
+    "scar.opened": ScarTransitionPayload,
+    "scar.dismissed": ScarTransitionPayload,
+    "scar.repair_proposed": ScarTransitionPayload,
+    "scar.guarded": ScarTransitionPayload,
+    "scar.triggered": ScarTriggerPayload,
+    "scar.guard.succeeded": ScarGuardPayload,
+    "scar.healed": ScarTransitionPayload,
+    "scar.regressed": ScarTransitionPayload,
+    "scar.repair.proposed": ScarRepairPayload,
+    "scar.repair.promoted": ScarRepairDecisionPayload,
+    "scar.repair.rejected": ScarRepairDecisionPayload,
 }
 
 

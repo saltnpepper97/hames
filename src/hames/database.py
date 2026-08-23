@@ -425,6 +425,108 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        9,
+        "evolution scars",
+        """
+        CREATE TABLE scars (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            scope TEXT NOT NULL CHECK (scope IN ('global', 'workspace', 'agent')),
+            status TEXT NOT NULL CHECK (
+                status IN (
+                    'candidate', 'open', 'repair_proposed', 'guarded',
+                    'healed', 'regressed', 'dismissed'
+                )
+            ),
+            severity TEXT NOT NULL CHECK (severity IN ('low', 'medium', 'high')),
+            failure_signature TEXT NOT NULL,
+            signature_hash TEXT NOT NULL,
+            description TEXT NOT NULL,
+            trigger_json TEXT NOT NULL,
+            expected_behavior TEXT NOT NULL,
+            detection TEXT NOT NULL DEFAULT 'explicit_correction',
+            owner_agent_id TEXT,
+            workspace_path TEXT,
+            source_session_id TEXT NOT NULL REFERENCES sessions(id),
+            source_run_id TEXT,
+            repair_layer TEXT CHECK (
+                repair_layer IS NULL OR repair_layer IN (
+                    'semantic_memory', 'relationship_memory', 'episodic_memory',
+                    'skill', 'policy_rule', 'context_rule', 'capability_requirement'
+                )
+            ),
+            repair_reference TEXT,
+            last_triggered_at TEXT NOT NULL,
+            successful_guard_count INTEGER NOT NULL DEFAULT 0
+                CHECK (successful_guard_count >= 0),
+            regression_count INTEGER NOT NULL DEFAULT 0 CHECK (regression_count >= 0),
+            dismissed_reason TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK (scope != 'workspace' OR workspace_path IS NOT NULL),
+            CHECK (scope != 'agent' OR owner_agent_id IS NOT NULL)
+        );
+
+        CREATE TABLE scar_evidence (
+            scar_id TEXT NOT NULL REFERENCES scars(id),
+            event_id TEXT NOT NULL REFERENCES events(id),
+            PRIMARY KEY (scar_id, event_id)
+        );
+
+        CREATE TABLE scar_repairs (
+            id TEXT PRIMARY KEY,
+            scar_id TEXT NOT NULL REFERENCES scars(id),
+            version INTEGER NOT NULL,
+            repair_layer TEXT NOT NULL CHECK (
+                repair_layer IN (
+                    'semantic_memory', 'relationship_memory', 'episodic_memory',
+                    'skill', 'policy_rule', 'context_rule', 'capability_requirement'
+                )
+            ),
+            base_hash TEXT NOT NULL DEFAULT '',
+            proposal_json TEXT NOT NULL,
+            rationale TEXT NOT NULL,
+            deterministic_checks_json TEXT NOT NULL DEFAULT '[]',
+            model_eval_report_json TEXT,
+            risk TEXT NOT NULL CHECK (risk IN ('low', 'medium', 'high')),
+            required_authority TEXT NOT NULL CHECK (
+                required_authority IN (
+                    'none', 'memory_write', 'skill_write', 'policy_write',
+                    'context_write', 'plugin_write'
+                )
+            ),
+            status TEXT NOT NULL CHECK (
+                status IN ('proposed', 'promoted', 'rejected', 'superseded')
+            ),
+            previous_scar_status TEXT NOT NULL CHECK (
+                previous_scar_status IN ('open', 'regressed')
+            ),
+            created_by TEXT NOT NULL CHECK (created_by IN ('automatic', 'user')),
+            source_session_id TEXT NOT NULL REFERENCES sessions(id),
+            created_at TEXT NOT NULL,
+            decided_at TEXT,
+            UNIQUE (scar_id, version)
+        );
+
+        CREATE INDEX scars_status_idx ON scars(status, severity);
+        CREATE INDEX scars_signature_idx ON scars(signature_hash);
+        CREATE INDEX scars_workspace_idx ON scars(workspace_path);
+        CREATE INDEX scar_repairs_scar_idx ON scar_repairs(scar_id, version);
+
+        CREATE TRIGGER scars_no_delete
+        BEFORE DELETE ON scars
+        BEGIN
+            SELECT RAISE(ABORT, 'scars cannot be deleted');
+        END;
+
+        CREATE TRIGGER scar_repairs_no_delete
+        BEFORE DELETE ON scar_repairs
+        BEGIN
+            SELECT RAISE(ABORT, 'scar repairs cannot be deleted');
+        END;
+        """,
+    ),
 )
 
 

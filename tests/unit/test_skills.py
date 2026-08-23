@@ -36,9 +36,9 @@ def test_skill_schema_is_migration_eight_and_upgrades_m6(tmp_path: Path) -> None
     path = tmp_path / "m6.db"
     Database(path, migrations=MIGRATIONS[:7]).migrate()
     Database(path).migrate()
-    assert len(MIGRATIONS) == 8
+    assert len(MIGRATIONS) == 9
     with Database(path).connect() as connection:
-        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 8
+        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 9
         tables = {
             str(row["name"])
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -46,9 +46,7 @@ def test_skill_schema_is_migration_eight_and_upgrades_m6(tmp_path: Path) -> None
     assert {"skills", "skill_versions", "skill_jobs", "skill_usage"} <= tables
 
 
-def test_skill_parse_version_activation_and_scope(
-    hames_paths: HamesPaths, tmp_path: Path
-) -> None:
+def test_skill_parse_version_activation_and_scope(hames_paths: HamesPaths, tmp_path: Path) -> None:
     ledger = Ledger.open(hames_paths.database)
     first = ledger.create_session(
         working_directory=tmp_path,
@@ -119,9 +117,7 @@ def test_skill_parse_version_activation_and_scope(
     assert [item.version for item in registry.history(active.version.skill_id)] == [2, 1]
 
 
-def test_skill_rollback_pin_and_package_integrity(
-    hames_paths: HamesPaths, tmp_path: Path
-) -> None:
+def test_skill_rollback_pin_and_package_integrity(hames_paths: HamesPaths, tmp_path: Path) -> None:
     ledger = Ledger.open(hames_paths.database)
     session = ledger.create_session(
         working_directory=tmp_path,
