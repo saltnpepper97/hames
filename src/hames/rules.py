@@ -21,6 +21,21 @@ from hames.providers.base import JSON_OBJECT
 RuleStatus = Literal["proposed", "active", "retired"]
 RuleAction = Literal["deny", "confirm"]
 
+_POSIX_CLASS = re.compile(r"\[:[a-z]+:\]", re.IGNORECASE)
+
+
+def compile_policy_pattern(pattern: str) -> re.Pattern[str]:
+    """Compile a Python regex, rejecting POSIX classes that re does not honor."""
+    if _POSIX_CLASS.search(pattern):
+        raise ValueError(
+            "policy rule pattern uses POSIX character classes which Python re does not honor; "
+            r"use Python regex such as \s, \d, or [ \t]"
+        )
+    try:
+        return re.compile(pattern)
+    except re.error as exc:
+        raise ValueError(f"policy rule pattern is not a valid regex: {exc}") from exc
+
 
 class RuleModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -267,10 +282,7 @@ class PolicyRuleStore:
         created_by: Literal["automatic", "user"] = "user",
         causation_id: str | None = None,
     ) -> RuleMutation:
-        try:
-            re.compile(pattern)
-        except re.error as exc:
-            raise ValueError(f"policy rule pattern is not a valid regex: {exc}") from exc
+        compile_policy_pattern(pattern)
         if action not in {"deny", "confirm"}:
             raise ValueError(f"unknown policy rule action: {action}")
         if not reason.strip():

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -99,8 +100,15 @@ def test_policy_rule_lifecycle_rejects_bad_regex(hames_paths: HamesPaths, tmp_pa
     store = PolicyRuleStore(ledger)
     session = _session(ledger, tmp_path)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not a valid regex"):
         store.propose(session=session, action="deny", pattern="([bad", reason="broken regex")
+    with pytest.raises(ValueError, match="POSIX character classes"):
+        store.propose(
+            session=session,
+            action="deny",
+            pattern=r"touch[[:space:]]+/tmp/m8-demo/FORBIDDEN",
+            reason="forbidden file protection",
+        )
 
     proposed = store.propose(
         session=session,
@@ -176,3 +184,20 @@ def test_policy_gate_enforces_declarative_rules(hames_paths: HamesPaths, tmp_pat
         declarative_rules=store.list_rules(status="active"),
     )
     assert confirmed.decision is PolicyDecisionKind.REQUIRE_CONFIRMATION
+
+    forbidden = tmp_path / "project" / "FORBIDDEN"
+    touch = store.propose(
+        session=session,
+        action="deny",
+        pattern=rf"touch\s+{re.escape(str(forbidden))}",
+        reason="forbidden file protection",
+    )
+    store.set_status(rule_id=touch.rule.id, action="activate", reason="approved")
+    blocked = gate.decide(
+        "shell",
+        ShellArguments(command=f"touch {forbidden}", workspace="project"),
+        context,
+        declarative_rules=store.list_rules(status="active"),
+    )
+    assert blocked.decision is PolicyDecisionKind.DENY
+    assert blocked.reason == "forbidden file protection"
