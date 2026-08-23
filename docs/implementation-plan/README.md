@@ -1,7 +1,7 @@
 # Hames Rewrite — Working Implementation Plan
 
-This directory is the authoritative build plan for Hames. M0 through M3 are
-implemented; M4 is the next execution phase. Later milestones preserve the design
+This directory is the authoritative build plan for Hames. M0 through M4 are
+implemented; M5 is the next execution phase. Later milestones preserve the design
 inventory but remain subject to refinement as the harness proves its concepts.
 
 Hames is a proper local agent harness built around a small trusted Python kernel,
@@ -86,7 +86,7 @@ Directories are created lazily and user files are never silently overwritten.
 | [M1](M01-EVENT-LEDGER.md) | The core ledger grows into complete replay, branching, blobs, redaction, and provenance infrastructure. |
 | [M2](M02-GATEWAY-PROVIDERS.md) | Provider and gateway contracts deepen without leaking provider wire formats into clients. |
 | [M3](M03-AGENT-RUNTIME-REPL.md) | Tools, policy, approvals, scratch workcells, and the complete single-agent loop make Hames useful for real work. |
-| [M4](M04-CONTEXT-WEB-INSPECTOR.md) | Context manifests and usage accounting become complete; the interface portion will be re-gated after REPL validation. |
+| [M4](M04-CONTEXT-WEB-INSPECTOR.md) | Deterministic context manifests, exact request snapshots, usage projections, REPL inspection, and audit exports make model calls explainable. |
 | [M5](M05-NAMED-AGENTS.md) | Human-readable agent capsules, capability separation, and bounded delegation mature. |
 | [M6](M06-LAYERED-MEMORY.md) | Relationship, Semantic, and Episodic memories become scoped, correctable, and observable. |
 | [M7](M07-SKILLS.md) | Portable Skills gain progressive disclosure, proposals, evaluation, versioning, and controlled promotion. |

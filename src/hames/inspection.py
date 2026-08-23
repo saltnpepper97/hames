@@ -89,9 +89,7 @@ def inspect_run(ledger: Ledger, run_id: str) -> RunInspection:
             if user_event.type == "user.message":
                 timeline_events.insert(0, user_event)
     contexts = [
-        inspect_context(ledger, event.id)
-        for event in events
-        if event.type == "context.compiled"
+        inspect_context(ledger, event.id) for event in events if event.type == "context.compiled"
     ]
     return RunInspection(
         **summary.model_dump(),
@@ -179,9 +177,7 @@ def export_transcript(
 def _run_summary(run_id: str, events: list[Event]) -> RunSummary:
     if not events:
         raise KeyError(run_id)
-    terminal = next(
-        (event for event in reversed(events) if event.type.startswith("run.")), None
-    )
+    terminal = next((event for event in reversed(events) if event.type.startswith("run.")), None)
     status = {
         "run.completed": "completed",
         "run.failed": "failed",

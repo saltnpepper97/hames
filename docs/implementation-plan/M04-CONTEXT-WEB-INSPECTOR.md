@@ -54,3 +54,42 @@ underlying behavior. No client may import hidden Python runtime state.
 
 M04 is complete when every model request can be reconstructed and explained from
 its manifest and ledger events through the gateway or terminal inspection tools.
+
+## Implemented result
+
+M04 is implemented on gateway protocol 5 and database migration 5.
+
+- Context capacity resolves from a profile override, provider model metadata, or
+  a conservative 32K fallback. The resolved value and provenance are durable
+  session settings and survive settings changes and forks.
+- The compiler uses the deterministic `utf8-bytes-div-4-v1` estimator, reserves
+  output separately, enforces category limits, preserves the active turn, selects
+  older turns newest-first, and records budget omissions and tool-result
+  compaction.
+- Reasoning remains durable and inspectable. It is replayed only within its
+  active tool loop; reasoning from completed runs is an audit-visible omitted
+  source rather than input to later user turns.
+- Each `context.compiled` event contains attributed source decisions and links to
+  a content-addressed canonical provider-request snapshot whose digest is checked
+  during inspection.
+- Gateway views derive session runs, timelines, context inspection, estimates,
+  exact provider usage, and ancestry-aware transcripts directly from ledger
+  events. Markdown and JSONL exports explicitly identify themselves as derived.
+- The Rust REPL exposes `/inspect`, `/context`, gateway-derived `/usage`, and
+  private `/export` files. `hames session export` provides the same formats,
+  refuses replacement by default, and requires `--force` to overwrite.
+
+No Ratatui, web UI, memory, named-agent expansion, or Skills behavior was added.
+The attributed source contract is the tested foundation those later milestones
+will consume.
+
+## Acceptance evidence
+
+- deterministic ordering, budgeting, source hashes, omissions, compaction, and
+  typed oversize failures are covered by compiler tests;
+- active and completed reasoning replay behavior is covered independently;
+- exact request snapshots are hash-verified through the gateway;
+- projections reproduce identically after reopening the database;
+- the Rust end-to-end test exercises `/usage`, `/inspect`, `/context`, REPL export,
+  CLI export, overwrite refusal, and explicit forced replacement;
+- the complete Python and Rust formatting, static-analysis, and test suites pass.

@@ -84,9 +84,7 @@ class CompiledContext(BaseModel):
 @dataclass(slots=True)
 class _Turn:
     source_id: str
-    messages: list[ProviderMessage] = field(
-        default_factory=lambda: list[ProviderMessage]()
-    )
+    messages: list[ProviderMessage] = field(default_factory=lambda: list[ProviderMessage]())
     event_ids: list[str] = field(default_factory=lambda: list[str]())
 
     @property
@@ -308,8 +306,7 @@ def _conversation_turns(
             )
             current.event_ids.append(event.id)
         elif (
-            event.type in {"tool.completed", "tool.failed", "tool.rejected"}
-            and current is not None
+            event.type in {"tool.completed", "tool.failed", "tool.rejected"} and current is not None
         ):
             current.messages.append(
                 ProviderMessage(
@@ -407,8 +404,7 @@ def _require_category(name: str, actual: int, limit: int) -> None:
 
 def _estimate_messages(messages: list[ProviderMessage]) -> int:
     return sum(
-        _estimate_text(_canonical_json(message.model_dump(mode="json"))) + 4
-        for message in messages
+        _estimate_text(_canonical_json(message.model_dump(mode="json"))) + 4 for message in messages
     )
 
 

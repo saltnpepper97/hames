@@ -13,9 +13,7 @@ from hames.paths import HamesPaths
 from hames.providers import ToolDefinition
 
 
-def _fixture(
-    hames_paths: HamesPaths, tmp_path: Path
-) -> tuple[Ledger, Session, AgentCapsule]:
+def _fixture(hames_paths: HamesPaths, tmp_path: Path) -> tuple[Ledger, Session, AgentCapsule]:
     hames_paths.ensure_foundation()
     ledger = Ledger.open(hames_paths.database)
     session = ledger.create_session(
@@ -71,9 +69,7 @@ def test_context_is_deterministic_and_omits_completed_reasoning(
         payload={"content": "first answer", "status": "completed"},
         causation_id=requested.id,
     )
-    ledger.append(
-        session_id=session.id, event_type="user.message", payload={"content": "second"}
-    )
+    ledger.append(session_id=session.id, event_type="user.message", payload={"content": "second"})
 
     first_compile = compile_context(
         session,
@@ -202,9 +198,7 @@ def test_request_snapshot_is_canonical_and_hashable(
 ) -> None:
     ledger, session_value, capsule = _fixture(hames_paths, tmp_path)
     session = ledger.get_session(session_value.id)
-    ledger.append(
-        session_id=session.id, event_type="user.message", payload={"content": "hello"}
-    )
+    ledger.append(session_id=session.id, event_type="user.message", payload={"content": "hello"})
     compiled = compile_context(
         session,
         ledger.replay(session.id),

@@ -122,16 +122,12 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             assert persisted_request["messages"][0]["content"] == "Hi"
             assert persisted_request["max_tokens"] == 4096
 
-            runs_response = await client.get(
-                f"/v1/sessions/{session_id}/runs", headers=headers
-            )
+            runs_response = await client.get(f"/v1/sessions/{session_id}/runs", headers=headers)
             assert runs_response.status_code == 200
             runs = runs_response.json()
             assert runs[0]["run_id"] == run_id
             assert runs[0]["status"] == "completed"
-            inspection_response = await client.get(
-                f"/v1/runs/{run_id}/inspection", headers=headers
-            )
+            inspection_response = await client.get(f"/v1/runs/{run_id}/inspection", headers=headers)
             assert inspection_response.status_code == 200
             inspection = inspection_response.json()
             assert inspection["usage"]["input_tokens"] == 10
@@ -153,9 +149,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             )
             assert context_response.status_code == 200
             assert context_response.json()["request_snapshot"] == persisted_request
-            usage_response = await client.get(
-                f"/v1/sessions/{session_id}/usage", headers=headers
-            )
+            usage_response = await client.get(f"/v1/sessions/{session_id}/usage", headers=headers)
             assert usage_response.json()["input_tokens"] == 10
             markdown = await client.get(
                 f"/v1/sessions/{session_id}/transcript",
@@ -173,9 +167,10 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             assert json.loads(jsonl.text.splitlines()[0])["provenance_authority"] == "event-ledger"
 
             reopened = Ledger.open(paths.database)
-            assert inspect_run(reopened, run_id).model_dump() == inspect_run(
-                state.ledger, run_id
-            ).model_dump()
+            assert (
+                inspect_run(reopened, run_id).model_dump()
+                == inspect_run(state.ledger, run_id).model_dump()
+            )
 
             branch = state.ledger.fork_session(session_id)
             branch_accepted = await client.post(

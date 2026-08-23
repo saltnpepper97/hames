@@ -342,9 +342,7 @@ def create_app(state: GatewayState) -> FastAPI:
     @app.post("/v1/sessions", dependencies=auth, response_model=Session, status_code=201)
     async def create_session(request: CreateSessionRequest) -> Session:
         provider_name = request.provider or state.config.runtime.default_provider
-        selection = await resolve_selection(
-            provider_name, request.model, request.reasoning_effort
-        )
+        selection = await resolve_selection(provider_name, request.model, request.reasoning_effort)
         model, reasoning_effort, context_window_tokens, context_window_source = selection
         try:
             return await asyncio.to_thread(
@@ -493,9 +491,7 @@ def create_app(state: GatewayState) -> FastAPI:
         except KeyError as exc:
             raise ApiError(404, "run_not_found", f"unknown run: {run_id}") from exc
 
-    @app.get(
-        "/v1/contexts/{event_id}", dependencies=auth, response_model=ContextInspection
-    )
+    @app.get("/v1/contexts/{event_id}", dependencies=auth, response_model=ContextInspection)
     async def inspect_context_endpoint(event_id: str) -> ContextInspection:
         try:
             return await asyncio.to_thread(inspect_context, state.ledger, event_id)
