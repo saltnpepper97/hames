@@ -17,7 +17,7 @@ from typing import cast
 import httpx
 import uvicorn
 
-from hames import PROTOCOL_VERSION
+from hames import PROTOCOL_VERSION, __version__
 from hames.config import HamesConfig, load_config
 from hames.gateway import GatewayState, create_app
 from hames.logging import configure_logging
@@ -140,7 +140,11 @@ def start(paths: HamesPaths, *, wait_seconds: float = 10.0) -> GatewayProcessSta
     paths.ensure_foundation()
     current = gateway_status(paths)
     if current.healthy:
-        return current
+        if current.protocol_version == PROTOCOL_VERSION and current.version == __version__:
+            return current
+        if current.pid is None:
+            raise RuntimeError("incompatible process is using the configured gateway port")
+        stop(paths, wait_seconds=wait_seconds)
     log_handle = (paths.logs / "gateway-bootstrap.log").open("ab")
     try:
         subprocess.Popen(

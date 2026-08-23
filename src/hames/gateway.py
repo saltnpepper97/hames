@@ -21,7 +21,7 @@ from hames import PROTOCOL_VERSION, __version__
 from hames.broker import EventBroker
 from hames.config import HamesConfig, load_config
 from hames.database import Database
-from hames.ledger import Event, Ledger, Session
+from hames.ledger import Event, EventIntegrityError, IntegrityResult, Ledger, Session
 from hames.paths import HamesPaths
 from hames.providers import Provider, ProviderError, ProviderModel
 from hames.providers.registry import configured_providers
@@ -53,6 +53,11 @@ class UpdateSessionRequest(ApiModel):
 
 class RunAccepted(ApiModel):
     run_id: str
+
+
+class ForkSessionRequest(ApiModel):
+    at: str | None = None
+    title: str | None = None
 
 
 class ProviderStatus(ApiModel):
@@ -163,6 +168,20 @@ def create_app(state: GatewayState) -> FastAPI:
             },
         )
 
+    @app.exception_handler(EventIntegrityError)
+    async def integrity_error_handler(_: Request, exc: EventIntegrityError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": {
+                    "code": "integrity_error",
+                    "message": str(exc),
+                    "retryable": False,
+                    "details": {},
+                }
+            },
+        )
+
     @app.get("/v1/health", response_model=Health)
     async def health() -> Health:
         return Health(
@@ -265,6 +284,60 @@ def create_app(state: GatewayState) -> FastAPI:
         return await asyncio.to_thread(
             state.ledger.list_events, session_id, after_sequence=after_sequence
         )
+
+    @app.get("/v1/sessions/{session_id}/history", dependencies=auth, response_model=list[Event])
+    async def replay_history(session_id: str, after_sequence: int = 0) -> list[Event]:
+        try:
+            return await asyncio.to_thread(
+                state.ledger.replay, session_id, after_sequence=after_sequence
+            )
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/fork",
+        dependencies=auth,
+        response_model=Session,
+        status_code=201,
+    )
+    async def fork_session(session_id: str, request: ForkSessionRequest) -> Session:
+        if state.runs.is_session_active(session_id):
+            raise ApiError(409, "session_run_active", "cannot fork a session with an active run")
+        fork_event_id: str | None = None
+        if request.at is not None:
+            try:
+                fork_event_id = (
+                    await asyncio.to_thread(
+                        state.ledger.resolve_visible_event, session_id, request.at
+                    )
+                ).id
+            except KeyError as exc:
+                raise ApiError(404, "fork_event_not_found", str(exc)) from exc
+        try:
+            return await asyncio.to_thread(
+                state.ledger.fork_session,
+                session_id,
+                fork_event_id=fork_event_id,
+                title=request.title,
+            )
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+        except ValueError as exc:
+            raise ApiError(409, "invalid_fork", str(exc)) from exc
+
+    @app.get("/v1/events/{event_id}", dependencies=auth, response_model=Event)
+    async def get_event(event_id: str) -> Event:
+        try:
+            return await asyncio.to_thread(state.ledger.get_event, event_id)
+        except KeyError as exc:
+            raise ApiError(404, "event_not_found", f"unknown event: {event_id}") from exc
+
+    @app.get("/v1/events/{event_id}/verify", dependencies=auth, response_model=IntegrityResult)
+    async def verify_event(event_id: str) -> IntegrityResult:
+        try:
+            return await asyncio.to_thread(state.ledger.verify_event, event_id)
+        except KeyError as exc:
+            raise ApiError(404, "event_not_found", f"unknown event: {event_id}") from exc
 
     @app.post(
         "/v1/sessions/{session_id}/messages",

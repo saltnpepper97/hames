@@ -100,10 +100,11 @@ fn make_history_private(_: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-async fn ensure_gateway(paths: &LocalPaths) -> Result<()> {
+pub(crate) async fn ensure_gateway(paths: &LocalPaths) -> Result<()> {
     let url = paths.gateway_url()?;
     if let Ok(health) = GatewayClient::health_unauthenticated(&url).await
         && health.status == "ok"
+        && health.protocol_version == PROTOCOL_VERSION
     {
         return Ok(());
     }
@@ -170,16 +171,63 @@ async fn handle_command(
         "/sessions" => {
             for item in client.sessions().await? {
                 println!(
-                    "{}  {:<8}  {}  {} / {}  {}  {}",
+                    "{}  {:<8}  {}  {} / {}  {}  {}{}",
                     item.id,
                     item.status,
                     item.created_at,
                     item.provider,
                     item.model,
                     item.agent_id,
-                    item.title.as_deref().unwrap_or(&item.working_directory)
+                    item.title.as_deref().unwrap_or(&item.working_directory),
+                    item.parent_session_id
+                        .as_ref()
+                        .map(|parent| format!("  branch-of {parent}"))
+                        .unwrap_or_default()
                 );
             }
+        }
+        "/session" => print_session(session),
+        "/events" => {
+            let count = parts
+                .get(1)
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .context("usage: /events [count]")?
+                .unwrap_or(20);
+            let history = client.history(&session.id).await?;
+            let start = history.len().saturating_sub(count);
+            for event in &history[start..] {
+                let short_id = event.id.get(..8).unwrap_or(&event.id);
+                let summary = event
+                    .payload
+                    .get("content")
+                    .and_then(|value| value.as_str())
+                    .map(|value| {
+                        value
+                            .replace('\n', " ")
+                            .chars()
+                            .take(60)
+                            .collect::<String>()
+                    })
+                    .unwrap_or_default();
+                println!(
+                    "{:>6}  {}  {:<28} {}",
+                    event.sequence, short_id, event.event_type, summary
+                );
+            }
+        }
+        "/fork" => {
+            *session = client
+                .fork_session(&session.id, parts.get(1).copied())
+                .await?;
+            *provider = session.provider.clone();
+            *model = session.model.clone();
+            *reasoning = session.reasoning_effort.clone();
+            println!(
+                "forked session {} from {}",
+                session.id,
+                session.fork_event_id.as_deref().unwrap_or("unknown event")
+            );
         }
         "/resume" => {
             let id = parts.get(1).context("usage: /resume <session-id>")?;
@@ -306,6 +354,25 @@ fn model_summary(model: &ProviderModel) -> String {
         Some(false) => {}
     }
     fields.join(", ")
+}
+
+fn print_session(session: &Session) {
+    println!(
+        "session: {}\nstatus: {}\nworking directory: {}\nagent: {}\nprovider: {}\nmodel: {}\nreasoning: {}\nparent: {}\nfork event: {}",
+        session.id,
+        session.status,
+        session.working_directory,
+        session.agent_id,
+        session.provider,
+        session.model,
+        if session.reasoning_effort.is_empty() {
+            "provider default"
+        } else {
+            &session.reasoning_effort
+        },
+        session.parent_session_id.as_deref().unwrap_or("none"),
+        session.fork_event_id.as_deref().unwrap_or("none"),
+    );
 }
 
 async fn stream_message(client: &GatewayClient, session: &Session, content: &str) -> Result<()> {
@@ -465,8 +532,9 @@ impl SseDecoder {
 
 fn print_help() {
     println!(
-        "/help\n/new\n/sessions\n/resume <id>\n/provider [provider] [model]\n\
-         /model\n/status\n/reasoning off|low|medium|xhigh\n/quit"
+        "/help\n/new\n/session\n/sessions\n/resume <id>\n/events [count]\n\
+         /fork [event-id-or-sequence]\n/provider [provider] [model]\n/model\n/status\n\
+         /reasoning off|low|medium|xhigh\n/quit"
     );
 }
 

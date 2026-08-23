@@ -43,7 +43,7 @@ pub struct ProviderModel {
     pub reasoning_efforts: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Session {
     pub id: String,
     pub created_at: String,
@@ -54,15 +54,36 @@ pub struct Session {
     pub provider: String,
     pub model: String,
     pub reasoning_effort: String,
+    pub parent_session_id: Option<String>,
+    pub fork_event_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Event {
+    pub id: String,
     pub sequence: u64,
+    pub session_id: String,
     pub run_id: Option<String>,
+    pub agent_id: Option<String>,
     #[serde(rename = "type")]
     pub event_type: String,
+    pub schema_version: u32,
+    pub created_at: String,
+    pub causation_id: Option<String>,
+    pub correlation_id: Option<String>,
     pub payload: Value,
+    pub blob_hash: Option<String>,
+    pub payload_hash: String,
+    pub redaction_state: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct IntegrityResult {
+    pub event_id: String,
+    pub ok: bool,
+    pub payload_hash: String,
+    pub blob_hash: Option<String>,
+    pub redaction_state: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -94,6 +115,12 @@ struct UpdateSession<'a> {
     provider: &'a str,
     model: &'a str,
     reasoning_effort: &'a str,
+}
+
+#[derive(Serialize)]
+struct ForkSession<'a> {
+    at: Option<&'a str>,
+    title: Option<&'a str>,
 }
 
 impl GatewayClient {
@@ -178,6 +205,34 @@ impl GatewayClient {
     pub async fn events(&self, session_id: &str) -> Result<Vec<Event>> {
         decode(
             self.get(&format!("/v1/sessions/{session_id}/events"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn history(&self, session_id: &str) -> Result<Vec<Event>> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/history"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn fork_session(&self, session_id: &str, at: Option<&str>) -> Result<Session> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/fork"))
+                .json(&ForkSession { at, title: None })
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn verify_event(&self, event_id: &str) -> Result<IntegrityResult> {
+        decode(
+            self.get(&format!("/v1/events/{event_id}/verify"))
                 .send()
                 .await?,
         )

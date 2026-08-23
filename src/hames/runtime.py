@@ -33,11 +33,14 @@ class RunManager:
         self.providers = providers
         self.broker = broker
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._session_runs: dict[str, str] = {}
 
     async def start(self, session_id: str, content: str) -> str:
         session = await asyncio.to_thread(self.ledger.get_session, session_id)
         if session.status != "open":
             raise ValueError("session is not open")
+        if session_id in self._session_runs:
+            raise ValueError("session already has an active run")
         if session.provider not in self.providers:
             raise KeyError(f"unknown provider: {session.provider}")
         user_event = await self._append(
@@ -51,8 +54,16 @@ class RunManager:
             self._run(run_id, session_id, user_event), name=f"hames-run-{run_id}"
         )
         self._tasks[run_id] = task
-        task.add_done_callback(lambda _: self._tasks.pop(run_id, None))
+        self._session_runs[session_id] = run_id
+        task.add_done_callback(lambda _: self._finish(run_id, session_id))
         return run_id
+
+    def _finish(self, run_id: str, session_id: str) -> None:
+        self._tasks.pop(run_id, None)
+        self._session_runs.pop(session_id, None)
+
+    def is_session_active(self, session_id: str) -> bool:
+        return session_id in self._session_runs
 
     async def cancel(self, run_id: str) -> bool:
         task = self._tasks.get(run_id)

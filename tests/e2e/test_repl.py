@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import socket
+from collections.abc import Mapping
 from pathlib import Path
 
 import httpx
@@ -34,6 +36,19 @@ async def wait_for_server(port: int) -> None:
                 pass
             await asyncio.sleep(0.02)
     raise AssertionError("test gateway did not start")
+
+
+async def run_hames(environment: Mapping[str, str], *args: str) -> tuple[int, str, str]:
+    process = await asyncio.create_subprocess_exec(
+        REPOSITORY / "target/debug/hames",
+        *args,
+        cwd=REPOSITORY,
+        env=environment,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10)
+    return process.returncode or 0, stdout.decode(), stderr.decode()
 
 
 @pytest.mark.asyncio
@@ -84,19 +99,46 @@ async def test_rust_repl_through_gateway_and_ledger(tmp_path: Path) -> None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(process.communicate(b"hello\n/quit\n"), timeout=10)
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(b"hello\n/fork\n/session\n/events\n/quit\n"), timeout=10
+        )
         output = stdout.decode()
         assert process.returncode == 0, stderr.decode()
         assert "thinking> check" in output
         assert "assistant> hello from fake" in output
+        assert "forked session" in output
+        assert "fork event:" in output
 
         sessions = state.ledger.list_sessions()
-        assert len(sessions) == 1
-        events = state.ledger.list_events(sessions[0].id)
+        assert len(sessions) == 2
+        root = next(session for session in sessions if session.parent_session_id is None)
+        branch = next(session for session in sessions if session.parent_session_id is not None)
+        events = state.ledger.list_events(root.id)
         event_types = [event.type for event in events]
         assert "assistant.reasoning" in event_types
         assert "assistant.message" in event_types
         assert "model.usage" in event_types
+        replay = state.ledger.replay(branch.id)
+        assert any(event.type == "assistant.message" for event in replay)
+
+        code, listed, error = await run_hames(environment, "session", "list", "--json")
+        assert code == 0, error
+        assert len(json.loads(listed)) == 2
+
+        code, shown, error = await run_hames(environment, "session", "show", branch.id, "--json")
+        assert code == 0, error
+        assert json.loads(shown)["session"]["parent_session_id"] == root.id
+
+        assistant = next(event for event in events if event.type == "assistant.message")
+        code, verified, error = await run_hames(
+            environment, "event", "verify", assistant.id, "--json"
+        )
+        assert code == 0, error
+        assert json.loads(verified)["ok"] is True
+
+        code, created, error = await run_hames(environment, "session", "new", "--json")
+        assert code == 0, error
+        assert json.loads(created)["parent_session_id"] is None
     finally:
         server.should_exit = True
         await server_task

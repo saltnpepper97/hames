@@ -109,6 +109,26 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                 "hello",
                 "Continue",
             ]
+
+            forked = await client.post(
+                f"/v1/sessions/{session_id}/fork",
+                headers=headers,
+                json={},
+            )
+            assert forked.status_code == 201
+            forked_body = response_object(forked)
+            assert forked_body["parent_session_id"] == session_id
+            history = await client.get(f"/v1/sessions/{forked_body['id']}/history", headers=headers)
+            assert history.status_code == 200
+            history_events = EVENT_LIST.validate_python(cast(object, history.json()))
+            inherited_answer = next(
+                event for event in history_events if event["type"] == "assistant.message"
+            )
+            verified = await client.get(
+                f"/v1/events/{inherited_answer['id']}/verify", headers=headers
+            )
+            assert verified.status_code == 200
+            assert response_object(verified)["ok"] is True
     finally:
         await state.runs.close()
 
