@@ -9,8 +9,8 @@ use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 
 use crate::api::{
-    ContextInspection, Event, GatewayClient, LiveEnvelope, PROTOCOL_VERSION, ProviderModel,
-    ProviderProbe, ProviderProfile, RunInspection, Session,
+    ContextInspection, Event, GatewayClient, LiveEnvelope, MemoryJob, MemoryRecord,
+    PROTOCOL_VERSION, ProviderModel, ProviderProbe, ProviderProfile, RunInspection, Session,
 };
 use crate::local::{LocalPaths, start_backend, write_private_export};
 
@@ -73,6 +73,7 @@ pub async fn run() -> Result<()> {
     }
     println!("Type /help for commands. The Python gateway remains running after exit.");
     ensure_trust(&client, &mut editor, &session).await?;
+    let mut remember_next = false;
 
     loop {
         let Some(input) = read_input(&mut editor)? else {
@@ -92,6 +93,7 @@ pub async fn run() -> Result<()> {
                 &mut provider,
                 &mut model,
                 &mut reasoning,
+                &mut remember_next,
             )
             .await
             {
@@ -101,7 +103,11 @@ pub async fn run() -> Result<()> {
             }
             continue;
         }
-        if let Err(error) = stream_message(&client, &mut editor, &session, &input).await {
+        let remember = std::mem::take(&mut remember_next);
+        if remember {
+            println!("remember> this turn will be captured explicitly");
+        }
+        if let Err(error) = stream_message(&client, &mut editor, &session, &input, remember).await {
             eprintln!("error: {error:#}");
         }
     }
@@ -181,12 +187,14 @@ async fn handle_command(
     provider: &mut String,
     model: &mut String,
     reasoning: &mut String,
+    remember_next: &mut bool,
 ) -> Result<CommandOutcome> {
     let parts: Vec<&str> = input.split_whitespace().collect();
     match parts.first().copied().unwrap_or("") {
         "/help" => print_help(),
         "/quit" | "/exit" => return Ok(CommandOutcome::Exit),
         "/new" => {
+            *remember_next = false;
             *session = client
                 .create_session(cwd, &session.agent_id, provider, model, reasoning)
                 .await?;
@@ -194,6 +202,7 @@ async fn handle_command(
             println!("new session {}", session.id);
         }
         "/clear" => {
+            *remember_next = false;
             *session = client
                 .create_session(cwd, &session.agent_id, provider, model, reasoning)
                 .await?;
@@ -285,6 +294,7 @@ async fn handle_command(
             }
         }
         "/resume" => {
+            *remember_next = false;
             let id = parts.get(1).context("usage: /resume <session-id>")?;
             *session = client.session(id).await?;
             *provider = session.provider.clone();
@@ -407,6 +417,17 @@ async fn handle_command(
             };
             print_context(&context);
         }
+        "/remember" => {
+            let content = input.strip_prefix("/remember").unwrap_or("").trim();
+            if content.is_empty() {
+                *remember_next = true;
+                println!("remember> armed for the next message");
+            } else {
+                let job = client.capture_memory(&session.id, content).await?;
+                println!("remember> queued extraction job {}", job.id);
+            }
+        }
+        "/memory" => handle_memory_command(client, session, &parts).await?,
         "/export" => {
             let path = parts
                 .get(1)
@@ -696,10 +717,21 @@ fn print_context(context: &ContextInspection) {
     );
     println!("selected sources:");
     for source in &manifest.selected_sources {
-        println!(
-            "  {:>6} tokens  {:<14} {}",
-            source.selected_tokens, source.source_type, source.source_id
-        );
+        if source.memory_id.is_empty() {
+            println!(
+                "  {:>6} tokens  {:<14} {}",
+                source.selected_tokens, source.source_type, source.source_id
+            );
+        } else {
+            println!(
+                "  {:>6} tokens  memory/{:<12} {} · {} · score {:.3}",
+                source.selected_tokens,
+                source.memory_layer,
+                source.memory_id,
+                source.memory_visibility,
+                source.retrieval_score,
+            );
+        }
     }
     if !manifest.omitted_sources.is_empty() {
         println!("omitted or compacted sources:");
@@ -717,16 +749,154 @@ fn print_context(context: &ContextInspection) {
     println!("request hash: {}", manifest.request_hash);
 }
 
+async fn handle_memory_command(
+    client: &GatewayClient,
+    session: &Session,
+    parts: &[&str],
+) -> Result<()> {
+    match parts.get(1).copied() {
+        None | Some("list") => {
+            print_memories(&client.memories(&session.id, "active", "").await?);
+        }
+        Some("all") => {
+            print_memories(&client.memories(&session.id, "all", "").await?);
+        }
+        Some("search") => {
+            let query = parts.get(2..).unwrap_or_default().join(" ");
+            if query.is_empty() {
+                bail!("usage: /memory search <query>");
+            }
+            print_memories(&client.memories(&session.id, "active", &query).await?);
+        }
+        Some("show") => {
+            let id = parts.get(2).context("usage: /memory show <memory-id>")?;
+            print_memory_detail(&client.memory(&session.id, id).await?);
+        }
+        Some("proposals") => {
+            print_memories(&client.memories(&session.id, "proposed", "").await?);
+        }
+        Some("accept" | "reject") => {
+            let action = parts[1];
+            let id = parts
+                .get(2)
+                .with_context(|| format!("usage: /memory {action} <memory-id>"))?;
+            let record = client.transition_memory(&session.id, id, action).await?;
+            println!("memory> {} is {}", record.id, record.status);
+        }
+        Some("forget" | "retract") => {
+            let id = parts.get(2).context("usage: /memory forget <memory-id>")?;
+            let record = client.transition_memory(&session.id, id, "retract").await?;
+            println!("memory> {} is {}", record.id, record.status);
+        }
+        Some("promote") => {
+            let id = parts
+                .get(2)
+                .context("usage: /memory promote <memory-id> <visibility>")?;
+            let visibility = parts
+                .get(3)
+                .context("usage: /memory promote <memory-id> <visibility>")?;
+            if !matches!(
+                *visibility,
+                "global" | "agent_private" | "workspace" | "session_team"
+            ) {
+                bail!("visibility must be global, agent_private, workspace, or session_team");
+            }
+            let record = client.promote_memory(&session.id, id, visibility).await?;
+            println!(
+                "memory> promoted {} to {} as {}",
+                id, record.visibility, record.id
+            );
+        }
+        Some("status") => {
+            print_memory_jobs(&client.memory_jobs(&session.id).await?);
+        }
+        Some("retry") => {
+            let id = parts
+                .get(2)
+                .context("usage: /memory retry <memory-job-id>")?;
+            let job = client.retry_memory_job(&session.id, id).await?;
+            println!("memory> retry queued for {}", job.id);
+        }
+        Some(_) => bail!(
+            "usage: /memory [list|all|search|show|proposals|accept|reject|forget|promote|status|retry]"
+        ),
+    }
+    Ok(())
+}
+
+fn print_memories(records: &[MemoryRecord]) {
+    if records.is_empty() {
+        println!("memory> no matching records");
+        return;
+    }
+    for record in records {
+        println!(
+            "{}  {:<12} {:<10} {:<13} {}",
+            record.id, record.layer, record.status, record.visibility, record.summary
+        );
+    }
+}
+
+fn print_memory_detail(record: &MemoryRecord) {
+    println!(
+        "memory: {}\nlayer: {}\nstatus: {}\nvisibility: {}\norigin: {}\nsubject: {}\npredicate: {}\nvalue: {}\nconfidence: {:.2}\nimportance: {:.2}\nsummary: {}",
+        record.id,
+        record.layer,
+        record.status,
+        record.visibility,
+        record.origin_kind,
+        record.subject,
+        record.predicate,
+        record.value,
+        record.confidence,
+        record.importance,
+        record.summary,
+    );
+    if !record.anchors.is_empty() {
+        println!("anchors:");
+        for anchor in &record.anchors {
+            println!("  {}: {}", anchor.kind, anchor.value);
+        }
+    }
+    if !record.provenance_event_ids.is_empty() {
+        println!("provenance:");
+        for event_id in &record.provenance_event_ids {
+            println!("  {event_id}");
+        }
+    }
+}
+
+fn print_memory_jobs(jobs: &[MemoryJob]) {
+    if jobs.is_empty() {
+        println!("memory> no extraction jobs");
+        return;
+    }
+    for job in jobs {
+        println!(
+            "{}  {:<16} {:<10} attempts {}{}",
+            job.id,
+            job.kind,
+            job.status,
+            job.attempts,
+            job.error_message
+                .as_ref()
+                .map(|message| format!(" · {message}"))
+                .unwrap_or_default(),
+        );
+    }
+}
+
 async fn stream_message(
     client: &GatewayClient,
     editor: &mut DefaultEditor,
     session: &Session,
     content: &str,
+    remember: bool,
 ) -> Result<()> {
     let events = client.events(&session.id).await?;
     let mut after = events.iter().map(|event| event.sequence).max().unwrap_or(0);
     let response = client.event_stream(&session.id, after).await?;
-    let accepted = client.send_message(&session.id, content).await?;
+    let accepted = client.send_message(&session.id, content, remember).await?;
     let run_id = accepted.run_id;
     let mut stream = Box::pin(response.bytes_stream());
     let mut decoder = SseDecoder::default();
@@ -1004,6 +1174,9 @@ fn print_help() {
         "/help\n/new\n/clear\n/session\n/sessions\n/resume <id>\n/events [count]\n\
          /fork [event-id-or-sequence]\n/agent [agent-id]\n/project\n/trust [status|revoke]\n\
          /provider [provider] [model]\n/model\n/reasoning [default|off|on|level]\n\
+         /remember [durable fact]\n/memory [list|all|search <query>|show <id>]\n\
+         /memory proposals|accept <id>|reject <id>|forget <id>\n\
+         /memory promote <id> <visibility>|status|retry <job-id>\n\
          /usage\n/inspect [run-id]\n/context [context-event-id]\n\
          /export <path> [markdown|jsonl]\n/status\n/cancel (Ctrl-C during a run)\n/quit"
     );

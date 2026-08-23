@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 #[derive(Clone)]
 pub struct GatewayClient {
@@ -175,6 +175,67 @@ pub struct ContextSource {
     pub event_ids: Vec<String>,
     pub origin: String,
     pub source_path: String,
+    #[serde(default)]
+    pub memory_id: String,
+    #[serde(default)]
+    pub memory_layer: String,
+    #[serde(default)]
+    pub memory_visibility: String,
+    #[serde(default)]
+    pub memory_anchors: Vec<MemoryAnchor>,
+    #[serde(default)]
+    pub retrieval_score: f64,
+    #[serde(default)]
+    pub provenance_event_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MemoryAnchor {
+    pub kind: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MemoryRecord {
+    pub id: String,
+    pub layer: String,
+    pub status: String,
+    pub visibility: String,
+    pub subject: String,
+    pub predicate: String,
+    pub value: Value,
+    pub summary: String,
+    pub confidence: f64,
+    pub importance: f64,
+    pub owner_agent_id: Option<String>,
+    pub workspace_path: Option<String>,
+    pub lineage_root_session_id: Option<String>,
+    pub source_session_id: String,
+    pub source_run_id: Option<String>,
+    pub origin_kind: String,
+    pub valid_from: Option<String>,
+    pub valid_until: Option<String>,
+    pub superseded_by_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub anchors: Vec<MemoryAnchor>,
+    pub provenance_event_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MemoryJob {
+    pub id: String,
+    pub kind: String,
+    pub status: String,
+    pub session_id: String,
+    pub run_id: Option<String>,
+    pub source_event_id: String,
+    pub content: Option<String>,
+    pub attempts: u64,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -527,12 +588,105 @@ impl GatewayClient {
         .await
     }
 
-    pub async fn send_message(&self, session_id: &str, content: &str) -> Result<RunAccepted> {
+    pub async fn send_message(
+        &self,
+        session_id: &str,
+        content: &str,
+        remember: bool,
+    ) -> Result<RunAccepted> {
         decode(
             self.post(&format!("/v1/sessions/{session_id}/messages"))
+                .json(&serde_json::json!({"content": content, "remember": remember}))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn memories(
+        &self,
+        session_id: &str,
+        status: &str,
+        query: &str,
+    ) -> Result<Vec<MemoryRecord>> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/memories"))
+                .query(&[("status", status), ("query", query)])
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn memory(&self, session_id: &str, memory_id: &str) -> Result<MemoryRecord> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/memories/{memory_id}"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn capture_memory(&self, session_id: &str, content: &str) -> Result<MemoryJob> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/memories/capture"))
                 .json(&serde_json::json!({"content": content}))
                 .send()
                 .await?,
+        )
+        .await
+    }
+
+    pub async fn transition_memory(
+        &self,
+        session_id: &str,
+        memory_id: &str,
+        action: &str,
+    ) -> Result<MemoryRecord> {
+        decode(
+            self.post(&format!(
+                "/v1/sessions/{session_id}/memories/{memory_id}/transition"
+            ))
+            .json(&serde_json::json!({"action": action}))
+            .send()
+            .await?,
+        )
+        .await
+    }
+
+    pub async fn promote_memory(
+        &self,
+        session_id: &str,
+        memory_id: &str,
+        visibility: &str,
+    ) -> Result<MemoryRecord> {
+        decode(
+            self.post(&format!(
+                "/v1/sessions/{session_id}/memories/{memory_id}/promote"
+            ))
+            .json(&serde_json::json!({"visibility": visibility}))
+            .send()
+            .await?,
+        )
+        .await
+    }
+
+    pub async fn memory_jobs(&self, session_id: &str) -> Result<Vec<MemoryJob>> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/memory-jobs"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn retry_memory_job(&self, session_id: &str, job_id: &str) -> Result<MemoryJob> {
+        decode(
+            self.post(&format!(
+                "/v1/sessions/{session_id}/memory-jobs/{job_id}/retry"
+            ))
+            .send()
+            .await?,
         )
         .await
     }
