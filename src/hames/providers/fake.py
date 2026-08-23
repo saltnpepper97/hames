@@ -31,3 +31,6 @@ class FakeProvider:
         self.requests.append(request)
         for event in self.events:
             yield event
+
+    async def aclose(self) -> None:
+        return None
