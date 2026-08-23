@@ -257,6 +257,21 @@ class Ledger:
             connection.commit()
             return event
 
+    @property
+    def transaction_lock(self) -> threading.Lock:
+        """Coordinate feature materializations that append events in the same transaction."""
+
+        return self._write_lock
+
+    def append_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        **kwargs: Any,
+    ) -> Event:
+        """Append a typed event inside a caller-owned ledger database transaction."""
+
+        return self._append_on_connection(connection, **kwargs)
+
     def _append_on_connection(
         self,
         connection: sqlite3.Connection,

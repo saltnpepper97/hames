@@ -204,6 +204,95 @@ MIGRATIONS = (
         UPDATE sessions SET lineage_kind = 'branch' WHERE parent_session_id IS NOT NULL;
         """,
     ),
+    Migration(
+        7,
+        "layered memory",
+        """
+        CREATE TABLE memory_records (
+            id TEXT PRIMARY KEY,
+            layer TEXT NOT NULL CHECK (layer IN ('relationship', 'semantic', 'episodic')),
+            status TEXT NOT NULL CHECK (
+                status IN ('proposed', 'active', 'rejected', 'superseded', 'retracted')
+            ),
+            visibility TEXT NOT NULL CHECK (
+                visibility IN ('global', 'agent_private', 'workspace', 'session_team')
+            ),
+            subject TEXT NOT NULL,
+            predicate TEXT NOT NULL,
+            value_json TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+            importance REAL NOT NULL CHECK (importance >= 0 AND importance <= 1),
+            owner_agent_id TEXT,
+            workspace_path TEXT,
+            lineage_root_session_id TEXT REFERENCES sessions(id),
+            source_session_id TEXT NOT NULL REFERENCES sessions(id),
+            source_run_id TEXT,
+            origin_kind TEXT NOT NULL CHECK (
+                origin_kind IN ('automatic', 'explicit', 'episode')
+            ),
+            valid_from TEXT,
+            valid_until TEXT,
+            superseded_by_id TEXT REFERENCES memory_records(id),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK (visibility != 'agent_private' OR owner_agent_id IS NOT NULL),
+            CHECK (visibility != 'workspace' OR workspace_path IS NOT NULL),
+            CHECK (visibility != 'session_team' OR lineage_root_session_id IS NOT NULL)
+        );
+
+        CREATE TABLE memory_anchors (
+            memory_id TEXT NOT NULL REFERENCES memory_records(id),
+            kind TEXT NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY (memory_id, kind, value)
+        );
+
+        CREATE TABLE memory_provenance (
+            memory_id TEXT NOT NULL REFERENCES memory_records(id),
+            event_id TEXT NOT NULL REFERENCES events(id),
+            PRIMARY KEY (memory_id, event_id)
+        );
+
+        CREATE VIRTUAL TABLE memory_fts USING fts5(
+            memory_id UNINDEXED,
+            subject,
+            predicate,
+            summary,
+            value
+        );
+
+        CREATE TABLE memory_jobs (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK (kind IN ('extraction', 'explicit_capture')),
+            status TEXT NOT NULL CHECK (
+                status IN ('pending', 'running', 'completed', 'failed', 'cancelled')
+            ),
+            session_id TEXT NOT NULL REFERENCES sessions(id),
+            run_id TEXT,
+            source_event_id TEXT NOT NULL REFERENCES events(id),
+            content TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            error_code TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (kind, session_id, run_id, source_event_id)
+        );
+
+        CREATE INDEX memory_status_layer_idx ON memory_records(status, layer);
+        CREATE INDEX memory_workspace_idx ON memory_records(workspace_path);
+        CREATE INDEX memory_agent_idx ON memory_records(owner_agent_id);
+        CREATE INDEX memory_lineage_idx ON memory_records(lineage_root_session_id);
+        CREATE INDEX memory_jobs_status_idx ON memory_jobs(status, created_at);
+
+        CREATE TRIGGER memory_records_no_delete
+        BEFORE DELETE ON memory_records
+        BEGIN
+            SELECT RAISE(ABORT, 'memory records cannot be deleted');
+        END;
+        """,
+    ),
 )
 
 

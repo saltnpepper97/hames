@@ -247,6 +247,70 @@ class DelegationTerminalPayload(EventPayload):
     duration_seconds: float = 0.0
 
 
+class MemoryAnchorPayload(EventPayload):
+    kind: str
+    value: str
+
+
+def _empty_memory_anchors() -> list[MemoryAnchorPayload]:
+    return []
+
+
+class MemoryRecordPayload(EventPayload):
+    memory_id: str
+    layer: str
+    status: str
+    visibility: str
+    summary: str
+    confidence: float
+    importance: float
+    anchors: list[MemoryAnchorPayload] = Field(default_factory=_empty_memory_anchors)
+    provenance_event_ids: list[str] = Field(default_factory=list)
+    supersedes_id: str | None = None
+
+
+class MemoryTransitionPayload(EventPayload):
+    memory_id: str
+    previous_status: str
+    status: str
+    reason: str
+    replacement_id: str | None = None
+
+
+class MemoryJobPayload(EventPayload):
+    job_id: str
+    kind: str
+    status: str
+    attempts: int
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+class MemoryRetrievedItemPayload(EventPayload):
+    memory_id: str
+    layer: str
+    score: float
+    estimated_tokens: int
+    provenance_event_ids: list[str] = Field(default_factory=list)
+
+
+def _empty_retrieved_memories() -> list[MemoryRetrievedItemPayload]:
+    return []
+
+
+class MemoryRetrievedPayload(EventPayload):
+    query_hash: str
+    selected: list[MemoryRetrievedItemPayload] = Field(default_factory=_empty_retrieved_memories)
+    omitted: list[MemoryRetrievedItemPayload] = Field(default_factory=_empty_retrieved_memories)
+    eligible_count: int
+
+
+class MemoryEpisodePayload(EventPayload):
+    memory_id: str
+    source_run_id: str
+    reason: str
+
+
 EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "session.opened": SessionOpenedPayload,
     "session.closed": SessionClosedPayload,
@@ -284,6 +348,18 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "delegation.task_card": DelegationTaskCardPayload,
     "delegation.completed": DelegationTerminalPayload,
     "delegation.failed": DelegationTerminalPayload,
+    "memory.proposed": MemoryRecordPayload,
+    "memory.accepted": MemoryTransitionPayload,
+    "memory.rejected": MemoryTransitionPayload,
+    "memory.superseded": MemoryTransitionPayload,
+    "memory.retracted": MemoryTransitionPayload,
+    "memory.promoted": MemoryRecordPayload,
+    "memory.job.queued": MemoryJobPayload,
+    "memory.job.started": MemoryJobPayload,
+    "memory.job.completed": MemoryJobPayload,
+    "memory.job.failed": MemoryJobPayload,
+    "memory.retrieved": MemoryRetrievedPayload,
+    "memory.episode.projected": MemoryEpisodePayload,
 }
 
 
