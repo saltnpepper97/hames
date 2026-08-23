@@ -6,7 +6,8 @@ Create Hames’s historical truth layer.
 
 Every later feature must be able to point to durable events explaining what happened, in what session/branch, under which agent, and because of which earlier event.
 
-M01 is complete when sessions can be created, branched, appended to, replayed, and inspected without a model or UI.
+M01 is complete when sessions can be created, branched, appended to, replayed, and
+inspected through the gateway, CLI, or REPL without requiring a model call.
 
 ## Invariants
 
@@ -32,8 +33,11 @@ fork_event_id nullable
 created_at
 closed_at nullable
 title nullable
-project_id nullable
-root_agent_id nullable
+working_directory
+agent_id
+provider
+model
+reasoning_effort
 status
 ```
 
@@ -64,6 +68,7 @@ causation_id nullable
 correlation_id nullable
 payload_json nullable
 blob_hash nullable
+payload_hash
 redaction_state
 ```
 
@@ -130,7 +135,9 @@ Requirements:
 - corrupted content produces a typed integrity error;
 - garbage collection is not automatic in this milestone because the ledger is append-only and references are durable.
 
-Define a size threshold above which event payload bodies are blob-backed. The threshold is configurable and tested.
+Canonical payload JSON larger than 65,536 bytes is blob-backed by default. Configure
+the threshold with `[ledger] blob_threshold_bytes` or
+`HAMES_LEDGER__BLOB_THRESHOLD_BYTES`.
 
 ## Redaction
 
@@ -142,7 +149,8 @@ At minimum redact:
 - authorization headers;
 - values explicitly marked secret by tool/provider schemas.
 
-A redacted event preserves enough metadata to understand that a secret existed and was intentionally omitted.
+A redacted event uses `{"$redacted": true, "reason": "secret"}` and preserves no
+secret hash, ciphertext, length, or recovery reference.
 
 Do not attempt magical full secret detection yet. Explicitly tagged secret handling must be reliable.
 
@@ -167,6 +175,10 @@ hames session show <session-id>
 hames session fork <session-id> --at <event-id>
 hames event verify <event-id>
 ```
+
+The Rust REPL also provides `/session`, `/events [count]`, and
+`/fork [event-id-or-sequence]`. Bare `/fork` selects the latest completed assistant
+turn and switches the REPL to the new branch.
 
 Output may be plain text/JSON. Provide `--json` for machine-readable inspection.
 

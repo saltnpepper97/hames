@@ -10,10 +10,11 @@ for the milestone plan.
 
 ## Status
 
-M0 is implemented. It provides a persistent loopback gateway, a Rust conversation
-REPL, append-only SQLite provenance, separate reasoning/answer streaming, and
-native llama.cpp and Ollama adapters. M0 intentionally exposes no tools to the
-model; file and shell work begin in M3 after the policy boundary exists.
+M1 is implemented. In addition to the M0 local conversation slice, Hames provides
+immutable session branching, ancestry-aware replay, typed and integrity-checked
+events, irreversible secret redaction, and content-addressed payload blobs. Hames
+still intentionally exposes no tools to the model; file and shell work begin in M3
+after the policy boundary exists.
 
 ## Quick start
 
@@ -67,6 +68,17 @@ is implemented; `hames doctor` reports when this compatibility mode is active.
 Inside the REPL, `/help` lists session, provider, model, status, and reasoning
 commands. A trailing `\` continues input on the next line. Ctrl-C during a model
 run requests cancellation; Ctrl-D or `/quit` exits the client.
+
+After a completed answer, `/fork` creates a branch and switches to it. `/events`
+shows the effective inherited history and `/session` shows the current ancestry.
+The same ledger is scriptable outside the REPL:
+
+```bash
+target/debug/hames session list --json
+target/debug/hames session show <session-id>
+target/debug/hames session fork <session-id> --at <event-id-or-sequence>
+target/debug/hames event verify <event-id>
+```
 
 ## Development
 
