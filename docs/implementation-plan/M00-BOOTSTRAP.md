@@ -1,203 +1,200 @@
-# M00 — Repository Bootstrap and Engineering Contract
+# M0 — Local Harness Foundation and Conversation Slice
 
 ## Goal
 
-Produce a clean, runnable Hames repository with immediate Git history, deterministic configuration/state paths, database migration infrastructure, logging, testing, and development commands.
+Prove Hames's process boundaries and historical truth with the smallest useful
+vertical slice: a trusted Python backend, persistent local gateway, capable Rust
+REPL, editable default agent capsule, llama.cpp and Ollama streaming, and durable
+session provenance.
 
-At the end of this milestone there is not yet an agent. There is, however, a production-quality foundation on which every later milestone can safely build.
+M0 deliberately has no model-callable tools. It proves the foundation before file
+mutation, shell execution, memory, named-agent delegation, or autonomous Flows.
 
 ## Required user-visible outcome
 
-From a clean checkout:
+After locked dependencies are installed:
 
 ```bash
-uv sync
-uv run hames --version
-uv run hames doctor
-uv run pytest
-```
-
-all succeed without network access.
-
-`hames doctor` reports the resolved config/state/cache directories, SQLite availability including FTS5, Python version, and whether optional host facilities such as `bwrap` are available. Missing future-only facilities are informational, not fatal.
-
-## Work
-
-### 1. Initialize Git before implementation code
-
-Follow `AGENT-INSTRUCTIONS.md`.
-
-Minimum early commits:
-
-```text
-chore: initialize hames rewrite
-build: configure python project and development tooling
-```
-
-### 2. Create the Python project
-
-Use `src/` layout and expose a `hames` console command.
-
-Define:
-
-```text
 hames --version
+hames -V
 hames doctor
+hames
 ```
 
-`--version` must come from package metadata, not a duplicated hard-coded constant.
+The REPL discovers or starts the persistent gateway, opens a session for the
+current directory, streams separate provider reasoning and answer content, records
+the run, supports cancellation, and can resume the session after reconnecting.
 
-### 3. XDG paths
+## Architecture
 
-Implement a single path resolver with:
-
-- config root;
-- state root;
-- cache root;
-- database path;
-- blob path;
-- proposal path;
-- plugin-worker path.
-
-Respect environment overrides and permit an explicit application root in tests.
-
-Creating directories must be lazy and have deterministic permissions.
-
-### 4. Configuration
-
-Implement `config.toml` loading with:
-
-- typed schema;
-- defaults;
-- environment overrides for secrets and machine-specific provider settings;
-- validation errors with exact field paths;
-- no automatic rewriting of the user’s config during normal startup.
-
-Initial configuration sections:
-
-```toml
-[server]
-host = "127.0.0.1"
-port = 7411
-
-[database]
-path = ""
-
-[logging]
-level = "INFO"
-
-[providers]
-default = ""
-
-[security]
-trusted_project_roots = []
+```text
+Rust REPL
+   │ versioned HTTP commands + SSE
+   ▼
+Python gateway / trusted harness
+   ├── context assembly
+   ├── provider normalization
+   └── append-only event ledger
+        │
+        ├── llama.cpp
+        └── Ollama
 ```
 
-Empty/default provider is valid in M00 so tests and `doctor` can run without a model.
+The gateway binds only to `127.0.0.1:7411`. An M0 bearer token stored with mode
+`0600` under `~/.hames/runtime/` protects operational endpoints.
 
-Unknown configuration keys must produce a warning or error according to one documented rule; do not silently ignore typos.
+## Persistent state and configuration
 
-### 5. Logging
+Use `~/.hames` by default and `HAMES_HOME` for deliberate overrides and tests.
+Create missing directories, the database, token, and default `AGENT.md` lazily;
+never overwrite user-edited files.
 
-Use structured application logging with:
+Initial `config.toml` sections are `runtime`, `gateway`, `providers.llama_cpp`,
+`providers.ollama`, `logging`, and `repl`. Unknown keys are errors. Empty model
+selection means discover models and auto-select only when exactly one is present.
 
-- timestamp;
-- level;
-- subsystem;
-- human-readable message;
-- optional session/event identifiers.
+The initial capsule is `~/.hames/agents/default/AGENT.md`. It uses strict YAML
+frontmatter and Markdown instructions. Every model request records its content
+hash.
 
-Secrets, authorization headers, API keys, and raw environment dumps must never be logged.
+## Python foundation
 
-Provide plain terminal logs first. JSON log output may be configurable but must use the same event fields.
+- Python 3.12+ `src/` package and internal `hamesd serve` command.
+- Pydantic v2 public/persistence schemas.
+- Strict configuration with `HAMES_<SECTION>__<FIELD>` overrides.
+- Structured logs with redaction and no environment dumps.
+- SQLite WAL, foreign keys, transactional numbered migrations, and checksums.
+- `hames doctor` data supplied through a stable JSON diagnostic boundary.
 
-### 6. SQLite and migrations
+## Core ledger
 
-Create migration infrastructure now.
+Create append-only `sessions` and `events` tables. Database triggers reject event
+updates and deletes. Global sequence numbers support SSE resume.
 
-Requirements:
+M0 durable event types:
 
-- SQLite WAL mode;
-- foreign keys enabled;
-- migration table with monotonic migration IDs;
-- application startup applies pending compatible migrations;
-- migration failures abort startup rather than continuing with half-upgraded state;
-- FTS5 capability is checked by `doctor`.
+```text
+session.opened
+session.closed
+user.message
+context.compiled
+model.requested
+model.response.started
+assistant.reasoning
+assistant.message
+model.usage
+model.response.completed
+model.response.failed
+run.cancelled
+runtime.error
+```
 
-M00 schema may contain only migration metadata and an application metadata table.
+Streaming deltas are transient. Completed or interrupted assembled reasoning and
+answer content are durable. Client disconnect is not cancellation.
 
-### 7. Test harness
+## Providers and reasoning capabilities
 
-Configure:
+Define one normalized provider interface with model discovery and these stream
+events:
 
-- `pytest`;
-- `pytest-asyncio`;
-- temporary isolated XDG roots;
-- helper fixture for fresh app state;
-- helper fixture for migrated SQLite database;
-- no tests touching the real home directory.
+```text
+response.started
+response.reasoning_delta
+response.text_delta
+response.usage
+response.completed
+response.failed
+```
 
-### 8. Developer quality commands
+llama.cpp uses `/v1/models`, model-specific `/props`, and streamed
+`/v1/chat/completions`. Inspect `chat_template_caps` rather than guessing model
+features by name. When reasoning effort is advertised, pass the selected level
+through `chat_template_kwargs` and record it with the request.
 
-Define reproducible commands for:
+Ollama uses `/api/tags`, `/api/ps`, and streamed `/api/chat`. Map `thinking`,
+content, usage, failures, and model metadata into the same internal schemas.
 
-- formatting;
-- linting;
-- tests;
-- type checking if selected;
-- web commands may be added later.
+All normal tests use a deterministic fake provider. Live local-provider smoke tests
+are explicit and optional.
 
-Document them in the root README.
+## Gateway API
 
-### 9. Basic documentation
+```text
+GET  /v1/health
+GET  /v1/providers
+POST /v1/sessions
+GET  /v1/sessions
+GET  /v1/sessions/{id}
+GET  /v1/sessions/{id}/events
+POST /v1/sessions/{id}/messages
+POST /v1/runs/{run-id}/cancel
+GET  /v1/events?session_id=<id>
+```
 
-Root README must state only what exists at M00:
+Errors use one typed envelope. A health response exposes build and protocol
+versions so the Rust client can reject incompatible gateways.
 
-- project purpose in one paragraph;
-- supported Python/Linux target;
-- install/dev setup;
-- `hames doctor`;
-- test command;
-- repository status as pre-runtime foundation.
+## Rust REPL
 
-Do not document agents, memory, skills, or plugins as already available.
+The Rust executable is named `hames`. It supports both `--version` and `-V`, plus:
+
+```text
+hames doctor
+hames gateway start|stop|status
+```
+
+The first REPL command set is:
+
+```text
+/help
+/new
+/sessions
+/resume <session-id>
+/provider [provider] [model]
+/model
+/status
+/reasoning off|low|medium|xhigh
+/quit
+```
+
+Support multiline input, persistent history, separate reasoning/answer display,
+Ctrl-C cancellation during a run, idle Ctrl-C input clearing, and Ctrl-D exit.
+The first REPL starts the gateway when absent; the gateway survives REPL exit.
+
+## Working-directory contract
+
+A new session records the canonical directory in which `hames` was launched.
+There is no registered project object. M0 does not expose file tools, so it does not
+create scratch space yet.
+
+Later tool-capable runs may request disposable workcells under
+`/tmp/hames/runs/<run-id>/<agent-id>/workspace/` for tests and prototypes. Normal
+work remains in the user's current directory.
 
 ## Tests
 
-At minimum:
-
-- default XDG path resolution;
-- environment-overridden paths;
-- explicit temporary root;
-- config parsing;
-- invalid config rejection;
-- secret values absent from logs;
-- clean database creation;
-- idempotent migration application;
-- migration failure leaves a detectable failed startup;
-- `doctor` succeeds on a supported Linux environment;
-- CLI `--version` matches package metadata.
-
-## Commit expectations
-
-This milestone should normally contain 3–5 coherent commits, including tests with the implementation they verify.
-
-Suggested slices:
-
-1. repository/project bootstrap;
-2. XDG/config/logging;
-3. SQLite migrations;
-4. doctor/test harness/docs.
+- Hames-home isolation, permissions, first-run creation, non-overwrite, config
+  validation, version equality, and secret-free logs.
+- Fresh/idempotent migrations, append-only triggers, stable ordering, restart
+  replay, context manifests, cancellation, and interrupted output.
+- Fixture-backed llama.cpp/Ollama discovery, reasoning, text, usage, malformed
+  streams, timeouts, and failures.
+- Gateway auth, loopback enforcement, SSE, resume, disconnect behavior, daemon
+  persistence, stale PID recovery, and protocol mismatch.
+- Rust command parsing, multiline input, history, model selection, reasoning
+  controls, cancellation, and connection recovery.
+- A process-level fake-provider test from Rust REPL through gateway and database.
 
 ## Acceptance gate
 
-M00 is complete only when:
+M0 is complete only when:
 
-- the repository was initialized before runtime implementation;
-- the working tree is clean;
-- all M00 tests pass offline;
-- `hames --version` and `hames doctor` work from a clean environment;
-- no code writes to the real user directories during tests;
-- migration state is deterministic;
-- README matches implemented behavior;
-- an annotated `m00` tag is created only after the above passes.
+- a fresh first run creates private local state without a setup wizard;
+- `hames --version`, `hames -V`, and `hames doctor` succeed;
+- the REPL starts or reconnects to a persistent gateway;
+- llama.cpp and Ollama adapters pass fixture tests and opt-in live smoke checks;
+- one session can stream, cancel, restart, resume, and reconstruct durable output;
+- provider-exposed reasoning remains distinct and its selected effort is recorded;
+- normal tests make no internet or paid-model calls;
+- Ruff, Pyright, pytest, rustfmt, Clippy, Cargo tests, and end-to-end tests pass;
+- the working tree is clean before annotated tag `m0` is created.

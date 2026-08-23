@@ -1,4 +1,4 @@
-# M03 — Single-Agent Runtime, Core Tools, Policy Gate, and Bare REPL
+# M03 — Single-Agent Runtime, Core Tools, Policy Gate, and Rust REPL
 
 ## Goal
 
@@ -6,7 +6,8 @@ Produce the first genuinely usable Hames.
 
 At the end of M03, a user can start the bare REPL, talk to one default agent, let it call core coding tools, approve or deny sensitive actions, and receive a final response. Every model/tool/policy action is recorded.
 
-This milestone deliberately does **not** build a rich TUI.
+This milestone extends the M0 Rust REPL. It deliberately does **not** build the
+custom Ratatui interface yet.
 
 ## Agent loop
 
@@ -109,27 +110,21 @@ Do not start with a fuzzy model-controlled patch engine.
 
 The policy gate inspects shell requests before execution.
 
-## Project trust
+## Working-directory trust and scratch workcells
 
-Introduce a project object:
+The session's canonical launch directory is its working context; Hames does not
+require a registered project object. Trust grants attach to an exact canonical
+path and may be granted once or persisted under policy.
+
+Normal requested work happens in that directory. For experiments, tests, or
+prototypes, a run may create disposable scratch space under:
 
 ```text
-project_id
-root_path
-trusted
-created_at
+/tmp/hames/runs/<run-id>/<agent-id>/workspace/
 ```
 
-CLI:
-
-```bash
-hames project trust /path/to/project
-hames project list
-```
-
-The agent cannot write or execute within an untrusted project.
-
-Read-only inspection of an untrusted project may require confirmation or be denied according to one documented default rule.
+Scratch output is never treated as a user deliverable. Copying or applying it to
+the real working directory is a separate attributable policy-controlled action.
 
 ## Policy gate
 
@@ -145,9 +140,9 @@ require_confirmation
 
 Initial default policy:
 
-- read/list inside trusted project: allow;
-- write/edit inside trusted project: allow;
-- ordinary project shell operations: allow;
+- read/list inside a trusted working directory: allow;
+- write/edit inside a trusted working directory: allow;
+- ordinary shell operations inside that directory: allow;
 - access outside trusted roots: confirm or deny according to path class;
 - destructive/high-risk command signatures: require confirmation;
 - known secret paths: deny unless explicitly whitelisted;
@@ -252,7 +247,7 @@ Until M04, context includes only:
 - current project root and policy summary;
 - tool schemas.
 
-Do not build hidden memory or skill injection yet.
+Do not build hidden memory or flow injection yet.
 
 ## Tests
 

@@ -1,8 +1,10 @@
-# M10 — Full Web Control Surface
+# M10 — Rich Control Surfaces: Ratatui and Web
 
 ## Goal
 
-Turn the early read-only Web Inspector into the primary rich interface for operating Hames.
+Design rich interfaces only after the Rust REPL and gateway semantics have proven
+the harness. Build the heavily customized Ratatui client first or alongside the
+web control surface. Both must operate Hames through the same gateway.
 
 The web application must use the same gateway APIs and event semantics as the REPL. It must not contain an alternative hidden agent runtime.
 
@@ -15,7 +17,7 @@ Chat
 Runs
 Agents
 Memory
-Skills
+Flows
 Scars
 Plugins
 Settings
@@ -55,7 +57,7 @@ Preserve/extend M04:
 - approvals;
 - agent attribution;
 - memory retrieval;
-- skills loaded;
+- flows loaded;
 - Scars triggered;
 - plugin calls.
 
@@ -111,7 +113,7 @@ Episodic:
 
 Memory detail shows why a record was retrieved for selected model request when retrieval events exist.
 
-## 5. Skills
+## 5. Flows
 
 Implement:
 
@@ -233,7 +235,7 @@ Add versioned endpoints required for:
 - agents;
 - memory;
 - work items;
-- skills/proposals;
+- flows/proposals;
 - Scars/repairs/evaluations;
 - plugins;
 - settings;
@@ -250,7 +252,7 @@ Frontend:
 - approval;
 - agent edit validation;
 - memory correction;
-- skill proposal diff/approval;
+- flow proposal diff/approval;
 - Scar evidence/repair;
 - plugin permission screen;
 - reconnect;
@@ -271,7 +273,7 @@ E2E with fake provider:
 4. approve action;
 5. create/select agent;
 6. inspect memory;
-7. approve skill proposal;
+7. approve flow proposal;
 8. inspect Scar;
 9. enable test plugin;
 10. refresh browser and reconstruct state.
@@ -282,7 +284,7 @@ Use web UI for an entire small coding task without REPL.
 
 Then open run inspector and verify every meaningful action can be traced.
 
-Repeat one workflow that triggers skill proposal and one correction that creates Scar. Review both entirely through web UI.
+Repeat one workflow that triggers flow proposal and one correction that creates Scar. Review both entirely through web UI.
 
 ## Commit expectations
 
@@ -293,7 +295,7 @@ Suggested slices:
 1. chat + approvals;
 2. agents;
 3. memory;
-4. skills;
+4. flows;
 5. Scars/evolution;
 6. plugins;
 7. settings/security;

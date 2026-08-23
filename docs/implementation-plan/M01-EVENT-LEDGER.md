@@ -117,7 +117,7 @@ Appending validates the typed payload before persistence.
 Large event content must be storable under:
 
 ```text
-$XDG_STATE_HOME/hames/blobs/sha256/<prefix>/<hash>
+~/.hames/blobs/sha256/<prefix>/<hash>
 ```
 
 Requirements:

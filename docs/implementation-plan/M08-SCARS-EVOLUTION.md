@@ -53,7 +53,7 @@ agent IDs
 intent labels
 entity IDs
 tool/error signatures
-skill IDs
+flow IDs
 retrieval/context signatures
 ```
 
@@ -92,13 +92,13 @@ Normalize failure signatures for:
 - same tool error;
 - repeated provider failure;
 - repeated policy rejection caused by same attempted behavior;
-- repeated skill-associated task failure.
+- repeated flow-associated task failure.
 
 A configurable recurrence threshold can create a Scar candidate.
 
-### 4. Skill outcome regression
+### 4. Flow outcome regression
 
-If active skill is repeatedly associated with corrections/failures, create Scar candidate referencing exact skill version.
+If active flow is repeatedly associated with corrections/failures, create Scar candidate referencing exact flow version.
 
 ## Scar creation
 
@@ -130,17 +130,17 @@ Use when entity linkage/dependency/ownership was wrong.
 
 Repair: relationship proposal.
 
-### Operational memory
+### Episodic memory
 
-Use when active status, blocker, next action, or current phase was lost.
+Use when the durable account of an outcome, failure, or lesson was incomplete.
 
-Repair: work-item update/proposal.
+Repair: episode correction or a new provenance-backed episode projection.
 
-### Skill
+### Flow
 
 Use when repeatable procedure was poor.
 
-Repair: new skill or skill patch through M07 proposal path.
+Repair: new flow or flow patch through M07 proposal path.
 
 ### Policy
 
@@ -167,7 +167,7 @@ Use when Hames lacked a genuine capability.
 
 At M08 this creates capability requirement proposal. M09 can turn it into isolated plugin proposal.
 
-Do not force every failure into prompt/skill.
+Do not force every failure into prompt/flow.
 
 ## Repair proposal
 
@@ -199,7 +199,7 @@ Run automatically:
 - required memory record available;
 - required context source included;
 - policy rule blocks/allows intended fixture;
-- skill metadata/trace tests pass;
+- flow metadata/trace tests pass;
 - no unauthorized scope broadening;
 - no stale base version.
 
@@ -241,7 +241,7 @@ A repair may auto-promote only if all hold:
 Default v0.1 posture:
 
 - memory corrections explicitly grounded in direct user correction may auto-promote within same scope;
-- skill changes require approval;
+- flow changes require approval;
 - policy changes require approval;
 - context rules require approval;
 - plugin/capability changes require approval.
@@ -290,7 +290,7 @@ Only inject concise active Scar guard when:
 - repair depends on model behavior rather than deterministic policy/context rule;
 - context budget allows.
 
-Prefer enforcing repair in memory/context/policy/skill mechanisms instead of reminding model forever.
+Prefer enforcing repair in memory/context/policy/flow mechanisms instead of reminding model forever.
 
 ## Inspector
 
@@ -322,7 +322,7 @@ Cover:
 - fake model evaluator;
 - budget blocking live/model eval;
 - safe memory auto-promotion rule;
-- policy/skill changes requiring approval;
+- policy/flow changes requiring approval;
 - guarded success count;
 - healing threshold;
 - regression reopening;
@@ -338,7 +338,7 @@ Create controlled failure:
 2. force/observe response using obsolete fact;
 3. mark it as correction;
 4. confirm Scar created with exact evidence;
-5. route repair to semantic/operational memory or context rule;
+5. route repair to semantic/episodic memory or context rule;
 6. approve/promote as required;
 7. replay historical case;
 8. repeat matching tasks until Scar becomes healed;

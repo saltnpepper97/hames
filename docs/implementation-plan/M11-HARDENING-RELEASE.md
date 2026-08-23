@@ -21,7 +21,7 @@ A completed session reconstructs after restart with:
 - agent branches;
 - context manifests;
 - memory retrieval;
-- skills;
+- flows;
 - Scars;
 - plugin events.
 
@@ -31,7 +31,7 @@ Attempt side effects through:
 
 - main agent tool;
 - child agent;
-- skill script;
+- flow script;
 - plugin tool;
 - evolution evaluator/repair action.
 
@@ -51,7 +51,7 @@ Prove:
 Prove stale writes rejected for:
 
 - agent edits if version-checked;
-- skill patches;
+- flow patches;
 - repair proposals;
 - plugin version updates;
 - policy/context-rule changes.
@@ -72,7 +72,7 @@ hames db backup <path>
 - orphaned references;
 - blob existence/hash;
 - session branch consistency;
-- active skill version consistency;
+- active flow version consistency;
 - memory supersession chains;
 - Scar repair references.
 
@@ -94,7 +94,7 @@ Bundle includes:
 - database snapshot;
 - referenced blobs;
 - agents;
-- skills;
+- flows;
 - safe configuration;
 - plugin manifests/source fingerprints;
 - schema/export version;
@@ -237,7 +237,7 @@ docs/getting-started.md
 docs/configuration.md
 docs/agents.md
 docs/memory.md
-docs/skills.md
+docs/flows.md
 docs/scars.md
 docs/plugins.md
 docs/security.md
@@ -255,7 +255,7 @@ Include concise diagrams for:
 - gateway/kernel;
 - event/session branches;
 - memory scopes;
-- skill proposal lifecycle;
+- flow proposal lifecycle;
 - Scar repair loop;
 - plugin sandbox/broker.
 
@@ -282,7 +282,7 @@ Required manual release smoke:
 6. inspect in web;
 7. use named child agent;
 8. verify memory recall;
-9. produce/approve skill proposal;
+9. produce/approve flow proposal;
 10. create/repair/heal a Scar;
 11. install/execute isolated test plugin;
 12. export state;

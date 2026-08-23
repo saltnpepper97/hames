@@ -41,7 +41,7 @@ feat(events): add append-only event store
 feat(gateway): stream session events over SSE
 feat(policy): require approval for destructive shell operations
 test(memory): cover scope visibility and supersession
-fix(skills): reject stale compare-and-swap patches
+fix(flows): reject stale compare-and-swap patches
 docs(m06): document memory provenance model
 ```
 
@@ -89,13 +89,7 @@ Model-dependent evaluation features must have fixture-backed tests. Live-provide
 
 Tests must never write to the user’s real Hames directories.
 
-All tests set temporary values for:
-
-```text
-XDG_CONFIG_HOME
-XDG_STATE_HOME
-XDG_CACHE_HOME
-```
+All tests set `HAMES_HOME` to a temporary isolated root.
 
 The runtime must support constructing an explicit application state root for tests.
 
@@ -121,7 +115,7 @@ Examples:
 - plugin RPC messages;
 - plugin manifests;
 - `AGENT.md` frontmatter;
-- skill metadata;
+- flow metadata;
 - export bundles.
 
 Internal helper objects do not need serialization ceremony.
@@ -134,7 +128,7 @@ When adding a feature, ask:
 
 - What event proves it happened?
 - What event links it to the model call or user action that caused it?
-- Can the Web Inspector explain this feature using existing events?
+- Can a client or transcript explain this feature using existing events?
 
 Do not create hidden mutable state that materially influences behavior but cannot be reconstructed or attributed.
 
@@ -148,7 +142,7 @@ All side effects initiated through Hames must pass through the same policy decis
 
 - main agent tools;
 - child agents;
-- skills;
+- flows;
 - plugin tools;
 - automatic evaluators;
 - evolution/repair jobs.
@@ -159,7 +153,7 @@ Agent-authored code must never be activated merely because it was generated succ
 
 Do not pull in LangChain, AutoGen, CrewAI, or another agent orchestration framework as the runtime.
 
-Libraries for focused problems are fine. The Hames loop, event semantics, policy gate, context compiler, memory scopes, skills, and Scars are product behavior and must remain owned by Hames.
+Libraries for focused problems are fine. The Hames loop, event semantics, policy gate, context compiler, memory scopes, flows, and Scars are product behavior and must remain owned by Hames.
 
 ## 11. Avoid speculative abstraction
 
@@ -167,7 +161,9 @@ Do not build extension points merely because they might be useful someday.
 
 The plugin API is deliberately delayed until M09 so real internal implementations have already demonstrated what needs to be extensible.
 
-Do not build a rich TUI during v0.1.0. The REPL is the terminal client. The web interface is the rich control surface.
+Prove behavior in the Rust REPL before investing in rich clients. A customized
+Ratatui client comes before or alongside later web work; all clients must use the
+same gateway rather than introducing another runtime.
 
 ## 12. Error handling
 

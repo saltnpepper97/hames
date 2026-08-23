@@ -1,146 +1,102 @@
-# Hames Rewrite — Implementation Plan to v0.1.0
+# Hames Rewrite — Working Implementation Plan
 
-This directory is the authoritative build plan for the Hames rewrite.
+This directory is the authoritative build plan for Hames. M0 is decision-complete;
+later milestones preserve the design inventory but are deliberately subject to
+refinement as the harness proves its concepts.
 
-Hames is a personal agent harness built around a small trusted kernel, an append-only event ledger, named agents, layered memory, progressively disclosed skills, evidence-backed self-correction, isolated plugins, and first-class observability.
+Hames is a proper local agent harness built around a small trusted Python kernel,
+an append-only event ledger, named agents, layered memory, progressively disclosed
+Flows, evidence-backed self-correction, optional isolated plugins, and first-class
+observability.
 
-The plan deliberately starts with a **bare REPL**, not a rich TUI or polished web application. The **Web Inspector** arrives early because it is a development instrument: Hames should be inspectable while Hames itself is being built. A rich terminal UI is explicitly **not** part of v0.1.0; the REPL is the terminal client for this release.
+## Product direction
 
-## Product principles
-
-1. **Simple kernel, powerful composition.** The trusted core owns only invariants that must remain understandable: events, sessions, context compilation, model execution, capability registration, and policy enforcement.
-2. **Everything important is reconstructable.** If something materially influenced a model call, Hames must be able to explain where it came from.
-3. **One source of historical truth.** Sessions, model calls, tool calls, approvals, memory retrieval, skill use, agents, corrections, and evaluations all emit into the event ledger.
-4. **Memory is layered, scoped, and provenance-backed.** Hames does not dump conversation fragments into a vector database and call that memory.
-5. **Skills are procedural memory.** They are not plugins and they are not policy.
-6. **The model may propose durable improvements; promotion remains controlled.** Hames can autonomously identify and draft skills, memory corrections, and other repairs, but durable authority changes are versioned, tested, inspectable, and promoted through policy.
-7. **Corrections become tests.** The signature feature of Hames is **Scars**: recurring or important failures become durable repair records tied to evidence and regression checks.
-8. **Plugins cannot route around the policy gate.** Third-party or agent-authored plugin code runs outside the trusted process.
-9. **Observability is a product feature.** Token usage, context composition, model calls, tools, memory retrieval, branches, failures, and evolution are visible in the same system.
-10. **Every milestone is shippable.** No milestone is considered complete because a skeleton exists. Its behavior, tests, migrations, failure handling, documentation, and integration must all pass its gate.
+1. **Python owns the harness.** The gateway, agent loop, policy, providers,
+   persistence, context construction, tools, memory, and evolution live in Python.
+2. **Clients use one gateway.** The Rust REPL, later Ratatui interface, web UI, and
+   possible desktop application use the same versioned HTTP/SSE boundary.
+3. **The REPL comes first.** Near-term work proves the internals through a capable
+   plain Rust REPL. Ratatui and graphical clients do not gate the core concepts.
+4. **Local models come first.** llama.cpp and Ollama are first-class M0 providers.
+   Hosted OpenAI API, Codex/ChatGPT, and other services come later.
+5. **One historical truth.** Material model input, provider activity, tools,
+   approvals, memory, Flows, agents, corrections, and evaluations emit events.
+6. **Agents work where invoked.** A session records the current directory as a
+   loose work context; Hames does not require a registered project object.
+7. **Scratch work is disposable.** Later tool-capable agents may prototype under
+   `/tmp/hames/runs/<run-id>/<agent-id>/workspace/`, but user deliverables belong
+   in the actual working directory.
+8. **Memory has three layers.** Relationship memory covers the user, Semantic
+   memory covers known facts, and Episodic memory covers what happened.
+9. **Flows are procedural knowledge.** A Flow is not a plugin or permission.
+   Models may propose Flows, but activation is versioned, evaluated, inspectable,
+   and controlled.
+10. **Corrections become tests.** Scars connect failures and corrections to
+    evidence, repairs, and regression checks.
 
 ## Target stack
 
-The plan assumes:
+- Python 3.12+ with `uv`, FastAPI, uvicorn, Pydantic v2, httpx, and SQLite.
+- Stable Rust with Tokio for the `hames` REPL client.
+- HTTP commands and Server-Sent Events between every client and the gateway.
+- SQLite in WAL mode plus content-addressed files for large immutable payloads.
+- pytest, pytest-asyncio, Ruff, Pyright, rustfmt, Clippy, and Cargo tests.
+- Linux as the initial host target.
+- Ratatui later, heavily customized for Hames; web and desktop stacks are not yet
+  selected.
 
-- **Python 3.12+** for the Hames controller/runtime.
-- `uv` for project and environment management.
-- `FastAPI` + `uvicorn` for the local gateway.
-- HTTP commands plus **Server-Sent Events (SSE)** for event streaming.
-- SQLite in WAL mode for durable structured state.
-- FTS5 for lexical retrieval.
-- Content-addressed files for large immutable payloads.
-- Pydantic v2 for public and persistence boundary schemas.
-- `httpx` for model/provider transport.
-- `pytest`, `pytest-asyncio`, and temporary isolated state roots for tests.
-- **TypeScript + React + Vite** for the web interface.
-- Linux as the v0.1.0 host target.
-- `bubblewrap` for isolated untrusted/plugin workers in the plugin milestone.
+Do not substitute a large orchestration framework for the runtime. Hames owns its
+loop and its invariants.
 
-Do not substitute a large orchestration framework for the runtime. Hames should own its loop.
-
-## Repository shape at v0.1.0
+## Repository and runtime shape
 
 ```text
 hames/
 ├── pyproject.toml
-├── README.md
-├── LICENSE
-├── src/
-│   └── hames/
-│       ├── core/
-│       ├── gateway/
-│       ├── providers/
-│       ├── tools/
-│       ├── policy/
-│       ├── agents/
-│       ├── memory/
-│       ├── skills/
-│       ├── evolution/
-│       ├── plugins/
-│       ├── cli/
-│       └── web/
-├── web/
-│   ├── package.json
-│   └── src/
+├── uv.lock
+├── Cargo.toml
+├── Cargo.lock
+├── src/hames/
+├── crates/hames-repl/
 ├── tests/
-│   ├── unit/
-│   ├── integration/
-│   ├── e2e/
-│   └── fixtures/
 └── docs/
 ```
 
-Runtime state follows XDG:
+Persistent state defaults to:
 
 ```text
-$XDG_CONFIG_HOME/hames/
+~/.hames/
 ├── config.toml
-├── agents/
-├── skills/
-├── plugins/
-└── projects/
-
-$XDG_STATE_HOME/hames/
 ├── hames.db
+├── agents/
 ├── blobs/
-├── plugin-workers/
-├── proposals/
-└── logs/
-
-$XDG_CACHE_HOME/hames/
-└── ...
+├── flows/
+├── logs/
+└── runtime/
 ```
 
-Project-local configuration lives in `.hames/` only when a project needs local instructions, policy, agents, or skills.
+`HAMES_HOME` overrides this root for tests and deliberate isolated installations.
+Directories are created lazily and user files are never silently overwritten.
 
-## Milestone order
+## Milestone direction
 
 | Milestone | Outcome |
 |---|---|
-| [M00](M00-BOOTSTRAP.md) | Repository, development contract, configuration, XDG state, migrations, tests, and immediate Git discipline exist. |
-| [M01](M01-EVENT-LEDGER.md) | Hames has an append-only event ledger, session tree, blob store, replay API, and durable provenance base. |
-| [M02](M02-GATEWAY-PROVIDERS.md) | Local gateway, SSE transport, model provider abstraction, real streaming, cancellation, usage, and provider error normalization work. |
-| [M03](M03-AGENT-RUNTIME-REPL.md) | A usable single-agent Hames exists with core tools, policy enforcement, approvals, and a bare streaming REPL. |
-| [M04](M04-CONTEXT-WEB-INSPECTOR.md) | Context compilation is explicit and inspectable; the first read-only web inspector visualizes real runs and usage. |
-| [M05](M05-NAMED-AGENTS.md) | Named `AGENT.md` agents, scoped capabilities, child-agent branches, and per-agent accounting are complete. |
-| [M06](M06-LAYERED-MEMORY.md) | Semantic, relationship, operational, and episodic memory are durable, scoped, searchable, provenance-backed, and observable. |
-| [M07](M07-SKILLS.md) | Portable skills, progressive disclosure, usage tracking, versioning, autonomous skill proposals, testing, and promotion are complete. |
-| [M08](M08-SCARS-EVOLUTION.md) | Hames detects corrections/failures, creates Scars, routes repairs, evaluates them, and guards against regressions. |
-| [M09](M09-PLUGINS.md) | A narrow isolated plugin system adds capabilities without giving plugins unrestricted access to the controller. |
-| [M10](M10-WEB-CONTROL.md) | The web inspector becomes a complete Hames control surface for chat, agents, memory, skills, Scars, plugins, approvals, and settings. |
-| [M11](M11-HARDENING-RELEASE.md) | Security, backup/export, migrations, packaging, documentation, end-to-end tests, and release gates produce Hames v0.1.0. |
+| [M0](M00-BOOTSTRAP.md) | Python gateway, Rust REPL, local providers, core provenance, streaming, cancellation, and diagnostics form a working local conversation slice. |
+| [M1](M01-EVENT-LEDGER.md) | The core ledger grows into complete replay, branching, blobs, redaction, and provenance infrastructure. |
+| [M2](M02-GATEWAY-PROVIDERS.md) | Provider and gateway contracts deepen without leaking provider wire formats into clients. |
+| [M3](M03-AGENT-RUNTIME-REPL.md) | Tools, policy, approvals, scratch workcells, and the complete single-agent loop make Hames useful for real work. |
+| [M4](M04-CONTEXT-WEB-INSPECTOR.md) | Context manifests and usage accounting become complete; the interface portion will be re-gated after REPL validation. |
+| [M5](M05-NAMED-AGENTS.md) | Human-readable agent capsules, capability separation, and bounded delegation mature. |
+| [M6](M06-LAYERED-MEMORY.md) | Relationship, Semantic, and Episodic memories become scoped, correctable, and observable. |
+| [M7](M07-FLOWS.md) | Portable Flows gain progressive disclosure, proposals, evaluation, versioning, and controlled promotion. |
+| [M8](M08-SCARS-EVOLUTION.md) | Scars provide evidence-backed repair routing and regression protection. |
+| [M9](M09-PLUGINS.md) | Optional isolated plugins add genuine capabilities without bypassing policy. |
+| [M10](M10-WEB-CONTROL.md) | Rich interfaces are designed from proven gateway behavior; Ratatui precedes or accompanies web work. |
+| [M11](M11-HARDENING-RELEASE.md) | Security, recovery, packaging, documentation, and release gates produce v0.1.0. |
 
 ## Mandatory execution rule
 
-Read [AGENT-INSTRUCTIONS.md](AGENT-INSTRUCTIONS.md) before implementation. It is part of the plan, not optional guidance.
-
-The implementation agent must:
-
-- initialize Git before implementation code exists;
-- commit continuously in coherent slices;
-- run the relevant test suite before each commit;
-- never hide a broken state inside a later “fix everything” commit;
-- leave each milestone on a clean, passing commit;
-- tag a milestone only after every acceptance criterion in that file passes.
-
-## Definition of v0.1.0
-
-Hames v0.1.0 is complete when a user can:
-
-1. Install and initialize Hames on Linux.
-2. Configure an OpenAI-compatible model endpoint or Anthropic provider.
-3. Start Hames and chat through the bare REPL or web UI.
-4. Allow Hames to read, edit, and run commands within a trusted project under explicit policy.
-5. Inspect exactly what happened during a run, including branch structure, tools, policy decisions, provider usage, and approximate context composition.
-6. Create named agents with a single `AGENT.md`, assign scoped tools/policy/memory, and delegate bounded child work.
-7. Use layered shared/private memory with provenance and corrections.
-8. Use skills loaded progressively rather than permanently occupying context.
-9. Let Hames detect repeatable workflows and draft skill proposals automatically.
-10. Mark or detect meaningful corrections, create Scars, propose repairs, evaluate them, and track recurrence.
-11. Install isolated plugins with explicit capabilities, while agent-authored plugins remain proposals until approved.
-12. Operate the same system from the Web Control interface.
-13. Export, back up, restore, and migrate state without losing provenance.
-14. Run the complete test suite from a clean checkout with no external paid model dependency.
-
-Anything not required by those outcomes is not allowed to delay v0.1.0.
+Read [AGENT-INSTRUCTIONS.md](AGENT-INSTRUCTIONS.md) before implementation. Commit
+continuously in coherent, tested slices. A milestone is complete only on a clean,
+passing commit and is tagged only after every acceptance criterion passes.

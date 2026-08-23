@@ -4,7 +4,7 @@
 
 Add genuine extensibility without turning the trusted Hames process into arbitrary third-party Python execution.
 
-Plugins add capabilities. Skills add procedures. The distinction must remain visible in code and UI.
+Plugins add capabilities. Flows add procedures. The distinction must remain visible in code and UI.
 
 For v0.1, third-party and agent-authored plugins run as subprocess workers. They do not import into the Hames controller.
 
@@ -190,7 +190,7 @@ Agent may conclude a Scar/task requires missing capability.
 It can create proposal under:
 
 ```text
-$XDG_STATE_HOME/hames/proposals/plugins/<proposal-id>/
+~/.hames/proposals/plugins/<proposal-id>/
 ```
 
 Proposal includes:

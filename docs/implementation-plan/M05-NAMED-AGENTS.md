@@ -8,19 +8,13 @@ Agents share one runtime and one event ledger while receiving explicit capabilit
 
 ## Agent storage
 
-Global agents:
-
 ```text
-$XDG_CONFIG_HOME/hames/agents/<agent-id>/AGENT.md
+~/.hames/agents/<agent-id>/AGENT.md
 ```
 
-Project-local agents:
-
-```text
-<project>/.hames/agents/<agent-id>/AGENT.md
-```
-
-Project-local agents load only for trusted projects.
+Agent configuration is always stored under `~/.hames`; Hames does not scatter
+agent state through user workspaces. A session may attach an agent to its current
+working-directory context without relocating the capsule.
 
 ## `AGENT.md`
 
@@ -49,16 +43,16 @@ policy: research
 memory:
   read:
     - global
-    - project
+    - workspace
     - agent:researcher
   write:
     - agent:researcher
     - proposals
 
-skills:
+flows:
   scopes:
     - global
-    - project
+    - workspace
     - agent:researcher
 
 delegation:
