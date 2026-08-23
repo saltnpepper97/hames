@@ -238,6 +238,8 @@ class EvolutionManager:
         skill_scars, skill_emitted = await self._skill_regressions(session, run_id, events)
         created.extend(skill_scars)
         pending.extend(skill_emitted)
+        for index, opened in enumerate(created):
+            created[index] = await self._auto_route(session, opened)
         guard_events = await self._update_guards(session, run_id, events, terminal, task_text)
         pending.extend(guard_events)
         await self._publish(pending)
@@ -312,6 +314,16 @@ class EvolutionManager:
                 )
                 pending_events.extend(healed_mutation.events)
         return pending_events
+
+    async def _auto_route(self, session: Session, scar: Scar) -> Scar:
+        """Route a freshly opened scar to its repair; unroutable scars stay open."""
+        if scar.status != "open":
+            return scar
+        try:
+            routed, _ = await self.propose_repair(session.id, scar.id)
+        except ValueError:
+            return scar
+        return routed
 
     async def _requeue_repair(self, session: Session, scar: Scar) -> list[Event]:
         """Open a fresh repair candidate version for an autonomously repairable scar."""
@@ -423,8 +435,9 @@ class EvolutionManager:
         if scar.status == "regressed":
             requeued = await self._requeue_repair(session, scar)
             events = (*events, *requeued)
+            scar = await asyncio.to_thread(self.store.get, scar.id)
         await self._publish(events)
-        return scar
+        return await self._auto_route(session, scar)
 
     async def _conversational_correction(
         self,

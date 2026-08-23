@@ -421,7 +421,7 @@ async def test_explicit_correction_opens_scar_and_deduplicates(
         content="the milestone file is docs/plan.md",
         target_event_id=target.id,
     )
-    assert scar.status == "open"
+    assert scar.status == "guarded"
     assert scar.severity == "high"
     assert scar.detection == "explicit_correction"
     assert target.id in scar.evidence_event_ids
@@ -430,12 +430,16 @@ async def test_explicit_correction_opens_scar_and_deduplicates(
     ]
     assert len(correction_events) == 1
     assert correction_events[0].payload["target_event_id"] == target.id
+    memories = manager.memory.list_visible(session, layer="semantic")
+    assert any("docs/plan.md" in record.summary for record in memories)
 
     again = await manager.submit_correction(
         session.id, content="THE MILESTONE FILE IS docs/plan.md"
     )
     assert again.id == scar.id
-    assert again.last_triggered_at >= scar.last_triggered_at
+    assert again.status == "guarded"
+    assert again.regression_count == 1
+    assert len(manager.store.repairs_for_scar(scar.id)) == 2
 
 
 async def test_conversational_correction_creates_one_scar(
@@ -447,12 +451,13 @@ async def test_conversational_correction_creates_one_scar(
     _run_with_assistant(ledger, session, "run-1", "Actually that output was wrong")
     created = await manager.observe_run(session.id, "run-1")
     assert len(created) == 1
-    assert created[0].status == "open"
+    assert created[0].status == "guarded"
     assert created[0].detection == "conversational_correction"
 
     _run_with_assistant(ledger, session, "run-2", "actually that output was wrong")
     second = await manager.observe_run(session.id, "run-2")
-    assert second == []
+    assert [scar.id for scar in second] == [created[0].id]
+    assert second[0].regression_count == 1
     scars = manager.store.list_scars(session)
     assert len(scars) == 1
 
@@ -479,7 +484,7 @@ async def test_repeated_failures_open_scar_after_threshold(
 
     _failed_run(ledger, session, "run-4", "do thing 4")
     again = await manager.observe_run(session.id, "run-4")
-    assert again == []
+    assert [scar.id for scar in again] == []
     assert len(manager.store.list_scars(session)) == 2
     triggered = [
         event for event in ledger.list_events(session.id) if event.type == "scar.triggered"
@@ -652,11 +657,9 @@ async def test_memory_repair_auto_promotes_and_guards(
     manager, store = _manager(hames_paths, ledger, tmp_path)
     session = _session(ledger, tmp_path)
     scar = await manager.submit_correction(session.id, content="always cite the docs/plan.md file")
-    assert scar.status == "open"
+    assert scar.status == "guarded"
+    assert scar.repair_layer == "semantic_memory"
 
-    routed, repair = await manager.propose_repair(session.id, scar.id)
-    assert repair.repair_layer == "semantic_memory"
-    assert routed.status == "guarded"
     memories = manager.memory.list_visible(session, layer="semantic")
     assert any("docs/plan.md" in record.summary for record in memories)
 
@@ -741,6 +744,30 @@ class _ScriptedProvider:
         return None
 
 
+def _open_scar(
+    manager: EvolutionManager, store: ScarStore, ledger: Ledger, session: Session, content: str
+) -> Scar:
+    evidence = ledger.append(
+        session_id=session.id,
+        agent_id=session.agent_id,
+        event_type="user.message",
+        payload={"content": content},
+    )
+    mutation = store.record_candidate(
+        session=session,
+        title=f"Correction: {content[:60]}",
+        severity="high",
+        failure_signature=f"explicit-correction:{content.casefold()[:120]}",
+        description=content,
+        expected_behavior="Hames must incorporate this correction.",
+        evidence_event_ids=[evidence.id],
+        detection="explicit_correction",
+        causation_id=evidence.id,
+    )
+    store.open(session=session, scar_id=mutation.scar.id, reason="evidence sufficient")
+    return store.get(mutation.scar.id)
+
+
 async def test_failing_model_evaluation_rejects_repair(
     hames_paths: HamesPaths, tmp_path: Path
 ) -> None:
@@ -749,7 +776,7 @@ async def test_failing_model_evaluation_rejects_repair(
     ledger = Ledger.open(hames_paths.database)
     manager, store = _manager(hames_paths, ledger, tmp_path)
     session = _session(ledger, tmp_path)
-    scar = await manager.submit_correction(session.id, content="cite docs/architecture.md")
+    scar = _open_scar(manager, store, ledger, session, "cite docs/architecture.md")
     _, repair = await manager.propose_repair(session.id, scar.id, layer_override="context_rule")
 
     evaluator = RepairEvaluator(
@@ -793,7 +820,7 @@ async def test_passing_authority_changing_repair_waits_for_approval(
     ledger = Ledger.open(hames_paths.database)
     manager, store = _manager(hames_paths, ledger, tmp_path)
     session = _session(ledger, tmp_path)
-    scar = await manager.submit_correction(session.id, content="always cite the runbook file")
+    scar = _open_scar(manager, store, ledger, session, "always cite the runbook file")
     _, repair = await manager.propose_repair(session.id, scar.id, layer_override="context_rule")
     evaluator = RepairEvaluator(
         ledger=ledger,
@@ -867,7 +894,7 @@ async def test_exhausted_evolution_budget_skips_model_eval(
         memory=manager.memory,
         skills=manager.skills,
     )
-    scar = await manager.submit_correction(session.id, content="budget test correction")
+    scar = _open_scar(manager, store, ledger, session, "budget test correction")
     _, repair = await manager.propose_repair(session.id, scar.id, layer_override="context_rule")
     report = await evaluator.evaluate(session.id, repair.id)
     assert "model" not in report
@@ -977,7 +1004,7 @@ async def test_model_evaluation_runs_under_budget_and_records_usage(
         skills=manager.skills,
     )
     session = _session(ledger, tmp_path)
-    scar = await manager.submit_correction(session.id, content="always answer in plain english")
+    scar = _open_scar(manager, store, ledger, session, "always answer in plain english")
     _, repair = await manager.propose_repair(session.id, scar.id, layer_override="context_rule")
     report = await evaluator.evaluate(session.id, repair.id)
     assert "model" in report
@@ -1041,8 +1068,7 @@ async def test_guarded_scar_heals_after_threshold_of_clean_runs(
     manager, store = _manager(hames_paths, ledger, tmp_path)
     session = _session(ledger, tmp_path)
     scar = await manager.submit_correction(session.id, content="cite docs/architecture.md")
-    routed, _ = await manager.propose_repair(session.id, scar.id)
-    assert routed.status == "guarded"
+    assert scar.status == "guarded"
 
     for index in range(config.evolution.healing_threshold):
         _run_with_assistant(ledger, session, f"clean-{index}", f"normal task {index}")
@@ -1060,17 +1086,19 @@ async def test_repeated_correction_after_repair_regresses_and_requeues(
     manager, store = _manager(hames_paths, ledger, tmp_path)
     session = _session(ledger, tmp_path)
     scar = await manager.submit_correction(session.id, content="always cite docs/plan.md")
-    routed, first_repair = await manager.propose_repair(session.id, scar.id)
-    assert routed.status == "guarded"
+    assert scar.status == "guarded"
+    first_repair = store.repairs_for_scar(scar.id)[0]
+    assert first_repair.version == 1
 
     again = await manager.submit_correction(session.id, content="ALWAYS cite docs/plan.md")
-    assert again.status == "regressed"
+    assert again.id == scar.id
+    assert again.status == "guarded"
     regressed_scar = store.get(scar.id)
     assert regressed_scar.regression_count == 1
     repairs = store.repairs_for_scar(scar.id)
     assert len(repairs) == 2
     assert repairs[0].version == 2
-    assert first_repair.version == 1
+    assert repairs[0].status == "promoted"
 
 
 def test_guarded_scars_injected_into_context_only_when_matching(

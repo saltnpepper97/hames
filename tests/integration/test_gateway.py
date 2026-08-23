@@ -1133,8 +1133,9 @@ async def test_correction_scar_and_rule_lifecycle_over_gateway(tmp_path: Path) -
             )
             assert corrected.status_code == 201
             scar = response_object(corrected)
-            assert scar["status"] == "open"
+            assert scar["status"] == "guarded"
             assert scar["detection"] == "explicit_correction"
+            assert scar["repair_layer"] == "semantic_memory"
             scar_id = str(scar["id"])
 
             listed = await client.get(f"/v1/sessions/{session_id}/scars", headers=headers)
