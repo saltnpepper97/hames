@@ -15,6 +15,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 AGENT_ID = re.compile(r"[a-z][a-z0-9-]{0,62}")
+READ_ONLY_TOOLS = frozenset({"read_file", "list_dir"})
 
 
 class AgentTools(BaseModel):
@@ -196,3 +197,15 @@ def load_agent(path: Path) -> AgentCapsule:
 def _validate_id(agent_id: str) -> None:
     if AGENT_ID.fullmatch(agent_id) is None:
         raise ValueError("agent ID must match [a-z][a-z0-9-]{0,62}")
+
+
+def permitted_tools(capsule: AgentCapsule, available: set[str]) -> frozenset[str]:
+    """Intersect a capsule's declared authority with the harness tool registry."""
+
+    permitted = set(available)
+    if capsule.metadata.authority == "read_only":
+        permitted.intersection_update(READ_ONLY_TOOLS)
+    if capsule.metadata.tools.allow:
+        permitted.intersection_update(capsule.metadata.tools.allow)
+    permitted.difference_update(capsule.metadata.tools.deny)
+    return frozenset(permitted)

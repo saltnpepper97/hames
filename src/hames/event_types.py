@@ -64,6 +64,8 @@ class ContextSourcePayload(EventPayload):
     truncation: str
     reason: str
     event_ids: list[str] = Field(default_factory=list)
+    origin: str = ""
+    source_path: str = ""
 
 
 class ContextCompiledPayload(EventPayload):
@@ -83,6 +85,10 @@ class ContextCompiledPayload(EventPayload):
     contributing_event_ids: list[str]
     request_hash: str
     request_snapshot_blob_hash: str
+    agent_id: str
+    agent_capsule_hash: str
+    agent_capsule_path: str
+    agent_origin: str = "global"
 
 
 class ModelRequestedPayload(EventPayload):

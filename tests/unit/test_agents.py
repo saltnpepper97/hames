@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from hames.agent import AgentRegistry, load_agent
+from hames.agent import AgentRegistry, load_agent, permitted_tools
 from hames.paths import HamesPaths
 
 
@@ -44,3 +44,17 @@ def test_retirement_preserves_capsule_outside_active_registry(hames_paths: Hames
     assert [item.id for item in registry.list()] == ["default"]
     with pytest.raises(ValueError, match="default"):
         registry.retire("default")
+
+
+def test_read_only_and_tool_lists_only_restrict_authority(tmp_path: Path) -> None:
+    path = tmp_path / "AGENT.md"
+    path.write_text(
+        "---\nid: reviewer\nname: Reviewer\nauthority: read_only\ntools:\n"
+        "  allow: [read_file, list_dir, write_file]\n---\nReview only.\n",
+        encoding="utf-8",
+    )
+    capsule = load_agent(path)
+    assert permitted_tools(capsule, {"read_file", "list_dir", "write_file", "shell"}) == {
+        "read_file",
+        "list_dir",
+    }

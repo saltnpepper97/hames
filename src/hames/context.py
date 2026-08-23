@@ -49,6 +49,8 @@ class SourceDecision(BaseModel):
     truncation: str = "none"
     reason: str = "selected"
     event_ids: list[str] = Field(default_factory=list)
+    origin: str = ""
+    source_path: str = ""
 
 
 class ContextManifest(BaseModel):
@@ -70,6 +72,10 @@ class ContextManifest(BaseModel):
     contributing_event_ids: list[str]
     request_hash: str = ""
     request_snapshot_blob_hash: str = ""
+    agent_id: str
+    agent_capsule_hash: str
+    agent_capsule_path: str
+    agent_origin: str = "global"
 
 
 class CompiledContext(BaseModel):
@@ -134,7 +140,12 @@ def compile_context(
     omitted: list[SourceDecision] = []
     for priority, (source_id, content) in enumerate(stable_parts, start=100):
         selected.append(_source(source_id, "instruction", content, priority))
-    selected.append(_source(agent_part[0], "agent", agent_part[1], 200))
+    agent_source = _source(
+        f"agent.{session.agent_id}.instructions", "agent", agent_part[1], 200
+    )
+    agent_source.origin = "global"
+    agent_source.source_path = str(capsule.path)
+    selected.append(agent_source)
     selected.append(_source("tool.schemas", "tools", encoded_tools, 150))
 
     fixed_tokens = stable_tokens + agent_tokens + tool_tokens
@@ -219,6 +230,9 @@ def compile_context(
             omitted_sources=omitted,
             source_order=[item.source_id for item in selected],
             contributing_event_ids=contributing,
+            agent_id=session.agent_id,
+            agent_capsule_hash=capsule.content_hash,
+            agent_capsule_path=str(capsule.path),
         ),
     )
 

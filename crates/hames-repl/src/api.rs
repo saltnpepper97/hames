@@ -150,6 +150,8 @@ pub struct ContextSource {
     pub truncation: String,
     pub reason: String,
     pub event_ids: Vec<String>,
+    pub origin: String,
+    pub source_path: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -170,6 +172,10 @@ pub struct ContextManifest {
     pub contributing_event_ids: Vec<String>,
     pub request_hash: String,
     pub request_snapshot_blob_hash: String,
+    pub agent_id: String,
+    pub agent_capsule_hash: String,
+    pub agent_capsule_path: String,
+    pub agent_origin: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

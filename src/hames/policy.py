@@ -81,7 +81,15 @@ class PolicyGate:
         tool_name: str,
         arguments: ToolArguments,
         context: ToolContext,
+        *,
+        allowed_tools: frozenset[str] | None = None,
     ) -> PolicyDecision:
+        if allowed_tools is not None and tool_name not in allowed_tools:
+            return PolicyDecision(
+                PolicyDecisionKind.DENY,
+                "the active agent is not allowed to use this tool",
+                "agent_scope",
+            )
         if isinstance(arguments, WorkspaceArguments):
             path_value = getattr(arguments, "path", None)
             if isinstance(path_value, str):

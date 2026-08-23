@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from hames.agent import load_agent
+from hames.agent import load_agent, permitted_tools
 from hames.broker import EventBroker
 from hames.config import HamesConfig
 from hames.context import ContextBudgetError, canonical_request_snapshot, compile_context
@@ -105,6 +105,7 @@ class ModelTurn:
     request_event_id: str
     finish_reason: str
     tool_calls: list[ToolInvocation]
+    allowed_tools: frozenset[str]
 
 
 class RunManager:
@@ -344,7 +345,9 @@ class RunManager:
                 if tool_count >= limits.max_tool_calls_per_run:
                     raise RunFailure("tool_call_limit", "run tool-call limit was exhausted")
                 tool_count += 1
-                await self._handle_tool(run_id, session, invocation, context, clock)
+                await self._handle_tool(
+                    run_id, session, invocation, context, clock, turn.allowed_tools
+                )
 
     async def _model_turn(
         self, run_id: str, session: Session, initial_causation_id: str | None
@@ -356,7 +359,8 @@ class RunManager:
             load_agent, self.paths.agents / session.agent_id / "AGENT.md"
         )
         history = await asyncio.to_thread(self.ledger.replay, session.id)
-        definitions = self.tools.definitions()
+        allowed_tools = permitted_tools(capsule, set(self.tools.names()))
+        definitions = self.tools.definitions(allowed_tools)
         context = compile_context(
             session,
             history,
@@ -513,7 +517,7 @@ class RunManager:
                 causation_id=request_event.id,
                 correlation_id=run_id,
             )
-            return ModelTurn(request_event.id, finish_reason, invocations)
+            return ModelTurn(request_event.id, finish_reason, invocations, allowed_tools)
         except asyncio.CancelledError:
             await self._persist_output(
                 session,
@@ -556,6 +560,7 @@ class RunManager:
         invocation: ToolInvocation,
         context: ToolContext,
         clock: ActiveClock,
+        allowed_tools: frozenset[str],
     ) -> None:
         requested = await self._append(
             session_id=session.id,
@@ -598,7 +603,9 @@ class RunManager:
             causation_id=requested.id,
             correlation_id=run_id,
         )
-        decision = self.policy.decide(invocation.name, arguments, context)
+        decision = self.policy.decide(
+            invocation.name, arguments, context, allowed_tools=allowed_tools
+        )
         policy_decided = await self._append(
             session_id=session.id,
             run_id=run_id,

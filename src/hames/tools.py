@@ -364,11 +364,18 @@ class ToolRegistry:
         ]
         self._tools = {tool.name: tool for tool in values}
 
-    def definitions(self) -> list[ToolDefinition]:
-        return [tool.definition() for tool in self._tools.values()]
+    def definitions(self, allowed: frozenset[str] | None = None) -> list[ToolDefinition]:
+        return [
+            tool.definition()
+            for tool in self._tools.values()
+            if allowed is None or tool.name in allowed
+        ]
 
     def get(self, name: str) -> ToolBase | None:
         return self._tools.get(name)
+
+    def names(self) -> set[str]:
+        return set(self._tools)
 
     def validate(self, name: str, arguments: dict[str, JsonValue]) -> ToolArguments:
         tool = self.get(name)
