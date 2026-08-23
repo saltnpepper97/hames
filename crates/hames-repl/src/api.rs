@@ -494,6 +494,15 @@ impl GatewayClient {
         decode(self.get("/v1/health").send().await?).await
     }
 
+    pub async fn token_accepted(&self) -> Result<bool> {
+        let response = self.get("/v1/providers").send().await?;
+        if response.status() == StatusCode::UNAUTHORIZED {
+            return Ok(false);
+        }
+        ensure_success(response).await?;
+        Ok(true)
+    }
+
     pub async fn providers(&self) -> Result<Vec<ProviderProfile>> {
         decode(self.get("/v1/providers").send().await?).await
     }
@@ -1015,7 +1024,7 @@ async fn ensure_success(response: Response) -> Result<Response> {
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
     if status == StatusCode::UNAUTHORIZED {
-        bail!("gateway rejected its local token; remove stale runtime state and restart")
+        bail!("gateway rejected this Hames home's token; another gateway may be using the port")
     }
     bail!("gateway returned {status}: {body}")
 }

@@ -107,6 +107,113 @@ def is_owned_gateway_process(pid: int) -> bool:
     return b"hames.cli" in command and b"serve" in command
 
 
+def _loopback_listen_inodes(port: int) -> set[int]:
+    inodes: set[int] = set()
+    tables = (
+        (Path("/proc/net/tcp"), {"0100007F"}),
+        (
+            Path("/proc/net/tcp6"),
+            {"00000000000000000000000001000000", "0000000000000000FFFF00000100007F"},
+        ),
+    )
+    port_hex = f"{port:04X}"
+    for table, loopbacks in tables:
+        try:
+            lines = table.read_text(encoding="utf-8").splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 10:
+                continue
+            local = fields[1]
+            state = fields[3]
+            if state != "0A" or ":" not in local:
+                continue
+            ip_hex, port_field = local.split(":", 1)
+            if port_field.upper() != port_hex or ip_hex.upper() not in loopbacks:
+                continue
+            try:
+                inodes.add(int(fields[9]))
+            except ValueError:
+                continue
+    return inodes
+
+
+def loopback_listener_pid(port: int) -> int | None:
+    """Return the PID listening on loopback `port`, if it can be identified."""
+    inodes = _loopback_listen_inodes(port)
+    if not inodes:
+        return None
+    proc = Path("/proc")
+    try:
+        entries = list(proc.iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        fd_dir = entry / "fd"
+        try:
+            for handle in fd_dir.iterdir():
+                try:
+                    target = handle.readlink()
+                except OSError:
+                    continue
+                text = os.fspath(target)
+                if not text.startswith("socket:[") or not text.endswith("]"):
+                    continue
+                try:
+                    inode = int(text[8:-1])
+                except ValueError:
+                    continue
+                if inode in inodes:
+                    return int(entry.name)
+        except OSError:
+            continue
+    return None
+
+
+def hames_listener_pid(port: int) -> int | None:
+    pid = loopback_listener_pid(port)
+    if pid is not None and is_owned_gateway_process(pid):
+        return pid
+    return None
+
+
+def _token_accepted(paths: HamesPaths, url: str) -> bool:
+    try:
+        token = paths.read_gateway_token()
+    except OSError:
+        return False
+    if not token:
+        return False
+    try:
+        response = httpx.get(
+            f"{url}/v1/providers",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=0.75,
+        )
+    except httpx.HTTPError:
+        return False
+    return response.status_code == 200
+
+
+def _compatible_gateway(status: GatewayProcessStatus) -> bool:
+    return status.protocol_version == PROTOCOL_VERSION and status.version == __version__
+
+
+def _terminate_pid(pid: int, wait_seconds: float) -> None:
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + wait_seconds
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+
+
 def gateway_status(paths: HamesPaths) -> GatewayProcessStatus:
     config = load_config(paths)
     url = gateway_url(config)
@@ -146,14 +253,21 @@ def serve(paths: HamesPaths) -> None:
 
 def start(paths: HamesPaths, *, wait_seconds: float = 10.0) -> GatewayProcessStatus:
     paths.ensure_foundation()
+    config = load_config(paths)
     current = gateway_status(paths)
+    if current.healthy and _compatible_gateway(current) and _token_accepted(paths, current.url):
+        return current
     if current.healthy:
-        if current.protocol_version == PROTOCOL_VERSION and current.version == __version__:
-            return current
-        if current.pid is None or not is_owned_gateway_process(current.pid):
+        occupier = current.pid
+        if occupier is None:
+            occupier = hames_listener_pid(config.gateway.port)
+        if occupier is None or not is_owned_gateway_process(occupier):
             raise RuntimeError("incompatible process is using the configured gateway port")
-        stop(paths, wait_seconds=wait_seconds)
+        _terminate_pid(occupier, wait_seconds)
+        paths.gateway_pid.unlink(missing_ok=True)
     log_handle = (paths.logs / "gateway-bootstrap.log").open("ab")
+    child_env = os.environ.copy()
+    child_env["HAMES_HOME"] = str(paths.root)
     try:
         subprocess.Popen(
             [sys.executable, "-m", "hames.cli", "serve"],
@@ -162,6 +276,7 @@ def start(paths: HamesPaths, *, wait_seconds: float = 10.0) -> GatewayProcessSta
             stderr=subprocess.STDOUT,
             start_new_session=True,
             close_fds=True,
+            env=child_env,
         )
     finally:
         log_handle.close()
@@ -171,7 +286,8 @@ def start(paths: HamesPaths, *, wait_seconds: float = 10.0) -> GatewayProcessSta
         if status.healthy:
             if status.protocol_version != PROTOCOL_VERSION:
                 raise RuntimeError("gateway protocol version does not match this installation")
-            return status
+            if _token_accepted(paths, status.url):
+                return status
         time.sleep(0.05)
     raise RuntimeError(
         f"gateway did not become healthy; see {paths.logs / 'gateway-bootstrap.log'}"
@@ -185,10 +301,6 @@ def stop(paths: HamesPaths, *, wait_seconds: float = 10.0) -> GatewayProcessStat
         return status
     if not is_owned_gateway_process(status.pid):
         raise RuntimeError("gateway PID file does not identify an owned Hames gateway process")
-    os.kill(status.pid, signal.SIGTERM)
-    deadline = time.monotonic() + wait_seconds
-    while time.monotonic() < deadline:
-        if read_pid(paths) is None:
-            break
-        time.sleep(0.05)
+    _terminate_pid(status.pid, wait_seconds)
+    paths.gateway_pid.unlink(missing_ok=True)
     return gateway_status(paths)

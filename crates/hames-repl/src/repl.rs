@@ -133,20 +133,30 @@ fn make_history_private(_: &std::path::Path) -> Result<()> {
 
 pub(crate) async fn ensure_gateway(paths: &LocalPaths) -> Result<()> {
     let url = paths.gateway_url()?;
-    if let Ok(health) = GatewayClient::health_unauthenticated(&url).await
-        && health.status == "ok"
-        && health.protocol_version == PROTOCOL_VERSION
-    {
+    if gateway_accepts_local_token(paths, &url).await? {
         return Ok(());
     }
     start_backend()?;
-    let health = GatewayClient::health_unauthenticated(&url)
-        .await
-        .context("gateway did not become reachable")?;
-    if health.protocol_version != PROTOCOL_VERSION {
-        bail!("started gateway has incompatible protocol version")
+    if gateway_accepts_local_token(paths, &url).await? {
+        return Ok(());
     }
-    Ok(())
+    bail!(
+        "gateway on {url} rejected {}; stop the Hames process occupying that port and retry",
+        paths.token.display()
+    )
+}
+
+async fn gateway_accepts_local_token(paths: &LocalPaths, url: &str) -> Result<bool> {
+    let Ok(health) = GatewayClient::health_unauthenticated(url).await else {
+        return Ok(false);
+    };
+    if health.status != "ok" || health.protocol_version != PROTOCOL_VERSION {
+        return Ok(false);
+    }
+    if !paths.token.exists() {
+        return Ok(false);
+    }
+    GatewayClient::from_paths(paths)?.token_accepted().await
 }
 
 fn read_input(editor: &mut DefaultEditor) -> Result<Option<String>> {
