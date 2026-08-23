@@ -193,6 +193,15 @@ async fn handle_command(
             ensure_trust(client, editor, session).await?;
             println!("new session {}", session.id);
         }
+        "/clear" => {
+            *session = client
+                .create_session(cwd, &session.agent_id, provider, model, reasoning)
+                .await?;
+            ensure_trust(client, editor, session).await?;
+            print!("\x1b[2J\x1b[H");
+            io::stdout().flush()?;
+            println!("fresh session {}", session.id);
+        }
         "/sessions" => {
             for item in client.sessions().await? {
                 println!(
@@ -256,35 +265,22 @@ async fn handle_command(
                 session.fork_event_id.as_deref().unwrap_or("unknown event")
             );
         }
-        "/fork-agent" => {
-            let agent_id = parts
-                .get(1)
-                .context("usage: /fork-agent <agent-id> [event-id-or-sequence]")?;
-            *session = client
-                .fork_session(&session.id, parts.get(2).copied(), Some(agent_id))
-                .await?;
-            *provider = session.provider.clone();
-            *model = session.model.clone();
-            *reasoning = session.reasoning_effort.clone();
-            ensure_trust(client, editor, session).await?;
-            println!(
-                "forked session {} as agent {}",
-                session.id, session.agent_id
-            );
-        }
         "/agent" => {
             if let Some(agent_id) = parts.get(1) {
-                *session = client
-                    .create_session(cwd, agent_id, provider, model, reasoning)
-                    .await?;
-                ensure_trust(client, editor, session).await?;
-                println!(
-                    "started fresh session {} as agent {}",
-                    session.id, session.agent_id
-                );
+                *session = client.update_session_agent(&session.id, agent_id).await?;
+                println!("next turn will use agent {}", session.agent_id);
             } else {
+                println!("active agent: {}", session.agent_id);
                 for agent in client.agents().await? {
-                    println!("{:<20} {:<10} {}", agent.id, agent.authority, agent.name);
+                    let active = if agent.id == session.agent_id {
+                        "*"
+                    } else {
+                        " "
+                    };
+                    println!(
+                        "{active} {:<20} {:<10} {}",
+                        agent.id, agent.authority, agent.name
+                    );
                 }
             }
         }
@@ -1005,8 +1001,8 @@ impl SseDecoder {
 
 fn print_help() {
     println!(
-        "/help\n/new\n/session\n/sessions\n/resume <id>\n/events [count]\n\
-         /fork [event-id-or-sequence]\n/fork-agent <agent-id> [event-id-or-sequence]\n/agent [agent-id]\n/project\n/trust [status|revoke]\n\
+        "/help\n/new\n/clear\n/session\n/sessions\n/resume <id>\n/events [count]\n\
+         /fork [event-id-or-sequence]\n/agent [agent-id]\n/project\n/trust [status|revoke]\n\
          /provider [provider] [model]\n/model\n/reasoning [default|off|on|level]\n\
          /usage\n/inspect [run-id]\n/context [context-event-id]\n\
          /export <path> [markdown|jsonl]\n/status\n/cancel (Ctrl-C during a run)\n/quit"

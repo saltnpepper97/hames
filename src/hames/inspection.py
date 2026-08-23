@@ -89,8 +89,8 @@ def agent_usage(ledger: Ledger, agent_id: str) -> AgentUsageProjection:
     events = [
         event
         for session in ledger.list_sessions()
-        if session.agent_id == agent_id
         for event in ledger.list_events(session.id)
+        if event.agent_id == agent_id
     ]
     usage = _usage(events)
     tool_events = [

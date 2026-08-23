@@ -588,6 +588,28 @@ class Ledger:
             connection.commit()
         return self.get_session(session_id)
 
+    def update_session_agent(self, session_id: str, *, agent_id: str) -> Session:
+        """Select the capsule for future turns without changing historical attribution."""
+
+        with self._write_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "UPDATE sessions SET agent_id = ? WHERE id = ? AND status = 'open'",
+                (agent_id, session_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(session_id)
+            self._append_on_connection(
+                connection,
+                session_id=session_id,
+                agent_id=agent_id,
+                event_type="session.agent.changed",
+                payload={"agent_id": agent_id},
+                correlation_id=session_id,
+            )
+            connection.commit()
+        return self.get_session(session_id)
+
     def _event_from_row(self, row: sqlite3.Row) -> Event:
         values = dict(row)
         payload_json = values.pop("payload_json")

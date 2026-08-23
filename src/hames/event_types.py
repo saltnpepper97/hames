@@ -44,6 +44,10 @@ class SessionSettingsPayload(EventPayload):
     context_window_source: str = "fallback"
 
 
+class SessionAgentChangedPayload(EventPayload):
+    agent_id: str
+
+
 class MessagePayload(EventPayload):
     content: str
 
@@ -248,6 +252,7 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "session.closed": SessionClosedPayload,
     "session.forked": SessionForkedPayload,
     "session.settings.changed": SessionSettingsPayload,
+    "session.agent.changed": SessionAgentChangedPayload,
     "user.message": MessagePayload,
     "assistant.message": AssistantOutputPayload,
     "assistant.reasoning": AssistantOutputPayload,

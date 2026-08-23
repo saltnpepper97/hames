@@ -66,6 +66,10 @@ class UpdateSessionRequest(ApiModel):
     reasoning_effort: str = ""
 
 
+class UpdateSessionAgentRequest(ApiModel):
+    agent_id: str
+
+
 class RunAccepted(ApiModel):
     run_id: str
 
@@ -526,6 +530,20 @@ def create_app(state: GatewayState) -> FastAPI:
             )
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+
+    @app.put("/v1/sessions/{session_id}/agent", dependencies=auth, response_model=Session)
+    async def update_session_agent(session_id: str, request: UpdateSessionAgentRequest) -> Session:
+        if state.runs.is_session_active(session_id):
+            raise ApiError(409, "session_run_active", "cannot change agent during an active run")
+        try:
+            await asyncio.to_thread(state.agents.load, request.agent_id)
+            return await asyncio.to_thread(
+                state.ledger.update_session_agent, session_id, agent_id=request.agent_id
+            )
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+        except (FileNotFoundError, ValueError) as exc:
+            raise ApiError(400, "unknown_agent", str(exc)) from exc
 
     @app.get("/v1/sessions/{session_id}/events", dependencies=auth, response_model=list[Event])
     async def list_events(session_id: str, after_sequence: int = 0) -> list[Event]:

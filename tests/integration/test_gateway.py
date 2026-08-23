@@ -53,7 +53,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 6
+            assert health_body["protocol_version"] == 7
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -609,6 +609,67 @@ async def test_runtime_delegates_with_an_explicit_task_card(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_agent_selection_changes_only_future_turns(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    fake = FakeProvider(
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="first"),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="second"),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
+    )
+    state = GatewayState.create(paths, providers={"fake": fake})
+    state.agents.create("reviewer", "Reviewer", authority="read_only")
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.post(
+                f"/v1/sessions/{session_id}/messages", headers=headers, json={"content": "one"}
+            )
+            await _wait_for_event(client, headers, session_id, "run.completed")
+            changed = await client.put(
+                f"/v1/sessions/{session_id}/agent",
+                headers=headers,
+                json={"agent_id": "reviewer"},
+            )
+            assert response_object(changed)["agent_id"] == "reviewer"
+            await client.post(
+                f"/v1/sessions/{session_id}/messages", headers=headers, json={"content": "two"}
+            )
+            events = await _wait_for_event(
+                client, headers, session_id, "run.completed", occurrences=2
+            )
+            messages = [event for event in events if event["type"] == "assistant.message"]
+            assert messages[0]["agent_id"] == "default"
+            assert messages[-1]["agent_id"] == "reviewer"
+            changed_event = next(
+                event for event in events if event["type"] == "session.agent.changed"
+            )
+            assert changed_event["agent_id"] == "reviewer"
+            contexts = [event for event in events if event["type"] == "context.compiled"]
+            assert contexts[-1]["payload"]["agent_id"] == "reviewer"  # type: ignore[index]
+            assert [tool.name for tool in fake.requests[-1].tools] == ["read_file", "list_dir"]
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
 async def test_trust_gate_persists_exact_root_and_can_be_revoked(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
@@ -829,12 +890,13 @@ async def _wait_for_event(
     headers: dict[str, str],
     session_id: str,
     event_type: str,
+    occurrences: int = 1,
 ) -> list[dict[str, JsonValue]]:
     events: list[dict[str, JsonValue]] = []
     for _ in range(100):
         response = await client.get(f"/v1/sessions/{session_id}/events", headers=headers)
         events = EVENT_LIST.validate_python(cast(object, response.json()))
-        if any(event["type"] == event_type for event in events):
+        if sum(event["type"] == event_type for event in events) >= occurrences:
             return events
         await asyncio.sleep(0.01)
     raise AssertionError(f"event did not arrive: {event_type}")
