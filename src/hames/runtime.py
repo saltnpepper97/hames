@@ -165,6 +165,12 @@ class RunManager:
     def is_session_active(self, session_id: str) -> bool:
         return session_id in self._session_runs
 
+    def is_working_directory_active(self, working_directory: str) -> bool:
+        return any(
+            self.ledger.get_session(session_id).working_directory == working_directory
+            for session_id in self._session_runs
+        )
+
     @property
     def active_run_count(self) -> int:
         return len(self._tasks)
@@ -764,8 +770,9 @@ class RunManager:
 
     def _prune_scratch(self) -> None:
         if self._scratch_base.exists():
+            stale_before = time.time() - 86_400
             for child in self._scratch_base.iterdir():
-                if child.is_dir():
+                if child.is_dir() and child.stat().st_mtime < stale_before:
                     shutil.rmtree(child, ignore_errors=True)
 
     def _remove_scratch(self, workspace: Path) -> None:

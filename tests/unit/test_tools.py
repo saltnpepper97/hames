@@ -84,7 +84,9 @@ async def test_paths_cannot_escape_and_large_results_use_blobs(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_shell_captures_channels_and_times_out(tmp_path: Path) -> None:
+async def test_shell_captures_channels_filters_secrets_and_times_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     context = tool_context(tmp_path, shell_timeout_seconds=0.05, shell_max_timeout_seconds=1)
     completed = await ShellTool().execute(
         context,
@@ -93,6 +95,13 @@ async def test_shell_captures_channels_and_times_out(tmp_path: Path) -> None:
     assert completed.status == "completed"
     assert completed.structured_data["stdout"] == "out"
     assert completed.structured_data["stderr"] == "err"
+
+    monkeypatch.setenv("FIXTURE_API_TOKEN", "must-not-cross-tool-boundary")
+    filtered = await ShellTool().execute(
+        context,
+        ShellArguments(command='printf "%s" "${FIXTURE_API_TOKEN-unset}"', timeout_seconds=1),
+    )
+    assert filtered.structured_data["stdout"] == "unset"
 
     timed_out = await ShellTool().execute(context, ShellArguments(command="sleep 5"))
     assert timed_out.status == "failed"
@@ -113,6 +122,10 @@ def test_policy_classifies_safe_dangerous_and_protected_actions(tmp_path: Path) 
     assert (
         gate.decide("shell", ShellArguments(command="cat ~/.hames/config.toml"), context).decision
         is PolicyDecisionKind.DENY
+    )
+    assert (
+        gate.decide("shell", ShellArguments(command="cat /etc/passwd"), context).decision
+        is PolicyDecisionKind.REQUIRE_CONFIRMATION
     )
 
 

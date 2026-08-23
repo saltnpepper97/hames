@@ -393,8 +393,8 @@ def create_app(state: GatewayState) -> FastAPI:
     @app.delete("/v1/sessions/{session_id}/trust", dependencies=auth, response_model=TrustStatus)
     async def revoke_session_root(session_id: str) -> TrustStatus:
         session, existing = await session_trust(session_id)
-        if state.runs.is_session_active(session_id):
-            raise ApiError(409, "session_run_active", "cannot revoke trust during an active run")
+        if state.runs.is_working_directory_active(session.working_directory):
+            raise ApiError(409, "project_run_active", "cannot revoke trust during an active run")
         if existing is not None:
             await asyncio.to_thread(state.controls.revoke_trust, Path(session.working_directory))
             await asyncio.to_thread(

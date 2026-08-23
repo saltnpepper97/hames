@@ -303,6 +303,7 @@ class ShellTool(ToolBase):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
+                env=_shell_environment(),
             )
             if process.stdout is None or process.stderr is None:  # pragma: no cover
                 raise RuntimeError("shell pipes were not created")
@@ -399,6 +400,25 @@ def _kill_process_group(process: asyncio.subprocess.Process) -> None:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+
+
+def _shell_environment() -> dict[str, str]:
+    secret_markers = (
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "API_KEY",
+        "APIKEY",
+        "AUTH",
+        "CREDENTIAL",
+        "COOKIE",
+    )
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not any(marker in key.upper() for marker in secret_markers)
+    }
 
 
 def _atomic_write(path: Path, content: bytes) -> None:

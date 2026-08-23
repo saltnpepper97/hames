@@ -37,12 +37,16 @@ _DENIED_SHELL = (
         re.compile(r"(?:^|[\s'\"])(?:~?/)?\.(?:ssh|gnupg|aws)(?:[/\s'\"]|$)"),
         "credential store access",
     ),
+    (
+        re.compile(r"(?:^|[\s'\"])(?:~?/)?\.(?:kube|env)(?:[/\s'\"]|$)"),
+        "secret configuration access",
+    ),
 )
 
 _CONFIRM_SHELL = (
     (
-        re.compile(r"\brm\s+(?:-[^\s]*r[^\s]*f|-[^\s]*f[^\s]*r)\b", re.I),
-        "recursive forced deletion",
+        re.compile(r"\brm\b[^\n;&|]*\s(?:-[A-Za-z]*r[A-Za-z]*|--recursive)(?:\s|$)", re.I),
+        "recursive deletion",
     ),
     (
         re.compile(r"\bgit\s+(?:reset\s+--hard|clean\s+-[^\s]*f|push\b[^\n]*--force)", re.I),
@@ -64,6 +68,8 @@ _SECRET_NAMES = {
     "credentials",
     "credentials.json",
 }
+
+_OUTSIDE_PATH = re.compile(r"(?<![\w$])/(?:home|root|etc|var|opt|srv|mnt|media)/[^\s'\";&|]+")
 
 
 class PolicyGate:
@@ -109,6 +115,21 @@ class PolicyGate:
             for pattern, reason in _CONFIRM_SHELL:
                 if pattern.search(arguments.command):
                     return PolicyDecision(PolicyDecisionKind.REQUIRE_CONFIRMATION, reason, "high")
+            workspace_root = context.root_for(arguments.workspace).resolve(strict=True)
+            for raw_path in _OUTSIDE_PATH.findall(arguments.command):
+                candidate = Path(raw_path).expanduser().resolve(strict=False)
+                if candidate != workspace_root and not candidate.is_relative_to(workspace_root):
+                    return PolicyDecision(
+                        PolicyDecisionKind.REQUIRE_CONFIRMATION,
+                        "command references a path outside the trusted workspace",
+                        "outside_workspace",
+                    )
+            if re.search(r"(?:^|[\s'\"])(?:\.\./)+", arguments.command):
+                return PolicyDecision(
+                    PolicyDecisionKind.REQUIRE_CONFIRMATION,
+                    "command contains parent-directory traversal",
+                    "outside_workspace",
+                )
 
         return PolicyDecision(PolicyDecisionKind.ALLOW, "allowed by trusted-root policy")
 
