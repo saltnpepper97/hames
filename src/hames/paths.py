@@ -85,7 +85,14 @@ class HamesPaths:
     def ensure_foundation(self) -> None:
         """Create only the directories and files required by M0."""
 
-        for directory in (self.root, self.agents, self.agents / "default", self.logs, self.runtime):
+        for directory in (
+            self.root,
+            self.agents,
+            self.agents / "default",
+            self.skills,
+            self.logs,
+            self.runtime,
+        ):
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
             directory.chmod(0o700)
 

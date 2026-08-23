@@ -35,9 +35,9 @@ def _candidate(
 
 
 def test_memory_schema_has_fts5_and_is_migration_seven(tmp_path: Path) -> None:
-    database = Database(tmp_path / "memory.db")
+    database = Database(tmp_path / "memory.db", migrations=MIGRATIONS[:7])
     database.migrate()
-    assert len(MIGRATIONS) == 7
+    assert MIGRATIONS[6].id == 7
     with database.connect() as connection:
         tables = {
             str(row["name"])
@@ -51,8 +51,8 @@ def test_memory_schema_has_fts5_and_is_migration_seven(tmp_path: Path) -> None:
 def test_migration_seven_upgrades_an_m5_database(tmp_path: Path) -> None:
     path = tmp_path / "m5.db"
     Database(path, migrations=MIGRATIONS[:6]).migrate()
-    Database(path).migrate()
-    with Database(path).connect() as connection:
+    Database(path, migrations=MIGRATIONS[:7]).migrate()
+    with Database(path, migrations=MIGRATIONS[:7]).connect() as connection:
         assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 7
         assert connection.execute("SELECT count(*) FROM memory_records").fetchone()[0] == 0
 

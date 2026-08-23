@@ -333,6 +333,119 @@ class MemoryPromotionPayload(EventPayload):
     visibility: str
 
 
+class SkillVersionPayload(EventPayload):
+    skill_id: str
+    version_id: str
+    slug: str
+    version: int
+    content_hash: str
+    scope: str
+    status: str
+    evidence_event_ids: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class SkillTransitionPayload(EventPayload):
+    skill_id: str
+    version_id: str
+    reason: str
+    replacement_version_id: str | None = None
+
+
+class SkillRollbackPayload(EventPayload):
+    skill_id: str
+    from_version_id: str
+    to_version_id: str
+    reason: str
+
+
+class SkillJobPayload(EventPayload):
+    job_id: str
+    kind: str
+    status: str
+    attempts: int
+    target_skill_id: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+class SkillAuthoringPayload(EventPayload):
+    goal: str
+    scope: str
+    target_skill_id: str | None = None
+    evidence_event_ids: list[str] = Field(default_factory=list)
+
+
+class SkillWorkflowPayload(EventPayload):
+    run_id: str
+    fingerprint: str
+    tool_sequence: list[str]
+    outcome: str
+    similar_run_ids: list[str] = Field(default_factory=list)
+
+
+class SkillCatalogueItemPayload(EventPayload):
+    skill_id: str
+    version_id: str
+    slug: str
+    version: int
+    content_hash: str
+    scope: str
+    score: float
+
+
+def _empty_skill_catalogue() -> list[SkillCatalogueItemPayload]:
+    return []
+
+
+class SkillCataloguedPayload(EventPayload):
+    query_hash: str
+    skills: list[SkillCatalogueItemPayload] = Field(default_factory=_empty_skill_catalogue)
+
+
+class SkillLoadedPayload(EventPayload):
+    skill_id: str
+    version_id: str
+    slug: str
+    version: int
+    content_hash: str
+    reason: str
+    score: float = 0.0
+
+
+class SkillExecutedPayload(EventPayload):
+    skill_id: str
+    version_id: str
+    slug: str
+    script: str | None = None
+    tool_name: str | None = None
+
+
+class SkillOutcomePayload(EventPayload):
+    skill_id: str
+    version_id: str
+    run_id: str
+    outcome: str
+    tool_calls: int
+    correction: bool = False
+
+
+class SkillEvaluationPayload(EventPayload):
+    skill_id: str
+    version_id: str
+    kind: str
+    status: str
+    score: float
+    report: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class SkillControlPayload(EventPayload):
+    skill_id: str
+    version_id: str
+    action: str
+    reason: str
+
+
 EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "session.opened": SessionOpenedPayload,
     "session.closed": SessionClosedPayload,
@@ -384,6 +497,30 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "memory.episode.projected": MemoryEpisodePayload,
     "memory.capture.requested": MemoryCapturePayload,
     "memory.promotion.requested": MemoryPromotionPayload,
+    "skill.authoring.requested": SkillAuthoringPayload,
+    "skill.workflow.observed": SkillWorkflowPayload,
+    "skill.proposal_triggered": SkillAuthoringPayload,
+    "skill.job.queued": SkillJobPayload,
+    "skill.job.started": SkillJobPayload,
+    "skill.job.completed": SkillJobPayload,
+    "skill.job.failed": SkillJobPayload,
+    "skill.drafted": SkillVersionPayload,
+    "skill.validated": SkillEvaluationPayload,
+    "skill.evaluated": SkillEvaluationPayload,
+    "skill.rejected": SkillTransitionPayload,
+    "skill.activated": SkillVersionPayload,
+    "skill.superseded": SkillTransitionPayload,
+    "skill.quarantined": SkillTransitionPayload,
+    "skill.rolled_back": SkillRollbackPayload,
+    "skill.catalogued": SkillCataloguedPayload,
+    "skill.loaded": SkillLoadedPayload,
+    "skill.executed": SkillExecutedPayload,
+    "skill.outcome.recorded": SkillOutcomePayload,
+    "skill.staled": SkillControlPayload,
+    "skill.archived": SkillControlPayload,
+    "skill.restored": SkillControlPayload,
+    "skill.pinned": SkillControlPayload,
+    "skill.unpinned": SkillControlPayload,
 }
 
 

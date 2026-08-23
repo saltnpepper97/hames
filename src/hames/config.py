@@ -54,6 +54,27 @@ class MemoryConfig(StrictModel):
     max_extraction_retries: int = Field(default=2, ge=0, le=5)
 
 
+class SkillsConfig(StrictModel):
+    enabled: bool = True
+    autonomous_authoring: bool = True
+    auto_activate: bool = True
+    provider: str = ""
+    model: str = ""
+    reasoning_effort: str = ""
+    repetition_threshold: int = Field(default=2, ge=2, le=10)
+    task_similarity_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
+    evaluator_pass_score: float = Field(default=0.80, ge=0.0, le=1.0)
+    max_background_model_calls_per_day: int = Field(default=8, ge=1, le=100)
+    max_job_retries: int = Field(default=2, ge=0, le=5)
+    max_catalog_entries: int = Field(default=12, ge=1, le=64)
+    catalog_budget_tokens: int = Field(default=2_048, ge=128)
+    loaded_budget_tokens: int = Field(default=8_192, ge=512)
+    max_package_bytes: int = Field(default=262_144, ge=4_096, le=4_194_304)
+    max_package_files: int = Field(default=64, ge=1, le=256)
+    script_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
+    stale_after_days: int = Field(default=90, ge=1)
+
+
 class ToolsConfig(StrictModel):
     shell_timeout_seconds: float = Field(default=120.0, gt=0)
     shell_max_timeout_seconds: float = Field(default=600.0, gt=0)
@@ -161,6 +182,7 @@ class HamesConfig(StrictModel):
     runtime: RuntimeConfig = RuntimeConfig()
     context: ContextConfig = ContextConfig()
     memory: MemoryConfig = MemoryConfig()
+    skills: SkillsConfig = SkillsConfig()
     tools: ToolsConfig = ToolsConfig()
     gateway: GatewayConfig = GatewayConfig()
     providers: dict[str, ProviderProfileConfig] = Field(default_factory=_default_provider_profiles)

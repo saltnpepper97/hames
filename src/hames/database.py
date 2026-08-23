@@ -295,6 +295,136 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        8,
+        "autonomous skills",
+        """
+        CREATE TABLE skills (
+            id TEXT PRIMARY KEY,
+            slug TEXT NOT NULL,
+            scope TEXT NOT NULL CHECK (scope IN ('global', 'workspace', 'agent')),
+            scope_key TEXT,
+            active_version_id TEXT,
+            pinned_version_id TEXT,
+            archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (slug, scope, scope_key),
+            CHECK (scope = 'global' OR scope_key IS NOT NULL)
+        );
+
+        CREATE TABLE skill_versions (
+            id TEXT PRIMARY KEY,
+            skill_id TEXT NOT NULL REFERENCES skills(id),
+            version INTEGER NOT NULL,
+            content_hash TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL CHECK (
+                status IN ('draft', 'verified', 'active', 'stale', 'archived',
+                           'rejected', 'quarantined', 'superseded')
+            ),
+            name TEXT NOT NULL,
+            description TEXT NOT NULL,
+            instructions TEXT NOT NULL,
+            metadata_json TEXT NOT NULL,
+            package_path TEXT NOT NULL,
+            base_version_id TEXT REFERENCES skill_versions(id),
+            created_by TEXT NOT NULL CHECK (created_by IN ('automatic', 'agent', 'user', 'import')),
+            source_session_id TEXT NOT NULL REFERENCES sessions(id),
+            source_run_id TEXT,
+            created_at TEXT NOT NULL,
+            activated_at TEXT,
+            last_used_at TEXT,
+            UNIQUE (skill_id, version)
+        );
+
+        CREATE TABLE skill_evidence (
+            version_id TEXT NOT NULL REFERENCES skill_versions(id),
+            event_id TEXT NOT NULL REFERENCES events(id),
+            PRIMARY KEY (version_id, event_id)
+        );
+
+        CREATE TABLE skill_evaluations (
+            id TEXT PRIMARY KEY,
+            version_id TEXT NOT NULL REFERENCES skill_versions(id),
+            kind TEXT NOT NULL CHECK (kind IN ('deterministic', 'model', 'script')),
+            status TEXT NOT NULL CHECK (status IN ('passed', 'failed')),
+            score REAL NOT NULL CHECK (score >= 0 AND score <= 1),
+            report_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE skill_jobs (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK (kind IN ('author', 'patch', 'revalidate')),
+            status TEXT NOT NULL CHECK (
+                status IN ('pending', 'running', 'completed', 'failed', 'cancelled', 'budget_wait')
+            ),
+            session_id TEXT NOT NULL REFERENCES sessions(id),
+            run_id TEXT,
+            source_event_id TEXT NOT NULL REFERENCES events(id),
+            target_skill_id TEXT REFERENCES skills(id),
+            goal TEXT NOT NULL,
+            scope TEXT NOT NULL CHECK (scope IN ('global', 'workspace', 'agent')),
+            attempts INTEGER NOT NULL DEFAULT 0,
+            error_code TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (kind, session_id, run_id, source_event_id)
+        );
+
+        CREATE TABLE workflow_signatures (
+            run_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(id),
+            agent_id TEXT NOT NULL,
+            workspace_path TEXT NOT NULL,
+            task_text TEXT NOT NULL,
+            task_tokens_json TEXT NOT NULL,
+            tool_sequence_json TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            outcome TEXT NOT NULL CHECK (outcome IN ('completed', 'failed', 'cancelled')),
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE skill_usage (
+            version_id TEXT NOT NULL REFERENCES skill_versions(id),
+            run_id TEXT NOT NULL,
+            session_id TEXT NOT NULL REFERENCES sessions(id),
+            catalogued INTEGER NOT NULL DEFAULT 0 CHECK (catalogued IN (0, 1)),
+            loaded INTEGER NOT NULL DEFAULT 0 CHECK (loaded IN (0, 1)),
+            executed INTEGER NOT NULL DEFAULT 0 CHECK (executed IN (0, 1)),
+            outcome TEXT,
+            tool_calls INTEGER NOT NULL DEFAULT 0,
+            correction INTEGER NOT NULL DEFAULT 0 CHECK (correction IN (0, 1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (version_id, run_id)
+        );
+
+        CREATE VIRTUAL TABLE skill_fts USING fts5(
+            version_id UNINDEXED,
+            slug,
+            name,
+            description,
+            triggers,
+            instructions
+        );
+
+        CREATE UNIQUE INDEX skill_one_active_version_idx ON skill_versions(skill_id)
+            WHERE status = 'active';
+        CREATE UNIQUE INDEX skill_global_slug_idx ON skills(slug) WHERE scope = 'global';
+        CREATE INDEX skill_jobs_status_idx ON skill_jobs(status, created_at);
+        CREATE INDEX workflow_scope_idx
+            ON workflow_signatures(workspace_path, agent_id, created_at);
+        CREATE INDEX skill_usage_run_idx ON skill_usage(run_id);
+
+        CREATE TRIGGER skill_versions_no_delete
+        BEFORE DELETE ON skill_versions
+        BEGIN
+            SELECT RAISE(ABORT, 'skill versions cannot be deleted');
+        END;
+        """,
+    ),
 )
 
 
