@@ -294,6 +294,10 @@ def create_app(state: GatewayState) -> FastAPI:
     ) -> StreamingResponse:
         async def generate() -> AsyncIterator[str]:
             async with state.broker.subscribe(session_id) as queue:
+                # Send headers only after the subscriber is registered.  Clients can
+                # now safely open the stream before starting a run without either
+                # side waiting for the other or losing the first transient delta.
+                yield ": connected\n\n"
                 replay = await asyncio.to_thread(
                     state.ledger.list_events, session_id, after_sequence=after_sequence
                 )

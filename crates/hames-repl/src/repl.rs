@@ -83,6 +83,20 @@ pub async fn run() -> Result<()> {
     }
     fs::create_dir_all(&paths.root).ok();
     editor.save_history(&paths.history)?;
+    make_history_private(&paths.history)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn make_history_private(path: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn make_history_private(_: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
