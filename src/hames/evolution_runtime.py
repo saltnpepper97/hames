@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import Iterable
-from typing import cast
+from typing import Any, cast
 
 from hames.broker import EventBroker
 from hames.config import HamesConfig
@@ -22,6 +22,14 @@ from hames.evolution import (
 )
 from hames.ledger import Event, Ledger, Session
 from hames.memory import MemoryCandidate, MemoryLayer, MemoryStore, MemoryVisibility
+from hames.providers import (
+    ModelRequest,
+    Provider,
+    ProviderError,
+    ProviderMessage,
+    StreamEventKind,
+)
+from hames.providers.base import JSON_OBJECT, ToolDefinition
 from hames.skill_runtime import SkillManager
 from hames.skills import SkillRegistry
 
@@ -36,6 +44,12 @@ FAILURE_EVENT_TYPES = {
 
 _TERMINAL_TYPES = {"run.completed", "run.failed", "run.cancelled"}
 
+REVIEWER_SYSTEM = """You classify one user message sent to a coding agent. Decide whether the
+message corrects a previous result, contradicting earlier output or instructing a different
+approach for next time. Ordinary new tasks, questions, and praise are not corrections. Submit
+exactly one classification through submit_correction_classification.
+"""
+
 
 class EvolutionManager:
     """Deterministic detectors turning corrections and repeated failures into Scars."""
@@ -49,6 +63,7 @@ class EvolutionManager:
         store: ScarStore,
         skills: SkillRegistry,
         memory: MemoryStore,
+        providers: dict[str, Provider] | None = None,
         skill_manager: SkillManager | None = None,
     ) -> None:
         self.ledger = ledger
@@ -57,6 +72,7 @@ class EvolutionManager:
         self.store = store
         self.skills = skills
         self.memory = memory
+        self.providers = providers or {}
         self.skill_manager = skill_manager
 
     async def propose_repair(
@@ -202,6 +218,10 @@ class EvolutionManager:
         scar, emitted = await self._conversational_correction(
             session, run_id, user, task_text, events, terminal
         )
+        if scar is None and terminal.type == "run.completed":
+            scar, emitted = await self._reviewer_classification(
+                session, run_id, task_text, events, terminal
+            )
         if scar is not None:
             created.append(scar)
         pending.extend(emitted)
@@ -343,6 +363,170 @@ class EvolutionManager:
             return None, ()
         scar, emitted = result
         return scar, emitted
+
+    async def _reviewer_classification(
+        self,
+        session: Session,
+        run_id: str,
+        task_text: str,
+        events: list[Event],
+        terminal: Event,
+    ) -> tuple[Scar | None, tuple[Event, ...]]:
+        """Optional reviewer-model pass for messages without explicit correction markers."""
+        if not self.config.evolution.reviewer_model_enabled or not self.providers:
+            return None, ()
+        used = await asyncio.to_thread(
+            self.store.count_background_model_calls_today, "evolution_review"
+        )
+        if used >= self.config.evolution.max_background_model_calls_per_day:
+            return None, ()
+        verdict = await self._classify_with_reviewer(session, run_id, task_text)
+        if verdict is None:
+            return None, ()
+        assistant = next(
+            (
+                event
+                for event in reversed(events)
+                if event.type == "assistant.message" and event.payload.get("status") == "completed"
+            ),
+            terminal,
+        )
+        if not verdict:
+            recorded = await asyncio.to_thread(
+                self.ledger.append,
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                event_type="correction.verdict",
+                payload={"content": task_text[:500], "is_correction": False},
+                causation_id=terminal.id,
+                correlation_id=run_id,
+            )
+            await self._publish((recorded,))
+            return None, ()
+
+        def _record() -> tuple[Scar, tuple[Event, ...]]:
+            signature = f"reviewed-correction:{task_text.strip().casefold()[:120]}"
+            existing = self.store.find_active_by_signature(session, signature)
+            if existing is not None:
+                triggered, trigger_event = self.store.record_trigger(
+                    session=session,
+                    scar_id=existing.id,
+                    run_id=run_id,
+                    matched_on=["reviewer_classification"],
+                    causation_id=terminal.id,
+                )
+                return triggered, (trigger_event,)
+            mutation = self.store.record_candidate(
+                session=session,
+                title=f"Reviewed correction: {task_text.strip()[:60]}",
+                severity="low",
+                failure_signature=signature,
+                description=(
+                    "The reviewer model classified this message as correcting the prior "
+                    f"result: {task_text[:500]}"
+                ),
+                expected_behavior=(
+                    "Equivalent future requests must reflect the corrected expectation."
+                ),
+                evidence_event_ids=[assistant.id, terminal.id],
+                trigger=ScarTrigger(workspace_paths=[session.working_directory]),
+                run_id=run_id,
+                detection="reviewer_classification",
+                causation_id=terminal.id,
+            )
+            return mutation.scar, mutation.events
+
+        scar, emitted = await asyncio.to_thread(_record)
+        return scar, emitted
+
+    async def _classify_with_reviewer(
+        self, session: Session, run_id: str, task_text: str
+    ) -> bool | None:
+        profile_id = self.config.evolution.provider or session.provider
+        provider = self.providers.get(profile_id)
+        if provider is None:
+            return None
+        model = self.config.evolution.model or session.model
+        reasoning = self.config.evolution.reasoning_effort or session.reasoning_effort
+        requested = await self._append_request(
+            session_id=session.id,
+            agent_id=session.agent_id,
+            payload={
+                "provider": profile_id,
+                "model": model,
+                "reasoning_effort": reasoning,
+                "agent_capsule_hash": "evolution-reviewer-v1",
+                "purpose": "evolution_review",
+            },
+            correlation_id=run_id,
+        )
+        request = ModelRequest(
+            model=model,
+            system=REVIEWER_SYSTEM,
+            messages=[ProviderMessage(role="user", content=task_text[:1000])],
+            reasoning_effort=reasoning,
+            max_tokens=512,
+            temperature=0,
+            tools=[classification_tool()],
+            metadata={"purpose": "evolution_review", "run_id": run_id},
+        )
+        name_parts: list[str] = []
+        argument_parts: list[str] = []
+        started = completed = False
+        try:
+            async for event in provider.stream(request):
+                if event.kind is StreamEventKind.STARTED:
+                    started = True
+                elif event.kind is StreamEventKind.TOOL_CALL_DELTA:
+                    if event.tool_call is None or event.tool_call.index != 0:
+                        raise ValueError("evolution reviewer emitted an invalid tool call")
+                    if event.tool_call.name:
+                        name_parts.append(event.tool_call.name)
+                    argument_parts.append(event.tool_call.arguments_delta)
+                elif event.kind is StreamEventKind.COMPLETED:
+                    completed = True
+            if (
+                not started
+                or not completed
+                or "".join(name_parts) != "submit_correction_classification"
+            ):
+                raise ValueError("evolution reviewer did not submit a classification")
+            raw = JSON_OBJECT.validate_json("".join(argument_parts) or "{}")
+            is_correction = bool(raw.get("is_correction", False))
+            recorded = await asyncio.to_thread(
+                self.ledger.append,
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                event_type="correction.verdict",
+                payload={"content": task_text[:500], "is_correction": is_correction},
+                causation_id=requested.id,
+                correlation_id=run_id,
+            )
+            await self._publish((recorded,))
+            return is_correction
+        except (ProviderError, ValueError):
+            return None
+
+    async def _append_request(
+        self,
+        *,
+        session_id: str,
+        agent_id: str,
+        payload: dict[str, Any],
+        correlation_id: str,
+    ) -> Event:
+        event = await asyncio.to_thread(
+            self.ledger.append,
+            session_id=session_id,
+            agent_id=agent_id,
+            event_type="model.requested",
+            payload=payload,
+            correlation_id=correlation_id,
+        )
+        await self._publish((event,))
+        return event
 
     async def _repeated_failures(
         self, session: Session, run_id: str, events: list[Event]
@@ -492,3 +676,19 @@ class EvolutionManager:
             await self.broker.publish(
                 event.session_id, {"durable": True, "event": event.model_dump(mode="json")}
             )
+
+
+def classification_tool() -> ToolDefinition:
+    return ToolDefinition(
+        name="submit_correction_classification",
+        description="Submit one correction classification for a user message.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "is_correction": {"type": "boolean"},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            },
+            "required": ["is_correction", "confidence"],
+            "additionalProperties": False,
+        },
+    )

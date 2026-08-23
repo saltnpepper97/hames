@@ -516,6 +516,20 @@ class ScarRepairDecisionPayload(EventPayload):
     checks: dict[str, JsonValue] = Field(default_factory=dict)
 
 
+class ScarEvaluationPayload(EventPayload):
+    scar_id: str
+    repair_id: str
+    kind: str
+    status: str
+    score: float = Field(ge=0, le=1)
+    report: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class CorrectionVerdictPayload(EventPayload):
+    content: str
+    is_correction: bool
+
+
 def _empty_require_source_types() -> list[str]:
     return []
 
@@ -626,6 +640,8 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "scar.repair.proposed": ScarRepairPayload,
     "scar.repair.promoted": ScarRepairDecisionPayload,
     "scar.repair.rejected": ScarRepairDecisionPayload,
+    "scar.repair.evaluated": ScarEvaluationPayload,
+    "correction.verdict": CorrectionVerdictPayload,
     "context.rule.proposed": ContextRuleEventPayload,
     "context.rule.activated": ContextRuleEventPayload,
     "context.rule.retired": ContextRuleEventPayload,

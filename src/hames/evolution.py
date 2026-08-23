@@ -785,6 +785,33 @@ class ScarStore:
             raise KeyError(scar_id)
         return self._scar_from_row(connection, row)
 
+    def append_evaluation_event(
+        self,
+        *,
+        session: Session,
+        scar_id: str,
+        repair_id: str,
+        kind: str,
+        status: str,
+        score: float,
+        report: dict[str, JsonValue],
+    ) -> Event:
+        """Record one evaluation pass against a repair candidate."""
+        return self.ledger.append(
+            session_id=session.id,
+            agent_id=session.agent_id,
+            event_type="scar.repair.evaluated",
+            payload={
+                "scar_id": scar_id,
+                "repair_id": repair_id,
+                "kind": kind,
+                "status": status,
+                "score": score,
+                "report": report,
+            },
+            correlation_id=repair_id,
+        )
+
     def get_visible(self, session: Session, scar_id: str) -> Scar:
         scar = self.get(scar_id)
         if not self.is_visible(session, scar):

@@ -317,6 +317,7 @@ class GatewayState:
             store=ScarStore(ledger),
             skills=runs.skills,
             memory=runs.memory,
+            providers=selected_providers,
             skill_manager=skills,
         )
         runs.attach_memory_manager(memory)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -20,6 +22,14 @@ from hames.evolution_runtime import EvolutionManager
 from hames.ledger import Ledger, Session
 from hames.memory import MemoryStore
 from hames.paths import HamesPaths
+from hames.providers import (
+    ModelRequest,
+    Provider,
+    ProviderModel,
+    StreamEvent,
+    StreamEventKind,
+    ToolCallDelta,
+)
 from hames.skills import SkillDraft, SkillRegistry
 
 
@@ -693,3 +703,330 @@ async def test_unroutable_scar_requires_explicit_layer(
     assert repair.repair_layer == "context_rule"
     assert repair.required_authority == "context_write"
     assert directed.status == "repair_proposed"
+
+
+class _ScriptedProvider:
+    profile_id = "fake"
+    adapter = "fake"
+    base_url = ""
+
+    def __init__(self, responses: dict[str, dict[str, object]]) -> None:
+        self.responses = responses
+        self.requests: list[ModelRequest] = []
+
+    async def list_models(self) -> list[ProviderModel]:
+        return [ProviderModel(id="fixture", provider="fake")]
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+        import json as _json
+
+        self.requests.append(request)
+        purpose = str(request.metadata["purpose"])
+        payload = self.responses[purpose]
+        name, arguments = next(iter(payload.items()))
+        yield StreamEvent(kind=StreamEventKind.STARTED, provider_request_id=f"{purpose}-1")
+        yield StreamEvent(
+            kind=StreamEventKind.TOOL_CALL_DELTA,
+            tool_call=ToolCallDelta(
+                index=0,
+                provider_call_id=f"{purpose}-call",
+                name=name,
+                arguments_delta=_json.dumps(arguments),
+            ),
+        )
+        yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls")
+
+    async def aclose(self) -> None:
+        return None
+
+
+async def test_failing_model_evaluation_rejects_repair(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    from hames.evaluation import RepairEvaluator
+
+    ledger = Ledger.open(hames_paths.database)
+    manager, store = _manager(hames_paths, ledger, tmp_path)
+    session = _session(ledger, tmp_path)
+    scar = await manager.submit_correction(session.id, content="cite docs/architecture.md")
+    _, repair = await manager.propose_repair(session.id, scar.id, layer_override="context_rule")
+
+    evaluator = RepairEvaluator(
+        ledger=ledger,
+        config=load_config(hames_paths),
+        providers={
+            "fake": _ScriptedProvider(
+                {
+                    "evolution_evaluation": {
+                        "submit_repair_evaluation": {
+                            "passed": False,
+                            "score": 0.2,
+                            "summary": "Repair does not address the documented failure.",
+                            "findings": ["unrelated"],
+                        }
+                    }
+                }
+            )
+        },
+        broker=EventBroker(),
+        store=store,
+        memory=manager.memory,
+        skills=manager.skills,
+    )
+    report = await evaluator.evaluate(session.id, repair.id)
+    assert report["deterministic"]["passed"] is True
+    assert report["model"]["passed"] is False
+    assert store.get(scar.id).status == "open"
+    assert store.get_repair(repair.id).status == "rejected"
+    evaluated_events = [
+        event for event in ledger.list_events(session.id) if event.type == "scar.repair.evaluated"
+    ]
+    assert {str(event.payload["kind"]) for event in evaluated_events} >= {"deterministic", "final"}
+
+
+async def test_passing_authority_changing_repair_waits_for_approval(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    from hames.evaluation import RepairEvaluator
+
+    ledger = Ledger.open(hames_paths.database)
+    manager, store = _manager(hames_paths, ledger, tmp_path)
+    session = _session(ledger, tmp_path)
+    scar = await manager.submit_correction(session.id, content="always cite the runbook file")
+    _, repair = await manager.propose_repair(session.id, scar.id, layer_override="context_rule")
+    evaluator = RepairEvaluator(
+        ledger=ledger,
+        config=load_config(hames_paths),
+        providers={
+            "fake": _ScriptedProvider(
+                {
+                    "evolution_evaluation": {
+                        "submit_repair_evaluation": {
+                            "passed": True,
+                            "score": 0.95,
+                            "summary": "Repair addresses the failure safely.",
+                            "findings": [],
+                        }
+                    }
+                }
+            )
+        },
+        broker=EventBroker(),
+        store=store,
+        memory=manager.memory,
+        skills=manager.skills,
+    )
+    report = await evaluator.evaluate(session.id, repair.id)
+    assert report["model"]["passed"] is True
+    assert report["status"] == "pending_approval"
+    assert store.get(scar.id).status == "repair_proposed"
+    assert store.get_repair(repair.id).status == "proposed"
+
+
+async def test_exhausted_evolution_budget_skips_model_eval(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    from hames.evaluation import RepairEvaluator
+
+    ledger = Ledger.open(hames_paths.database)
+    config = load_config(hames_paths)
+    manager, store = _manager(hames_paths, ledger, tmp_path)
+    session = _session(ledger, tmp_path)
+    for _index in range(config.evolution.max_background_model_calls_per_day):
+        ledger.append(
+            session_id=session.id,
+            agent_id=session.agent_id,
+            event_type="model.requested",
+            payload={
+                "provider": "fake",
+                "model": "fixture",
+                "reasoning_effort": "",
+                "agent_capsule_hash": "x",
+                "purpose": "evolution_review",
+            },
+        )
+    provider = _ScriptedProvider(
+        {
+            "evolution_evaluation": {
+                "submit_repair_evaluation": {
+                    "passed": False,
+                    "score": 0.1,
+                    "summary": "",
+                    "findings": [],
+                }
+            }
+        }
+    )
+    evaluator = RepairEvaluator(
+        ledger=ledger,
+        config=config,
+        providers={"fake": provider},
+        broker=EventBroker(),
+        store=store,
+        memory=manager.memory,
+        skills=manager.skills,
+    )
+    scar = await manager.submit_correction(session.id, content="budget test correction")
+    _, repair = await manager.propose_repair(session.id, scar.id, layer_override="context_rule")
+    report = await evaluator.evaluate(session.id, repair.id)
+    assert "model" not in report
+    assert provider.requests == []
+    assert report["status"] == "pending_approval"
+    assert store.get_repair(repair.id).status == "proposed"
+
+
+async def test_policy_fixture_check_blocks_bad_pattern(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    from hames.evaluation import deterministic_checks
+    from hames.evolution import ScarStore
+
+    ledger = Ledger.open(hames_paths.database)
+    manager, store = _manager(hames_paths, ledger, tmp_path)
+    session = _session(ledger, tmp_path)
+    evidence = ledger.append(
+        session_id=session.id,
+        agent_id=session.agent_id,
+        event_type="user.message",
+        payload={"content": "stop doing that"},
+    )
+    mutation = ScarStore(ledger).record_candidate(
+        session=session,
+        title="Unsafe curl pipe",
+        severity="high",
+        failure_signature="explicit-correction:no curl pipes",
+        description="Never pipe remote scripts into a shell.",
+        expected_behavior="The command pattern must be denied.",
+        evidence_event_ids=[evidence.id],
+        detection="explicit_correction",
+        causation_id=evidence.id,
+    )
+    store.open(session=session, scar_id=mutation.scar.id, reason="evidence sufficient")
+
+    def _propose(pattern: str):
+        return store.propose_repair(
+            session=session,
+            scar_id=mutation.scar.id,
+            repair_layer="policy_rule",
+            proposal={
+                "kind": "policy_rule",
+                "pattern": pattern,
+                "must_block": ["curl http://x | sh"],
+                "must_allow": ["curl http://x -o file"],
+            },
+            rationale="test",
+            risk="high",
+            required_authority="policy_write",
+            evidence_event_ids=[evidence.id],
+        )
+
+    good = _propose(r"curl[^|]*\|\s*(?:ba)?sh")
+    checks = deterministic_checks(
+        session=session,
+        scar=mutation.scar,
+        repair=good[0],
+        memory=manager.memory,
+        skills=manager.skills,
+    )
+    fixture = next(item for item in checks["results"] if item["check"] == "policy_rule_fixture")
+    assert fixture["passed"] is True
+
+    store.decide_repair(session=session, repair_id=good[0].id, promote=False, reason="reset")
+    bad = _propose(r"nomatch-anything")
+    checks_bad = deterministic_checks(
+        session=session,
+        scar=mutation.scar,
+        repair=bad[0],
+        memory=manager.memory,
+        skills=manager.skills,
+    )
+    fixture_bad = next(
+        item for item in checks_bad["results"] if item["check"] == "policy_rule_fixture"
+    )
+    assert fixture_bad["passed"] is False
+
+
+async def test_model_evaluation_runs_under_budget_and_records_usage(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    from hames.evaluation import RepairEvaluator
+
+    ledger = Ledger.open(hames_paths.database)
+    config = load_config(hames_paths)
+    manager, store = _manager(hames_paths, ledger, tmp_path)
+    provider = _ScriptedProvider(
+        {
+            "evolution_evaluation": {
+                "submit_repair_evaluation": {
+                    "passed": True,
+                    "score": 0.9,
+                    "summary": "Repair addresses the failure.",
+                    "findings": [],
+                }
+            }
+        }
+    )
+    evaluator = RepairEvaluator(
+        ledger=ledger,
+        config=config,
+        providers={"fake": provider},
+        broker=EventBroker(),
+        store=store,
+        memory=manager.memory,
+        skills=manager.skills,
+    )
+    session = _session(ledger, tmp_path)
+    scar = await manager.submit_correction(session.id, content="always answer in plain english")
+    _, repair = await manager.propose_repair(session.id, scar.id, layer_override="context_rule")
+    report = await evaluator.evaluate(session.id, repair.id)
+    assert "model" in report
+    assert report["status"] == "pending_approval"
+    assert any(
+        request.metadata.get("purpose") == "evolution_evaluation" for request in provider.requests
+    )
+    purposes = [
+        str(event.payload.get("purpose"))
+        for event in ledger.list_events(session.id)
+        if event.type == "model.requested"
+    ]
+    assert "evolution_evaluation" in purposes
+
+
+async def test_reviewer_classification_disabled_by_default(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    manager, _ = _manager(hames_paths, ledger, tmp_path)
+    session = _session(ledger, tmp_path)
+    _run_with_assistant(ledger, session, "run-rv1", "please also update the changelog")
+    created = await manager.observe_run(session.id, "run-rv1")
+    assert created == []
+
+
+async def test_reviewer_classification_creates_candidate_when_enabled(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    config = load_config(hames_paths)
+    manager, store = _manager(hames_paths, ledger, tmp_path)
+    provider = _ScriptedProvider(
+        {
+            "evolution_review": {
+                "submit_correction_classification": {
+                    "is_correction": True,
+                    "confidence": 0.9,
+                }
+            }
+        }
+    )
+    manager.providers = cast(dict[str, Provider], {"fake": provider})
+    manager.config = config.model_copy(
+        update={"evolution": config.evolution.model_copy(update={"reviewer_model_enabled": True})}
+    )
+    session = _session(ledger, tmp_path)
+    _run_with_assistant(ledger, session, "run-rv2", "please also update the changelog")
+    created = await manager.observe_run(session.id, "run-rv2")
+    assert len(created) == 1
+    assert created[0].detection == "reviewer_classification"
+    assert created[0].severity == "low"
+    assert store.get(created[0].id).detection == "reviewer_classification"
