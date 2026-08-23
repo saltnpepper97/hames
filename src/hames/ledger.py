@@ -77,7 +77,7 @@ class EventIntegrityError(RuntimeError):
 
 
 class Ledger:
-    """The only supported write path for M0 sessions and events."""
+    """The only supported write path for sessions and durable events."""
 
     def __init__(
         self,
@@ -161,6 +161,13 @@ class Ledger:
     ) -> Event:
         with self._write_lock, self.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(session_id)
+            if row["status"] != "open":
+                raise ValueError("session is not open")
             event = self._append_on_connection(
                 connection,
                 session_id=session_id,
@@ -270,6 +277,140 @@ class Ledger:
                 (session_id, after_sequence),
             ).fetchall()
         return [self._event_from_row(row) for row in rows]
+
+    def replay(self, session_id: str, *, after_sequence: int = 0) -> list[Event]:
+        events = self._replay(session_id, active=set())
+        return [event for event in events if event.sequence > after_sequence]
+
+    def _replay(self, session_id: str, *, active: set[str]) -> list[Event]:
+        if session_id in active:
+            raise EventIntegrityError(f"session ancestry cycle detected at {session_id}")
+        active.add(session_id)
+        try:
+            session = self.get_session(session_id)
+            inherited: list[Event] = []
+            if session.parent_session_id is not None:
+                if session.fork_event_id is None:
+                    raise EventIntegrityError(f"branch {session.id} has no fork event")
+                fork = self.get_event(session.fork_event_id)
+                parent_events = self._replay(session.parent_session_id, active=active)
+                if not any(event.id == fork.id for event in parent_events):
+                    raise EventIntegrityError(
+                        f"fork event {fork.id} is not visible in parent {session.parent_session_id}"
+                    )
+                inherited = [event for event in parent_events if event.sequence <= fork.sequence]
+            return [*inherited, *self.list_events(session_id)]
+        finally:
+            active.remove(session_id)
+
+    def fork_session(
+        self,
+        parent_session_id: str,
+        *,
+        fork_event_id: str | None = None,
+        title: str | None = None,
+    ) -> Session:
+        parent = self.get_session(parent_session_id)
+        history = self.replay(parent_session_id)
+        if fork_event_id is None:
+            target = next(
+                (
+                    event
+                    for event in reversed(history)
+                    if event.type == "assistant.message"
+                    and event.payload.get("status") == "completed"
+                ),
+                None,
+            )
+            if target is None:
+                raise ValueError("session has no completed assistant turn to fork")
+        else:
+            target = next((event for event in history if event.id == fork_event_id), None)
+            if target is None:
+                raise ValueError("fork event is not visible in the parent session")
+
+        provider, model, reasoning_effort = self._settings_at(history, target.sequence)
+        session_id = new_id()
+        created_at = utc_now()
+        branch_title = title or f"Branch of {parent.title or parent.id} @ {target.sequence}"
+        with self._write_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO sessions(
+                    id, created_at, status, title, working_directory, agent_id,
+                    provider, model, reasoning_effort, parent_session_id, fork_event_id
+                ) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    created_at,
+                    branch_title,
+                    parent.working_directory,
+                    parent.agent_id,
+                    provider,
+                    model,
+                    reasoning_effort,
+                    parent.id,
+                    target.id,
+                ),
+            )
+            opened = self._append_on_connection(
+                connection,
+                session_id=session_id,
+                event_type="session.opened",
+                agent_id=parent.agent_id,
+                payload={
+                    "working_directory": parent.working_directory,
+                    "provider": provider,
+                    "model": model,
+                    "reasoning_effort": reasoning_effort,
+                },
+                causation_id=target.id,
+                correlation_id=session_id,
+            )
+            self._append_on_connection(
+                connection,
+                session_id=session_id,
+                event_type="session.forked",
+                agent_id=parent.agent_id,
+                payload={
+                    "parent_session_id": parent.id,
+                    "fork_event_id": target.id,
+                    "fork_sequence": target.sequence,
+                },
+                causation_id=opened.id,
+                correlation_id=session_id,
+            )
+            connection.commit()
+        return self.get_session(session_id)
+
+    @staticmethod
+    def _settings_at(history: list[Event], sequence: int) -> tuple[str, str, str]:
+        settings: tuple[str, str, str] | None = None
+        for event in history:
+            if event.sequence > sequence:
+                break
+            if event.type in {"session.opened", "session.settings.changed"}:
+                settings = (
+                    str(event.payload["provider"]),
+                    str(event.payload["model"]),
+                    str(event.payload["reasoning_effort"]),
+                )
+        if settings is None:
+            raise EventIntegrityError("session history has no settings origin")
+        return settings
+
+    def resolve_visible_event(self, session_id: str, value: str) -> Event:
+        history = self.replay(session_id)
+        if value.isdigit():
+            sequence = int(value)
+            event = next((item for item in history if item.sequence == sequence), None)
+        else:
+            event = next((item for item in history if item.id == value), None)
+        if event is None:
+            raise KeyError(value)
+        return event
 
     def get_event(self, event_id: str) -> Event:
         with self.database.connect() as connection:

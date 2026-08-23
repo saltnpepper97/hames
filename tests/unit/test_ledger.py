@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from random import Random
 
 import pytest
 
 from hames.database import MIGRATIONS, Database, Migration, MigrationError
 from hames.event_types import UnknownEventType
-from hames.ledger import Ledger
+from hames.ledger import Event, Ledger
 from hames.paths import HamesPaths
 
 
@@ -120,6 +122,185 @@ def test_unknown_event_append_is_rejected(hames_paths: HamesPaths, tmp_path: Pat
     )
     with pytest.raises(UnknownEventType):
         ledger.append(session_id=session.id, event_type="future.unknown", payload={})
+
+
+def test_unknown_persisted_event_remains_readable(hames_paths: HamesPaths, tmp_path: Path) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    session = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    payload = "{}"
+    with ledger.database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO events(
+                id, session_id, type, schema_version, created_at, payload_json,
+                payload_hash, redaction_state
+            ) VALUES ('future-event', ?, 'future.unknown', 99, '2026-01-01', ?, sha256(?), 'none')
+            """,
+            (session.id, payload, payload),
+        )
+    assert ledger.get_event("future-event").type == "future.unknown"
+
+
+def test_concurrent_appends_have_stable_unique_sequence(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    session = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+
+    def append_message(index: int) -> Event:
+        return ledger.append(
+            session_id=session.id,
+            event_type="user.message",
+            payload={"content": f"message {index}"},
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        events = list(pool.map(append_message, range(40)))
+    sequences = [event.sequence for event in events]
+    assert len(set(sequences)) == 40
+    persisted = ledger.list_events(session.id)
+    assert [event.sequence for event in persisted] == sorted(event.sequence for event in persisted)
+
+
+def test_closed_session_rejects_new_events(hames_paths: HamesPaths, tmp_path: Path) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    session = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    ledger.close_session(session.id)
+    with pytest.raises(ValueError, match="not open"):
+        ledger.append(
+            session_id=session.id,
+            event_type="user.message",
+            payload={"content": "too late"},
+        )
+
+
+def test_nested_branch_replay_and_settings_at_fork(hames_paths: HamesPaths, tmp_path: Path) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    root = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="first",
+    )
+    user = ledger.append(
+        session_id=root.id,
+        event_type="user.message",
+        payload={"content": "root question"},
+    )
+    answer = ledger.append(
+        session_id=root.id,
+        event_type="assistant.message",
+        payload={"content": "root answer", "status": "completed"},
+        causation_id=user.id,
+    )
+    ledger.update_session_settings(
+        root.id,
+        provider="fake",
+        model="later",
+        reasoning_effort="xhigh",
+    )
+
+    branch = ledger.fork_session(root.id, fork_event_id=answer.id)
+    assert branch.parent_session_id == root.id
+    assert branch.fork_event_id == answer.id
+    assert branch.model == "first"
+    branch_answer = ledger.append(
+        session_id=branch.id,
+        event_type="assistant.message",
+        payload={"content": "branch answer", "status": "completed"},
+    )
+    nested = ledger.fork_session(branch.id)
+
+    replay = ledger.replay(nested.id)
+    assert [event.payload.get("content") for event in replay if "content" in event.payload] == [
+        "root question",
+        "root answer",
+        "branch answer",
+    ]
+    assert nested.fork_event_id == branch_answer.id
+    assert all(event.type != "session.settings.changed" for event in replay)
+
+
+def test_fork_rejects_invisible_target(hames_paths: HamesPaths, tmp_path: Path) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    first = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    other = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    foreign = ledger.append(
+        session_id=other.id,
+        event_type="user.message",
+        payload={"content": "foreign"},
+    )
+    with pytest.raises(ValueError, match="not visible"):
+        ledger.fork_session(first.id, fork_event_id=foreign.id)
+
+
+def test_generated_branch_tree_matches_reference_replay(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    root = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    first = ledger.append(
+        session_id=root.id,
+        event_type="assistant.message",
+        payload={"content": "root", "status": "completed"},
+    )
+    sessions = [root]
+    expected: dict[str, list[Event]] = {root.id: [*ledger.list_events(root.id)]}
+    random = Random(20260823)
+
+    for index in range(20):
+        parent = random.choice(sessions)
+        parent_history = expected[parent.id]
+        target = random.choice(parent_history)
+        child = ledger.fork_session(parent.id, fork_event_id=target.id)
+        child_local = ledger.list_events(child.id)
+        expected[child.id] = [
+            *[event for event in parent_history if event.sequence <= target.sequence],
+            *child_local,
+        ]
+        message = ledger.append(
+            session_id=child.id,
+            event_type="assistant.message",
+            payload={"content": f"branch {index}", "status": "completed"},
+        )
+        expected[child.id].append(message)
+        sessions.append(child)
+
+    assert first in expected[root.id]
+    for session in sessions:
+        assert [event.id for event in ledger.replay(session.id)] == [
+            event.id for event in expected[session.id]
+        ]
 
 
 def test_session_requires_existing_directory(hames_paths: HamesPaths, tmp_path: Path) -> None:

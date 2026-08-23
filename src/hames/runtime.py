@@ -110,7 +110,7 @@ class RunManager:
         capsule = await asyncio.to_thread(
             load_agent, self.paths.agents / session.agent_id / "AGENT.md"
         )
-        history = await asyncio.to_thread(self.ledger.list_events, session_id)
+        history = await asyncio.to_thread(self.ledger.replay, session_id)
         context = compile_context(session, history, capsule)
         context_event = await self._append(
             session_id=session_id,

@@ -92,6 +92,23 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             assert reasoning_payload["content"] == "check "
             assert answer_payload["content"] == "hello"
             assert fake.requests[0].reasoning_effort == "medium"
+
+            branch = state.ledger.fork_session(session_id)
+            branch_accepted = await client.post(
+                f"/v1/sessions/{branch.id}/messages",
+                headers=headers,
+                json={"content": "Continue"},
+            )
+            assert branch_accepted.status_code == 202
+            for _ in range(100):
+                if len(fake.requests) == 2:
+                    break
+                await asyncio.sleep(0.01)
+            assert [message.content for message in fake.requests[1].messages] == [
+                "Hi",
+                "hello",
+                "Continue",
+            ]
     finally:
         await state.runs.close()
 
