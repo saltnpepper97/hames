@@ -63,12 +63,17 @@ class ReplConfig(StrictModel):
     show_reasoning: bool = True
 
 
+class LedgerConfig(StrictModel):
+    blob_threshold_bytes: int = Field(default=65_536, ge=1024)
+
+
 class HamesConfig(StrictModel):
     runtime: RuntimeConfig = RuntimeConfig()
     gateway: GatewayConfig = GatewayConfig()
     providers: ProvidersConfig = ProvidersConfig()
     logging: LoggingConfig = LoggingConfig()
     repl: ReplConfig = ReplConfig()
+    ledger: LedgerConfig = LedgerConfig()
 
 
 def _environment_overrides(environ: Mapping[str, str]) -> dict[str, Any]:

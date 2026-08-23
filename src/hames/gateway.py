@@ -107,7 +107,7 @@ class GatewayState:
         config = load_config(paths)
         database = Database(paths.database)
         database.migrate()
-        ledger = Ledger(database)
+        ledger = Ledger(database, blob_threshold_bytes=config.ledger.blob_threshold_bytes)
         broker = EventBroker()
         selected_providers = providers or configured_providers(config)
         runs = RunManager(

@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from hames.providers.base import JSON_OBJECT, JsonValue
+
 
 class EventPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -86,6 +88,7 @@ class FailurePayload(EventPayload):
 class RuntimeNoticePayload(EventPayload):
     code: str = "notice"
     message: str
+    details: dict[str, Any] = {}
 
 
 EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
@@ -112,8 +115,8 @@ class UnknownEventType(ValueError):
     pass
 
 
-def validate_payload(event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+def validate_payload(event_type: str, payload: dict[str, Any]) -> dict[str, JsonValue]:
     model = EVENT_PAYLOADS.get(event_type)
     if model is None:
         raise UnknownEventType(f"unknown event type: {event_type}")
-    return model.model_validate(payload).model_dump(mode="json")
+    return JSON_OBJECT.validate_python(model.model_validate(payload).model_dump(mode="json"))

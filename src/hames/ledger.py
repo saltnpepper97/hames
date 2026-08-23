@@ -7,15 +7,17 @@ import json
 import sqlite3
 import threading
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from hames.blobs import BlobIntegrityError, BlobStore
 from hames.database import Database
 from hames.event_types import validate_payload
+from hames.redaction import redact
 
 
 def utc_now() -> str:
@@ -62,11 +64,31 @@ class Event(LedgerModel):
     redaction_state: str
 
 
+class IntegrityResult(LedgerModel):
+    event_id: str
+    ok: bool
+    payload_hash: str
+    blob_hash: str | None
+    redaction_state: str
+
+
+class EventIntegrityError(RuntimeError):
+    pass
+
+
 class Ledger:
     """The only supported write path for M0 sessions and events."""
 
-    def __init__(self, database: Database) -> None:
+    def __init__(
+        self,
+        database: Database,
+        *,
+        blob_store: BlobStore | None = None,
+        blob_threshold_bytes: int = 65_536,
+    ) -> None:
         self.database = database
+        self.blob_store = blob_store or BlobStore(database.path.parent / "blobs")
+        self.blob_threshold_bytes = blob_threshold_bytes
         self._write_lock = threading.Lock()
 
     @classmethod
@@ -135,6 +157,7 @@ class Ledger:
         agent_id: str | None = None,
         causation_id: str | None = None,
         correlation_id: str | None = None,
+        secret_paths: Iterable[str] = (),
     ) -> Event:
         with self._write_lock, self.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -147,6 +170,7 @@ class Ledger:
                 agent_id=agent_id,
                 causation_id=causation_id,
                 correlation_id=correlation_id,
+                secret_paths=secret_paths,
             )
             connection.commit()
             return event
@@ -162,19 +186,29 @@ class Ledger:
         agent_id: str | None = None,
         causation_id: str | None = None,
         correlation_id: str | None = None,
+        secret_paths: Iterable[str] = (),
     ) -> Event:
         event_id = new_id()
         created_at = utc_now()
         validated = validate_payload(event_type, dict(payload))
-        encoded = json.dumps(validated, separators=(",", ":"), sort_keys=True)
-        payload_hash = hashlib.sha256(encoded.encode()).hexdigest()
+        persisted, was_redacted = redact(validated, secret_paths)
+        encoded = json.dumps(persisted, separators=(",", ":"), sort_keys=True)
+        encoded_bytes = encoded.encode()
+        payload_hash = hashlib.sha256(encoded_bytes).hexdigest()
+        blob_hash = (
+            self.blob_store.put(encoded_bytes)
+            if len(encoded_bytes) > self.blob_threshold_bytes
+            else None
+        )
+        inline_payload = None if blob_hash else encoded
+        redaction_state = "redacted" if was_redacted else "none"
         cursor = connection.execute(
             """
             INSERT INTO events(
                 id, session_id, run_id, agent_id, type, schema_version,
                 created_at, causation_id, correlation_id, payload_json, blob_hash,
                 payload_hash, redaction_state
-            ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, NULL, ?, 'none')
+            ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event_id,
@@ -185,8 +219,10 @@ class Ledger:
                 created_at,
                 causation_id,
                 correlation_id,
-                encoded,
+                inline_payload,
+                blob_hash,
                 payload_hash,
+                redaction_state,
             ),
         )
         sequence = cursor.lastrowid
@@ -203,10 +239,10 @@ class Ledger:
             created_at=created_at,
             causation_id=causation_id,
             correlation_id=correlation_id,
-            payload=validated,
-            blob_hash=None,
+            payload=persisted,
+            blob_hash=blob_hash,
             payload_hash=payload_hash,
-            redaction_state="none",
+            redaction_state=redaction_state,
         )
 
     def get_session(self, session_id: str) -> Session:
@@ -234,6 +270,23 @@ class Ledger:
                 (session_id, after_sequence),
             ).fetchall()
         return [self._event_from_row(row) for row in rows]
+
+    def get_event(self, event_id: str) -> Event:
+        with self.database.connect() as connection:
+            row = connection.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+        if row is None:
+            raise KeyError(event_id)
+        return self._event_from_row(row)
+
+    def verify_event(self, event_id: str) -> IntegrityResult:
+        event = self.get_event(event_id)
+        return IntegrityResult(
+            event_id=event.id,
+            ok=True,
+            payload_hash=event.payload_hash,
+            blob_hash=event.blob_hash,
+            redaction_state=event.redaction_state,
+        )
 
     def close_session(self, session_id: str, *, status: str = "closed") -> Session:
         if status not in {"closed", "cancelled", "failed"}:
@@ -289,12 +342,24 @@ class Ledger:
             connection.commit()
         return self.get_session(session_id)
 
-    @staticmethod
-    def _event_from_row(row: sqlite3.Row) -> Event:
+    def _event_from_row(self, row: sqlite3.Row) -> Event:
         values = dict(row)
         payload_json = values.pop("payload_json")
-        if payload_json is None:
-            raise RuntimeError("blob-backed payload support is not initialized")
-        payload = json.loads(payload_json)
+        blob_hash = values.get("blob_hash")
+        try:
+            encoded = (
+                self.blob_store.read(str(blob_hash))
+                if blob_hash is not None
+                else str(payload_json).encode()
+            )
+        except BlobIntegrityError as exc:
+            raise EventIntegrityError(str(exc)) from exc
+        actual = hashlib.sha256(encoded).hexdigest()
+        if actual != values["payload_hash"]:
+            expected = values["payload_hash"]
+            raise EventIntegrityError(
+                f"event {values['id']} payload hash mismatch: expected {expected}, found {actual}"
+            )
+        payload = json.loads(encoded)
         values["payload"] = payload
         return Event.model_validate(values)

@@ -60,6 +60,14 @@ def test_nested_provider_override_keeps_default_endpoint(hames_paths: HamesPaths
     assert config.providers.llama_cpp.base_url == "http://127.0.0.1:8080"
 
 
+def test_blob_threshold_environment_override(hames_paths: HamesPaths) -> None:
+    config = load_config(
+        hames_paths,
+        environ={"HAMES_LEDGER__BLOB_THRESHOLD_BYTES": "131072"},
+    )
+    assert config.ledger.blob_threshold_bytes == 131_072
+
+
 def test_legacy_config_is_translated_without_rewriting(hames_paths: HamesPaths) -> None:
     hames_paths.ensure_foundation()
     legacy = """\
