@@ -8,7 +8,7 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -664,7 +664,11 @@ class MemoryStore:
             )
             recency = 1.0 / (1.0 + age_days / 30.0)
             score = 4 * anchor + 3 * relevance + 2 * record.importance + record.confidence + recency
-            tokens = max(1, len(record.summary.encode()) // 4)
+            encoded = json.dumps(
+                _canonical_memory_item(record), separators=(",", ":"), sort_keys=True
+            ).encode()
+            # Include conservative allowance for the surrounding list and comma.
+            tokens = max(1, (len(encoded) + 3) // 4 + 1)
             ranked.append(RetrievedMemory(record=record, score=score, estimated_tokens=tokens))
         ranked.sort(key=lambda item: (-item.score, item.record.id))
         selected: list[RetrievedMemory] = []
@@ -833,16 +837,17 @@ def should_auto_activate(candidate: MemoryCandidate, *, explicit: bool = False) 
 
 
 def canonical_memory_context(items: list[RetrievedMemory]) -> str:
-    payload = [
-        {
-            "id": item.record.id,
-            "layer": item.record.layer,
-            "summary": item.record.summary,
-            "subject": item.record.subject,
-            "predicate": item.record.predicate,
-            "value": item.record.value,
-            "provenance_event_ids": item.record.provenance_event_ids,
-        }
-        for item in items
-    ]
+    payload = [_canonical_memory_item(item.record) for item in items]
     return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+
+def _canonical_memory_item(record: MemoryRecord) -> dict[str, JsonValue]:
+    return {
+        "id": record.id,
+        "layer": record.layer,
+        "summary": record.summary,
+        "subject": record.subject,
+        "predicate": record.predicate,
+        "value": record.value,
+        "provenance_event_ids": cast(list[JsonValue], record.provenance_event_ids),
+    }

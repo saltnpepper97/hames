@@ -504,7 +504,7 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "memory.promotion.requested": MemoryPromotionPayload,
     "skill.authoring.requested": SkillAuthoringPayload,
     "skill.workflow.observed": SkillWorkflowPayload,
-    "skill.proposal_triggered": SkillAuthoringPayload,
+    "skill.evolution.triggered": SkillAuthoringPayload,
     "skill.job.queued": SkillJobPayload,
     "skill.job.started": SkillJobPayload,
     "skill.job.completed": SkillJobPayload,

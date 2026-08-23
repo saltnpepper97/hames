@@ -244,6 +244,14 @@ class SkillRegistry:
             raise ValueError("Skill evidence must be non-empty and visible to the source session")
         scope, scope_key = self._scope(metadata.scope, session)
         skill_id = target_skill_id or self._entity_for(session, metadata.id, scope, scope_key)
+        if target_skill_id is not None:
+            entity = self._entity(target_skill_id)
+            entity_scope = str(entity["scope"])
+            entity_key = None if entity["scope_key"] is None else str(entity["scope_key"])
+            if str(entity["slug"]) != metadata.id:
+                raise ValueError("Skill correction cannot change ID")
+            if entity_scope != scope or entity_key != scope_key:
+                raise ValueError("Skill correction cannot change scope")
         base = self.active_version(skill_id) if target_skill_id else None
         version_number = self._next_version(skill_id)
         metadata = metadata.model_copy(update={"version": version_number})
@@ -773,22 +781,26 @@ class SkillRegistry:
 
     def reject(self, session: Session, version_id: str, *, reason: str, causation_id: str) -> Event:
         candidate = self.get_visible_version(session, version_id)
-        with self.database.connect() as connection:
+        with self.ledger.transaction_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 "UPDATE skill_versions SET status = 'rejected' WHERE id = ?", (version_id,)
             )
-        return self.ledger.append(
-            session_id=session.id,
-            agent_id=session.agent_id,
-            event_type="skill.rejected",
-            payload={
-                "skill_id": candidate.skill_id,
-                "version_id": version_id,
-                "reason": reason,
-            },
-            causation_id=causation_id,
-            correlation_id=version_id,
-        )
+            event = self.ledger.append_in_transaction(
+                connection,
+                session_id=session.id,
+                agent_id=session.agent_id,
+                event_type="skill.rejected",
+                payload={
+                    "skill_id": candidate.skill_id,
+                    "version_id": version_id,
+                    "reason": reason,
+                },
+                causation_id=causation_id,
+                correlation_id=version_id,
+            )
+            connection.commit()
+        return event
 
     def quarantine_and_rollback(
         self, session: Session, version_id: str, *, reason: str, causation_id: str
@@ -800,7 +812,8 @@ class SkillRegistry:
         fallback = next(
             (item for item in history if item.status in {"superseded", "verified", "stale"}), None
         )
-        with self.database.connect() as connection:
+        with self.ledger.transaction_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 "UPDATE skill_versions SET status = 'quarantined' WHERE id = ?", (current.id,)
             )
@@ -808,14 +821,20 @@ class SkillRegistry:
                 "UPDATE skills SET active_version_id = NULL, updated_at = ? WHERE id = ?",
                 (utc_now(), current.skill_id),
             )
-        quarantined = self.ledger.append(
-            session_id=session.id,
-            agent_id=session.agent_id,
-            event_type="skill.quarantined",
-            payload={"skill_id": current.skill_id, "version_id": current.id, "reason": reason},
-            causation_id=causation_id,
-            correlation_id=current.id,
-        )
+            quarantined = self.ledger.append_in_transaction(
+                connection,
+                session_id=session.id,
+                agent_id=session.agent_id,
+                event_type="skill.quarantined",
+                payload={
+                    "skill_id": current.skill_id,
+                    "version_id": current.id,
+                    "reason": reason,
+                },
+                causation_id=causation_id,
+                correlation_id=current.id,
+            )
+            connection.commit()
         if fallback is None:
             return self.get(current.id), (quarantined,)
         activated = self.activate(

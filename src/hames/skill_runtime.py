@@ -152,6 +152,42 @@ class SkillManager:
             )
             if job is not None:
                 queued.append(job)
+        loaded = [event for event in events if event.type == "skill.loaded"]
+        targeted = {
+            str(request.payload["target_skill_id"])
+            for request in requests
+            if request.payload.get("target_skill_id") is not None
+        }
+        if outcome == "completed" and loaded and self._looks_like_correction(task_text):
+            target_skill_id = str(loaded[-1].payload["skill_id"])
+            if target_skill_id not in targeted:
+                target = await asyncio.to_thread(self.registry.active_version, target_skill_id)
+                target_scope = "workspace" if target is None else target.scope
+                triggered = await self._append(
+                    session_id=session.id,
+                    run_id=run_id,
+                    agent_id=session.agent_id,
+                    event_type="skill.evolution.triggered",
+                    payload={
+                        "goal": task_text,
+                        "scope": target_scope,
+                        "target_skill_id": target_skill_id,
+                        "evidence_event_ids": [user.id, loaded[-1].id, observed.id],
+                    },
+                    causation_id=observed.id,
+                    correlation_id=run_id,
+                )
+                job = await self._queue_job(
+                    session,
+                    kind="patch",
+                    source=triggered,
+                    run_id=run_id,
+                    goal=task_text,
+                    scope=target_scope,
+                    target_skill_id=target_skill_id,
+                )
+                if job is not None:
+                    queued.append(job)
         repeated = (
             outcome == "completed"
             and len(tool_sequence) >= 2
@@ -162,7 +198,7 @@ class SkillManager:
                 session_id=session.id,
                 run_id=run_id,
                 agent_id=session.agent_id,
-                event_type="skill.proposal_triggered",
+                event_type="skill.evolution.triggered",
                 payload={
                     "goal": task_text,
                     "scope": "workspace",
@@ -695,6 +731,21 @@ class SkillManager:
     @staticmethod
     def _draft_scope(job: SkillJob, session: Session) -> str:
         return f"agent:{session.agent_id}" if job.scope == "agent" else job.scope
+
+    @staticmethod
+    def _looks_like_correction(task_text: str) -> bool:
+        lowered = task_text.casefold()
+        markers = (
+            "actually",
+            "that was wrong",
+            "you were wrong",
+            "correct that",
+            "fix that workflow",
+            "do this instead",
+            "next time",
+            "from now on",
+        )
+        return any(marker in lowered for marker in markers)
 
     async def _append(self, **kwargs: Any) -> Event:
         event = await asyncio.to_thread(self.ledger.append, **kwargs)
