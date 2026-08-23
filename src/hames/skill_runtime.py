@@ -66,12 +66,19 @@ class SkillManager:
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._worker: asyncio.Task[None] | None = None
 
-    async def start(self) -> None:
+    async def start(self) -> frozenset[str]:
         if self._worker is not None and not self._worker.done():
-            return
-        for job in await asyncio.to_thread(self.registry.recover_jobs):
+            return frozenset()
+        recovered = await asyncio.to_thread(self.registry.recover_jobs)
+        for job in recovered:
             self._queue.put_nowait(job.id)
         self._worker = asyncio.create_task(self._work(), name="hames-skill-worker")
+        return frozenset(job.id for job in recovered)
+
+    async def _schedule(self, job_id: str) -> None:
+        recovered = await self.start()
+        if job_id not in recovered:
+            self._queue.put_nowait(job_id)
 
     async def close(self) -> None:
         if self._worker is None:
@@ -218,9 +225,10 @@ class SkillManager:
             if job is not None:
                 queued.append(job)
         if queued:
-            await self.start()
+            recovered = await self.start()
             for job in queued:
-                self._queue.put_nowait(job.id)
+                if job.id not in recovered:
+                    self._queue.put_nowait(job.id)
         return queued
 
     async def author(
@@ -262,14 +270,12 @@ class SkillManager:
         )
         if job is None:
             raise ValueError("Skill authoring job is already queued")
-        await self.start()
-        self._queue.put_nowait(job.id)
+        await self._schedule(job.id)
         return job
 
     async def retry(self, session_id: str, job_id: str) -> SkillJob:
         job = await asyncio.to_thread(self.registry.retry_job, session_id, job_id)
-        await self.start()
-        self._queue.put_nowait(job.id)
+        await self._schedule(job.id)
         return job
 
     async def _queue_job(
@@ -313,7 +319,10 @@ class SkillManager:
                 self._queue.task_done()
 
     async def _execute(self, job_id: str) -> None:
-        job, started = await asyncio.to_thread(self.registry.start_job, job_id)
+        try:
+            job, started = await asyncio.to_thread(self.registry.start_job, job_id)
+        except ValueError:
+            return
         await self._publish(started)
         try:
             used = await asyncio.to_thread(self.registry.background_model_calls_today)

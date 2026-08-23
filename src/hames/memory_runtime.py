@@ -50,12 +50,19 @@ class MemoryManager:
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._worker: asyncio.Task[None] | None = None
 
-    async def start(self) -> None:
+    async def start(self) -> frozenset[str]:
         if self._worker is not None and not self._worker.done():
-            return
-        for job in await asyncio.to_thread(self.store.recover_jobs):
+            return frozenset()
+        recovered = await asyncio.to_thread(self.store.recover_jobs)
+        for job in recovered:
             self._queue.put_nowait(job.id)
         self._worker = asyncio.create_task(self._work(), name="hames-memory-worker")
+        return frozenset(job.id for job in recovered)
+
+    async def _schedule(self, job_id: str) -> None:
+        recovered = await self.start()
+        if job_id not in recovered:
+            self._queue.put_nowait(job_id)
 
     async def close(self) -> None:
         if self._worker is None:
@@ -92,8 +99,7 @@ class MemoryManager:
                 return None
             raise
         await self._publish(event)
-        await self.start()
-        self._queue.put_nowait(job.id)
+        await self._schedule(job.id)
         return job
 
     async def enqueue_capture(self, session: Session, content: str, source: Event) -> MemoryJob:
@@ -106,8 +112,7 @@ class MemoryManager:
             content=content,
         )
         await self._publish(event)
-        await self.start()
-        self._queue.put_nowait(job.id)
+        await self._schedule(job.id)
         return job
 
     async def retry(self, session_id: str, job_id: str) -> MemoryJob:
@@ -127,8 +132,7 @@ class MemoryManager:
             causation_id=job.source_event_id,
             correlation_id=job.id,
         )
-        await self.start()
-        self._queue.put_nowait(job.id)
+        await self._schedule(job.id)
         return job
 
     async def _work(self) -> None:
@@ -143,7 +147,10 @@ class MemoryManager:
                 self._queue.task_done()
 
     async def _execute(self, job_id: str) -> None:
-        job, started = await asyncio.to_thread(self.store.start_job, job_id)
+        try:
+            job, started = await asyncio.to_thread(self.store.start_job, job_id)
+        except ValueError:
+            return
         await self._publish(started)
         try:
             candidates = await self._extract(job)

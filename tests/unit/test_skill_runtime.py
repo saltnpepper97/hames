@@ -4,6 +4,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -176,6 +177,14 @@ async def test_repeated_successful_workflow_autonomously_activates_skill(
         types = [event.type for event in ledger.list_events(session.id)]
         assert "skill.workflow.observed" in types
         assert "skill.activated" in types
+        assert types.count("skill.job.started") == 1
+        handle: Any = manager
+        assert handle._worker is not None and not handle._worker.done()
+        handle._queue.put_nowait(jobs[0].id)
+        await asyncio.sleep(0.4)
+        assert handle._worker is not None and not handle._worker.done()
+        later = [event.type for event in ledger.list_events(session.id)]
+        assert later.count("skill.job.started") == 1
     finally:
         await manager.close()
 

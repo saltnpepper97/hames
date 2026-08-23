@@ -4,6 +4,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -142,6 +143,70 @@ async def test_background_extraction_activates_important_user_memory(
         event_types = [event.type for event in ledger.list_events(session.id)]
         assert "memory.job.completed" in event_types
         assert "memory.accepted" in event_types
+        assert event_types.count("memory.job.started") == 1
+        handle: Any = manager
+        assert handle._worker is not None and not handle._worker.done()
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_dequeue_does_not_kill_memory_worker(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    session = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    user = ledger.append(
+        session_id=session.id,
+        agent_id=session.agent_id,
+        event_type="user.message",
+        payload={"content": "I prefer concise documentation."},
+    )
+    started = ledger.append(
+        session_id=session.id,
+        run_id="run-dup",
+        agent_id=session.agent_id,
+        event_type="run.started",
+        payload={"max_model_turns": 1, "max_tool_calls": 1, "max_active_seconds": 30.0},
+        causation_id=user.id,
+    )
+    ledger.append(
+        session_id=session.id,
+        run_id="run-dup",
+        agent_id=session.agent_id,
+        event_type="run.completed",
+        payload={"model_turns": 1, "tool_calls": 0, "active_seconds": 0.1},
+        causation_id=started.id,
+    )
+    provider = ExtractingProvider()
+    manager = MemoryManager(
+        ledger=ledger,
+        config=HamesConfig(),
+        providers={"fake": provider},
+        broker=EventBroker(),
+    )
+    try:
+        job = await manager.enqueue_run(session.id, "run-dup")
+        assert job is not None
+        for _ in range(100):
+            if MemoryStore(ledger).get_job(job.id).status == "completed":
+                break
+            await asyncio.sleep(0.01)
+        assert MemoryStore(ledger).get_job(job.id).status == "completed"
+        handle: Any = manager
+        handle._queue.put_nowait(job.id)
+        await asyncio.sleep(0.4)
+        assert handle._worker is not None and not handle._worker.done()
+        assert len(provider.requests) == 1
+        started_events = [
+            event for event in ledger.list_events(session.id) if event.type == "memory.job.started"
+        ]
+        assert len(started_events) == 1
     finally:
         await manager.close()
 
