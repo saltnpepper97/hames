@@ -6,7 +6,7 @@ import pytest
 
 from hames.database import MIGRATIONS, Database
 from hames.ledger import Ledger
-from hames.memory import MemoryCandidate, MemoryStore
+from hames.memory import MemoryAnchor, MemoryCandidate, MemoryStore
 from hames.paths import HamesPaths
 
 
@@ -222,6 +222,10 @@ def test_episode_projection_is_deterministic_and_skips_routine_chat(
     assert projected.record.layer == "episodic"
     assert projected.events[-1].type == "memory.episode.projected"
     assert "read README.md" in projected.record.summary
+    restarted_projection = MemoryStore(ledger).project_episode(session, "notable-run")
+    assert restarted_projection is not None
+    assert restarted_projection.record.id == projected.record.id
+    assert restarted_projection.events == ()
 
     routine_user = ledger.append(
         session_id=session.id,
@@ -245,3 +249,59 @@ def test_episode_projection_is_deterministic_and_skips_routine_chat(
         payload={"model_turns": 1, "tool_calls": 0, "active_seconds": 0.1},
     )
     assert MemoryStore(ledger).project_episode(session, "routine-run") is None
+
+
+def test_semantic_memory_supports_flexible_and_session_team_anchors(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    root = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="builder",
+        provider="fake",
+        model="fixture",
+    )
+    evidence = ledger.append(
+        session_id=root.id,
+        agent_id=root.agent_id,
+        event_type="user.message",
+        payload={"content": "The gateway listens on a loopback address."},
+    )
+    store = MemoryStore(ledger)
+    semantic = store.create_candidate(
+        session=root,
+        candidate=MemoryCandidate(
+            layer="semantic",
+            visibility="session_team",
+            subject="hames:gateway",
+            predicate="network_scope",
+            value="loopback",
+            summary="The Hames gateway listens on a loopback address.",
+            confidence=1.0,
+            importance=0.8,
+            anchors=[MemoryAnchor(kind="component", value="gateway")],
+            provenance_event_ids=[evidence.id],
+            evidence_basis="explicit_user",
+        ),
+        run_id=None,
+        origin_kind="explicit",
+        activate=True,
+        causation_id=evidence.id,
+    ).record
+    assert semantic.layer == "semantic"
+    assert MemoryAnchor(kind="component", value="gateway") in semantic.anchors
+
+    child = ledger.fork_session(
+        root.id,
+        fork_event_id=store.get(semantic.id).provenance_event_ids[0],
+        agent_id="reviewer",
+    )
+    unrelated = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="builder",
+        provider="fake",
+        model="fixture",
+    )
+    assert store.get_visible(child, semantic.id).id == semantic.id
+    with pytest.raises(KeyError):
+        store.get_visible(unrelated, semantic.id)

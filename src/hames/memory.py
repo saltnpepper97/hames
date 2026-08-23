@@ -247,6 +247,13 @@ class MemoryStore:
         return MemoryMutation(self.get(memory_id), tuple(events))
 
     def project_episode(self, session: Session, run_id: str) -> MemoryMutation | None:
+        with self.database.connect() as connection:
+            existing = connection.execute(
+                "SELECT id FROM memory_records WHERE layer = 'episodic' AND source_run_id = ?",
+                (run_id,),
+            ).fetchone()
+        if existing is not None:
+            return MemoryMutation(self.get(str(existing["id"])), ())
         events = self.ledger.list_run_events(run_id)
         if not events:
             return None
