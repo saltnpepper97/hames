@@ -53,14 +53,36 @@ class AssistantOutputPayload(EventPayload):
     status: str
 
 
+class ContextSourcePayload(EventPayload):
+    source_id: str
+    source_type: str
+    content_hash: str
+    priority: int
+    estimated_tokens: int
+    selected_tokens: int = 0
+    visibility: str
+    truncation: str
+    reason: str
+    event_ids: list[str] = Field(default_factory=list)
+
+
 class ContextCompiledPayload(EventPayload):
-    core_contract_hash: str
-    agent_capsule_hash: str
-    history_event_ids: list[str]
-    working_directory: str
+    compiler_version: int
+    estimator_version: str
+    provider: str
+    model: str
+    reasoning_effort: str
+    context_window_tokens: int
+    context_window_source: str
+    input_budget_tokens: int
+    output_reserve_tokens: int
+    estimated_input_tokens: int
+    selected_sources: list[ContextSourcePayload]
+    omitted_sources: list[ContextSourcePayload]
     source_order: list[str]
-    tool_schema_hash: str = ""
-    policy_summary_hash: str = ""
+    contributing_event_ids: list[str]
+    request_hash: str
+    request_snapshot_blob_hash: str
 
 
 class ModelRequestedPayload(EventPayload):

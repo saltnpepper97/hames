@@ -12,7 +12,7 @@ from typing import Any
 from hames.agent import load_agent
 from hames.broker import EventBroker
 from hames.config import HamesConfig
-from hames.context import compile_context
+from hames.context import ContextBudgetError, canonical_request_snapshot, compile_context
 from hames.control import Approval, ControlStore
 from hames.ledger import Event, Ledger, Session, new_id
 from hames.paths import HamesPaths
@@ -235,6 +235,15 @@ class RunManager:
             await self._append_failure(
                 session_id, run_id, user_event.id, exc.code, str(exc), exc.details
             )
+        except ContextBudgetError as exc:
+            await self._append_failure(
+                session_id,
+                run_id,
+                user_event.id,
+                "context_budget_exceeded",
+                str(exc),
+                exc.details,
+            )
         except ProviderError as exc:
             await self._append_failure(
                 session_id,
@@ -348,7 +357,26 @@ class RunManager:
         )
         history = await asyncio.to_thread(self.ledger.replay, session.id)
         definitions = self.tools.definitions()
-        context = compile_context(session, history, capsule, definitions, POLICY_SUMMARY)
+        context = compile_context(
+            session,
+            history,
+            capsule,
+            definitions,
+            POLICY_SUMMARY,
+            self.config.context,
+            run_id=run_id,
+        )
+        snapshot = canonical_request_snapshot(
+            model=session.model,
+            system=context.system,
+            messages=context.messages,
+            tools=context.tools,
+            reasoning_effort=session.reasoning_effort,
+            max_tokens=self.config.context.output_reserve_tokens,
+        )
+        request_hash = await asyncio.to_thread(self.ledger.blob_store.put, snapshot)
+        context.manifest.request_hash = request_hash
+        context.manifest.request_snapshot_blob_hash = request_hash
         previous = history[-1].id if history else initial_causation_id
         context_event = await self._append(
             session_id=session.id,
@@ -378,7 +406,8 @@ class RunManager:
             messages=context.messages,
             system=context.system,
             reasoning_effort=session.reasoning_effort,
-            tools=definitions,
+            max_tokens=self.config.context.output_reserve_tokens,
+            tools=context.tools,
         )
         started = completed = usage_seen = False
         finish_reason = "stop"

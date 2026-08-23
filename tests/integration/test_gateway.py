@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import cast
@@ -107,6 +109,15 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             assert reasoning_payload["content"] == "check "
             assert answer_payload["content"] == "hello"
             assert fake.requests[0].reasoning_effort == "medium"
+            context_event = next(event for event in events if event["type"] == "context.compiled")
+            context_payload = context_event["payload"]
+            assert isinstance(context_payload, dict)
+            snapshot_hash = str(context_payload["request_snapshot_blob_hash"])
+            snapshot = state.ledger.blob_store.read(snapshot_hash)
+            assert hashlib.sha256(snapshot).hexdigest() == context_payload["request_hash"]
+            persisted_request = json.loads(snapshot)
+            assert persisted_request["messages"][0]["content"] == "Hi"
+            assert persisted_request["max_tokens"] == 4096
 
             branch = state.ledger.fork_session(session_id)
             branch_accepted = await client.post(

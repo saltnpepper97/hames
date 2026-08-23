@@ -90,8 +90,10 @@ class OllamaProvider:
                 return set(), None
             body = JSON_OBJECT.validate_python(cast(object, response.json()))
             capabilities = body.get("capabilities", [])
-            supported = (
-                {str(value) for value in capabilities} if isinstance(capabilities, list) else set()
+            supported: set[str] = (
+                {str(value) for value in capabilities}
+                if isinstance(capabilities, list)
+                else set[str]()
             )
             model_info = body.get("model_info", {})
             context_length = None
