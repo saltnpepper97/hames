@@ -242,6 +242,39 @@ class Ledger:
             connection.commit()
         return self.get_session(session_id)
 
+    def update_session_settings(
+        self,
+        session_id: str,
+        *,
+        provider: str,
+        model: str,
+        reasoning_effort: str,
+    ) -> Session:
+        with self._write_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                UPDATE sessions
+                SET provider = ?, model = ?, reasoning_effort = ?
+                WHERE id = ? AND status = 'open'
+                """,
+                (provider, model, reasoning_effort, session_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(session_id)
+            self._append_on_connection(
+                connection,
+                session_id=session_id,
+                event_type="session.settings.changed",
+                payload={
+                    "provider": provider,
+                    "model": model,
+                    "reasoning_effort": reasoning_effort,
+                },
+            )
+            connection.commit()
+        return self.get_session(session_id)
+
     @staticmethod
     def _event_from_row(row: sqlite3.Row) -> Event:
         values = dict(row)

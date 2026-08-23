@@ -45,6 +45,12 @@ class MessageRequest(ApiModel):
     content: str = Field(min_length=1)
 
 
+class UpdateSessionRequest(ApiModel):
+    provider: str
+    model: str
+    reasoning_effort: str = ""
+
+
 class RunAccepted(ApiModel):
     run_id: str
 
@@ -218,6 +224,39 @@ def create_app(state: GatewayState) -> FastAPI:
     async def get_session(session_id: str) -> Session:
         try:
             return await asyncio.to_thread(state.ledger.get_session, session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+
+    @app.patch("/v1/sessions/{session_id}", dependencies=auth, response_model=Session)
+    async def update_session(session_id: str, request: UpdateSessionRequest) -> Session:
+        provider = state.providers.get(request.provider)
+        if provider is None:
+            raise ApiError(400, "unknown_provider", f"unknown provider: {request.provider}")
+        models = await provider.list_models()
+        selected = next((item for item in models if item.id == request.model), None)
+        if selected is None:
+            raise ApiError(400, "unknown_model", f"unknown model: {request.model}")
+        if request.reasoning_effort and request.reasoning_effort != "off":
+            if not selected.reasoning_supported:
+                raise ApiError(400, "reasoning_not_supported", "model does not advertise reasoning")
+            if (
+                selected.reasoning_efforts
+                and request.reasoning_effort not in selected.reasoning_efforts
+            ):
+                raise ApiError(
+                    400,
+                    "reasoning_effort_not_supported",
+                    f"unsupported reasoning effort: {request.reasoning_effort}",
+                    details={"supported": selected.reasoning_efforts},
+                )
+        try:
+            return await asyncio.to_thread(
+                state.ledger.update_session_settings,
+                session_id,
+                provider=request.provider,
+                model=request.model,
+                reasoning_effort=request.reasoning_effort,
+            )
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
 
