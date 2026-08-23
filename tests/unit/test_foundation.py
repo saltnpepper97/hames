@@ -10,6 +10,7 @@ from hames import __version__
 from hames.agent import load_agent
 from hames.cli import main
 from hames.config import load_config
+from hames.context import CORE_CONTRACT
 from hames.doctor import run_doctor
 from hames.paths import HamesPaths
 
@@ -19,6 +20,13 @@ def test_default_and_overridden_home(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(environ={"HAMES_HOME": str(expected)})
     assert paths.root == expected
     assert paths.database == expected / "hames.db"
+
+
+def test_core_contract_keeps_model_and_harness_authority_separate() -> None:
+    assert "no tools are exposed" in CORE_CONTRACT
+    assert "working-directory path is context, not evidence" in CORE_CONTRACT
+    assert "do not describe\nyourself as necessarily stateless per turn" in CORE_CONTRACT
+    assert "Do not guess about Hames features" in CORE_CONTRACT
 
 
 def test_foundation_is_private_and_does_not_overwrite(hames_paths: HamesPaths) -> None:
