@@ -1,20 +1,22 @@
 # Hames
 
 Hames is a local agent harness under active development. A trusted Python
-backend owns the harness and gateway; a Rust REPL is the first client. M0 focuses
-on proving local-model conversations and provenance before adding tools or rich
-interfaces.
+backend owns the harness and gateway; a Rust REPL is the first client. The current
+milestones prove local-model conversations, provenance, and reliable provider
+transport before adding tools or rich interfaces.
 
 See [`docs/implementation-plan/README.md`](docs/implementation-plan/README.md)
 for the milestone plan.
 
 ## Status
 
-M1 is implemented. In addition to the M0 local conversation slice, Hames provides
+M2 is implemented. In addition to the M0 local conversation slice, Hames provides
 immutable session branching, ancestry-aware replay, typed and integrity-checked
 events, irreversible secret redaction, and content-addressed payload blobs. Hames
-still intentionally exposes no tools to the model; file and shell work begin in M3
-after the policy boundary exists.
+also has named local-provider profiles, explicit health probes, strict normalized
+streams, resumable SSE, model-specific reasoning levels, and a tool-call wire
+contract. It still intentionally executes no tools; file and shell work begin in
+M3 after the policy boundary exists.
 
 ## Quick start
 
@@ -37,37 +39,46 @@ The REPL starts the Python gateway on demand. Exiting the REPL leaves it running
 use `target/debug/hames gateway status` or `target/debug/hames gateway stop` to
 inspect or stop it.
 
-Hames defaults to llama.cpp at `http://127.0.0.1:8080`. If exactly one model is
-reported it is selected automatically; otherwise the REPL asks. A minimal
-`~/.hames/config.toml` override looks like:
+Hames defaults to the `llama_cpp` profile at `http://127.0.0.1:8080`. Model
+selection prefers the request, then the profile default, then a sole discovered
+model; otherwise the REPL asks. A minimal `~/.hames/config.toml` override looks
+like:
 
 ```toml
 [runtime]
 default_provider = "llama_cpp" # or "ollama"
 
 [providers.llama_cpp]
+adapter = "llama_cpp"
 base_url = "http://127.0.0.1:8080"
 model = "qwen3.8-27b"
 reasoning_effort = "medium"
+supported_reasoning_efforts = ["low", "medium", "xhigh"]
 
 [providers.ollama]
+adapter = "ollama"
 base_url = "http://127.0.0.1:11434"
 ```
+
+Profile names are arbitrary, and multiple profiles may use the same adapter.
+The legacy profile names infer their adapter when it is omitted.
 
 Every setting can be overridden with a nested environment name such as
 `HAMES_PROVIDERS__LLAMA_CPP__MODEL=qwen3.8-27b`. `HAMES_HOME` relocates all
 persistent state from its private default at `~/.hames`; it is particularly useful
 for isolated tests.
 
-If `~/.hames/config.toml` is from the pre-rewrite `schema_version` format, M0
+If `~/.hames/config.toml` is from the pre-rewrite `schema_version` format, Hames
 recognizes it without rewriting it. The active `llamacpp`/Ollama provider and its
 endpoint, model, reasoning effort, and timeout are translated in memory. Other
 legacy settings remain preserved but inactive until their corresponding milestone
 is implemented; `hames doctor` reports when this compatibility mode is active.
 
 Inside the REPL, `/help` lists session, provider, model, status, and reasoning
-commands. A trailing `\` continues input on the next line. Ctrl-C during a model
-run requests cancellation; Ctrl-D or `/quit` exits the client.
+commands. `/reasoning` reports model-specific choices; `default`, `off`, `on`, and
+advertised named levels can be selected. A trailing `\` continues input on the
+next line. Ctrl-C during a model run requests cancellation; Ctrl-D or `/quit`
+exits the client.
 
 After a completed answer, `/fork` creates a branch and switches to it. `/events`
 shows the effective inherited history and `/session` shows the current ancestry.
