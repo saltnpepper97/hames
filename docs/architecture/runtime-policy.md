@@ -1,7 +1,7 @@
 # Runtime and policy boundary
 
 The Python runtime is the only component allowed to execute model-requested work.
-Clients send messages and decisions through protocol v8; provider adapters only
+Clients send messages and decisions through protocol v9; provider adapters only
 translate normalized messages and streams. Neither the Rust REPL nor a provider
 adapter directly reads files, writes files, or starts commands.
 
@@ -49,3 +49,13 @@ The shell classifier is deliberately a policy gate rather than a containment
 sandbox. Bash is expressive enough to obscure filesystem and network behavior;
 strong isolation belongs in a later hardening milestone and must not be implied by
 the M03 checks.
+
+## Skill script isolation
+
+The core shell policy above remains the boundary for ordinary agent-selected Bash.
+Self-authored Skill scripts are narrower: validation and execution require
+Bubblewrap, use fresh user/network/process namespaces, hide the real home, mount
+the immutable package read-only, and allow writes only in disposable run scratch.
+Normal execution sees the project read-only at `/project`; validation self-tests do
+not receive a project mount at all. If isolation is unavailable, Hames rejects the
+script instead of falling back to host execution.

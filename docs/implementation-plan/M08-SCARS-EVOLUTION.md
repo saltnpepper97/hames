@@ -6,7 +6,10 @@ Implement Hames’s defining self-correction mechanism.
 
 A **Scar** is a durable record of a meaningful failure or correction linked to evidence, trigger conditions, expected behavior, a chosen repair layer, evaluation, and future regression checks.
 
-The goal is not autonomous self-rewriting. The goal is evidence-backed, inspectable improvement.
+The goal is autonomous, evidence-backed, inspectable improvement without
+unbounded self-rewriting or silent authority expansion. Hames should diagnose,
+test, repair, guard, and revisit its own low-risk behavior without turning every
+finding into an idea for the user to process.
 
 ## Scar states
 
@@ -83,7 +86,9 @@ Implement conservative detector that can mark a user message as likely correctio
 - reference to immediately preceding result;
 - optional reviewer-model classification under evolution budget.
 
-Automatic classification creates a candidate, not unquestionable truth.
+Automatic classification creates an evidence-bearing candidate. Hames may advance
+it autonomously when deterministic evidence is sufficient; uncertainty remains
+visible rather than becoming unquestionable truth.
 
 ### 3. Repeated runtime failure
 
@@ -102,7 +107,8 @@ If active skill is repeatedly associated with corrections/failures, create Scar 
 
 ## Scar creation
 
-A candidate becomes `open` when evidence is sufficient or user confirms it.
+A candidate becomes `open` when evidence is sufficient. User confirmation is an
+available override for ambiguous or authority-changing cases, not a normal gate.
 
 Creation process answers:
 
@@ -140,7 +146,7 @@ Repair: episode correction or a new provenance-backed episode projection.
 
 Use when repeatable procedure was poor.
 
-Repair: new skill or skill patch through M07 proposal path.
+Repair: new Skill or autonomous immutable Skill patch through the M07 lifecycle.
 
 ### Policy
 
@@ -169,9 +175,9 @@ At M08 this creates capability requirement proposal. M09 can turn it into isolat
 
 Do not force every failure into prompt/skill.
 
-## Repair proposal
+## Repair candidate
 
-Every proposal contains:
+Every candidate contains:
 
 ```text
 scar_id
@@ -183,10 +189,12 @@ evidence
 deterministic checks
 model-eval cases optional
 risk
-required approval
+required authority class
 ```
 
-Repairs cannot silently broaden agent/plugin permissions.
+Repairs cannot silently broaden agent/plugin permissions. A candidate is a durable
+internal work item, not a user inbox: low-risk candidates should proceed through
+evaluation and promotion autonomously.
 
 ## Replay/evaluation engine
 
@@ -241,12 +249,15 @@ A repair may auto-promote only if all hold:
 Default v0.1 posture:
 
 - memory corrections explicitly grounded in direct user correction may auto-promote within same scope;
-- skill changes require approval;
+- Skill changes use M07 autonomous validation, independent evaluation, pinning,
+  quarantine, and rollback;
 - policy changes require approval;
 - context rules require approval;
 - plugin/capability changes require approval.
 
-All promotion is versioned and emits events.
+All promotion is versioned and emits events. Only changes that grant or weaken
+authority require user approval; ordinary behavioral repair should remain
+self-sufficient.
 
 ## Guarding and healing
 
@@ -274,7 +285,7 @@ If failure returns:
 healed/guarded → regressed
 ```
 
-and create new repair proposal version.
+and create a new repair candidate version for autonomous evaluation.
 
 ## Context integration
 
@@ -315,14 +326,15 @@ Cover:
 - explicit correction linked to prior event;
 - conversational candidate detector;
 - repeated error signature;
-- candidate confirmation/dismissal;
+- evidence-based candidate opening and user dismissal override;
 - each repair routing class;
 - context rule enforcement;
 - deterministic replay;
 - fake model evaluator;
 - budget blocking live/model eval;
 - safe memory auto-promotion rule;
-- policy/skill changes requiring approval;
+- autonomous Skill repair and rollback;
+- policy authority changes requiring approval;
 - guarded success count;
 - healing threshold;
 - regression reopening;
@@ -339,7 +351,7 @@ Create controlled failure:
 3. mark it as correction;
 4. confirm Scar created with exact evidence;
 5. route repair to semantic/episodic memory or context rule;
-6. approve/promote as required;
+6. evaluate and autonomously promote the safe repair;
 7. replay historical case;
 8. repeat matching tasks until Scar becomes healed;
 9. inspect full lineage from failure → repair → evaluation → healed state.
@@ -351,7 +363,7 @@ Suggested slices:
 1. Scar schema/state machine;
 2. correction/repetition detectors;
 3. repair router;
-4. context rules/policy proposal integration;
+4. context-rule and policy-candidate integration;
 5. replay/evaluator;
 6. promotion/guard/healing;
 7. inspector/e2e/docs.
@@ -364,7 +376,7 @@ M08 is complete only when Hames demonstrates a complete, inspectable improvement
 failure
 → evidence
 → Scar
-→ repair proposal
+→ repair candidate
 → evaluation
 → controlled promotion
 → guarded future runs

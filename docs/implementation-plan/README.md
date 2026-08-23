@@ -1,7 +1,7 @@
 # Hames Rewrite — Working Implementation Plan
 
-This directory is the authoritative build plan for Hames. M0 through M6 are
-implemented; M7 is the next execution phase. Later milestones preserve the design
+This directory is the authoritative build plan for Hames. M0 through M7 are
+implemented; M8 is the next execution phase. Later milestones preserve the design
 inventory but remain subject to refinement as the harness proves its concepts.
 
 Hames is a proper local agent harness built around a small trusted Python kernel,
@@ -29,8 +29,9 @@ observability.
 8. **Memory has three layers.** Relationship memory covers the user, Semantic
    memory covers known facts, and Episodic memory covers what happened.
 9. **Skills are procedural knowledge.** A Skill is not a plugin or permission.
-   Models may propose Skills, but activation is versioned, evaluated, inspectable,
-   and controlled.
+   Hames may autonomously draft, test, independently evaluate, activate, correct,
+   quarantine, and roll back Skills. Immutable versions, evidence, policy, pinning,
+   and inspection control that evolution without requiring a proposal inbox.
 10. **Corrections become tests.** Scars connect failures and corrections to
     evidence, repairs, and regression checks.
 
@@ -89,7 +90,7 @@ Directories are created lazily and user files are never silently overwritten.
 | [M4](M04-CONTEXT-WEB-INSPECTOR.md) | Deterministic context manifests, exact request snapshots, usage projections, REPL inspection, and audit exports make model calls explainable. |
 | [M5](M05-NAMED-AGENTS.md) | Human-readable agent capsules, capability separation, and bounded delegation mature. |
 | [M6](M06-LAYERED-MEMORY.md) | Relationship, Semantic, and Episodic memories become scoped, correctable, and observable. |
-| [M7](M07-SKILLS.md) | Portable Skills gain progressive disclosure, proposals, evaluation, versioning, and controlled promotion. |
+| [M7](M07-SKILLS.md) | Portable Skills gain autonomous evidence-backed authoring, evaluation, versioning, progressive disclosure, and rollback. |
 | [M8](M08-SCARS-EVOLUTION.md) | Scars provide evidence-backed repair routing and regression protection. |
 | [M9](M09-PLUGINS.md) | Optional isolated plugins add genuine capabilities without bypassing policy. |
 | [M10](M10-WEB-CONTROL.md) | Rich interfaces are designed from proven gateway behavior; Ratatui precedes or accompanies web work. |

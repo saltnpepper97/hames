@@ -1,119 +1,106 @@
-# M07 — Skills, Progressive Disclosure, Autonomous Skill Proposals, and Curation
+# M07 — Autonomous Skills and Progressive Disclosure
 
-## Goal
+## Outcome
 
-Implement procedural memory.
+M07 is implemented on gateway protocol 9 and SQLite migration 8.
 
-A skill captures a reusable method the agent should follow. Hames can recognize when a repeated workflow, correction, or recovered failure is worth turning into a skill and autonomously draft/test a proposal. Activation remains versioned and controlled.
+Hames now owns procedural memory. It can observe a repeated successful workflow,
+draft a reusable Skill with the configured model, validate it, independently
+evaluate it, and activate it without asking the user to curate a proposal inbox.
+The same machinery can patch an existing Skill. Activation remains safe and
+inspectable through immutable versions, evidence, deterministic policy, pinning,
+quarantine, and automatic rollback.
 
-## Skill package
+This is intentionally different from the earlier proposal-and-approval design.
+Hames is meant to be self-sufficient: inspection and override are user controls,
+not mandatory steps in its learning loop.
 
-A skill is a directory:
+## Persistent shape
+
+All durable Skill state remains below `~/.hames` (or `HAMES_HOME`):
 
 ```text
-skills/<skill-id>/
-├── SKILL.md
-├── references/ optional
-├── scripts/ optional
-└── tests/ optional
+skills/
+└── packages/
+    └── <skill-id>/
+        └── <version>-<content-hash-prefix>/
+            ├── SKILL.md
+            ├── references/ optional
+            └── scripts/ optional
 ```
 
-`SKILL.md` uses YAML frontmatter plus Markdown.
+The database stores Skill identities, immutable versions, evidence, evaluations,
+background jobs, workflow signatures, and usage outcomes. Package directories are
+private and content-addressed. Every read verifies the complete package hash, so
+out-of-band edits are detected rather than silently trusted.
 
-Required metadata:
+`SKILL.md` is YAML frontmatter plus Markdown. Metadata includes:
 
 ```yaml
 id: investigate-rust-regression
 name: Investigate Rust Regression
-description: Diagnose a Rust regression by reproducing, narrowing, patching, and retesting it.
-version: 3
+description: Reproduce, narrow, repair, and verify a Rust regression.
+version: 2
 scope: workspace
-tools:
-  - read_file
-  - edit_file
-  - shell
+tools: [read_file, edit_file, shell]
+triggers: [rust regression, failing cargo test]
+requires: [project_trusted]
+scripts: []
 ```
 
-Optional:
+Scopes are `global`, `workspace`, and `agent:<id>`. A global ID cannot overlap a
+narrower visible ID. Workspace and agent Skills remain unavailable outside their
+recorded boundary.
 
-```yaml
-triggers:
-  - rust regression
-  - failing cargo test
-requires:
-  - project_trusted
-```
+## Autonomous lifecycle
 
-The body contains the procedure.
+After every settled run Hames records a deterministic workflow signature from:
 
-## Progressive disclosure
+- the causative user task;
+- the ordered tool-result sequence;
+- agent and workspace identity;
+- the terminal run outcome.
 
-Normal context contains only compact catalog entry:
+A completed workflow with at least two tool calls becomes authoring evidence when
+the configured number of materially similar successful workflows is reached. The
+default threshold is two. `skill_author` can also request authoring or correction
+from inside the normal agent loop. A successful turn that explicitly corrects a
+loaded Skill queues a grounded patch rather than merely remembering the feedback.
+A failed declared Skill script immediately
+quarantines its version, restores the newest safe predecessor when one exists, and
+queues a correction.
 
-```text
-id
-name
-description
-scope
-tool requirements
-```
+The background job is recoverable and follows this pipeline:
 
-Full body loads only when:
+1. select the session provider/model unless the Skills configuration overrides it;
+2. give the drafter only the goal, exact evidence subset, scope, and current Skill
+   when patching;
+3. reject undeclared tools, unsafe paths, oversized packages, invisible evidence,
+   and tools not grounded in the observed workflow;
+4. syntax-check declared scripts and execute their required `--self-test` in an
+   offline Bubblewrap sandbox;
+5. send the candidate and deterministic report to an independent evaluator call;
+6. activate automatically only when validation passes and the evaluation reaches
+   the configured score;
+7. otherwise preserve the immutable rejected candidate and its report.
 
-- model explicitly requests through `skill_load`; or
-- deterministic selector marks it highly relevant and context compiler includes it under budget.
+Foreground agent requests have priority over background memory extraction and
+Skill authoring/evaluation on providers that serialize model access. A daily
+background model-call budget prevents unbounded autonomous work. Exhausted jobs
+remain visible as `budget_wait` and can be retried after the budget changes or a
+new day begins.
 
-References/scripts are not loaded with body unless individually requested/executed.
+There is no `approve proposal` command and no silent authority expansion. A model
+may improve procedure, but the runtime still owns tools, policy, trust, and every
+side effect.
 
-Emit:
+## Versions and rollback
 
-```text
-skill.catalogued
-skill.loaded
-skill.executed
-```
+Active versions are immutable. A patch records its base version. Activation uses
+compare-and-swap semantics and rejects a candidate if another correction became
+active first. Replaced versions become `superseded` rather than being deleted.
 
-as appropriate.
-
-## Skill registry and scopes
-
-Support:
-
-```text
-global
-workspace
-agent:<id>
-```
-
-Duplicate ambiguous IDs are rejected under one documented shadowing/uniqueness rule.
-
-CLI:
-
-```bash
-hames skill list
-hames skill show <id>
-hames skill validate <path-or-id>
-hames skill install <path>
-hames skill archive <id>
-```
-
-## Immutable versions
-
-Durable skill metadata tracks:
-
-```text
-skill_id
-version
-content_hash
-status
-scope
-created_at
-created_by
-base_version nullable
-evidence_event_ids
-```
-
-Statuses:
+Statuses are:
 
 ```text
 draft
@@ -126,226 +113,81 @@ quarantined
 superseded
 ```
 
-An active skill version is immutable.
+Pinning prevents autonomous activation of a different version. Archive is
+reversible. Rollback quarantines the current version and reactivates the newest
+eligible predecessor. These controls are overrides for autonomous behavior, not a
+required review queue.
 
-Editing creates candidate new version.
+## Progressive disclosure
 
-Compare-and-swap activation requires expected base content hash still matches current active version.
+At the beginning of a run, the context compiler receives only compact relevant
+catalog records containing identity, description, triggers, tools, scripts, scope,
+hash, and relevance score. Full instructions enter context only after the model
+calls `skill_load`.
 
-## Script execution
+Loaded instructions are explicitly subordinate to the core contract and current
+policy. A script is not executed merely because its Skill was loaded; the model
+must call `skill_run` with a declared script ID.
 
-Skill scripts are executable helpers, not instructions.
+Context manifests separately attribute `skill_catalog` and loaded `skill` sources.
+The ledger emits `skill.catalogued`, `skill.loaded`, and `skill.executed`, and the
+usage projection records catalog, load, execution, settled outcome, tool count,
+correction, and last use.
 
-They must:
+## Script containment
 
-- declare required capability;
-- execute through same policy gate;
-- never receive more authority than current agent;
-- have bounded output/time;
-- emit tool/skill events.
+Self-authored executable helpers are allowed, but they do not run as ordinary host
+processes. Bubblewrap creates a fresh namespace with:
 
-A skill cannot smuggle unrestricted subprocess execution around `shell`.
+- networking disabled;
+- no real home directory;
+- the Skill package read-only at `/skill`;
+- the project read-only at `/project` during normal execution;
+- only the run scratch directory writable at `/workspace`;
+- bounded time and output.
 
-## Usage tracking
+Validation self-tests receive no project mount. If Bubblewrap is unavailable,
+script validation or execution is rejected rather than falling back to unsafe host
+execution. User deliverables still use normal policy-controlled core tools in the
+actual project workspace.
 
-Track:
+## Interfaces
 
-- catalog appearances;
-- full loads;
-- associated tool calls;
-- runs in which skill was active;
-- successful task outcomes;
-- failed task outcomes;
-- corrections after use;
-- last use;
-- patches;
-- estimated context cost.
-
-Do not define “success” solely as “model loaded skill.” Use settled run outcome signals.
-
-## Autonomous candidate detector
-
-Run a cheap deterministic detector after a run settles.
-
-Candidate evidence:
+The Rust REPL provides:
 
 ```text
-similar_workflow_count
-successful_multistep_trace
-user_correction_followed_by_resolution
-non_obvious_error_recovery
-tool_call_cost
-existing_skill_similarity
-future_reuse_score
-volatility
-security_sensitivity
+/skills
+/skills search <query>
+/skills show <id>
+/skills history <id>
+/skills jobs
+/skills author <goal>
+/skills correct <id> <change>
+/skills retry <job-id>
+/skills pin|unpin|archive|restore|rollback <id>
 ```
 
-Create candidate when configured rule is satisfied, including:
+The noninteractive Rust CLI mirrors these operations under `hames skill`; a
+session ID is explicit because visibility depends on workspace and agent scope.
+The protocol exposes the same session-scoped registry, history, jobs, authoring,
+retry, and lifecycle-control endpoints for future Ratatui and web clients.
 
-- materially similar successful workflow occurred at least twice;
-- explicit correction led to verified improved workflow;
-- non-obvious error was recovered with reusable sequence;
-- high-cost workflow has strong project recurrence evidence;
-- user explicitly asks Hames to do method consistently.
+## Provenance events
 
-Reject as skill material when:
+M07 adds typed events for workflow observation, authoring requests and triggers,
+recoverable jobs, drafts, validation, evaluation, activation, supersession,
+rejection, quarantine, rollback, catalog/load/execute usage, outcomes, and user
+overrides. Model authoring and evaluation calls use the ordinary normalized model
+request/response/usage events with an explicit maintenance purpose.
 
-- primarily a fact;
-- hard safety invariant;
-- one-off/transient;
-- active skill already covers it;
-- workflow did not settle successfully;
-- evidence includes secrets that cannot be safely abstracted.
+## Verification
 
-Detector emits `skill.proposal_triggered` with evidence IDs.
+Automated coverage includes migration from M6, parsing, scope visibility, package
+integrity, stale activation rejection, version history, pin/archive/rollback,
+repeated-workflow detection, autonomous fake-provider drafting, independent
+rejection, provider priority, gateway lifecycle endpoints, protocol 9, REPL build,
+and the existing end-to-end harness suite.
 
-## Autonomous drafting
-
-When auto-drafting is enabled, Hames may run a reviewer/drafter model call after trigger.
-
-Drafter receives:
-
-- exact evidence trace subset;
-- relevant current skill if patching;
-- required tool/policy boundaries;
-- no unrelated conversation history.
-
-It outputs:
-
-- proposed `SKILL.md`;
-- rationale;
-- evidence links;
-- acceptance tests;
-- new skill vs patch decision.
-
-This is proposal, not activation.
-
-Automatic drafting obeys configured evolution budget. Zero budget leaves proposals undrafted until requested.
-
-## Validation and tests
-
-Validation includes:
-
-- metadata schema;
-- unique ID;
-- no forbidden paths;
-- declared tools exist;
-- script policy compatibility;
-- references resolve;
-- content-size bounds.
-
-Skill tests may include:
-
-1. deterministic script/unit tests;
-2. trace assertions;
-3. replay cases using fake provider;
-4. optional live/model evaluation under explicit budget/approval.
-
-Proposal cannot become `verified` if deterministic validation fails.
-
-## Promotion
-
-CLI:
-
-```bash
-hames skill proposal list
-hames skill proposal show <id>
-hames skill proposal approve <id>
-hames skill proposal reject <id>
-```
-
-Approval:
-
-1. re-read current base skill;
-2. verify base hash;
-3. reject stale proposal on mismatch;
-4. rerun deterministic validation/tests;
-5. atomically activate new version;
-6. preserve old version as superseded;
-7. emit `skill.promoted`.
-
-No silent global activation.
-
-## Curation
-
-Implement deterministic curation metrics.
-
-A skill can become `stale` when:
-
-- unused for configured period;
-- repeatedly loaded but never used;
-- poor outcome rate;
-- superseded by another skill.
-
-Archival is reversible and does not delete versions.
-
-Automatic merging of skill bodies is not required. Hames may propose consolidation, but promotion uses same proposal path.
-
-## Context and Inspector
-
-Context manifest shows catalog and loaded skills separately.
-
-Inspector adds:
-
-- active catalog;
-- version history;
-- load/use counts;
-- evidence;
-- proposal diffs;
-- validation/test results;
-- status transitions.
-
-## Tests
-
-Cover:
-
-- parsing/validation;
-- progressive disclosure;
-- scope visibility;
-- content hash/versioning;
-- stale compare-and-swap rejection;
-- usage metrics;
-- repeated-success trigger;
-- correction trigger;
-- false-positive exclusions;
-- auto-draft with fake reviewer;
-- evolution budget;
-- validation failure;
-- approval/rejection;
-- archive/restore;
-- skill script cannot bypass policy;
-- migration from M06.
-
-## Manual smoke test
-
-Perform same nontrivial coding workflow twice.
-
-Verify:
-
-1. detector creates candidate;
-2. auto-drafter produces skill proposal;
-3. proposal references exact runs;
-4. proposal inactive before approval;
-5. inspect and approve;
-6. matching third task sees catalog and progressively loads skill;
-7. context inspector shows estimated token contribution.
-
-## Commit expectations
-
-Suggested slices:
-
-1. skill package/parser/registry;
-2. catalog/progressive loading;
-3. versioning and usage;
-4. detector;
-5. drafting/proposals;
-6. validation/promotion;
-7. curation;
-8. inspector/docs/e2e.
-
-## Acceptance gate
-
-M07 is complete when Hames can notice reusable workflow on its own, draft grounded skill proposal, validate it, preserve version history, require controlled promotion, and later load active skill only when relevant.
-
-Finish clean and tag `m07`.
+The milestone is complete when the full offline gate passes, a clean isolated
+live llama.cpp run proves autonomous creation and later progressive loading, the
+result is documented, and the repository is tagged `m07`.

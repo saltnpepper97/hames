@@ -10,7 +10,7 @@ for the milestone plan.
 
 ## Status
 
-M6 is implemented. In addition to the local conversation and branching slices, Hames provides
+M7 is implemented. In addition to the local conversation and branching slices, Hames provides
 immutable session branching, ancestry-aware replay, typed and integrity-checked
 events, irreversible secret redaction, and content-addressed payload blobs. Hames
 also has named local-provider profiles, explicit health probes, strict normalized
@@ -37,6 +37,13 @@ in `/context`. Background extraction proposes only bounded durable facts from th
 settled turn; notable tool runs also receive deterministic episodic projections.
 Users can explicitly capture, review, correct, promote, or forget memories from the
 REPL.
+Procedural memory is now autonomous. Hames records settled workflow signatures,
+detects repeated successful multi-step work, drafts and independently evaluates
+immutable scoped Skills, and activates passing versions without a proposal inbox.
+Only compact relevant catalog entries enter normal context; the model must load a
+Skill before its full procedure is supplied. Declared scripts self-test and run in
+an offline Bubblewrap sandbox. Pinning, archive, history, quarantine, rollback,
+jobs, evidence, and typed ledger events keep evolution inspectable and reversible.
 
 ## Quick start
 
@@ -96,6 +103,24 @@ max_proposals_per_pass = 4
 max_retrieved_records = 8
 max_extraction_retries = 2
 
+[skills]
+enabled = true
+autonomous_authoring = true
+auto_activate = true
+# Blank values reuse the active session provider, model, and reasoning effort.
+provider = ""
+model = ""
+reasoning_effort = ""
+repetition_threshold = 2
+task_similarity_threshold = 0.65
+evaluator_pass_score = 0.80
+max_background_model_calls_per_day = 8
+max_job_retries = 2
+max_catalog_entries = 12
+catalog_budget_tokens = 2048
+loaded_budget_tokens = 8192
+script_timeout_seconds = 60.0
+
 [providers.llama_cpp]
 adapter = "llama_cpp"
 base_url = "http://127.0.0.1:8080"
@@ -130,7 +155,9 @@ shows the current grant and `/trust revoke` removes it. Trusted roots allow norm
 file changes and ordinary shell work without repetitive prompts. Hames still asks
 for exact one-shot confirmation for deterministic high-risk signatures and denies
 known secrets, credential stores, raw-device operations, and generic access to its
-own state. This policy gate is not an operating-system sandbox.
+own state. Core shell work uses this policy gate rather than an operating-system
+sandbox; self-authored Skill scripts use the narrower Bubblewrap boundary described
+below.
 
 Inside the REPL, `/help` lists session, project, trust, provider, model, usage,
 inspection, export, status, and reasoning commands. `/reasoning` reports
@@ -164,6 +191,14 @@ Explicit captures are still structured by the configured model rather than store
 as an untyped transcript fragment. A failed extraction never blocks the completed
 chat turn and remains visible as a retryable memory job.
 
+Skill evolution also runs after a settled turn and never delays its completed
+answer. `/skills` lists active visible procedures; `search`, `show`, and `history`
+inspect them, while `jobs` shows autonomous work. `author` and `correct` enqueue the
+same autonomous pipeline explicitly. `pin`, `unpin`, `archive`, `restore`, and
+`rollback` are overrides rather than an approval workflow. Script helpers run with
+networking disabled, no real home, a read-only project, and only disposable run
+scratch writable. See [`docs/architecture/skills.md`](docs/architecture/skills.md).
+
 The same ledger is scriptable outside the REPL:
 
 ```bash
@@ -174,6 +209,9 @@ target/debug/hames session export <session-id> --format markdown --output audit.
 target/debug/hames event verify <event-id>
 target/debug/hames agent list
 target/debug/hames agent create reviewer --authority read-only
+target/debug/hames skill list <session-id>
+target/debug/hames skill show <session-id> <skill-id>
+target/debug/hames skill jobs <session-id>
 ```
 
 Use `--force` explicitly when replacing an existing noninteractive export. Audit
