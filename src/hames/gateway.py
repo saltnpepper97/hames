@@ -52,6 +52,11 @@ from hames.paths import HamesPaths
 from hames.providers import Provider, ProviderError, ProviderModel
 from hames.providers.registry import configured_providers
 from hames.providers.scheduled import SerializedProvider
+from hames.rules import (
+    ContextRule,
+    ContextRuleCondition,
+    PolicyRule,
+)
 from hames.runtime import RunManager
 from hames.skill_runtime import SkillManager
 from hames.skills import SkillJob, SkillSummary, SkillVersion
@@ -145,6 +150,42 @@ class SkillControlRequest(ApiModel):
 class CorrectionRequest(ApiModel):
     content: str = Field(min_length=1, max_length=8000)
     target_event_id: str | None = None
+
+
+class ContextRuleRequest(ApiModel):
+    description: str = Field(min_length=1, max_length=2000)
+    require_source_types: list[str] = Field(min_length=1, max_length=16)
+    workspace_paths: list[str] = Field(default_factory=list, max_length=16)
+    agent_ids: list[str] = Field(default_factory=list, max_length=16)
+    scar_id: str | None = None
+
+
+class PolicyRuleRequest(ApiModel):
+    action: Literal["deny", "confirm"]
+    pattern: str = Field(min_length=1, max_length=2000)
+    reason: str = Field(min_length=1, max_length=2000)
+    scar_id: str | None = None
+
+
+class RuleDecisionRequest(ApiModel):
+    reason: str = Field(default="user_decision", min_length=1, max_length=240)
+
+
+_RULE_STATUSES = {"proposed", "active", "retired"}
+
+
+def _rule_status_filter(status: str | None) -> Literal["proposed", "active", "retired"] | None:
+    if status is None:
+        return None
+    if status not in _RULE_STATUSES:
+        raise ApiError(422, "invalid_status_filter", f"unknown rule status: {status}")
+    return cast(Literal["proposed", "active", "retired"], status)
+
+
+def _rule_action(action: str, kind: str) -> Literal["activate", "retire"]:
+    if action not in {"activate", "retire"}:
+        raise ApiError(404, "unknown_action", f"unknown {kind} action: {action}")
+    return cast(Literal["activate", "retire"], action)
 
 
 class AgentPublic(ApiModel):
@@ -1007,6 +1048,119 @@ def create_app(state: GatewayState) -> FastAPI:
             return await asyncio.to_thread(state.evolution.store.get_visible, session, scar_id)
         except KeyError as exc:
             raise ApiError(404, "scar_not_found", f"unknown visible Scar: {scar_id}") from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/context-rules",
+        dependencies=auth,
+        response_model=ContextRule,
+        status_code=201,
+    )
+    async def propose_context_rule(session_id: str, request: ContextRuleRequest) -> ContextRule:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            mutation = await asyncio.to_thread(
+                state.runs.context_rules.propose,
+                session=session,
+                description=request.description,
+                require_source_types=request.require_source_types,
+                condition=ContextRuleCondition(
+                    workspace_paths=request.workspace_paths,
+                    agent_ids=request.agent_ids,
+                ),
+                scar_id=request.scar_id,
+            )
+            for event in mutation.events:
+                await state.broker.publish(
+                    event.session_id, {"durable": True, "event": event.model_dump(mode="json")}
+                )
+            result = mutation.rule
+            assert isinstance(result, ContextRule)
+            return result
+        except ValueError as exc:
+            raise ApiError(400, "invalid_context_rule", str(exc)) from exc
+
+    @app.get("/v1/context-rules", dependencies=auth, response_model=list[ContextRule])
+    async def list_context_rules(status: str | None = None) -> list[ContextRule]:
+        return await asyncio.to_thread(
+            state.runs.context_rules.list_rules, status=_rule_status_filter(status)
+        )
+
+    @app.post("/v1/context-rules/{rule_id}/{action}", dependencies=auth)
+    async def decide_context_rule(rule_id: str, action: str, request: RuleDecisionRequest):
+        rule_action = _rule_action(action, "context-rule")
+        try:
+            mutation = await asyncio.to_thread(
+                state.runs.context_rules.set_status,
+                rule_id=rule_id,
+                action=rule_action,
+                reason=request.reason,
+            )
+        except KeyError as exc:
+            raise ApiError(404, "context_rule_not_found", f"unknown rule: {rule_id}") from exc
+        except ValueError as exc:
+            raise ApiError(409, "invalid_context_rule_transition", str(exc)) from exc
+        for event in mutation.events:
+            await state.broker.publish(
+                event.session_id, {"durable": True, "event": event.model_dump(mode="json")}
+            )
+        result = mutation.rule
+        assert isinstance(result, ContextRule)
+        return result
+
+    @app.post(
+        "/v1/sessions/{session_id}/policy-rules",
+        dependencies=auth,
+        response_model=PolicyRule,
+        status_code=201,
+    )
+    async def propose_policy_rule(session_id: str, request: PolicyRuleRequest) -> PolicyRule:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            mutation = await asyncio.to_thread(
+                state.runs.policy_rules.propose,
+                session=session,
+                action=request.action,
+                pattern=request.pattern,
+                reason=request.reason,
+                scar_id=request.scar_id,
+            )
+            for event in mutation.events:
+                await state.broker.publish(
+                    event.session_id, {"durable": True, "event": event.model_dump(mode="json")}
+                )
+            result = mutation.rule
+            assert isinstance(result, PolicyRule)
+            return result
+        except ValueError as exc:
+            raise ApiError(400, "invalid_policy_rule", str(exc)) from exc
+
+    @app.get("/v1/policy-rules", dependencies=auth, response_model=list[PolicyRule])
+    async def list_policy_rules(status: str | None = None) -> list[PolicyRule]:
+        return await asyncio.to_thread(
+            state.runs.policy_rules.list_rules, status=_rule_status_filter(status)
+        )
+
+    @app.post("/v1/policy-rules/{rule_id}/{action}", dependencies=auth)
+    async def decide_policy_rule(rule_id: str, action: str, request: RuleDecisionRequest):
+        rule_action = _rule_action(action, "policy-rule")
+        try:
+            mutation = await asyncio.to_thread(
+                state.runs.policy_rules.set_status,
+                rule_id=rule_id,
+                action=rule_action,
+                reason=request.reason,
+            )
+        except KeyError as exc:
+            raise ApiError(404, "policy_rule_not_found", f"unknown rule: {rule_id}") from exc
+        except ValueError as exc:
+            raise ApiError(409, "invalid_policy_rule_transition", str(exc)) from exc
+        for event in mutation.events:
+            await state.broker.publish(
+                event.session_id, {"durable": True, "event": event.model_dump(mode="json")}
+            )
+        result = mutation.rule
+        assert isinstance(result, PolicyRule)
+        return result
 
     @app.get("/v1/sessions/{session_id}/events", dependencies=auth, response_model=list[Event])
     async def list_events(session_id: str, after_sequence: int = 0) -> list[Event]:

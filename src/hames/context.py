@@ -14,6 +14,7 @@ from hames.config import ContextConfig
 from hames.ledger import Event, Session
 from hames.memory import RetrievedMemory, canonical_memory_context
 from hames.providers import ProviderMessage, ToolCall, ToolDefinition
+from hames.rules import ContextRule
 from hames.skills import SkillSummary, SkillVersion
 
 CORE_CONTRACT = """You are the reasoning model inside Hames, a trusted local coding-agent
@@ -40,6 +41,17 @@ class ContextBudgetError(RuntimeError):
     def __init__(self, message: str, *, details: dict[str, object]) -> None:
         super().__init__(message)
         self.details = details
+
+
+class ContextRuleViolation(RuntimeError):
+    """An activated context rule's required source was not selected."""
+
+    def __init__(self, violations: dict[str, list[str]]) -> None:
+        rendered = "; ".join(
+            f"{rule_id} missing {', '.join(types)}" for rule_id, types in violations.items()
+        )
+        super().__init__(f"activated context rules are not satisfied: {rendered}")
+        self.details = {"violations": violations}
 
 
 class SourceDecision(BaseModel):
@@ -133,6 +145,7 @@ def compile_context(
     loaded_skills: list[SkillVersion] | None = None,
     skill_catalog_budget_tokens: int = 2048,
     loaded_skill_budget_tokens: int = 8192,
+    context_rules: list[ContextRule] | None = None,
 ) -> CompiledContext:
     input_budget = session.context_window_tokens - config.output_reserve_tokens
     if input_budget <= 0:
@@ -342,6 +355,9 @@ def compile_context(
     system = "\n".join([*system_parts, agent_part[1]])
     estimated_input = fixed_tokens + _estimate_messages(messages)
     contributing = [event_id for item in selected for event_id in item.event_ids]
+    violations = _unsatisfied_context_rules(context_rules or [], session, selected)
+    if violations:
+        raise ContextRuleViolation(violations)
     return CompiledContext(
         system=system,
         messages=messages,
@@ -364,6 +380,32 @@ def compile_context(
             agent_capsule_path=str(capsule.path),
         ),
     )
+
+
+def _unsatisfied_context_rules(
+    rules: list[ContextRule],
+    session: Session,
+    selected: list[SourceDecision],
+) -> dict[str, list[str]]:
+    violations: dict[str, list[str]] = {}
+    for rule in rules:
+        if not rule.condition.matches(
+            working_directory=session.working_directory, agent_id=session.agent_id
+        ):
+            continue
+        missing: list[str] = []
+        for requirement in rule.require_source_types:
+            satisfied = any(
+                source.source_type == requirement
+                or source.source_id == requirement
+                or source.source_id.startswith(f"{requirement}.")
+                for source in selected
+            )
+            if not satisfied:
+                missing.append(requirement)
+        if missing:
+            violations[rule.id] = missing
+    return violations
 
 
 def canonical_request_snapshot(

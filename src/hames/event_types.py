@@ -516,6 +516,27 @@ class ScarRepairDecisionPayload(EventPayload):
     checks: dict[str, JsonValue] = Field(default_factory=dict)
 
 
+def _empty_require_source_types() -> list[str]:
+    return []
+
+
+class ContextRuleEventPayload(EventPayload):
+    rule_id: str
+    version: int
+    status: str
+    condition: dict[str, JsonValue] = Field(default_factory=dict)
+    require_source_types: list[str] = Field(default_factory=_empty_require_source_types)
+    reason: str = ""
+
+
+class PolicyRuleEventPayload(EventPayload):
+    rule_id: str
+    action: str = ""
+    pattern: str = ""
+    status: str
+    reason: str = ""
+
+
 EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "session.opened": SessionOpenedPayload,
     "session.closed": SessionClosedPayload,
@@ -605,6 +626,12 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "scar.repair.proposed": ScarRepairPayload,
     "scar.repair.promoted": ScarRepairDecisionPayload,
     "scar.repair.rejected": ScarRepairDecisionPayload,
+    "context.rule.proposed": ContextRuleEventPayload,
+    "context.rule.activated": ContextRuleEventPayload,
+    "context.rule.retired": ContextRuleEventPayload,
+    "policy.rule.proposed": PolicyRuleEventPayload,
+    "policy.rule.activated": PolicyRuleEventPayload,
+    "policy.rule.retired": PolicyRuleEventPayload,
 }
 
 

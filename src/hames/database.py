@@ -527,6 +527,54 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        10,
+        "declarative context and policy rules",
+        """
+        CREATE TABLE context_rules (
+            id TEXT PRIMARY KEY,
+            version INTEGER NOT NULL,
+            condition_json TEXT NOT NULL,
+            require_source_types_json TEXT NOT NULL,
+            description TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('proposed', 'active', 'retired')),
+            scar_id TEXT REFERENCES scars(id),
+            source_session_id TEXT NOT NULL REFERENCES sessions(id),
+            created_by TEXT NOT NULL CHECK (created_by IN ('automatic', 'user')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE policy_rules (
+            id TEXT PRIMARY KEY,
+            action TEXT NOT NULL CHECK (action IN ('deny', 'confirm')),
+            scope TEXT NOT NULL DEFAULT 'shell_command',
+            pattern TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('proposed', 'active', 'retired')),
+            scar_id TEXT REFERENCES scars(id),
+            source_session_id TEXT NOT NULL REFERENCES sessions(id),
+            created_by TEXT NOT NULL CHECK (created_by IN ('automatic', 'user')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX context_rules_status_idx ON context_rules(status);
+        CREATE INDEX policy_rules_status_idx ON policy_rules(status);
+
+        CREATE TRIGGER context_rules_no_delete
+        BEFORE DELETE ON context_rules
+        BEGIN
+            SELECT RAISE(ABORT, 'context rules cannot be deleted');
+        END;
+
+        CREATE TRIGGER policy_rules_no_delete
+        BEFORE DELETE ON policy_rules
+        BEGIN
+            SELECT RAISE(ABORT, 'policy rules cannot be deleted');
+        END;
+        """,
+    ),
 )
 
 

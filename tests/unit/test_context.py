@@ -317,3 +317,114 @@ def test_request_snapshot_is_canonical_and_hashable(
     digest = ledger.blob_store.put(snapshot)
     assert digest == hashlib.sha256(snapshot).hexdigest()
     assert ledger.blob_store.read(digest) == snapshot
+
+
+def test_context_rule_enforcement_requires_matching_source(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    from hames.context import ContextRuleViolation
+    from hames.memory import MemoryAnchor
+    from hames.rules import ContextRule, ContextRuleCondition
+
+    ledger, session_value, capsule = _fixture(hames_paths, tmp_path)
+    session = ledger.get_session(session_value.id)
+    ledger.append(session_id=session.id, event_type="user.message", payload={"content": "hi"})
+    rule = ContextRule(
+        id="rule-1",
+        version=1,
+        description="Milestone context must be present.",
+        condition=ContextRuleCondition(workspace_paths=[session.working_directory]),
+        require_source_types=["memory"],
+        status="active",
+        scar_id=None,
+        source_session_id=session.id,
+        created_by="user",
+        created_at="2026-01-01",
+        updated_at="2026-01-01",
+    )
+
+    with pytest.raises(ContextRuleViolation):
+        compile_context(
+            session,
+            ledger.replay(session.id),
+            capsule,
+            _tools(),
+            "safe reads",
+            ContextConfig(),
+            run_id="run-1",
+            context_rules=[rule],
+        )
+
+    store = MemoryStore(ledger)
+    user_event_id = ledger.list_events(session.id)[0].id
+    mutation = store.create_candidate(
+        session=session,
+        candidate=MemoryCandidate(
+            layer="semantic",
+            visibility="workspace",
+            subject="project",
+            predicate="current_milestone",
+            value={"text": "m8"},
+            summary="Current milestone is m8.",
+            confidence=1.0,
+            importance=0.8,
+            anchors=[MemoryAnchor(kind="workspace", value=session.working_directory)],
+            provenance_event_ids=[user_event_id],
+            evidence_basis="explicit_user",
+        ),
+        run_id=None,
+        origin_kind="explicit",
+        activate=True,
+        causation_id=user_event_id,
+    )
+    retrieved, _, _ = store.retrieve(session, "milestone", limit=4, token_budget=512)
+    assert any(item.record.id == mutation.record.id for item in retrieved)
+    compiled = compile_context(
+        session,
+        ledger.replay(session.id),
+        capsule,
+        _tools(),
+        "safe reads",
+        ContextConfig(),
+        run_id="run-2",
+        memories=retrieved,
+        context_rules=[rule],
+    )
+    memory_sources = [
+        source for source in compiled.manifest.selected_sources if source.source_type == "memory"
+    ]
+    assert memory_sources
+
+
+def test_non_matching_context_rules_do_not_apply(hames_paths: HamesPaths, tmp_path: Path) -> None:
+    from hames.rules import ContextRule, ContextRuleCondition
+
+    ledger, session_value, capsule = _fixture(hames_paths, tmp_path)
+    session = ledger.get_session(session_value.id)
+    ledger.append(session_id=session.id, event_type="user.message", payload={"content": "hi"})
+    other_root = tmp_path / "elsewhere"
+    other_root.mkdir()
+    rule = ContextRule(
+        id="rule-2",
+        version=1,
+        description="Other project only.",
+        condition=ContextRuleCondition(workspace_paths=[str(other_root)]),
+        require_source_types=["memory"],
+        status="active",
+        scar_id=None,
+        source_session_id=session.id,
+        created_by="user",
+        created_at="2026-01-01",
+        updated_at="2026-01-01",
+    )
+    compiled = compile_context(
+        session,
+        ledger.replay(session.id),
+        capsule,
+        _tools(),
+        "safe reads",
+        ContextConfig(),
+        run_id="run-1",
+        context_rules=[rule],
+    )
+    assert compiled.manifest.selected_sources

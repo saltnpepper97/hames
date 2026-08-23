@@ -14,7 +14,12 @@ from typing import TYPE_CHECKING, Any
 from hames.agent import AgentCapsule, AgentRegistry, load_agent, permitted_tools
 from hames.broker import EventBroker
 from hames.config import HamesConfig
-from hames.context import ContextBudgetError, canonical_request_snapshot, compile_context
+from hames.context import (
+    ContextBudgetError,
+    ContextRuleViolation,
+    canonical_request_snapshot,
+    compile_context,
+)
 from hames.control import Approval, ControlStore
 from hames.ledger import Event, Ledger, Session, new_id
 from hames.memory import MemoryStore, RetrievedMemory, retrieval_query_hash
@@ -22,8 +27,10 @@ from hames.paths import HamesPaths
 from hames.policy import PolicyDecisionKind, PolicyGate, approval_request_hash
 from hames.providers import ModelRequest, Provider, ProviderError, StreamEvent, StreamEventKind
 from hames.providers.base import JSON_OBJECT, JsonValue
+from hames.rules import ContextRuleStore, PolicyRuleStore
 from hames.skills import SkillRegistry, SkillSummary, SkillVersion
 from hames.tools import (
+    ShellArguments,
     SkillAuthorArguments,
     SkillLoadArguments,
     SkillRunArguments,
@@ -155,6 +162,8 @@ class RunManager:
         self.agents = AgentRegistry(paths.agents)
         self.memory = MemoryStore(ledger)
         self.policy = PolicyGate(paths.root)
+        self.context_rules = ContextRuleStore(ledger)
+        self.policy_rules = PolicyRuleStore(ledger)
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._session_runs: dict[str, str] = {}
         self._approval_waiters: dict[str, asyncio.Future[str]] = {}
@@ -318,6 +327,15 @@ class RunManager:
                 "context_budget_exceeded",
                 str(exc),
                 exc.details,
+            )
+        except ContextRuleViolation as exc:
+            await self._append_failure(
+                session_id,
+                run_id,
+                user_event.id,
+                "context_rule_violation",
+                str(exc),
+                dict(exc.details),
             )
         except ProviderError as exc:
             await self._append_failure(
@@ -497,6 +515,11 @@ class RunManager:
         ):
             allowed_tools = frozenset(allowed_tools - {"spawn_agent"})
         definitions = self.tools.definitions(allowed_tools)
+        active_context_rules = await asyncio.to_thread(
+            self.context_rules.active_matching,
+            working_directory=session.working_directory,
+            agent_id=session.agent_id,
+        )
         context = compile_context(
             session,
             history,
@@ -510,6 +533,7 @@ class RunManager:
             loaded_skills=list(self._loaded_skills.get(run_id, {}).values()),
             skill_catalog_budget_tokens=self.config.skills.catalog_budget_tokens,
             loaded_skill_budget_tokens=self.config.skills.loaded_budget_tokens,
+            context_rules=active_context_rules,
         )
         snapshot = canonical_request_snapshot(
             model=session.model,
@@ -861,8 +885,17 @@ class RunManager:
             causation_id=requested.id,
             correlation_id=run_id,
         )
+        active_policy_rules = (
+            await asyncio.to_thread(self.policy_rules.list_rules, status="active")
+            if isinstance(arguments, ShellArguments)
+            else []
+        )
         decision = self.policy.decide(
-            invocation.name, arguments, context, allowed_tools=allowed_tools
+            invocation.name,
+            arguments,
+            context,
+            allowed_tools=allowed_tools,
+            declarative_rules=active_policy_rules,
         )
         policy_decided = await self._append(
             session_id=session.id,

@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
 from hames.providers.base import JsonValue
+from hames.rules import PolicyRule
 from hames.tools import ShellArguments, ToolArguments, ToolContext, WorkspaceArguments
 
 
@@ -83,6 +85,7 @@ class PolicyGate:
         context: ToolContext,
         *,
         allowed_tools: frozenset[str] | None = None,
+        declarative_rules: Sequence[PolicyRule] = (),
     ) -> PolicyDecision:
         if allowed_tools is not None and tool_name not in allowed_tools:
             return PolicyDecision(
@@ -90,6 +93,27 @@ class PolicyGate:
                 "the active agent is not allowed to use this tool",
                 "agent_scope",
             )
+        rule_denial: PolicyDecision | None = None
+        rule_confirmation: PolicyDecision | None = None
+        if isinstance(arguments, ShellArguments) and declarative_rules:
+            for rule in declarative_rules:
+                if rule.status != "active" or rule.scope != "shell_command":
+                    continue
+                if re.search(rule.pattern, arguments.command) is None:
+                    continue
+                decision = (
+                    PolicyDecision(PolicyDecisionKind.DENY, rule.reason, "declarative_rule")
+                    if rule.action == "deny"
+                    else PolicyDecision(
+                        PolicyDecisionKind.REQUIRE_CONFIRMATION,
+                        rule.reason,
+                        "declarative_rule",
+                    )
+                )
+                if rule.action == "deny" and rule_denial is None:
+                    rule_denial = decision
+                if rule.action == "confirm" and rule_confirmation is None:
+                    rule_confirmation = decision
         if isinstance(arguments, WorkspaceArguments):
             path_value = getattr(arguments, "path", None)
             if isinstance(path_value, str):
@@ -139,6 +163,10 @@ class PolicyGate:
                     "outside_workspace",
                 )
 
+        if rule_denial is not None:
+            return rule_denial
+        if rule_confirmation is not None:
+            return rule_confirmation
         return PolicyDecision(PolicyDecisionKind.ALLOW, "allowed by trusted-root policy")
 
 
