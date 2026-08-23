@@ -11,7 +11,7 @@ from hames.broker import EventBroker
 from hames.config import HamesConfig
 from hames.ledger import Ledger
 from hames.memory import MemoryStore
-from hames.memory_runtime import MemoryManager
+from hames.memory_runtime import MemoryManager, memory_submission_tool
 from hames.paths import HamesPaths
 from hames.providers import ModelRequest, ProviderModel, StreamEvent, StreamEventKind, ToolCallDelta
 
@@ -69,6 +69,13 @@ class ExtractingProvider:
 
     async def aclose(self) -> None:
         return None
+
+
+def test_extraction_tool_schema_is_llama_cpp_compatible() -> None:
+    encoded = json.dumps(memory_submission_tool().input_schema)
+    assert "$defs" not in encoded
+    assert "$ref" not in encoded
+    assert '"episodic"' not in encoded
 
 
 @pytest.mark.asyncio

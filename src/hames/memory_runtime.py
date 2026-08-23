@@ -22,7 +22,8 @@ fact. Never store procedures, secrets, transient mood, guesses, routine chat, or
 Every candidate must cite only supplied evidence event IDs. Direct user statements use
 explicit_user; facts established by successful tools use successful_tool; anything else uses
 assistant_inference. Use global visibility only for facts useful across workspaces, otherwise use
-workspace. Episodic memory is created deterministically elsewhere.
+workspace. Express value as a concise string and always provide anchors, using an empty list when
+none are needed. Episodic memory is created deterministically elsewhere.
 """
 
 
@@ -209,7 +210,7 @@ class MemoryManager:
             reasoning_effort=reasoning,
             max_tokens=2048,
             temperature=0,
-            tools=[_submission_tool()],
+            tools=[memory_submission_tool(self.config.memory.max_proposals_per_pass)],
             metadata={"purpose": "memory_extraction", "job_id": job.id},
         )
         name_parts: list[str] = []
@@ -331,7 +332,63 @@ class MemoryManager:
         )
 
 
-def _submission_tool() -> ToolDefinition:
+def memory_submission_tool(max_candidates: int = 4) -> ToolDefinition:
+    # Keep this boundary schema self-contained. Pydantic's MemoryCandidate schema
+    # nests $defs below array items, while llama.cpp resolves $ref from the tool
+    # root and rejects that otherwise valid JSON Schema.
+    candidate_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "layer": {"type": "string", "enum": ["relationship", "semantic"]},
+            "visibility": {
+                "type": "string",
+                "enum": ["global", "agent_private", "workspace", "session_team"],
+            },
+            "subject": {"type": "string"},
+            "predicate": {"type": "string"},
+            "value": {"type": "string"},
+            "summary": {"type": "string"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "importance": {"type": "number", "minimum": 0, "maximum": 1},
+            "anchors": {
+                "type": "array",
+                "maxItems": 4,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"type": "string"},
+                        "value": {"type": "string"},
+                    },
+                    "required": ["kind", "value"],
+                    "additionalProperties": False,
+                },
+            },
+            "provenance_event_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "maxItems": 8,
+            },
+            "evidence_basis": {
+                "type": "string",
+                "enum": ["explicit_user", "successful_tool", "assistant_inference"],
+            },
+        },
+        "required": [
+            "layer",
+            "visibility",
+            "subject",
+            "predicate",
+            "value",
+            "summary",
+            "confidence",
+            "importance",
+            "anchors",
+            "provenance_event_ids",
+            "evidence_basis",
+        ],
+        "additionalProperties": False,
+    }
     return ToolDefinition(
         name="submit_memory_candidates",
         description="Submit only important durable memory candidates, or an empty list.",
@@ -340,7 +397,8 @@ def _submission_tool() -> ToolDefinition:
             "properties": {
                 "candidates": {
                     "type": "array",
-                    "items": MemoryCandidate.model_json_schema(),
+                    "maxItems": max_candidates,
+                    "items": candidate_schema,
                 }
             },
             "required": ["candidates"],
