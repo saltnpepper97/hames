@@ -14,7 +14,7 @@ from typing import Annotated, Literal, cast
 
 from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from hames import PROTOCOL_VERSION, __version__
@@ -22,6 +22,17 @@ from hames.broker import EventBroker
 from hames.config import HamesConfig, ProviderProfileConfig, load_config
 from hames.control import ControlStore
 from hames.database import Database
+from hames.inspection import (
+    ContextInspection,
+    RunInspection,
+    RunSummary,
+    UsageProjection,
+    export_transcript,
+    inspect_context,
+    inspect_run,
+    session_runs,
+    session_usage,
+)
 from hames.ledger import Event, EventIntegrityError, IntegrityResult, Ledger, Session
 from hames.paths import HamesPaths
 from hames.providers import Provider, ProviderError, ProviderModel
@@ -452,6 +463,58 @@ def create_app(state: GatewayState) -> FastAPI:
             )
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+
+    @app.get(
+        "/v1/sessions/{session_id}/runs",
+        dependencies=auth,
+        response_model=list[RunSummary],
+    )
+    async def inspect_session_runs(session_id: str) -> list[RunSummary]:
+        try:
+            return await asyncio.to_thread(session_runs, state.ledger, session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+
+    @app.get(
+        "/v1/sessions/{session_id}/usage",
+        dependencies=auth,
+        response_model=UsageProjection,
+    )
+    async def inspect_session_usage(session_id: str) -> UsageProjection:
+        try:
+            return await asyncio.to_thread(session_usage, state.ledger, session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+
+    @app.get("/v1/runs/{run_id}/inspection", dependencies=auth, response_model=RunInspection)
+    async def inspect_run_endpoint(run_id: str) -> RunInspection:
+        try:
+            return await asyncio.to_thread(inspect_run, state.ledger, run_id)
+        except KeyError as exc:
+            raise ApiError(404, "run_not_found", f"unknown run: {run_id}") from exc
+
+    @app.get(
+        "/v1/contexts/{event_id}", dependencies=auth, response_model=ContextInspection
+    )
+    async def inspect_context_endpoint(event_id: str) -> ContextInspection:
+        try:
+            return await asyncio.to_thread(inspect_context, state.ledger, event_id)
+        except KeyError as exc:
+            raise ApiError(404, "context_not_found", f"unknown context: {event_id}") from exc
+        except ValueError as exc:
+            raise ApiError(409, "invalid_context_manifest", str(exc)) from exc
+
+    @app.get("/v1/sessions/{session_id}/transcript", dependencies=auth)
+    async def session_transcript(
+        session_id: str, format: Literal["markdown", "jsonl"] = "markdown"
+    ) -> Response:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            content = await asyncio.to_thread(export_transcript, state.ledger, session, format)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+        media_type = "text/markdown" if format == "markdown" else "application/x-ndjson"
+        return Response(content=content, media_type=media_type)
 
     @app.post(
         "/v1/sessions/{session_id}/fork",

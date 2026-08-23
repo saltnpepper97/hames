@@ -287,6 +287,13 @@ class Ledger:
             ).fetchall()
         return [self._event_from_row(row) for row in rows]
 
+    def list_run_events(self, run_id: str) -> list[Event]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM events WHERE run_id = ? ORDER BY sequence", (run_id,)
+            ).fetchall()
+        return [self._event_from_row(row) for row in rows]
+
     def replay(self, session_id: str, *, after_sequence: int = 0) -> list[Event]:
         events = self._replay(session_id, active=set())
         return [event for event in events if event.sequence > after_sequence]

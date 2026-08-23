@@ -12,6 +12,8 @@ import pytest
 from pydantic import TypeAdapter
 
 from hames.gateway import GatewayState, create_app
+from hames.inspection import inspect_run
+from hames.ledger import Ledger
 from hames.paths import HamesPaths
 from hames.providers import (
     ModelRequest,
@@ -76,6 +78,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                 json={"content": "Hi"},
             )
             assert accepted.status_code == 202
+            run_id = str(response_object(accepted)["run_id"])
 
             event_types: list[str] = []
             events: list[dict[str, JsonValue]] = []
@@ -118,6 +121,61 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             persisted_request = json.loads(snapshot)
             assert persisted_request["messages"][0]["content"] == "Hi"
             assert persisted_request["max_tokens"] == 4096
+
+            runs_response = await client.get(
+                f"/v1/sessions/{session_id}/runs", headers=headers
+            )
+            assert runs_response.status_code == 200
+            runs = runs_response.json()
+            assert runs[0]["run_id"] == run_id
+            assert runs[0]["status"] == "completed"
+            inspection_response = await client.get(
+                f"/v1/runs/{run_id}/inspection", headers=headers
+            )
+            assert inspection_response.status_code == 200
+            inspection = inspection_response.json()
+            assert inspection["usage"]["input_tokens"] == 10
+            assert inspection["usage"]["estimated_input_tokens"] > 0
+            assert [item["channel"] for item in inspection["timeline"]] == [
+                "user",
+                "lifecycle",
+                "context",
+                "lifecycle",
+                "lifecycle",
+                "usage",
+                "thinking",
+                "answer",
+                "lifecycle",
+                "lifecycle",
+            ]
+            context_response = await client.get(
+                f"/v1/contexts/{context_event['id']}", headers=headers
+            )
+            assert context_response.status_code == 200
+            assert context_response.json()["request_snapshot"] == persisted_request
+            usage_response = await client.get(
+                f"/v1/sessions/{session_id}/usage", headers=headers
+            )
+            assert usage_response.json()["input_tokens"] == 10
+            markdown = await client.get(
+                f"/v1/sessions/{session_id}/transcript",
+                headers=headers,
+            )
+            assert markdown.status_code == 200
+            assert "Derived view only" in markdown.text
+            assert "private" not in markdown.text
+            assert "check " in markdown.text
+            jsonl = await client.get(
+                f"/v1/sessions/{session_id}/transcript",
+                headers=headers,
+                params={"format": "jsonl"},
+            )
+            assert json.loads(jsonl.text.splitlines()[0])["provenance_authority"] == "event-ledger"
+
+            reopened = Ledger.open(paths.database)
+            assert inspect_run(reopened, run_id).model_dump() == inspect_run(
+                state.ledger, run_id
+            ).model_dump()
 
             branch = state.ledger.fork_session(session_id)
             branch_accepted = await client.post(
