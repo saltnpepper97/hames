@@ -43,6 +43,15 @@ def test_strict_config_and_environment_override(hames_paths: HamesPaths) -> None
         load_config(hames_paths, environ={})
 
 
+def test_nested_provider_override_keeps_default_endpoint(hames_paths: HamesPaths) -> None:
+    config = load_config(
+        hames_paths,
+        environ={"HAMES_PROVIDERS__LLAMA_CPP__MODEL": "qwen3.8-27b"},
+    )
+    assert config.providers.llama_cpp.model == "qwen3.8-27b"
+    assert config.providers.llama_cpp.base_url == "http://127.0.0.1:8080"
+
+
 def test_agent_rejects_unknown_frontmatter(hames_paths: HamesPaths) -> None:
     hames_paths.ensure_foundation()
     hames_paths.default_agent.write_text("---\nid: default\nname: Hames\ntyop: true\n---\nHello\n")

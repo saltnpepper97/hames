@@ -39,7 +39,7 @@ class ProviderModel(ProviderBoundary):
     quantization: str | None = None
     input_modalities: list[str] = []
     output_modalities: list[str] = []
-    reasoning_supported: bool = False
+    reasoning_supported: bool | None = None
     reasoning_efforts: list[str] = []
 
 

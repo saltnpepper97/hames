@@ -157,3 +157,21 @@ async def test_llama_cpp_rejects_malformed_stream() -> None:
             )
         ]
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_llama_cpp_does_not_wake_unloaded_models_for_capabilities() -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        return httpx.Response(
+            200,
+            json={"data": [{"id": "cold-model", "status": {"value": "unloaded"}}]},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    models = await LlamaCppProvider("http://llama", client=client).list_models()
+    assert models[0].reasoning_supported is None
+    assert paths == ["/v1/models"]
+    await client.aclose()

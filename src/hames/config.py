@@ -105,10 +105,10 @@ def load_config(
     environ: Mapping[str, str] | None = None,
 ) -> HamesConfig:
     env = os.environ if environ is None else environ
-    source: dict[str, Any] = {}
+    source = HamesConfig().model_dump()
     if paths.config_file.exists():
         with paths.config_file.open("rb") as handle:
-            source = tomllib.load(handle)
+            _deep_merge(source, tomllib.load(handle))
     merged = _deep_merge(source, _environment_overrides(env))
     return HamesConfig.model_validate(merged)
 

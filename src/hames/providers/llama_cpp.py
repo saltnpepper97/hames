@@ -58,25 +58,26 @@ class LlamaCppProvider:
             model_id = str(raw.get("id", ""))
             if not model_id:
                 continue
-            props = await self._model_props(model_id)
+            status_value = raw.get("status", "unknown")
+            if isinstance(status_value, dict):
+                status_value = status_value.get("value", "unknown")
+            status = str(status_value)
+            props = await self._model_props(model_id) if status in {"loaded", "sleeping"} else {}
             caps = props.get("chat_template_caps", {})
             if not isinstance(caps, dict):
                 caps = {}
-            reasoning = bool(caps.get("supports_reasoning_effort", False))
+            reasoning = bool(caps.get("supports_reasoning_effort", False)) if props else None
             meta = raw.get("meta", {})
             if not isinstance(meta, dict):
                 meta = {}
             architecture = raw.get("architecture", {})
             if not isinstance(architecture, dict):
                 architecture = {}
-            status_value = raw.get("status", "unknown")
-            if isinstance(status_value, dict):
-                status_value = status_value.get("value", "unknown")
             models.append(
                 ProviderModel(
                     id=model_id,
                     provider=self.name,
-                    status=str(status_value),
+                    status=status,
                     context_length=_optional_int(meta.get("n_ctx"))
                     or _nested_optional_int(props, "default_generation_settings", "n_ctx"),
                     parameter_size=_parameter_size(meta.get("n_params")),
@@ -84,7 +85,7 @@ class LlamaCppProvider:
                     input_modalities=_string_list(architecture.get("input_modalities")),
                     output_modalities=_string_list(architecture.get("output_modalities")),
                     reasoning_supported=reasoning,
-                    reasoning_efforts=["low", "medium", "xhigh"] if reasoning else [],
+                    reasoning_efforts=["low", "medium", "xhigh"] if reasoning is True else [],
                 )
             )
         return models

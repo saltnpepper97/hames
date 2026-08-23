@@ -237,7 +237,7 @@ def create_app(state: GatewayState) -> FastAPI:
         if selected is None:
             raise ApiError(400, "unknown_model", f"unknown model: {request.model}")
         if request.reasoning_effort and request.reasoning_effort != "off":
-            if not selected.reasoning_supported:
+            if selected.reasoning_supported is False:
                 raise ApiError(400, "reasoning_not_supported", "model does not advertise reasoning")
             if (
                 selected.reasoning_efforts
