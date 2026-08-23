@@ -244,3 +244,11 @@ M01 is complete only when:
 - all tests pass;
 - the repository is clean;
 - annotated tag `m01` is created.
+
+## Completion record
+
+Completed on 2026-08-23 with protocol v2. Offline acceptance covers typed payloads,
+M0 migration, concurrent ordering, opaque future events, append-only enforcement,
+branch-tree replay, redaction, blob integrity, gateway routes, and Rust process-level
+CLI/REPL behavior. A live Qwen3.8 smoke test confirmed inherited conversation context
+after `/fork`.
