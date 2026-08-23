@@ -1,7 +1,7 @@
 # Hames Rewrite — Working Implementation Plan
 
-This directory is the authoritative build plan for Hames. M0 through M2 are
-implemented; M3 is the next execution phase. Later milestones preserve the design
+This directory is the authoritative build plan for Hames. M0 through M3 are
+implemented; M4 is the next execution phase. Later milestones preserve the design
 inventory but remain subject to refinement as the harness proves its concepts.
 
 Hames is a proper local agent harness built around a small trusted Python kernel,

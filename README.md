@@ -2,21 +2,22 @@
 
 Hames is a local agent harness under active development. A trusted Python
 backend owns the harness and gateway; a Rust REPL is the first client. The current
-milestones prove local-model conversations, provenance, and reliable provider
-transport before adding tools or rich interfaces.
+milestones provide a bounded coding-agent loop while keeping every side effect
+behind deterministic policy and durable provenance.
 
 See [`docs/implementation-plan/README.md`](docs/implementation-plan/README.md)
 for the milestone plan.
 
 ## Status
 
-M2 is implemented. In addition to the M0 local conversation slice, Hames provides
+M3 is implemented. In addition to the local conversation and branching slices, Hames provides
 immutable session branching, ancestry-aware replay, typed and integrity-checked
 events, irreversible secret redaction, and content-addressed payload blobs. Hames
 also has named local-provider profiles, explicit health probes, strict normalized
-streams, resumable SSE, model-specific reasoning levels, and a tool-call wire
-contract. It still intentionally executes no tools; file and shell work begin in
-M3 after the policy boundary exists.
+streams, resumable SSE, and model-specific reasoning levels. Its Python runtime
+now executes bounded `read_file`, `list_dir`, `write_file`, `edit_file`, and Bash
+tool calls inside an explicitly trusted project or disposable scratch workspace.
+Risky operations require exact one-shot approval in the Rust REPL.
 
 ## Quick start
 
@@ -47,6 +48,13 @@ like:
 ```toml
 [runtime]
 default_provider = "llama_cpp" # or "ollama"
+max_model_turns_per_user_message = 24
+max_tool_calls_per_run = 96
+max_active_seconds_per_run = 1800.0
+
+[tools]
+shell_timeout_seconds = 120.0
+shell_max_timeout_seconds = 600.0
 
 [providers.llama_cpp]
 adapter = "llama_cpp"
@@ -74,7 +82,16 @@ endpoint, model, reasoning effort, and timeout are translated in memory. Other
 legacy settings remain preserved but inactive until their corresponding milestone
 is implemented; `hames doctor` reports when this compatibility mode is active.
 
-Inside the REPL, `/help` lists session, provider, model, status, and reasoning
+The first time a session uses an exact canonical directory, the REPL asks whether
+to trust and remember it. Trust is persisted in `~/.hames/hames.db`; `/trust`
+shows the current grant and `/trust revoke` removes it. Trusted roots allow normal
+file changes and ordinary shell work without repetitive prompts. Hames still asks
+for exact one-shot confirmation for deterministic high-risk signatures and denies
+known secrets, credential stores, raw-device operations, and generic access to its
+own state. This policy gate is not an operating-system sandbox.
+
+Inside the REPL, `/help` lists session, project, trust, provider, model, usage,
+status, and reasoning
 commands. `/reasoning` reports model-specific choices; `default`, `off`, `on`, and
 advertised named levels can be selected. A trailing `\` continues input on the
 next line. Ctrl-C during a model run requests cancellation; Ctrl-D or `/quit`
@@ -82,6 +99,9 @@ exits the client.
 
 After a completed answer, `/fork` creates a branch and switches to it. `/events`
 shows the effective inherited history and `/session` shows the current ancestry.
+Tool requests and results are printed concisely. Scratch work requested by the
+model lives under `/tmp/hames/runs/<run-id>/<agent-id>/workspace` for that run and
+is removed at its terminal event.
 The same ledger is scriptable outside the REPL:
 
 ```bash

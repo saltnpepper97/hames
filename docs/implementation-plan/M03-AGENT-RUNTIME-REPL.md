@@ -4,7 +4,9 @@
 
 Produce the first genuinely usable Hames.
 
-At the end of M03, a user can start the bare REPL, talk to one default agent, let it call core coding tools, approve or deny sensitive actions, and receive a final response. Every model/tool/policy action is recorded.
+At the end of M03, a user can start the bare REPL, talk to one default agent, let
+it call core coding tools, approve or deny sensitive actions, and receive a final
+response. Every model/tool/policy action is recorded.
 
 This milestone extends the M0 Rust REPL. It deliberately does **not** build the
 custom Ratatui interface yet.
@@ -31,6 +33,9 @@ max_model_turns_per_user_message
 max_tool_calls_per_run
 max_wall_clock_seconds
 ```
+
+M03 defaults are 24 model turns, 96 requested tool calls, and 30 minutes of
+active provider/tool time. Human approval waits pause the active-time clock.
 
 Limit exhaustion returns a typed final failure rather than looping forever.
 
@@ -108,13 +113,18 @@ Do not start with a fuzzy model-controlled patch engine.
 - bounded output with blob spill;
 - exit code and duration.
 
+The initial interface accepts one command string and executes it with explicit
+`/bin/bash -lc` semantics. Multiple model-requested calls execute sequentially,
+even when a provider returns them together.
+
 The policy gate inspects shell requests before execution.
 
 ## Working-directory trust and scratch workcells
 
 The session's canonical launch directory is its working context; Hames does not
 require a registered project object. Trust grants attach to an exact canonical
-path and may be granted once or persisted under policy.
+path. The Rust REPL asks once and persists the grant until `/trust revoke`
+removes it.
 
 Normal requested work happens in that directory. For experiments, tests, or
 prototypes, a run may create disposable scratch space under:
@@ -181,6 +191,9 @@ Gateway route:
 POST /v1/approvals/{id}
 ```
 
+The body contains the decision and canonical request hash. Approval is consumed
+once; changed arguments, stale hashes, and repeated resolution are conflicts.
+
 Approvals emit durable events.
 
 ## Tool events
@@ -224,6 +237,7 @@ Required commands:
 /model
 /usage
 /cancel
+/trust
 /quit
 ```
 
@@ -236,7 +250,9 @@ Display:
 
 No panels, mouse handling, terminal graphics framework, or dashboard.
 
-The REPL talks to the gateway contract. It may auto-start a local gateway child process for convenience, but must still use the same HTTP/SSE APIs as an external client.
+The REPL talks to the gateway contract. It may auto-start a local gateway child
+process for convenience, but must still use the same HTTP/SSE APIs as an external
+client.
 
 ## Minimal context in M03
 
@@ -298,6 +314,29 @@ Suggested slices:
 
 ## Acceptance gate
 
-M03 is complete when Hames can safely perform a real small coding task from the REPL with a trusted project, all actions are observable in the event ledger, approvals are exact and durable, loop limits work, and the full offline test suite passes.
+M03 is complete when Hames can safely perform a real small coding task from the
+REPL with a trusted project, all actions are observable in the event ledger,
+approvals are exact and durable, loop limits work, and the full offline test suite
+passes.
 
 Finish with clean Git state and tag `m03`.
+
+## Implemented contract
+
+M03 uses gateway protocol v4 and SQLite migration 4. A run, rather than an
+individual provider response, owns the terminal state. `model.response.completed`
+therefore occurs once per model turn, while only `run.completed`, `run.failed`,
+or `run.cancelled` ends the client operation.
+
+Core file paths are relative to either `project` or `scratch` and are resolved
+against canonical roots so absolute paths, `..`, and symlink escapes cannot cross
+the boundary. Large model-visible output is previewed and referenced through the
+content-addressed blob store. Scratch directories are removed at the end of a run
+and abandoned Hames scratch roots are pruned on gateway startup.
+
+## Completion record
+
+Completed on 2026-08-23 with protocol v4 and migration 4. The full offline gate
+passed with 58 Python tests and 3 Rust tests. Live `qwen3.8-27b` acceptance through
+llama.cpp completed read/continuation, exact edit, safe shell, and denied destructive
+shell flows. See [`M3-QWEN38.md`](../model-evaluations/M3-QWEN38.md).

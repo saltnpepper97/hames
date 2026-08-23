@@ -27,6 +27,20 @@ a model request is caused by its context compilation. `correlation_id` groups al
 events in one logical activity, normally a run or branch creation. Neither field is
 used as a substitute for session ancestry.
 
+## Agent runs and tool history
+
+Protocol v4 makes the run the terminal unit. One user message causes
+`run.started`; each provider cycle has its own context, request, response, usage,
+assistant output, and optional `model.tool_call` events. Tool calls then produce
+`tool.requested`, policy, optional approval, execution, and result events. Only
+`run.completed`, `run.failed`, or `run.cancelled` ends the logical operation.
+
+Context replay reconstructs assistant tool calls and linked tool-result messages,
+so a provider continuation and a resumed or forked session see the same evidence.
+Multiple calls from one response retain provider order and execute sequentially.
+Approval records are mutable control-plane materializations, but every requested
+and resolved transition is also preserved in the append-only event history.
+
 ## Typed payloads and forward reads
 
 Known event types have strict Pydantic payload schemas and are validated before
@@ -77,6 +91,12 @@ table is dropped; any SQL failure rolls the transaction back. The migration is
 one-way because protocol-v1 writers do not supply payload hashes. Hames restarts an
 owned older gateway before migration and refuses to stop or replace an unrelated
 process occupying the configured port.
+
+Migration 4 adds exact canonical trusted-root grants and one-shot approval
+materializations. Trust lives under `~/.hames` and applies across sessions using
+the same canonical directory. Approval hashes bind the tool name, arguments, run,
+session, agent, and working directory; a changed or previously resolved request
+cannot reuse the decision.
 
 Garbage collection is intentionally absent in M1. A failed database append can
 leave an unreferenced content-addressed blob, which is safe and can be handled by a
