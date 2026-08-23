@@ -37,6 +37,14 @@ from hames.inspection import (
     session_usage,
 )
 from hames.ledger import Event, EventIntegrityError, IntegrityResult, Ledger, Session
+from hames.memory import (
+    MemoryJob,
+    MemoryLayer,
+    MemoryRecord,
+    MemoryStatus,
+    MemoryVisibility,
+    contains_secret,
+)
 from hames.memory_runtime import MemoryManager
 from hames.paths import HamesPaths
 from hames.providers import Provider, ProviderError, ProviderModel
@@ -60,6 +68,7 @@ class CreateSessionRequest(ApiModel):
 
 class MessageRequest(ApiModel):
     content: str = Field(min_length=1)
+    remember: bool = False
 
 
 class UpdateSessionRequest(ApiModel):
@@ -104,6 +113,19 @@ class AgentCreateRequest(ApiModel):
     id: str
     name: str = Field(min_length=1, max_length=80)
     authority: Literal["standard", "read_only"] = "standard"
+
+
+class MemoryCaptureRequest(ApiModel):
+    content: str = Field(min_length=1, max_length=32_000)
+
+
+class MemoryTransitionRequest(ApiModel):
+    action: Literal["accept", "reject", "retract"]
+    reason: str = Field(default="user_request", min_length=1, max_length=240)
+
+
+class MemoryPromotionRequest(ApiModel):
+    visibility: MemoryVisibility
 
 
 class AgentPublic(ApiModel):
@@ -560,6 +582,172 @@ def create_app(state: GatewayState) -> FastAPI:
         except (FileNotFoundError, ValueError) as exc:
             raise ApiError(400, "unknown_agent", str(exc)) from exc
 
+    @app.get(
+        "/v1/sessions/{session_id}/memories",
+        dependencies=auth,
+        response_model=list[MemoryRecord],
+    )
+    async def list_memories(
+        session_id: str,
+        query: str = "",
+        status: str = "active",
+        layer: MemoryLayer | None = None,
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> list[MemoryRecord]:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            selected_status: MemoryStatus | None
+            if status == "all":
+                selected_status = None
+            elif status in {"proposed", "active", "rejected", "superseded", "retracted"}:
+                selected_status = cast(MemoryStatus, status)
+            else:
+                raise ApiError(400, "invalid_memory_status", f"unknown memory status: {status}")
+            return await asyncio.to_thread(
+                state.memory.store.list_visible,
+                session,
+                status=selected_status,
+                layer=layer,
+                query=query,
+                limit=limit,
+            )
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+
+    @app.get(
+        "/v1/sessions/{session_id}/memories/{memory_id}",
+        dependencies=auth,
+        response_model=MemoryRecord,
+    )
+    async def get_memory(session_id: str, memory_id: str) -> MemoryRecord:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            return await asyncio.to_thread(state.memory.store.get_visible, session, memory_id)
+        except KeyError as exc:
+            raise ApiError(404, "memory_not_found", f"unknown visible memory: {memory_id}") from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/memories/capture",
+        dependencies=auth,
+        response_model=MemoryJob,
+        status_code=202,
+    )
+    async def capture_memory(session_id: str, request: MemoryCaptureRequest) -> MemoryJob:
+        if contains_secret(request.content):
+            raise ApiError(
+                400,
+                "memory_secret_rejected",
+                "explicit memory resembles a credential or private key",
+            )
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            source = await asyncio.to_thread(
+                state.ledger.append,
+                session_id=session.id,
+                agent_id=session.agent_id,
+                event_type="memory.capture.requested",
+                payload={"content": request.content, "explicit": True},
+                correlation_id=session.id,
+            )
+            await state.broker.publish(
+                source.session_id,
+                {"durable": True, "event": source.model_dump(mode="json")},
+            )
+            return await state.memory.enqueue_capture(session, request.content, source)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/memories/{memory_id}/transition",
+        dependencies=auth,
+        response_model=MemoryRecord,
+    )
+    async def transition_memory(
+        session_id: str, memory_id: str, request: MemoryTransitionRequest
+    ) -> MemoryRecord:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            mutation = await asyncio.to_thread(
+                state.memory.store.transition,
+                session=session,
+                memory_id=memory_id,
+                action=request.action,
+                reason=request.reason,
+            )
+            for event in mutation.events:
+                await state.broker.publish(
+                    event.session_id,
+                    {"durable": True, "event": event.model_dump(mode="json")},
+                )
+            return mutation.record
+        except KeyError as exc:
+            raise ApiError(404, "memory_not_found", f"unknown visible memory: {memory_id}") from exc
+        except ValueError as exc:
+            raise ApiError(409, "invalid_memory_transition", str(exc)) from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/memories/{memory_id}/promote",
+        dependencies=auth,
+        response_model=MemoryRecord,
+    )
+    async def promote_memory(
+        session_id: str, memory_id: str, request: MemoryPromotionRequest
+    ) -> MemoryRecord:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            source = await asyncio.to_thread(
+                state.ledger.append,
+                session_id=session.id,
+                agent_id=session.agent_id,
+                event_type="memory.promotion.requested",
+                payload={"memory_id": memory_id, "visibility": request.visibility},
+                correlation_id=memory_id,
+            )
+            mutation = await asyncio.to_thread(
+                state.memory.store.promote,
+                session=session,
+                memory_id=memory_id,
+                visibility=request.visibility,
+                causation_id=source.id,
+            )
+            for event in (source, *mutation.events):
+                await state.broker.publish(
+                    event.session_id,
+                    {"durable": True, "event": event.model_dump(mode="json")},
+                )
+            return mutation.record
+        except KeyError as exc:
+            raise ApiError(404, "memory_not_found", f"unknown visible memory: {memory_id}") from exc
+        except ValueError as exc:
+            raise ApiError(409, "invalid_memory_promotion", str(exc)) from exc
+
+    @app.get(
+        "/v1/sessions/{session_id}/memory-jobs",
+        dependencies=auth,
+        response_model=list[MemoryJob],
+    )
+    async def list_memory_jobs(session_id: str) -> list[MemoryJob]:
+        try:
+            await asyncio.to_thread(state.ledger.get_session, session_id)
+            return await asyncio.to_thread(state.memory.store.list_jobs, session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/memory-jobs/{job_id}/retry",
+        dependencies=auth,
+        response_model=MemoryJob,
+        status_code=202,
+    )
+    async def retry_memory_job(session_id: str, job_id: str) -> MemoryJob:
+        try:
+            await asyncio.to_thread(state.ledger.get_session, session_id)
+            return await state.memory.retry(session_id, job_id)
+        except KeyError as exc:
+            raise ApiError(404, "memory_job_not_found", f"unknown memory job: {job_id}") from exc
+        except ValueError as exc:
+            raise ApiError(409, "memory_job_not_retryable", str(exc)) from exc
+
     @app.get("/v1/sessions/{session_id}/events", dependencies=auth, response_model=list[Event])
     async def list_events(session_id: str, after_sequence: int = 0) -> list[Event]:
         return await asyncio.to_thread(
@@ -681,7 +869,11 @@ def create_app(state: GatewayState) -> FastAPI:
     )
     async def send_message(session_id: str, request: MessageRequest) -> RunAccepted:
         try:
-            return RunAccepted(run_id=await state.runs.start(session_id, request.content))
+            return RunAccepted(
+                run_id=await state.runs.start(
+                    session_id, request.content, remember=request.remember
+                )
+            )
         except KeyError as exc:
             raise ApiError(404, "session_or_provider_not_found", str(exc)) from exc
         except ValueError as exc:

@@ -109,6 +109,27 @@ class MemoryManager:
         self._queue.put_nowait(job.id)
         return job
 
+    async def retry(self, session_id: str, job_id: str) -> MemoryJob:
+        job = await asyncio.to_thread(self.store.retry_job, session_id, job_id)
+        session = await asyncio.to_thread(self.ledger.get_session, session_id)
+        await self._append(
+            session_id=session.id,
+            run_id=job.run_id,
+            agent_id=session.agent_id,
+            event_type="memory.job.queued",
+            payload={
+                "job_id": job.id,
+                "kind": job.kind,
+                "status": "pending",
+                "attempts": job.attempts,
+            },
+            causation_id=job.source_event_id,
+            correlation_id=job.id,
+        )
+        await self.start()
+        self._queue.put_nowait(job.id)
+        return job
+
     async def _work(self) -> None:
         while True:
             job_id = await self._queue.get()

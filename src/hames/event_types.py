@@ -50,6 +50,7 @@ class SessionAgentChangedPayload(EventPayload):
 
 class MessagePayload(EventPayload):
     content: str
+    remember: bool = False
 
 
 class AssistantOutputPayload(EventPayload):
@@ -322,6 +323,16 @@ class MemoryEpisodePayload(EventPayload):
     reason: str
 
 
+class MemoryCapturePayload(EventPayload):
+    content: str
+    explicit: bool = True
+
+
+class MemoryPromotionPayload(EventPayload):
+    memory_id: str
+    visibility: str
+
+
 EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "session.opened": SessionOpenedPayload,
     "session.closed": SessionClosedPayload,
@@ -371,6 +382,8 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "memory.job.failed": MemoryJobPayload,
     "memory.retrieved": MemoryRetrievedPayload,
     "memory.episode.projected": MemoryEpisodePayload,
+    "memory.capture.requested": MemoryCapturePayload,
+    "memory.promotion.requested": MemoryPromotionPayload,
 }
 
 

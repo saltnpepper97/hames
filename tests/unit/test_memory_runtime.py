@@ -30,7 +30,12 @@ class ExtractingProvider:
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
         self.requests.append(request)
         evidence = json.loads(request.messages[0].content)
-        user = evidence["evidence"][0]
+        if evidence["explicit_capture"]:
+            event_id = evidence["evidence_event_ids"][0]
+            summary = str(evidence["content"])
+        else:
+            event_id = evidence["evidence"][0]["event_id"]
+            summary = "The user prefers concise documentation."
         arguments = json.dumps(
             {
                 "candidates": [
@@ -40,11 +45,11 @@ class ExtractingProvider:
                         "subject": "user:local",
                         "predicate": "prefers_docs",
                         "value": "concise",
-                        "summary": "The user prefers concise documentation.",
+                        "summary": summary,
                         "confidence": 0.95,
                         "importance": 0.9,
                         "anchors": [],
-                        "provenance_event_ids": [user["event_id"]],
+                        "provenance_event_ids": [event_id],
                         "evidence_basis": "explicit_user",
                     }
                 ]
@@ -130,5 +135,46 @@ async def test_background_extraction_activates_important_user_memory(
         event_types = [event.type for event in ledger.list_events(session.id)]
         assert "memory.job.completed" in event_types
         assert "memory.accepted" in event_types
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_explicit_capture_is_activated_and_attributed(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    session = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    source = ledger.append(
+        session_id=session.id,
+        agent_id=session.agent_id,
+        event_type="memory.capture.requested",
+        payload={"content": "The user prefers concise documentation.", "explicit": True},
+    )
+    provider = ExtractingProvider()
+    manager = MemoryManager(
+        ledger=ledger,
+        config=HamesConfig(),
+        providers={"fake": provider},
+        broker=EventBroker(),
+    )
+    try:
+        job = await manager.enqueue_capture(
+            session, "The user prefers concise documentation.", source
+        )
+        for _ in range(100):
+            if MemoryStore(ledger).get_job(job.id).status == "completed":
+                break
+            await asyncio.sleep(0.01)
+        record = MemoryStore(ledger).list_visible(session)[0]
+        assert record.status == "active"
+        assert record.origin_kind == "explicit"
+        assert source.id in record.provenance_event_ids
+        assert provider.requests[0].metadata["purpose"] == "memory_extraction"
     finally:
         await manager.close()

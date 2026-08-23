@@ -14,6 +14,7 @@ from pydantic import TypeAdapter
 from hames.gateway import GatewayState, create_app
 from hames.inspection import inspect_run
 from hames.ledger import Ledger
+from hames.memory import MemoryCandidate
 from hames.paths import HamesPaths
 from hames.providers import (
     ModelRequest,
@@ -885,6 +886,98 @@ async def test_agent_active_time_limit_is_typed(tmp_path: Path) -> None:
             failure = next(event for event in events if event["type"] == "run.failed")["payload"]
             assert isinstance(failure, dict)
             assert failure["code"] == "active_time_limit"
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_exposes_memory_review_and_promotion(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            session = state.ledger.get_session(session_id)
+            evidence = state.ledger.append(
+                session_id=session_id,
+                agent_id=session.agent_id,
+                event_type="user.message",
+                payload={"content": "Keep documentation concise."},
+            )
+            proposed = state.memory.store.create_candidate(
+                session=session,
+                candidate=MemoryCandidate(
+                    layer="relationship",
+                    visibility="workspace",
+                    subject="user:local",
+                    predicate="prefers_documentation_style",
+                    value="concise",
+                    summary="The user prefers concise documentation.",
+                    confidence=0.95,
+                    importance=0.9,
+                    provenance_event_ids=[evidence.id],
+                    evidence_basis="explicit_user",
+                ),
+                run_id=None,
+                origin_kind="automatic",
+                activate=False,
+                causation_id=evidence.id,
+            ).record
+
+            proposals = await client.get(
+                f"/v1/sessions/{session_id}/memories",
+                headers=headers,
+                params={"status": "proposed"},
+            )
+            assert proposals.status_code == 200
+            assert [item["id"] for item in proposals.json()] == [proposed.id]
+
+            accepted = await client.post(
+                f"/v1/sessions/{session_id}/memories/{proposed.id}/transition",
+                headers=headers,
+                json={"action": "accept"},
+            )
+            assert accepted.status_code == 200
+            assert response_object(accepted)["status"] == "active"
+
+            promoted = await client.post(
+                f"/v1/sessions/{session_id}/memories/{proposed.id}/promote",
+                headers=headers,
+                json={"visibility": "global"},
+            )
+            assert promoted.status_code == 200
+            promoted_body = response_object(promoted)
+            assert promoted_body["visibility"] == "global"
+            assert promoted_body["status"] == "active"
+
+            search = await client.get(
+                f"/v1/sessions/{session_id}/memories",
+                headers=headers,
+                params={"query": "concise documentation"},
+            )
+            assert search.status_code == 200
+            assert [item["id"] for item in search.json()] == [promoted_body["id"]]
+
+            secret = await client.post(
+                f"/v1/sessions/{session_id}/memories/capture",
+                headers=headers,
+                json={"content": "Remember sk_this_is_a_fake_secret_token_12345"},
+            )
+            assert secret.status_code == 400
+            secret_error = response_object(secret)["error"]
+            assert isinstance(secret_error, dict)
+            assert secret_error["code"] == "memory_secret_rejected"
     finally:
         await state.runs.close()
 

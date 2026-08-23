@@ -392,6 +392,54 @@ class MemoryStore:
             connection.commit()
         return MemoryMutation(self.get(memory_id), (event,))
 
+    def promote(
+        self,
+        *,
+        session: Session,
+        memory_id: str,
+        visibility: MemoryVisibility,
+        causation_id: str,
+    ) -> MemoryMutation:
+        previous = self.get_visible(session, memory_id)
+        if previous.status != "active":
+            raise ValueError("only an active memory can be promoted")
+        if previous.visibility == visibility:
+            raise ValueError("memory already has the requested visibility")
+        scope_kinds = {"user", "agent", "workspace", "session_lineage"}
+        candidate = MemoryCandidate(
+            layer=previous.layer,
+            visibility=visibility,
+            subject=previous.subject,
+            predicate=previous.predicate,
+            value=previous.value,
+            summary=previous.summary,
+            confidence=previous.confidence,
+            importance=previous.importance,
+            anchors=[item for item in previous.anchors if item.kind not in scope_kinds],
+            provenance_event_ids=[*previous.provenance_event_ids, causation_id],
+            supersedes_id=previous.id,
+            evidence_basis="explicit_user",
+            valid_from=previous.valid_from,
+            valid_until=previous.valid_until,
+        )
+        mutation = self.create_candidate(
+            session=session,
+            candidate=candidate,
+            run_id=None,
+            origin_kind="explicit",
+            activate=True,
+            causation_id=causation_id,
+        )
+        promoted = self.ledger.append(
+            session_id=session.id,
+            agent_id=session.agent_id,
+            event_type="memory.promoted",
+            payload=self._record_event_payload(mutation.record.id, candidate, "active"),
+            causation_id=mutation.events[-1].id,
+            correlation_id=mutation.record.id,
+        )
+        return MemoryMutation(mutation.record, (*mutation.events, promoted))
+
     def queue_job(
         self,
         *,
@@ -528,6 +576,20 @@ class MemoryStore:
                 "SELECT * FROM memory_jobs WHERE status = 'pending' ORDER BY created_at"
             ).fetchall()
         return [MemoryJob.model_validate(dict(row)) for row in rows]
+
+    def retry_job(self, session_id: str, job_id: str) -> MemoryJob:
+        job = self.get_job(job_id)
+        if job.session_id != session_id:
+            raise KeyError(job_id)
+        if job.status != "failed":
+            raise ValueError("only a failed memory job can be retried")
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE memory_jobs SET status = 'pending', error_code = NULL, "
+                "error_message = NULL, updated_at = ? WHERE id = ?",
+                (utc_now(), job_id),
+            )
+        return self.get_job(job_id)
 
     def get(self, memory_id: str) -> MemoryRecord:
         with self.database.connect() as connection:

@@ -147,7 +147,7 @@ class RunManager:
     def attach_memory_manager(self, manager: MemoryManager) -> None:
         self.memory_manager = manager
 
-    async def start(self, session_id: str, content: str) -> str:
+    async def start(self, session_id: str, content: str, *, remember: bool = False) -> str:
         session = await asyncio.to_thread(self.ledger.get_session, session_id)
         if session.status != "open":
             raise ValueError("session is not open")
@@ -161,7 +161,7 @@ class RunManager:
         user_event = await self._append(
             session_id=session_id,
             event_type="user.message",
-            payload={"content": content},
+            payload={"content": content, "remember": remember},
             agent_id=session.agent_id,
         )
         return self._launch(session_id, user_event)
@@ -256,6 +256,7 @@ class RunManager:
 
     async def _run(self, run_id: str, session_id: str, user_event: Event) -> None:
         scratch_root: Path | None = None
+        session: Session | None = None
         try:
             session = await asyncio.to_thread(self.ledger.get_session, session_id)
             scratch_root = self._scratch_base / run_id / session.agent_id / "workspace"
@@ -307,8 +308,13 @@ class RunManager:
         finally:
             if self.config.memory.enabled:
                 await self._project_episode(session_id, run_id)
-            if self.memory_manager is not None:
-                await self.memory_manager.enqueue_run(session_id, run_id)
+            if self.memory_manager is not None and session is not None:
+                if bool(user_event.payload.get("remember", False)):
+                    await self.memory_manager.enqueue_capture(
+                        session, str(user_event.payload.get("content", "")), user_event
+                    )
+                else:
+                    await self.memory_manager.enqueue_run(session_id, run_id)
             if scratch_root is not None:
                 await asyncio.to_thread(self._remove_scratch, scratch_root)
 
