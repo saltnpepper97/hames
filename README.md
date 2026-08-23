@@ -10,7 +10,7 @@ for the milestone plan.
 
 ## Status
 
-M5 is implemented. In addition to the local conversation and branching slices, Hames provides
+M6 is implemented. In addition to the local conversation and branching slices, Hames provides
 immutable session branching, ancestry-aware replay, typed and integrity-checked
 events, irreversible secret redaction, and content-addressed payload blobs. Hames
 also has named local-provider profiles, explicit health probes, strict normalized
@@ -30,6 +30,13 @@ can list agents with `/agent` and select one for subsequent turns with
 Capsules may narrow tool authority and permit only named child agents. Delegation
 creates a separate, bounded child session with an explicit task card and selected
 evidence; it never silently copies the parent conversation.
+Relationship, Semantic, and Episodic memory now provide durable continuity without
+a required project registry. Active records are visibility-filtered and ranked
+before entering the context budget, and every selected record remains attributable
+in `/context`. Background extraction proposes only bounded durable facts from the
+settled turn; notable tool runs also receive deterministic episodic projections.
+Users can explicitly capture, review, correct, promote, or forget memories from the
+REPL.
 
 ## Quick start
 
@@ -76,7 +83,18 @@ output_reserve_tokens = 4096
 stable_instruction_limit_tokens = 8192
 agent_identity_limit_tokens = 4096
 tool_schema_limit_tokens = 8192
-retrieved_context_limit_tokens = 0
+retrieved_context_limit_tokens = 2048
+
+[memory]
+enabled = true
+automatic_extraction = true
+# Blank values reuse the active session provider, model, and reasoning effort.
+provider = ""
+model = ""
+reasoning_effort = ""
+max_proposals_per_pass = 4
+max_retrieved_records = 8
+max_extraction_retries = 2
 
 [providers.llama_cpp]
 adapter = "llama_cpp"
@@ -136,6 +154,16 @@ estimate, source selection, compaction, omissions, and exact request hash.
 `/usage` keeps compiler estimates distinct from provider-reported token counts.
 `/export <path> [markdown|jsonl]` writes a private derived audit transcript and
 refuses to overwrite an existing file.
+
+Memory extraction normally runs after each settled turn. `/remember` marks the
+next ordinary message as an explicit durable capture; `/remember <fact>` queues a
+capture without sending another chat turn. `/memory` lists active visible records,
+while `/memory search`, `show`, `proposals`, `accept`, `reject`, `forget`,
+`promote`, `status`, and `retry` provide the review workflow shown by `/help`.
+Explicit captures are still structured by the configured model rather than stored
+as an untyped transcript fragment. A failed extraction never blocks the completed
+chat turn and remains visible as a retryable memory job.
+
 The same ledger is scriptable outside the REPL:
 
 ```bash

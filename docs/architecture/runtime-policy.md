@@ -1,7 +1,7 @@
 # Runtime and policy boundary
 
 The Python runtime is the only component allowed to execute model-requested work.
-Clients send messages and decisions through protocol v4; provider adapters only
+Clients send messages and decisions through protocol v8; provider adapters only
 translate normalized messages and streams. Neither the Rust REPL nor a provider
 adapter directly reads files, writes files, or starts commands.
 

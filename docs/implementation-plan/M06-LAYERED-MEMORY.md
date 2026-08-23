@@ -84,3 +84,30 @@ emits an event tied to its cause.
 M06 is complete when the three layers provide useful, correctable continuity across
 sessions without a mandatory project registry, raw-transcript embedding, scope
 leakage, or hidden provenance.
+
+## Implemented result
+
+Completed on 2026-08-23 with gateway protocol v8 and SQLite migration 7.
+
+- Relationship and Semantic records are extracted in recoverable background jobs
+  from bounded current-turn evidence. Explicit user and successful-tool facts may
+  auto-activate under confidence and importance thresholds; inference remains a
+  proposal.
+- Episodic records are deterministic, idempotent projections of notable runs.
+  Routine conversation is deliberately skipped.
+- Global, agent-private, exact-workspace, and session-team visibility is enforced
+  before FTS5 ranking. Flexible record anchors do not create a project registry.
+- Active retrieval is bounded by record count and tokens. The selected set is held
+  stable across one tool loop, emitted as `memory.retrieved`, and fully attributed
+  in the context manifest.
+- `/remember` and `/memory` expose capture, search, proposal review, correction,
+  promotion, forgetting, job status, and retry through the Rust REPL and protocol.
+- Memory mutation, retrieval, extraction provider work, and episode projection are
+  typed ledger events. Secret-like standalone captures are rejected before append,
+  and no rejected candidate is materialized.
+
+The full model trace remains in the event ledger and audit views; M6 does not add a
+separate "dream" executor or permit memory jobs to run tools. Procedures remain
+reserved for Skills in M7. See
+[`../architecture/memory.md`](../architecture/memory.md) for the implemented
+invariants.

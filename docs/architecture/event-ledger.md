@@ -29,7 +29,7 @@ used as a substitute for session ancestry.
 
 ## Agent runs and tool history
 
-Protocol v4 makes the run the terminal unit. One user message causes
+Since protocol v4, the run is the terminal unit. One user message causes
 `run.started`; each provider cycle has its own context, request, response, usage,
 assistant output, and optional `model.tool_call` events. Tool calls then produce
 `tool.requested`, policy, optional approval, execution, and result events. Only
@@ -40,6 +40,15 @@ so a provider continuation and a resumed or forked session see the same evidence
 Multiple calls from one response retain provider order and execute sequentially.
 Approval records are mutable control-plane materializations, but every requested
 and resolved transition is also preserved in the append-only event history.
+
+## Memory projections
+
+Protocol v8 adds layered-memory materializations without changing the ledger's
+authority. Memory proposals, review transitions, extraction jobs, retrieval sets,
+and episode projections all have typed events. The SQLite memory tables provide
+efficient state and FTS5 retrieval, while provenance event IDs connect each record
+back to durable evidence. See [memory.md](memory.md) for visibility and retrieval
+rules.
 
 ## Typed payloads and forward reads
 

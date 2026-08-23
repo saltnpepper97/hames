@@ -27,7 +27,7 @@ id: investigate-rust-regression
 name: Investigate Rust Regression
 description: Diagnose a Rust regression by reproducing, narrowing, patching, and retesting it.
 version: 3
-scope: project
+scope: workspace
 tools:
   - read_file
   - edit_file
@@ -60,7 +60,7 @@ tool requirements
 
 Full body loads only when:
 
-- model explicitly requests through `flow_load`; or
+- model explicitly requests through `skill_load`; or
 - deterministic selector marks it highly relevant and context compiler includes it under budget.
 
 References/scripts are not loaded with body unless individually requested/executed.
@@ -81,7 +81,7 @@ Support:
 
 ```text
 global
-project:<id>
+workspace
 agent:<id>
 ```
 
@@ -102,7 +102,7 @@ hames skill archive <id>
 Durable skill metadata tracks:
 
 ```text
-flow_id
+skill_id
 version
 content_hash
 status
@@ -175,7 +175,7 @@ successful_multistep_trace
 user_correction_followed_by_resolution
 non_obvious_error_recovery
 tool_call_cost
-existing_flow_similarity
+existing_skill_similarity
 future_reuse_score
 volatility
 security_sensitivity
