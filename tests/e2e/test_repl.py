@@ -84,9 +84,7 @@ async def test_rust_repl_through_gateway_and_ledger(tmp_path: Path) -> None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(b"hello\n/quit\n"), timeout=10
-        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(b"hello\n/quit\n"), timeout=10)
         output = stdout.decode()
         assert process.returncode == 0, stderr.decode()
         assert "thinking> check" in output
