@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path, PurePath
 from typing import Literal, cast
 
@@ -248,13 +249,12 @@ class SkillRegistry:
         metadata = metadata.model_copy(update={"version": version_number})
         files = dict(draft.files)
         files["SKILL.md"] = render_skill(metadata, draft.instructions)
+        if sum(len(value.encode()) for value in files.values()) > self.max_package_bytes:
+            raise ValueError("Skill package exceeds configured size limit")
         content_hash = _package_hash(files)
         version_id = new_id()
         package_path = (
-            self.root
-            / "packages"
-            / metadata.id
-            / f"{version_number:04d}-{content_hash[:12]}"
+            self.root / "packages" / metadata.id / f"{version_number:04d}-{content_hash[:12]}"
         )
         self._write_package(package_path, files)
         now = utc_now()
@@ -262,7 +262,7 @@ class SkillRegistry:
             connection.execute("BEGIN IMMEDIATE")
             if target_skill_id is None:
                 connection.execute(
-                    "INSERT OR IGNORE INTO skills(" 
+                    "INSERT OR IGNORE INTO skills("
                     "id, slug, scope, scope_key, created_at, updated_at"
                     ") VALUES (?, ?, ?, ?, ?, ?)",
                     (skill_id, metadata.id, scope, scope_key, now, now),
@@ -344,7 +344,7 @@ class SkillRegistry:
             ).fetchone()
             active_id = None if active_row is None else active_row["active_version_id"]
             if current is None:
-                if candidate.base_version_id is not None:
+                if candidate.base_version_id is not None and reason != "automatic_rollback":
                     raise ValueError("Skill base version is no longer active")
             elif current.id != version_id and candidate.base_version_id != current.id:
                 raise ValueError("Skill base version changed; draft a new correction")
@@ -441,6 +441,336 @@ class SkillRegistry:
                 ),
             )
 
+    def observe_workflow(
+        self,
+        *,
+        session: Session,
+        run_id: str,
+        task_text: str,
+        tool_sequence: list[str],
+        outcome: Literal["completed", "failed", "cancelled"],
+        causation_id: str,
+        similarity_threshold: float,
+    ) -> tuple[Event, list[str]]:
+        encoded_tools = json.dumps(tool_sequence, separators=(",", ":"))
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "agent": session.agent_id,
+                    "task": _tokens(task_text),
+                    "tools": tool_sequence,
+                    "workspace": session.working_directory,
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT run_id, task_text FROM workflow_signatures "
+                "WHERE workspace_path = ? AND agent_id = ? AND tool_sequence_json = ? "
+                "AND outcome = 'completed' ORDER BY created_at DESC LIMIT 50",
+                (session.working_directory, session.agent_id, encoded_tools),
+            ).fetchall()
+            similar = [
+                str(row["run_id"])
+                for row in rows
+                if task_similarity(task_text, str(row["task_text"])) >= similarity_threshold
+            ]
+            connection.execute(
+                "INSERT OR IGNORE INTO workflow_signatures("
+                "run_id, session_id, agent_id, workspace_path, task_text, task_tokens_json, "
+                "tool_sequence_json, fingerprint, outcome, created_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    session.id,
+                    session.agent_id,
+                    session.working_directory,
+                    task_text,
+                    json.dumps(_tokens(task_text), separators=(",", ":")),
+                    encoded_tools,
+                    fingerprint,
+                    outcome,
+                    utc_now(),
+                ),
+            )
+        event = self.ledger.append(
+            session_id=session.id,
+            run_id=run_id,
+            agent_id=session.agent_id,
+            event_type="skill.workflow.observed",
+            payload={
+                "run_id": run_id,
+                "fingerprint": fingerprint,
+                "tool_sequence": tool_sequence,
+                "outcome": outcome,
+                "similar_run_ids": similar,
+            },
+            causation_id=causation_id,
+            correlation_id=run_id,
+        )
+        return event, similar
+
+    def queue_job(
+        self,
+        *,
+        session: Session,
+        kind: Literal["author", "patch", "revalidate"],
+        source_event_id: str,
+        run_id: str | None,
+        goal: str,
+        scope: SkillScope,
+        target_skill_id: str | None = None,
+    ) -> tuple[SkillJob, Event]:
+        job_id = new_id()
+        now = utc_now()
+        with self.ledger.transaction_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "INSERT INTO skill_jobs("
+                "id, kind, status, session_id, run_id, source_event_id, target_skill_id, "
+                "goal, scope, attempts, created_at, updated_at"
+                ") VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                (
+                    job_id,
+                    kind,
+                    session.id,
+                    run_id,
+                    source_event_id,
+                    target_skill_id,
+                    goal,
+                    scope,
+                    now,
+                    now,
+                ),
+            )
+            event = self.ledger.append_in_transaction(
+                connection,
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                event_type="skill.job.queued",
+                payload={
+                    "job_id": job_id,
+                    "kind": kind,
+                    "status": "pending",
+                    "attempts": 0,
+                    "target_skill_id": target_skill_id,
+                },
+                causation_id=source_event_id,
+                correlation_id=job_id,
+            )
+            connection.commit()
+        return self.get_job(job_id), event
+
+    def start_job(self, job_id: str) -> tuple[SkillJob, Event]:
+        job = self.get_job(job_id)
+        if job.status not in {"pending", "running", "budget_wait"}:
+            raise ValueError("Skill job is not pending")
+        session = self.ledger.get_session(job.session_id)
+        attempts = job.attempts + 1
+        with self.ledger.transaction_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "UPDATE skill_jobs SET status = 'running', attempts = ?, updated_at = ?, "
+                "error_code = NULL, error_message = NULL WHERE id = ?",
+                (attempts, utc_now(), job_id),
+            )
+            event = self.ledger.append_in_transaction(
+                connection,
+                session_id=job.session_id,
+                run_id=job.run_id,
+                agent_id=session.agent_id,
+                event_type="skill.job.started",
+                payload={
+                    "job_id": job.id,
+                    "kind": job.kind,
+                    "status": "running",
+                    "attempts": attempts,
+                    "target_skill_id": job.target_skill_id,
+                },
+                causation_id=job.source_event_id,
+                correlation_id=job.id,
+            )
+            connection.commit()
+        return self.get_job(job_id), event
+
+    def finish_job(
+        self,
+        job_id: str,
+        *,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        retry: bool = False,
+        budget_wait: bool = False,
+    ) -> tuple[SkillJob, Event]:
+        job = self.get_job(job_id)
+        if job.status != "running":
+            raise ValueError("Skill job is not running")
+        session = self.ledger.get_session(job.session_id)
+        status = (
+            "budget_wait"
+            if budget_wait
+            else "pending"
+            if retry
+            else "failed"
+            if error_code
+            else "completed"
+        )
+        event_type = "skill.job.failed" if error_code else "skill.job.completed"
+        with self.ledger.transaction_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "UPDATE skill_jobs SET status = ?, error_code = ?, error_message = ?, "
+                "updated_at = ? WHERE id = ?",
+                (status, error_code, error_message, utc_now(), job_id),
+            )
+            event = self.ledger.append_in_transaction(
+                connection,
+                session_id=job.session_id,
+                run_id=job.run_id,
+                agent_id=session.agent_id,
+                event_type=event_type,
+                payload={
+                    "job_id": job.id,
+                    "kind": job.kind,
+                    "status": status,
+                    "attempts": job.attempts,
+                    "target_skill_id": job.target_skill_id,
+                    "error_code": error_code,
+                    "error_message": error_message,
+                },
+                causation_id=job.source_event_id,
+                correlation_id=job.id,
+            )
+            connection.commit()
+        return self.get_job(job_id), event
+
+    def get_job(self, job_id: str) -> SkillJob:
+        with self.database.connect() as connection:
+            row = connection.execute("SELECT * FROM skill_jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        return SkillJob.model_validate(dict(row))
+
+    def list_jobs(self, session_id: str, *, limit: int = 50) -> list[SkillJob]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM skill_jobs WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+        return [SkillJob.model_validate(dict(row)) for row in rows]
+
+    def recover_jobs(self) -> list[SkillJob]:
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE skill_jobs SET status = 'pending', updated_at = ? WHERE status = 'running'",
+                (utc_now(),),
+            )
+            rows = connection.execute(
+                "SELECT * FROM skill_jobs WHERE status = 'pending' ORDER BY created_at"
+            ).fetchall()
+        return [SkillJob.model_validate(dict(row)) for row in rows]
+
+    def retry_job(self, session_id: str, job_id: str) -> SkillJob:
+        job = self.get_job(job_id)
+        if job.session_id != session_id:
+            raise KeyError(job_id)
+        if job.status not in {"failed", "budget_wait"}:
+            raise ValueError("only a failed or budget-waiting Skill job can be retried")
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE skill_jobs SET status = 'pending', error_code = NULL, "
+                "error_message = NULL, updated_at = ? WHERE id = ?",
+                (utc_now(), job_id),
+            )
+        return self.get_job(job_id)
+
+    def background_model_calls_today(self) -> int:
+        start = datetime.now(UTC).date().isoformat()
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT count(*) AS value FROM events WHERE type = 'model.requested' "
+                "AND created_at >= ? AND payload_json IS NOT NULL "
+                "AND json_extract(payload_json, '$.purpose') IN "
+                "('skill_authoring', 'skill_evaluation')",
+                (start,),
+            ).fetchone()
+        return int(row["value"])
+
+    def record_usage(
+        self,
+        *,
+        version_id: str,
+        run_id: str,
+        session_id: str,
+        stage: Literal["catalogued", "loaded", "executed"],
+    ) -> None:
+        now = utc_now()
+        with self.database.connect() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO skill_usage("
+                "version_id, run_id, session_id, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?)",
+                (version_id, run_id, session_id, now, now),
+            )
+            connection.execute(
+                f"UPDATE skill_usage SET {stage} = 1, updated_at = ? "
+                "WHERE version_id = ? AND run_id = ?",
+                (now, version_id, run_id),
+            )
+            if stage in {"loaded", "executed"}:
+                connection.execute(
+                    "UPDATE skill_versions SET last_used_at = ? WHERE id = ?",
+                    (now, version_id),
+                )
+
+    def record_run_outcomes(
+        self,
+        *,
+        session: Session,
+        run_id: str,
+        outcome: str,
+        tool_calls: int,
+        correction: bool,
+        causation_id: str,
+    ) -> list[Event]:
+        now = utc_now()
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT version_id FROM skill_usage WHERE run_id = ? "
+                "AND (loaded = 1 OR executed = 1)",
+                (run_id,),
+            ).fetchall()
+            connection.execute(
+                "UPDATE skill_usage SET outcome = ?, tool_calls = ?, correction = ?, "
+                "updated_at = ? WHERE run_id = ?",
+                (outcome, tool_calls, int(correction), now, run_id),
+            )
+        events: list[Event] = []
+        for row in rows:
+            version = self.get(str(row["version_id"]))
+            events.append(
+                self.ledger.append(
+                    session_id=session.id,
+                    run_id=run_id,
+                    agent_id=session.agent_id,
+                    event_type="skill.outcome.recorded",
+                    payload={
+                        "skill_id": version.skill_id,
+                        "version_id": version.id,
+                        "run_id": run_id,
+                        "outcome": outcome,
+                        "tool_calls": tool_calls,
+                        "correction": correction,
+                    },
+                    causation_id=causation_id,
+                    correlation_id=run_id,
+                )
+            )
+        return events
+
     def reject(self, session: Session, version_id: str, *, reason: str, causation_id: str) -> Event:
         candidate = self.get_visible_version(session, version_id)
         with self.database.connect() as connection:
@@ -525,11 +855,7 @@ class SkillRegistry:
         summaries: list[SkillSummary] = []
         for item in values:
             haystack = set(
-                _tokens(
-                    " ".join(
-                        [item.slug, item.name, item.description, *item.metadata.triggers]
-                    )
-                )
+                _tokens(" ".join([item.slug, item.name, item.description, *item.metadata.triggers]))
             )
             score = 0.0 if not query_tokens else len(query_tokens & haystack) / len(query_tokens)
             summaries.append(self.summary(item, score=score))
@@ -640,6 +966,9 @@ class SkillRegistry:
             raise KeyError(slug)
         return match
 
+    def latest_visible(self, session: Session, slug: str) -> SkillVersion:
+        return self._latest_visible(session, slug)
+
     def _validate_metadata(self, metadata: SkillMetadata, files: dict[str, str]) -> None:
         unknown = set(metadata.tools) - self.available_tools
         if unknown:
@@ -703,9 +1032,11 @@ class SkillRegistry:
 
     @staticmethod
     def _visible(session: Session, value: SkillVersion) -> bool:
-        return value.scope == "global" or (
-            value.scope == "workspace" and value.scope_key == session.working_directory
-        ) or (value.scope == "agent" and value.scope_key == session.agent_id)
+        return (
+            value.scope == "global"
+            or (value.scope == "workspace" and value.scope_key == session.working_directory)
+            or (value.scope == "agent" and value.scope_key == session.agent_id)
+        )
 
     def _next_version(self, skill_id: str) -> int:
         with self.database.connect() as connection:
@@ -751,12 +1082,8 @@ class SkillRegistry:
                 None if values["source_run_id"] is None else str(values["source_run_id"])
             ),
             created_at=str(values["created_at"]),
-            activated_at=(
-                None if values["activated_at"] is None else str(values["activated_at"])
-            ),
-            last_used_at=(
-                None if values["last_used_at"] is None else str(values["last_used_at"])
-            ),
+            activated_at=(None if values["activated_at"] is None else str(values["activated_at"])),
+            last_used_at=(None if values["last_used_at"] is None else str(values["last_used_at"])),
             pinned=values.get("pinned_version_id") == values["id"],
         )
 

@@ -51,6 +51,8 @@ from hames.providers import Provider, ProviderError, ProviderModel
 from hames.providers.registry import configured_providers
 from hames.providers.scheduled import SerializedProvider
 from hames.runtime import RunManager
+from hames.skill_runtime import SkillManager
+from hames.skills import SkillJob, SkillSummary, SkillVersion
 
 
 class ApiModel(BaseModel):
@@ -126,6 +128,16 @@ class MemoryTransitionRequest(ApiModel):
 
 class MemoryPromotionRequest(ApiModel):
     visibility: MemoryVisibility
+
+
+class SkillAuthorRequest(ApiModel):
+    goal: str = Field(min_length=1, max_length=4000)
+    scope: Literal["workspace", "agent"] = "workspace"
+    target_skill_id: str | None = None
+
+
+class SkillControlRequest(ApiModel):
+    reason: str = Field(default="user_override", min_length=1, max_length=240)
 
 
 class AgentPublic(ApiModel):
@@ -206,6 +218,7 @@ class GatewayState:
     broker: EventBroker
     runs: RunManager
     memory: MemoryManager
+    skills: SkillManager
     token: str
 
     @classmethod
@@ -241,7 +254,15 @@ class GatewayState:
             providers=selected_providers,
             broker=broker,
         )
+        skills = SkillManager(
+            ledger=ledger,
+            config=config,
+            providers=selected_providers,
+            broker=broker,
+            registry=runs.skills,
+        )
         runs.attach_memory_manager(memory)
+        runs.attach_skill_manager(skills)
         return cls(
             paths,
             config,
@@ -251,6 +272,7 @@ class GatewayState:
             broker,
             runs,
             memory,
+            skills,
             paths.read_gateway_token(),
         )
 
@@ -747,6 +769,182 @@ def create_app(state: GatewayState) -> FastAPI:
             raise ApiError(404, "memory_job_not_found", f"unknown memory job: {job_id}") from exc
         except ValueError as exc:
             raise ApiError(409, "memory_job_not_retryable", str(exc)) from exc
+
+    @app.get(
+        "/v1/sessions/{session_id}/skills",
+        dependencies=auth,
+        response_model=list[SkillSummary],
+    )
+    async def list_skills(
+        session_id: str,
+        query: str = "",
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> list[SkillSummary]:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            return await asyncio.to_thread(
+                state.runs.skills.visible, session, query=query, limit=limit
+            )
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+
+    @app.get(
+        "/v1/sessions/{session_id}/skills/{slug}",
+        dependencies=auth,
+        response_model=SkillVersion,
+    )
+    async def get_skill(session_id: str, slug: str) -> SkillVersion:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            return await asyncio.to_thread(state.runs.skills.get_visible, session, slug)
+        except KeyError as exc:
+            raise ApiError(404, "skill_not_found", f"unknown visible Skill: {slug}") from exc
+        except ValueError as exc:
+            raise ApiError(409, "skill_integrity_error", str(exc)) from exc
+
+    @app.get(
+        "/v1/sessions/{session_id}/skills/{slug}/history",
+        dependencies=auth,
+        response_model=list[SkillVersion],
+    )
+    async def skill_history(session_id: str, slug: str) -> list[SkillVersion]:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            current = await asyncio.to_thread(state.runs.skills.latest_visible, session, slug)
+            return await asyncio.to_thread(state.runs.skills.history, current.skill_id)
+        except KeyError as exc:
+            raise ApiError(404, "skill_not_found", f"unknown visible Skill: {slug}") from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/skills/author",
+        dependencies=auth,
+        response_model=SkillJob,
+        status_code=202,
+    )
+    async def author_skill(session_id: str, request: SkillAuthorRequest) -> SkillJob:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            return await state.skills.author(
+                session,
+                goal=request.goal,
+                scope=request.scope,
+                target_skill_id=request.target_skill_id,
+            )
+        except KeyError as exc:
+            raise ApiError(404, "session_or_skill_not_found", str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(409, "skill_authoring_not_queued", str(exc)) from exc
+
+    @app.get(
+        "/v1/sessions/{session_id}/skill-jobs",
+        dependencies=auth,
+        response_model=list[SkillJob],
+    )
+    async def list_skill_jobs(session_id: str) -> list[SkillJob]:
+        try:
+            await asyncio.to_thread(state.ledger.get_session, session_id)
+            return await asyncio.to_thread(state.runs.skills.list_jobs, session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/skill-jobs/{job_id}/retry",
+        dependencies=auth,
+        response_model=SkillJob,
+        status_code=202,
+    )
+    async def retry_skill_job(session_id: str, job_id: str) -> SkillJob:
+        try:
+            await asyncio.to_thread(state.ledger.get_session, session_id)
+            return await state.skills.retry(session_id, job_id)
+        except KeyError as exc:
+            raise ApiError(404, "skill_job_not_found", f"unknown Skill job: {job_id}") from exc
+        except ValueError as exc:
+            raise ApiError(409, "skill_job_not_retryable", str(exc)) from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/skills/{slug}/{action}",
+        dependencies=auth,
+        response_model=SkillVersion,
+    )
+    async def control_skill(
+        session_id: str,
+        slug: str,
+        action: Literal["pin", "unpin", "archive", "restore", "rollback"],
+        request: SkillControlRequest,
+    ) -> SkillVersion:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            current = await asyncio.to_thread(state.runs.skills.latest_visible, session, slug)
+            source = await asyncio.to_thread(
+                state.ledger.append,
+                session_id=session.id,
+                agent_id=session.agent_id,
+                event_type="skill.control.requested",
+                payload={
+                    "skill_id": current.skill_id,
+                    "version_id": current.id,
+                    "action": action,
+                    "reason": request.reason,
+                },
+                correlation_id=current.skill_id,
+            )
+            await state.broker.publish(
+                source.session_id, {"durable": True, "event": source.model_dump(mode="json")}
+            )
+            if action == "rollback":
+                active = await asyncio.to_thread(state.runs.skills.get_visible, session, slug)
+                result, events = await asyncio.to_thread(
+                    state.runs.skills.quarantine_and_rollback,
+                    session,
+                    active.id,
+                    reason=request.reason,
+                    causation_id=source.id,
+                )
+                for event in events:
+                    await state.broker.publish(
+                        event.session_id,
+                        {"durable": True, "event": event.model_dump(mode="json")},
+                    )
+                return result
+            if action in {"pin", "unpin"}:
+                result = await asyncio.to_thread(
+                    state.runs.skills.set_pinned, session, slug, pinned=action == "pin"
+                )
+            else:
+                result = await asyncio.to_thread(
+                    state.runs.skills.set_archived,
+                    session,
+                    slug,
+                    archived=action == "archive",
+                )
+            event = await asyncio.to_thread(
+                state.ledger.append,
+                session_id=session.id,
+                agent_id=session.agent_id,
+                event_type={
+                    "pin": "skill.pinned",
+                    "unpin": "skill.unpinned",
+                    "archive": "skill.archived",
+                    "restore": "skill.restored",
+                }[action],
+                payload={
+                    "skill_id": current.skill_id,
+                    "version_id": result.id,
+                    "action": action,
+                    "reason": request.reason,
+                },
+                causation_id=source.id,
+                correlation_id=current.skill_id,
+            )
+            await state.broker.publish(
+                event.session_id, {"durable": True, "event": event.model_dump(mode="json")}
+            )
+            return result
+        except KeyError as exc:
+            raise ApiError(404, "skill_not_found", f"unknown visible Skill: {slug}") from exc
+        except ValueError as exc:
+            raise ApiError(409, "invalid_skill_transition", str(exc)) from exc
 
     @app.get("/v1/sessions/{session_id}/events", dependencies=auth, response_model=list[Event])
     async def list_events(session_id: str, after_sequence: int = 0) -> list[Event]:

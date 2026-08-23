@@ -15,7 +15,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 AGENT_ID = re.compile(r"[a-z][a-z0-9-]{0,62}")
-READ_ONLY_TOOLS = frozenset({"read_file", "list_dir"})
+READ_ONLY_TOOLS = frozenset({"read_file", "list_dir", "skill_load"})
 
 
 class AgentTools(BaseModel):

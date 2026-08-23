@@ -284,6 +284,8 @@ def _channel(event_type: str) -> str:
         return "context"
     if event_type.startswith("memory."):
         return "memory"
+    if event_type.startswith("skill."):
+        return "skill"
     if event_type == "model.usage":
         return "usage"
     if event_type.endswith("failed") or event_type == "runtime.error":

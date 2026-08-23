@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 #[derive(Clone)]
 pub struct GatewayClient {
@@ -187,6 +187,16 @@ pub struct ContextSource {
     pub retrieval_score: f64,
     #[serde(default)]
     pub provenance_event_ids: Vec<String>,
+    #[serde(default)]
+    pub skill_id: String,
+    #[serde(default)]
+    pub skill_version_id: String,
+    #[serde(default)]
+    pub skill_slug: String,
+    #[serde(default)]
+    pub skill_version: u64,
+    #[serde(default)]
+    pub skill_scope: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -231,6 +241,89 @@ pub struct MemoryJob {
     pub run_id: Option<String>,
     pub source_event_id: String,
     pub content: Option<String>,
+    pub attempts: u64,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SkillScript {
+    pub id: String,
+    pub path: String,
+    pub interpreter: String,
+    pub description: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SkillMetadata {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub version: u64,
+    pub scope: String,
+    pub tools: Vec<String>,
+    pub triggers: Vec<String>,
+    pub requires: Vec<String>,
+    pub scripts: Vec<SkillScript>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SkillSummary {
+    pub id: String,
+    pub slug: String,
+    pub version_id: String,
+    pub version: u64,
+    pub name: String,
+    pub description: String,
+    pub scope: String,
+    pub scope_key: Option<String>,
+    pub status: String,
+    pub content_hash: String,
+    pub triggers: Vec<String>,
+    pub tools: Vec<String>,
+    pub scripts: Vec<SkillScript>,
+    pub score: f64,
+    pub pinned: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SkillVersion {
+    pub id: String,
+    pub skill_id: String,
+    pub slug: String,
+    pub version: u64,
+    pub content_hash: String,
+    pub status: String,
+    pub scope: String,
+    pub scope_key: Option<String>,
+    pub name: String,
+    pub description: String,
+    pub instructions: String,
+    pub metadata: SkillMetadata,
+    pub package_path: String,
+    pub base_version_id: Option<String>,
+    pub created_by: String,
+    pub source_session_id: String,
+    pub source_run_id: Option<String>,
+    pub created_at: String,
+    pub activated_at: Option<String>,
+    pub last_used_at: Option<String>,
+    pub pinned: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SkillJob {
+    pub id: String,
+    pub kind: String,
+    pub status: String,
+    pub session_id: String,
+    pub run_id: Option<String>,
+    pub source_event_id: String,
+    pub target_skill_id: Option<String>,
+    pub goal: String,
+    pub scope: String,
     pub attempts: u64,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
@@ -687,6 +780,89 @@ impl GatewayClient {
             ))
             .send()
             .await?,
+        )
+        .await
+    }
+
+    pub async fn skills(&self, session_id: &str, query: &str) -> Result<Vec<SkillSummary>> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/skills"))
+                .query(&[("query", query)])
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn skill(&self, session_id: &str, slug: &str) -> Result<SkillVersion> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/skills/{slug}"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn skill_history(&self, session_id: &str, slug: &str) -> Result<Vec<SkillVersion>> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/skills/{slug}/history"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn author_skill(
+        &self,
+        session_id: &str,
+        goal: &str,
+        scope: &str,
+        target_skill_id: Option<&str>,
+    ) -> Result<SkillJob> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/skills/author"))
+                .json(&serde_json::json!({
+                    "goal": goal,
+                    "scope": scope,
+                    "target_skill_id": target_skill_id,
+                }))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn skill_jobs(&self, session_id: &str) -> Result<Vec<SkillJob>> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/skill-jobs"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn retry_skill_job(&self, session_id: &str, job_id: &str) -> Result<SkillJob> {
+        decode(
+            self.post(&format!(
+                "/v1/sessions/{session_id}/skill-jobs/{job_id}/retry"
+            ))
+            .send()
+            .await?,
+        )
+        .await
+    }
+
+    pub async fn control_skill(
+        &self,
+        session_id: &str,
+        slug: &str,
+        action: &str,
+    ) -> Result<SkillVersion> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/skills/{slug}/{action}"))
+                .json(&serde_json::json!({}))
+                .send()
+                .await?,
         )
         .await
     }

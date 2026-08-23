@@ -81,6 +81,11 @@ class ContextSourcePayload(EventPayload):
     memory_anchors: list[dict[str, str]] = Field(default_factory=_empty_anchor_dicts)
     retrieval_score: float = 0.0
     provenance_event_ids: list[str] = Field(default_factory=list)
+    skill_id: str = ""
+    skill_version_id: str = ""
+    skill_slug: str = ""
+    skill_version: int = 0
+    skill_scope: str = ""
 
 
 class ContextCompiledPayload(EventPayload):
@@ -516,6 +521,7 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "skill.loaded": SkillLoadedPayload,
     "skill.executed": SkillExecutedPayload,
     "skill.outcome.recorded": SkillOutcomePayload,
+    "skill.control.requested": SkillControlPayload,
     "skill.staled": SkillControlPayload,
     "skill.archived": SkillControlPayload,
     "skill.restored": SkillControlPayload,

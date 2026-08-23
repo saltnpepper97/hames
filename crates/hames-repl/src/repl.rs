@@ -11,6 +11,7 @@ use rustyline::error::ReadlineError;
 use crate::api::{
     ContextInspection, Event, GatewayClient, LiveEnvelope, MemoryJob, MemoryRecord,
     PROTOCOL_VERSION, ProviderModel, ProviderProbe, ProviderProfile, RunInspection, Session,
+    SkillJob, SkillSummary, SkillVersion,
 };
 use crate::local::{LocalPaths, start_backend, write_private_export};
 
@@ -428,6 +429,7 @@ async fn handle_command(
             }
         }
         "/memory" => handle_memory_command(client, session, &parts).await?,
+        "/skills" => handle_skills_command(client, session, &parts).await?,
         "/export" => {
             let path = parts
                 .get(1)
@@ -717,7 +719,17 @@ fn print_context(context: &ContextInspection) {
     );
     println!("selected sources:");
     for source in &manifest.selected_sources {
-        if source.memory_id.is_empty() {
+        if !source.skill_version_id.is_empty() {
+            println!(
+                "  {:>6} tokens  skill/{:<14} {} v{} · {} · score {:.3}",
+                source.selected_tokens,
+                source.source_type,
+                source.skill_slug,
+                source.skill_version,
+                source.skill_scope,
+                source.retrieval_score,
+            );
+        } else if source.memory_id.is_empty() {
             println!(
                 "  {:>6} tokens  {:<14} {}",
                 source.selected_tokens, source.source_type, source.source_id
@@ -878,6 +890,158 @@ fn print_memory_jobs(jobs: &[MemoryJob]) {
             job.kind,
             job.status,
             job.attempts,
+            job.error_message
+                .as_ref()
+                .map(|message| format!(" · {message}"))
+                .unwrap_or_default(),
+        );
+    }
+}
+
+async fn handle_skills_command(
+    client: &GatewayClient,
+    session: &Session,
+    parts: &[&str],
+) -> Result<()> {
+    match parts.get(1).copied() {
+        None | Some("list") => print_skills(&client.skills(&session.id, "").await?),
+        Some("search") => {
+            let query = parts.get(2..).unwrap_or_default().join(" ");
+            if query.is_empty() {
+                bail!("usage: /skills search <query>");
+            }
+            print_skills(&client.skills(&session.id, &query).await?);
+        }
+        Some("show") => {
+            let slug = parts.get(2).context("usage: /skills show <id>")?;
+            print_skill_detail(&client.skill(&session.id, slug).await?);
+        }
+        Some("history") => {
+            let slug = parts.get(2).context("usage: /skills history <id>")?;
+            print_skill_history(&client.skill_history(&session.id, slug).await?);
+        }
+        Some("jobs" | "status") => print_skill_jobs(&client.skill_jobs(&session.id).await?),
+        Some("author") => {
+            let goal = parts.get(2..).unwrap_or_default().join(" ");
+            if goal.is_empty() {
+                bail!("usage: /skills author <goal>");
+            }
+            let job = client
+                .author_skill(&session.id, &goal, "workspace", None)
+                .await?;
+            println!("skills> autonomous authoring job {} queued", job.id);
+        }
+        Some("correct") => {
+            let slug = parts
+                .get(2)
+                .context("usage: /skills correct <id> <correction>")?;
+            let goal = parts.get(3..).unwrap_or_default().join(" ");
+            if goal.is_empty() {
+                bail!("usage: /skills correct <id> <correction>");
+            }
+            let current = client.skill(&session.id, slug).await?;
+            let job = client
+                .author_skill(&session.id, &goal, &current.scope, Some(&current.skill_id))
+                .await?;
+            println!("skills> autonomous correction job {} queued", job.id);
+        }
+        Some("retry") => {
+            let id = parts.get(2).context("usage: /skills retry <job-id>")?;
+            let job = client.retry_skill_job(&session.id, id).await?;
+            println!("skills> retry queued for {}", job.id);
+        }
+        Some(action @ ("pin" | "unpin" | "archive" | "restore" | "rollback")) => {
+            let slug = parts
+                .get(2)
+                .with_context(|| format!("usage: /skills {action} <id>"))?;
+            let skill = client.control_skill(&session.id, slug, action).await?;
+            println!(
+                "skills> {} v{} is {}{}",
+                skill.slug,
+                skill.version,
+                skill.status,
+                if skill.pinned { " (pinned)" } else { "" }
+            );
+        }
+        Some(_) => bail!(
+            "usage: /skills [list|search|show|history|jobs|author|correct|retry|pin|unpin|archive|restore|rollback]"
+        ),
+    }
+    Ok(())
+}
+
+fn print_skills(skills: &[SkillSummary]) {
+    if skills.is_empty() {
+        println!("skills> no matching active Skills");
+        return;
+    }
+    for skill in skills {
+        println!(
+            "{:<28} v{:<3} {:<10} {}{}",
+            skill.slug,
+            skill.version,
+            skill.scope,
+            skill.description,
+            if skill.pinned { " · pinned" } else { "" },
+        );
+    }
+}
+
+fn print_skill_detail(skill: &SkillVersion) {
+    println!(
+        "Skill: {} v{}\nstatus: {}\nscope: {}\nhash: {}\ncreated by: {}\npackage: {}\ntools: {}\ntriggers: {}\n\n{}",
+        skill.slug,
+        skill.version,
+        skill.status,
+        skill.scope,
+        skill.content_hash,
+        skill.created_by,
+        skill.package_path,
+        skill.metadata.tools.join(", "),
+        skill.metadata.triggers.join(", "),
+        skill.instructions,
+    );
+    if !skill.metadata.scripts.is_empty() {
+        println!("scripts:");
+        for script in &skill.metadata.scripts {
+            println!(
+                "  {} ({}) · {}",
+                script.id, script.interpreter, script.description
+            );
+        }
+    }
+}
+
+fn print_skill_history(history: &[SkillVersion]) {
+    if history.is_empty() {
+        println!("skills> no versions");
+        return;
+    }
+    for skill in history {
+        println!(
+            "{} v{:<3} {:<12} {}{}",
+            skill.slug,
+            skill.version,
+            skill.status,
+            skill.content_hash,
+            if skill.pinned { " · pinned" } else { "" },
+        );
+    }
+}
+
+fn print_skill_jobs(jobs: &[SkillJob]) {
+    if jobs.is_empty() {
+        println!("skills> no authoring jobs");
+        return;
+    }
+    for job in jobs {
+        println!(
+            "{}  {:<10} {:<12} attempts {} · {}{}",
+            job.id,
+            job.kind,
+            job.status,
+            job.attempts,
+            job.goal,
             job.error_message
                 .as_ref()
                 .map(|message| format!(" · {message}"))
@@ -1177,6 +1341,9 @@ fn print_help() {
          /remember [durable fact]\n/memory [list|all|search <query>|show <id>]\n\
          /memory proposals|accept <id>|reject <id>|forget <id>\n\
          /memory promote <id> <visibility>|status|retry <job-id>\n\
+         /skills [list|search <query>|show <id>|history <id>|jobs]\n\
+         /skills author <goal>|correct <id> <change>|retry <job-id>\n\
+         /skills pin|unpin|archive|restore|rollback <id>\n\
          /usage\n/inspect [run-id]\n/context [context-event-id]\n\
          /export <path> [markdown|jsonl]\n/status\n/cancel (Ctrl-C during a run)\n/quit"
     );

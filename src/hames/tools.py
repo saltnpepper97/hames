@@ -73,6 +73,22 @@ class SpawnAgentArguments(ToolArguments):
     requested_result_format: Literal["summary", "markdown", "json"] = "summary"
 
 
+class SkillLoadArguments(ToolArguments):
+    id: str = Field(min_length=1)
+
+
+class SkillAuthorArguments(ToolArguments):
+    goal: str = Field(min_length=1, max_length=4000)
+    scope: Literal["workspace", "agent"] = "workspace"
+    target_skill_id: str | None = None
+
+
+class SkillRunArguments(ToolArguments):
+    id: str = Field(min_length=1)
+    script: str = Field(min_length=1)
+    args: list[str] = Field(default_factory=list, max_length=64)
+
+
 class ToolResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -368,6 +384,28 @@ class SpawnAgentTool(ToolBase):
     arguments_type: ClassVar[type[ToolArguments]] = SpawnAgentArguments
 
 
+class SkillLoadTool(ToolBase):
+    name = "skill_load"
+    description = "Load one active Skill by ID into this run before following its procedure."
+    arguments_type: ClassVar[type[ToolArguments]] = SkillLoadArguments
+
+
+class SkillAuthorTool(ToolBase):
+    name = "skill_author"
+    description = (
+        "Request autonomous creation or correction of a reusable Skill after this run settles."
+    )
+    side_effect_class = "skill_authoring"
+    arguments_type: ClassVar[type[ToolArguments]] = SkillAuthorArguments
+
+
+class SkillRunTool(ToolBase):
+    name = "skill_run"
+    description = "Run a declared script from a Skill already loaded into this run."
+    side_effect_class = "skill_script"
+    arguments_type: ClassVar[type[ToolArguments]] = SkillRunArguments
+
+
 class ToolRegistry:
     def __init__(self) -> None:
         values: list[ToolBase] = [
@@ -377,6 +415,9 @@ class ToolRegistry:
             EditFileTool(),
             ShellTool(),
             SpawnAgentTool(),
+            SkillLoadTool(),
+            SkillAuthorTool(),
+            SkillRunTool(),
         ]
         self._tools = {tool.name: tool for tool in values}
 

@@ -88,6 +88,8 @@ async def test_rust_repl_through_gateway_and_ledger(tmp_path: Path) -> None:
                 "HAMES_HOME": str(paths.root),
                 "HAMES_GATEWAY__PORT": str(port),
                 "HAMES_RUNTIME__DEFAULT_PROVIDER": "fake",
+                "HAMES_PROVIDERS__FAKE__ADAPTER": "llama_cpp",
+                "HAMES_PROVIDERS__FAKE__BASE_URL": "http://127.0.0.1:1/v1",
                 "HAMES_PROVIDERS__FAKE__MODEL": "fixture",
             }
         )

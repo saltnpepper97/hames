@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import shutil
 import time
@@ -21,10 +22,21 @@ from hames.paths import HamesPaths
 from hames.policy import PolicyDecisionKind, PolicyGate, approval_request_hash
 from hames.providers import ModelRequest, Provider, ProviderError, StreamEvent, StreamEventKind
 from hames.providers.base import JSON_OBJECT, JsonValue
-from hames.tools import SpawnAgentArguments, ToolArguments, ToolContext, ToolRegistry, ToolResult
+from hames.skills import SkillRegistry, SkillSummary, SkillVersion
+from hames.tools import (
+    SkillAuthorArguments,
+    SkillLoadArguments,
+    SkillRunArguments,
+    SpawnAgentArguments,
+    ToolArguments,
+    ToolContext,
+    ToolRegistry,
+    ToolResult,
+)
 
 if TYPE_CHECKING:
     from hames.memory_runtime import MemoryManager
+    from hames.skill_runtime import SkillManager
 
 POLICY_SUMMARY = (
     "Reads, writes, deterministic edits, and ordinary Bash commands are allowed inside the "
@@ -132,6 +144,13 @@ class RunManager:
         self.providers = providers
         self.broker = broker
         self.tools = ToolRegistry()
+        self.skills = SkillRegistry(
+            paths.skills,
+            ledger,
+            available_tools=self.tools.names(),
+            max_package_bytes=config.skills.max_package_bytes,
+            max_package_files=config.skills.max_package_files,
+        )
         self.agents = AgentRegistry(paths.agents)
         self.memory = MemoryStore(ledger)
         self.policy = PolicyGate(paths.root)
@@ -142,10 +161,16 @@ class RunManager:
         self._child_count_by_parent: dict[str, int] = {}
         self._scratch_base = Path("/tmp/hames/runs")
         self.memory_manager: MemoryManager | None = None
+        self.skill_manager: SkillManager | None = None
+        self._skill_catalogs: dict[str, list[SkillSummary]] = {}
+        self._loaded_skills: dict[str, dict[str, SkillVersion]] = {}
         self._prune_scratch()
 
     def attach_memory_manager(self, manager: MemoryManager) -> None:
         self.memory_manager = manager
+
+    def attach_skill_manager(self, manager: SkillManager) -> None:
+        self.skill_manager = manager
 
     async def start(self, session_id: str, content: str, *, remember: bool = False) -> str:
         session = await asyncio.to_thread(self.ledger.get_session, session_id)
@@ -181,6 +206,8 @@ class RunManager:
         self._session_runs.pop(session_id, None)
         self._children_by_parent.pop(run_id, None)
         self._child_count_by_parent.pop(run_id, None)
+        self._skill_catalogs.pop(run_id, None)
+        self._loaded_skills.pop(run_id, None)
 
     def is_session_active(self, session_id: str) -> bool:
         return session_id in self._session_runs
@@ -251,6 +278,8 @@ class RunManager:
             await asyncio.gather(*tasks, return_exceptions=True)
         if self.memory_manager is not None:
             await self.memory_manager.close()
+        if self.skill_manager is not None:
+            await self.skill_manager.close()
         for provider in self.providers.values():
             await provider.aclose()
 
@@ -315,6 +344,8 @@ class RunManager:
                     )
                 else:
                     await self.memory_manager.enqueue_run(session_id, run_id)
+            if self.skill_manager is not None and session is not None:
+                await self.skill_manager.observe_run(session_id, run_id)
             if scratch_root is not None:
                 await asyncio.to_thread(self._remove_scratch, scratch_root)
 
@@ -363,6 +394,14 @@ class RunManager:
         memories, retrieval_event = await self._retrieve_memories(
             session, run_id, str(user_event.payload.get("content", "")), run_started.id
         )
+        catalog, skill_event = await self._retrieve_skills(
+            session,
+            run_id,
+            str(user_event.payload.get("content", "")),
+            retrieval_event.id if retrieval_event is not None else run_started.id,
+        )
+        self._skill_catalogs[run_id] = catalog
+        self._loaded_skills[run_id] = {}
         tool_count = 0
         model_turns = 0
         while True:
@@ -373,7 +412,9 @@ class RunManager:
                 self._model_turn(
                     run_id,
                     session,
-                    retrieval_event.id
+                    skill_event.id
+                    if model_turns == 1 and skill_event is not None
+                    else retrieval_event.id
                     if model_turns == 1 and retrieval_event is not None
                     else run_started.id
                     if model_turns == 1
@@ -446,6 +487,10 @@ class RunManager:
             self.config.context,
             run_id=run_id,
             memories=memories,
+            skill_catalog=self._skill_catalogs.get(run_id, []),
+            loaded_skills=list(self._loaded_skills.get(run_id, {}).values()),
+            skill_catalog_budget_tokens=self.config.skills.catalog_budget_tokens,
+            loaded_skill_budget_tokens=self.config.skills.loaded_budget_tokens,
         )
         snapshot = canonical_request_snapshot(
             model=session.model,
@@ -675,6 +720,54 @@ class RunManager:
         )
         return selected, event
 
+    async def _retrieve_skills(
+        self,
+        session: Session,
+        run_id: str,
+        query: str,
+        causation_id: str,
+    ) -> tuple[list[SkillSummary], Event | None]:
+        if not self.config.skills.enabled:
+            return [], None
+        selected = await asyncio.to_thread(
+            self.skills.visible,
+            session,
+            query=query,
+            limit=self.config.skills.max_catalog_entries,
+        )
+        event = await self._append(
+            session_id=session.id,
+            run_id=run_id,
+            agent_id=session.agent_id,
+            event_type="skill.catalogued",
+            payload={
+                "query_hash": hashlib.sha256(query.encode()).hexdigest(),
+                "skills": [
+                    {
+                        "skill_id": item.id,
+                        "version_id": item.version_id,
+                        "slug": item.slug,
+                        "version": item.version,
+                        "content_hash": item.content_hash,
+                        "scope": item.scope,
+                        "score": item.score,
+                    }
+                    for item in selected
+                ],
+            },
+            causation_id=causation_id,
+            correlation_id=run_id,
+        )
+        for item in selected:
+            await asyncio.to_thread(
+                self.skills.record_usage,
+                version_id=item.version_id,
+                run_id=run_id,
+                session_id=session.id,
+                stage="catalogued",
+            )
+        return selected, event
+
     async def _project_episode(self, session_id: str, run_id: str) -> None:
         try:
             session = await asyncio.to_thread(self.ledger.get_session, session_id)
@@ -808,6 +901,21 @@ class RunManager:
             )
             await self._persist_tool_result(session, run_id, invocation, result, started.id)
             return
+        if invocation.name in {"skill_load", "skill_author", "skill_run"}:
+            started = await self._append(
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                event_type="tool.started",
+                payload={"tool_call_id": invocation.tool_call_id, "name": invocation.name},
+                causation_id=policy_decided.id,
+                correlation_id=run_id,
+            )
+            result = await self._handle_skill_tool(
+                run_id, session, arguments, invocation.name, context, started.id, clock
+            )
+            await self._persist_tool_result(session, run_id, invocation, result, started.id)
+            return
         tool = self.tools.get(invocation.name)
         if tool is None:
             raise RuntimeError(f"tool disappeared from registry: {invocation.name}")
@@ -822,6 +930,244 @@ class RunManager:
         )
         result = await clock.measure(tool.execute(context, arguments))
         await self._persist_tool_result(session, run_id, invocation, result, started.id)
+
+    async def _handle_skill_tool(
+        self,
+        run_id: str,
+        session: Session,
+        arguments: ToolArguments,
+        tool_name: str,
+        context: ToolContext,
+        causation_id: str,
+        clock: ActiveClock,
+    ) -> ToolResult:
+        if isinstance(arguments, SkillLoadArguments):
+            try:
+                skill = await asyncio.to_thread(self.skills.get_visible, session, arguments.id)
+            except (KeyError, ValueError) as exc:
+                return ToolResult(status="rejected", summary=f"Skill cannot be loaded: {exc}")
+            self._loaded_skills.setdefault(run_id, {})[skill.slug] = skill
+            await asyncio.to_thread(
+                self.skills.record_usage,
+                version_id=skill.id,
+                run_id=run_id,
+                session_id=session.id,
+                stage="loaded",
+            )
+            event = await self._append(
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                event_type="skill.loaded",
+                payload={
+                    "skill_id": skill.skill_id,
+                    "version_id": skill.id,
+                    "slug": skill.slug,
+                    "version": skill.version,
+                    "content_hash": skill.content_hash,
+                    "reason": "model_selected",
+                    "score": next(
+                        (
+                            item.score
+                            for item in self._skill_catalogs.get(run_id, [])
+                            if item.slug == skill.slug
+                        ),
+                        0.0,
+                    ),
+                },
+                causation_id=causation_id,
+                correlation_id=run_id,
+            )
+            return ToolResult(
+                status="completed",
+                summary=f"loaded Skill {skill.slug} v{skill.version}",
+                content=skill.instructions,
+                structured_data={"event_id": event.id, "content_hash": skill.content_hash},
+            )
+        if isinstance(arguments, SkillAuthorArguments):
+            event = await self._append(
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                event_type="skill.authoring.requested",
+                payload={
+                    "goal": arguments.goal,
+                    "scope": arguments.scope,
+                    "target_skill_id": arguments.target_skill_id,
+                    "evidence_event_ids": [causation_id],
+                },
+                causation_id=causation_id,
+                correlation_id=run_id,
+            )
+            return ToolResult(
+                status="completed",
+                summary="autonomous Skill authoring will run after this turn settles",
+                structured_data={"event_id": event.id},
+            )
+        if not isinstance(arguments, SkillRunArguments):
+            return ToolResult(status="failed", summary=f"invalid {tool_name} arguments")
+        skill = self._loaded_skills.get(run_id, {}).get(arguments.id)
+        if skill is None:
+            return ToolResult(status="rejected", summary="Skill must be loaded before script use")
+        script = next(
+            (item for item in skill.metadata.scripts if item.id == arguments.script), None
+        )
+        if script is None:
+            return ToolResult(status="rejected", summary="Skill does not declare that script")
+        executed = await self._append(
+            session_id=session.id,
+            run_id=run_id,
+            agent_id=session.agent_id,
+            event_type="skill.executed",
+            payload={
+                "skill_id": skill.skill_id,
+                "version_id": skill.id,
+                "slug": skill.slug,
+                "script": script.id,
+                "tool_name": "skill_run",
+            },
+            causation_id=causation_id,
+            correlation_id=run_id,
+        )
+        await asyncio.to_thread(
+            self.skills.record_usage,
+            version_id=skill.id,
+            run_id=run_id,
+            session_id=session.id,
+            stage="executed",
+        )
+        result = await clock.measure(
+            self._execute_skill_script(
+                skill, script.path, script.interpreter, arguments.args, context
+            )
+        )
+        if result.status == "failed":
+            try:
+                _, events = await asyncio.to_thread(
+                    self.skills.quarantine_and_rollback,
+                    session,
+                    skill.id,
+                    reason="declared_script_failed",
+                    causation_id=executed.id,
+                )
+                for event in events:
+                    await self.broker.publish(
+                        event.session_id,
+                        {"durable": True, "event": event.model_dump(mode="json")},
+                    )
+                await self._append(
+                    session_id=session.id,
+                    run_id=run_id,
+                    agent_id=session.agent_id,
+                    event_type="skill.authoring.requested",
+                    payload={
+                        "goal": f"Correct failed script {script.id}: {result.summary}",
+                        "scope": skill.scope,
+                        "target_skill_id": skill.skill_id,
+                        "evidence_event_ids": [executed.id],
+                    },
+                    causation_id=events[-1].id,
+                    correlation_id=run_id,
+                )
+            except (KeyError, ValueError):
+                pass
+        return result
+
+    async def _execute_skill_script(
+        self,
+        skill: SkillVersion,
+        script_path: str,
+        interpreter: str,
+        args: list[str],
+        context: ToolContext,
+    ) -> ToolResult:
+        started = time.monotonic()
+        bwrap = shutil.which("bwrap")
+        if bwrap is None:
+            return ToolResult(
+                status="rejected", summary="Skill script isolation is unavailable (bwrap missing)"
+            )
+        scratch = context.root_for("scratch")
+        command = [
+            bwrap,
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-all",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--ro-bind",
+            "/etc",
+            "/etc",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--dir",
+            "/home",
+            "--ro-bind",
+            str(Path(skill.package_path)),
+            "/skill",
+            "--ro-bind",
+            str(context.project_root),
+            "/project",
+            "--bind",
+            str(scratch),
+            "/workspace",
+            "--chdir",
+            "/workspace",
+            "--clearenv",
+            "--setenv",
+            "PATH",
+            "/usr/bin",
+            "--setenv",
+            "HOME",
+            "/workspace",
+            "/usr/bin/python3" if interpreter == "python" else "/usr/bin/bash",
+            f"/skill/{script_path}",
+            *args,
+        ]
+        process: asyncio.subprocess.Process | None = None
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=self.config.skills.script_timeout_seconds
+            )
+            output = (stdout + stderr).decode("utf-8", errors="replace")
+            bounded = output[: self.config.tools.model_result_char_limit]
+            return ToolResult(
+                status="completed" if process.returncode == 0 else "failed",
+                summary=(
+                    f"Skill script {script_path} completed"
+                    if process.returncode == 0
+                    else f"Skill script {script_path} exited {process.returncode}"
+                ),
+                content=bounded,
+                truncated=len(output) > len(bounded),
+                structured_data={"exit_code": process.returncode},
+                duration_seconds=time.monotonic() - started,
+            )
+        except TimeoutError:
+            if process is not None:
+                process.kill()
+                await process.communicate()
+            return ToolResult(
+                status="failed",
+                summary=f"Skill script exceeded {self.config.skills.script_timeout_seconds}s",
+                duration_seconds=time.monotonic() - started,
+            )
+        except OSError as exc:
+            return ToolResult(
+                status="failed",
+                summary=f"Skill script failed: {exc}",
+                duration_seconds=time.monotonic() - started,
+            )
 
     async def _delegate(
         self,

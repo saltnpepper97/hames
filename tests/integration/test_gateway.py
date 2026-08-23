@@ -26,6 +26,7 @@ from hames.providers import (
 )
 from hames.providers.base import JSON_OBJECT, JsonValue
 from hames.providers.fake import FakeProvider
+from hames.skills import SkillDraft
 
 EVENT_LIST = TypeAdapter(list[dict[str, JsonValue]])
 
@@ -54,7 +55,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 8
+            assert health_body["protocol_version"] == 9
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -90,12 +91,13 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                 if "run.completed" in event_types:
                     break
                 await asyncio.sleep(0.01)
-            assert event_types[:13] == [
+            assert event_types[:14] == [
                 "session.opened",
                 "trust.granted",
                 "user.message",
                 "run.started",
                 "memory.retrieved",
+                "skill.catalogued",
                 "context.compiled",
                 "model.requested",
                 "model.response.started",
@@ -139,6 +141,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                 "user",
                 "lifecycle",
                 "memory",
+                "skill",
                 "context",
                 "lifecycle",
                 "lifecycle",
@@ -148,6 +151,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                 "lifecycle",
                 "lifecycle",
                 "memory",
+                "skill",
             ]
             context_response = await client.get(
                 f"/v1/contexts/{context_event['id']}", headers=headers
@@ -606,7 +610,11 @@ async def test_runtime_delegates_with_an_explicit_task_card(tmp_path: Path) -> N
             result = next(event for event in events if event["type"] == "tool.completed")
             assert result["payload"]["name"] == "spawn_agent"  # type: ignore[index]
             assert len(fake.requests) == 3
-            assert [tool.name for tool in fake.requests[1].tools] == ["read_file", "list_dir"]
+            assert [tool.name for tool in fake.requests[1].tools] == [
+                "read_file",
+                "list_dir",
+                "skill_load",
+            ]
             assert fake.requests[2].messages[-1].tool_name == "spawn_agent"
             assert run_id
     finally:
@@ -669,7 +677,11 @@ async def test_agent_selection_changes_only_future_turns(tmp_path: Path) -> None
             assert changed_event["agent_id"] == "reviewer"
             contexts = [event for event in events if event["type"] == "context.compiled"]
             assert contexts[-1]["payload"]["agent_id"] == "reviewer"  # type: ignore[index]
-            assert [tool.name for tool in fake.requests[-1].tools] == ["read_file", "list_dir"]
+            assert [tool.name for tool in fake.requests[-1].tools] == [
+                "read_file",
+                "list_dir",
+                "skill_load",
+            ]
     finally:
         await state.runs.close()
 
@@ -978,6 +990,101 @@ async def test_gateway_exposes_memory_review_and_promotion(tmp_path: Path) -> No
             secret_error = response_object(secret)["error"]
             assert isinstance(secret_error, dict)
             assert secret_error["code"] == "memory_secret_rejected"
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_exposes_skill_inspection_and_lifecycle_controls(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            session = state.ledger.get_session(session_id)
+            evidence = state.ledger.append(
+                session_id=session.id,
+                agent_id=session.agent_id,
+                event_type="user.message",
+                payload={"content": "Inspect files and verify the result."},
+            )
+            drafted = state.runs.skills.create_draft(
+                session=session,
+                draft=SkillDraft(
+                    id="inspect-files",
+                    name="Inspect Files",
+                    description="Inspect project files and verify the result.",
+                    scope="workspace",
+                    tools=["read_file", "list_dir"],
+                    triggers=["inspect files"],
+                    instructions=(
+                        "Read the requested file, list its directory, and verify findings."
+                    ),
+                ),
+                evidence_event_ids=[evidence.id],
+                created_by="automatic",
+                run_id=None,
+                causation_id=evidence.id,
+            )
+            state.runs.skills.activate(
+                session=session,
+                version_id=drafted.version.id,
+                causation_id=drafted.events[-1].id,
+            )
+
+            listed = await client.get(
+                f"/v1/sessions/{session_id}/skills",
+                headers=headers,
+                params={"query": "inspect files"},
+            )
+            assert listed.status_code == 200
+            assert listed.json()[0]["slug"] == "inspect-files"
+            shown = await client.get(
+                f"/v1/sessions/{session_id}/skills/inspect-files", headers=headers
+            )
+            assert shown.status_code == 200
+            assert shown.json()["instructions"].startswith("Read the requested")
+            pinned = await client.post(
+                f"/v1/sessions/{session_id}/skills/inspect-files/pin",
+                headers=headers,
+                json={},
+            )
+            assert pinned.status_code == 200
+            assert pinned.json()["pinned"] is True
+            archived = await client.post(
+                f"/v1/sessions/{session_id}/skills/inspect-files/archive",
+                headers=headers,
+                json={},
+            )
+            assert archived.status_code == 200
+            assert (
+                await client.get(f"/v1/sessions/{session_id}/skills", headers=headers)
+            ).json() == []
+            restored = await client.post(
+                f"/v1/sessions/{session_id}/skills/inspect-files/restore",
+                headers=headers,
+                json={},
+            )
+            assert restored.status_code == 200
+            history = await client.get(
+                f"/v1/sessions/{session_id}/skills/inspect-files/history", headers=headers
+            )
+            assert history.status_code == 200
+            assert len(history.json()) == 1
+            jobs = await client.get(f"/v1/sessions/{session_id}/skill-jobs", headers=headers)
+            assert jobs.status_code == 200
+            assert jobs.json() == []
     finally:
         await state.runs.close()
 

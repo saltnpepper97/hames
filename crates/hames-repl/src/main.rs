@@ -38,6 +38,11 @@ enum Command {
         #[command(subcommand)]
         action: AgentAction,
     },
+    /// Inspect and control autonomous Skills.
+    Skill {
+        #[command(subcommand)]
+        action: SkillAction,
+    },
     /// Inspect durable events.
     Event {
         #[command(subcommand)]
@@ -81,6 +86,75 @@ enum AgentAction {
         id: String,
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Clone, Debug, Subcommand)]
+enum SkillAction {
+    List {
+        session: String,
+        #[arg(long, default_value = "")]
+        query: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Show {
+        session: String,
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    History {
+        session: String,
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Jobs {
+        session: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Author {
+        session: String,
+        goal: String,
+        #[arg(long, default_value = "workspace")]
+        scope: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Correct {
+        session: String,
+        id: String,
+        goal: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Retry {
+        session: String,
+        job: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Pin {
+        session: String,
+        id: String,
+    },
+    Unpin {
+        session: String,
+        id: String,
+    },
+    Archive {
+        session: String,
+        id: String,
+    },
+    Restore {
+        session: String,
+        id: String,
+    },
+    Rollback {
+        session: String,
+        id: String,
     },
 }
 
@@ -178,9 +252,133 @@ async fn main() -> Result<()> {
         }
         Some(Command::Session { action }) => run_session_command(action).await,
         Some(Command::Agent { action }) => run_agent_command(action).await,
+        Some(Command::Skill { action }) => run_skill_command(action).await,
         Some(Command::Event { action }) => run_event_command(action).await,
         None => repl::run().await,
     }
+}
+
+async fn run_skill_command(action: SkillAction) -> Result<()> {
+    let (_, client) = connected_client().await?;
+    match action {
+        SkillAction::List {
+            session,
+            query,
+            json,
+        } => {
+            let skills = client.skills(&session, &query).await?;
+            if json {
+                print_json(&skills)
+            } else {
+                for skill in skills {
+                    println!(
+                        "{:<28} v{:<3} {:<10} {}",
+                        skill.slug, skill.version, skill.scope, skill.description
+                    );
+                }
+                Ok(())
+            }
+        }
+        SkillAction::Show { session, id, json } => {
+            let skill = client.skill(&session, &id).await?;
+            if json {
+                print_json(&skill)
+            } else {
+                println!("{} v{}\n{}", skill.slug, skill.version, skill.instructions);
+                Ok(())
+            }
+        }
+        SkillAction::History { session, id, json } => {
+            let history = client.skill_history(&session, &id).await?;
+            if json {
+                print_json(&history)
+            } else {
+                for skill in history {
+                    println!(
+                        "{} v{}  {}  {}",
+                        skill.slug, skill.version, skill.status, skill.content_hash
+                    );
+                }
+                Ok(())
+            }
+        }
+        SkillAction::Jobs { session, json } => {
+            let jobs = client.skill_jobs(&session).await?;
+            if json {
+                print_json(&jobs)
+            } else {
+                for job in jobs {
+                    println!(
+                        "{}  {:<10} {:<12} {}",
+                        job.id, job.kind, job.status, job.goal
+                    );
+                }
+                Ok(())
+            }
+        }
+        SkillAction::Author {
+            session,
+            goal,
+            scope,
+            json,
+        } => {
+            let job = client.author_skill(&session, &goal, &scope, None).await?;
+            if json {
+                print_json(&job)
+            } else {
+                println!("queued autonomous Skill job {}", job.id);
+                Ok(())
+            }
+        }
+        SkillAction::Correct {
+            session,
+            id,
+            goal,
+            json,
+        } => {
+            let current = client.skill(&session, &id).await?;
+            let job = client
+                .author_skill(&session, &goal, &current.scope, Some(&current.skill_id))
+                .await?;
+            if json {
+                print_json(&job)
+            } else {
+                println!("queued autonomous Skill correction {}", job.id);
+                Ok(())
+            }
+        }
+        SkillAction::Retry { session, job, json } => {
+            let job = client.retry_skill_job(&session, &job).await?;
+            if json {
+                print_json(&job)
+            } else {
+                println!("retry queued for {}", job.id);
+                Ok(())
+            }
+        }
+        SkillAction::Pin { session, id } => control_skill(&client, &session, &id, "pin").await,
+        SkillAction::Unpin { session, id } => control_skill(&client, &session, &id, "unpin").await,
+        SkillAction::Archive { session, id } => {
+            control_skill(&client, &session, &id, "archive").await
+        }
+        SkillAction::Restore { session, id } => {
+            control_skill(&client, &session, &id, "restore").await
+        }
+        SkillAction::Rollback { session, id } => {
+            control_skill(&client, &session, &id, "rollback").await
+        }
+    }
+}
+
+async fn control_skill(
+    client: &GatewayClient,
+    session: &str,
+    id: &str,
+    action: &str,
+) -> Result<()> {
+    let skill = client.control_skill(session, id, action).await?;
+    println!("{} v{} is {}", skill.slug, skill.version, skill.status);
+    Ok(())
 }
 
 async fn run_agent_command(action: AgentAction) -> Result<()> {
