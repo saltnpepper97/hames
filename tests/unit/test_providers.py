@@ -10,6 +10,7 @@ from hames.providers import (
     ProviderError,
     ProviderMessage,
     StreamEventKind,
+    ToolCall,
     ToolDefinition,
 )
 from hames.providers.llama_cpp import LlamaCppProvider
@@ -216,7 +217,27 @@ async def test_llama_cpp_normalizes_streamed_tool_calls() -> None:
         async for event in provider.stream(
             ModelRequest(
                 model="fixture",
-                messages=[ProviderMessage(role="user", content="inspect")],
+                messages=[
+                    ProviderMessage(role="user", content="inspect"),
+                    ProviderMessage(
+                        role="assistant",
+                        content="",
+                        reasoning_content="I should inspect it.",
+                        tool_calls=[
+                            ToolCall(
+                                id="hames-call-1",
+                                name="read_file",
+                                arguments={"path": "README.md"},
+                            )
+                        ],
+                    ),
+                    ProviderMessage(
+                        role="tool",
+                        content='{"status":"completed"}',
+                        tool_call_id="hames-call-1",
+                        tool_name="read_file",
+                    ),
+                ],
                 system="",
                 tools=[
                     ToolDefinition(
@@ -237,7 +258,60 @@ async def test_llama_cpp_normalizes_streamed_tool_calls() -> None:
     assert tool_events[0].tool_call is not None
     assert tool_events[0].tool_call.name == "read_file"
     assert "tools" in seen_request
+    assert seen_request["parallel_tool_calls"] is False
+    sent_messages = seen_request["messages"]
+    assert isinstance(sent_messages, list)
+    assert sent_messages[-2]["tool_calls"][0]["id"] == "hames-call-1"
+    assert sent_messages[-1]["tool_call_id"] == "hames-call-1"
     assert events[-1].finish_reason == "tool_calls"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_ollama_maps_normalized_tool_history_by_name() -> None:
+    seen_request: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_request.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            text='{"message":{"content":"done"},"done":true,"done_reason":"stop"}\n',
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = OllamaProvider("http://ollama", client=client)
+    _ = [
+        event
+        async for event in provider.stream(
+            ModelRequest(
+                model="fixture",
+                system="",
+                messages=[
+                    ProviderMessage(
+                        role="assistant",
+                        content="",
+                        tool_calls=[
+                            ToolCall(
+                                id="hames-call-1",
+                                name="read_file",
+                                arguments={"path": "README.md"},
+                            )
+                        ],
+                    ),
+                    ProviderMessage(
+                        role="tool",
+                        content="fixture",
+                        tool_call_id="hames-call-1",
+                        tool_name="read_file",
+                    ),
+                ],
+            )
+        )
+    ]
+    sent_messages = seen_request["messages"]
+    assert isinstance(sent_messages, list)
+    assert sent_messages[0]["tool_calls"][0]["function"]["name"] == "read_file"
+    assert sent_messages[1]["tool_name"] == "read_file"
     await client.aclose()
 
 

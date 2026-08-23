@@ -585,6 +585,97 @@ async def test_destructive_shell_waits_for_exact_one_shot_denial(tmp_path: Path)
         await state.runs.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("runtime_config", "tool_calls", "expected_code"),
+    [
+        ("max_model_turns_per_user_message = 1", 1, "model_turn_limit"),
+        ("max_tool_calls_per_run = 1", 2, "tool_call_limit"),
+    ],
+)
+async def test_agent_loop_limits_are_typed(
+    tmp_path: Path, runtime_config: str, tool_calls: int, expected_code: str
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text(f"[runtime]\n{runtime_config}\n", encoding="utf-8")
+    turn = [StreamEvent(kind=StreamEventKind.STARTED)]
+    for index in range(tool_calls):
+        turn.append(
+            StreamEvent(
+                kind=StreamEventKind.TOOL_CALL_DELTA,
+                tool_call=ToolCallDelta(
+                    index=index,
+                    provider_call_id=f"call-{index}",
+                    name="unknown_fixture_tool",
+                    arguments_delta="{}",
+                ),
+            )
+        )
+    turn.append(StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"))
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([], turns=[turn])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "keep going"},
+            )
+            events = await _wait_for_event(client, headers, session_id, "run.failed")
+            failure = events[-1]["payload"]
+            assert isinstance(failure, dict)
+            assert failure["code"] == expected_code
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_active_time_limit_is_typed(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text("[runtime]\nmax_active_seconds_per_run = 0.02\n", encoding="utf-8")
+    state = GatewayState.create(paths, providers={"fake": StallingProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "wait forever"},
+            )
+            events = await _wait_for_event(client, headers, session_id, "run.failed")
+            failure = events[-1]["payload"]
+            assert isinstance(failure, dict)
+            assert failure["code"] == "active_time_limit"
+    finally:
+        await state.runs.close()
+
+
 async def _wait_for_event(
     client: httpx.AsyncClient,
     headers: dict[str, str],
