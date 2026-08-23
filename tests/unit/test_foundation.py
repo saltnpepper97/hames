@@ -57,8 +57,39 @@ def test_nested_provider_override_keeps_default_endpoint(hames_paths: HamesPaths
         hames_paths,
         environ={"HAMES_PROVIDERS__LLAMA_CPP__MODEL": "qwen3.8-27b"},
     )
-    assert config.providers.llama_cpp.model == "qwen3.8-27b"
-    assert config.providers.llama_cpp.base_url == "http://127.0.0.1:8080"
+    assert config.providers["llama_cpp"].model == "qwen3.8-27b"
+    assert config.providers["llama_cpp"].base_url == "http://127.0.0.1:8080"
+
+
+def test_named_provider_profiles_can_share_an_adapter(hames_paths: HamesPaths) -> None:
+    hames_paths.ensure_foundation()
+    hames_paths.config_file.write_text(
+        """\
+[runtime]
+default_provider = "fast"
+
+[providers.fast]
+adapter = "llama_cpp"
+base_url = "http://127.0.0.1:8080"
+model = "qwen3.8-27b"
+reasoning_effort = "medium"
+supported_reasoning_efforts = ["low", "medium", "xhigh"]
+
+[providers.deep]
+adapter = "llama_cpp"
+base_url = "http://127.0.0.1:8081"
+model = "qwen3.8-27b"
+reasoning_effort = "xhigh"
+supported_reasoning_efforts = ["low", "medium", "xhigh"]
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(hames_paths, environ={})
+
+    assert config.runtime.default_provider == "fast"
+    assert config.providers["fast"].adapter == "llama_cpp"
+    assert config.providers["deep"].base_url == "http://127.0.0.1:8081"
 
 
 def test_blob_threshold_environment_override(hames_paths: HamesPaths) -> None:
@@ -94,10 +125,10 @@ self_authoring = "automatic"
     config = load_config(hames_paths, environ={})
 
     assert config.runtime.default_provider == "llama_cpp"
-    assert config.providers.llama_cpp.base_url == "http://127.0.0.1:8080"
-    assert config.providers.llama_cpp.model == "qwen3.8-27b"
-    assert config.providers.llama_cpp.reasoning_effort == "medium"
-    assert config.providers.llama_cpp.timeout_seconds == 600.0
+    assert config.providers["llama_cpp"].base_url == "http://127.0.0.1:8080"
+    assert config.providers["llama_cpp"].model == "qwen3.8-27b"
+    assert config.providers["llama_cpp"].reasoning_effort == "medium"
+    assert config.providers["llama_cpp"].timeout_seconds == 600.0
     assert hames_paths.config_file.read_text(encoding="utf-8") == legacy
     assert run_doctor(hames_paths).config_compatibility is not None
 

@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Clone)]
 pub struct GatewayClient {
@@ -22,14 +22,35 @@ pub struct Health {
     pub version: String,
     pub protocol_version: u32,
     pub database_ready: bool,
+    pub provider_profiles: Vec<String>,
+    pub default_provider: String,
+    pub active_runs: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct ProviderStatus {
+pub struct ProviderProfile {
     pub id: String,
-    pub available: bool,
+    pub adapter: String,
+    pub endpoint: String,
+    pub configured_model: String,
+    pub default_reasoning_effort: String,
+    pub supported_reasoning_efforts: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ProviderProbeError {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ProviderProbe {
+    pub id: String,
+    pub adapter: String,
+    pub reachable: bool,
     pub models: Vec<ProviderModel>,
-    pub error: Option<String>,
+    pub error: Option<ProviderProbeError>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -146,8 +167,17 @@ impl GatewayClient {
         decode(self.get("/v1/health").send().await?).await
     }
 
-    pub async fn providers(&self) -> Result<Vec<ProviderStatus>> {
+    pub async fn providers(&self) -> Result<Vec<ProviderProfile>> {
         decode(self.get("/v1/providers").send().await?).await
+    }
+
+    pub async fn probe_provider(&self, profile_id: &str) -> Result<ProviderProbe> {
+        decode(
+            self.post(&format!("/v1/providers/{profile_id}/probe"))
+                .send()
+                .await?,
+        )
+        .await
     }
 
     pub async fn create_session(

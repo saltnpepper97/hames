@@ -20,16 +20,20 @@ from hames.providers.base import (
 
 
 class LlamaCppProvider:
-    name = "llama_cpp"
+    adapter = "llama_cpp"
 
     def __init__(
         self,
         base_url: str,
         *,
+        profile_id: str = "llama_cpp",
         timeout_seconds: float = 120.0,
+        supported_reasoning_efforts: list[str] | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        self.profile_id = profile_id
         self.base_url = base_url.rstrip("/")
+        self.supported_reasoning_efforts = supported_reasoning_efforts or []
         self._owned_client = client is None
         self.client = client or httpx.AsyncClient(timeout=timeout_seconds)
 
@@ -76,7 +80,7 @@ class LlamaCppProvider:
             models.append(
                 ProviderModel(
                     id=model_id,
-                    provider=self.name,
+                    provider=self.profile_id,
                     status=status,
                     context_length=_optional_int(meta.get("n_ctx"))
                     or _nested_optional_int(props, "default_generation_settings", "n_ctx"),

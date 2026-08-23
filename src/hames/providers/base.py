@@ -76,7 +76,9 @@ class ProviderError(RuntimeError):
 
 
 class Provider(Protocol):
-    name: str
+    profile_id: str
+    adapter: str
+    base_url: str
 
     async def list_models(self) -> list[ProviderModel]: ...
 

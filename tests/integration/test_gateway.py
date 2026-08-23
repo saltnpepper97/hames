@@ -41,7 +41,9 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             health = await client.get("/v1/health")
             assert health.status_code == 200
-            assert response_object(health)["protocol_version"] == 2
+            health_body = response_object(health)
+            assert health_body["protocol_version"] == 3
+            assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
             created = await client.post(
@@ -137,6 +139,40 @@ class TwoModelProvider(FakeProvider):
     async def list_models(self) -> list[ProviderModel]:
         models = await super().list_models()
         return [models[0], models[0].model_copy(update={"id": "other"})]
+
+
+class CountingProvider(FakeProvider):
+    def __init__(self) -> None:
+        super().__init__([])
+        self.probes = 0
+
+    async def list_models(self) -> list[ProviderModel]:
+        self.probes += 1
+        return await super().list_models()
+
+
+@pytest.mark.asyncio
+async def test_provider_listing_is_offline_and_probe_is_explicit(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    fake = CountingProvider()
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            listed = await client.get("/v1/providers", headers=headers)
+            assert listed.status_code == 200
+            assert fake.probes == 0
+            profiles = listed.json()
+            assert profiles[0]["id"] == "fake"
+            assert profiles[0]["adapter"] == "fake"
+
+            probed = await client.post("/v1/providers/fake/probe", headers=headers)
+            assert probed.status_code == 200
+            assert probed.json()["reachable"] is True
+            assert fake.probes == 1
+    finally:
+        await state.runs.close()
 
 
 class StallingProvider(FakeProvider):

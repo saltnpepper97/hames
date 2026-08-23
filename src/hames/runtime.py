@@ -65,6 +65,10 @@ class RunManager:
     def is_session_active(self, session_id: str) -> bool:
         return session_id in self._session_runs
 
+    @property
+    def active_run_count(self) -> int:
+        return len(self._tasks)
+
     async def cancel(self, run_id: str) -> bool:
         task = self._tasks.get(run_id)
         if task is None or task.done():

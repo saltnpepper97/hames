@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from hames.paths import HamesPaths
 
@@ -35,16 +35,59 @@ class GatewayConfig(StrictModel):
         return value
 
 
-class ProviderConfig(StrictModel):
+class ProviderProfileConfig(StrictModel):
+    adapter: str
     base_url: str
     model: str = ""
     reasoning_effort: str = ""
+    supported_reasoning_efforts: list[str] = Field(default_factory=list)
     timeout_seconds: float = Field(default=120.0, gt=0)
 
+    @field_validator("adapter")
+    @classmethod
+    def known_adapter(cls, value: str) -> str:
+        if value not in {"llama_cpp", "ollama"}:
+            raise ValueError(f"unknown provider adapter: {value}")
+        return value
 
-class ProvidersConfig(StrictModel):
-    llama_cpp: ProviderConfig = ProviderConfig(base_url="http://127.0.0.1:8080")
-    ollama: ProviderConfig = ProviderConfig(base_url="http://127.0.0.1:11434")
+    @field_validator("base_url")
+    @classmethod
+    def valid_http_url(cls, value: str) -> str:
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("provider base_url must be an absolute HTTP(S) URL")
+        if parsed.username or parsed.password:
+            raise ValueError("provider base_url must not contain credentials")
+        return value.rstrip("/")
+
+    @field_validator("supported_reasoning_efforts")
+    @classmethod
+    def valid_reasoning_efforts(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("supported reasoning efforts must be unique")
+        if any(not value or value == "off" for value in values):
+            raise ValueError("supported reasoning efforts must not contain empty or off")
+        return values
+
+    @model_validator(mode="after")
+    def default_effort_is_supported(self) -> ProviderProfileConfig:
+        if (
+            self.reasoning_effort
+            and self.reasoning_effort != "off"
+            and self.supported_reasoning_efforts
+            and self.reasoning_effort not in self.supported_reasoning_efforts
+        ):
+            raise ValueError("reasoning_effort is not listed in supported_reasoning_efforts")
+        return self
+
+
+def _default_provider_profiles() -> dict[str, ProviderProfileConfig]:
+    return {
+        "llama_cpp": ProviderProfileConfig(adapter="llama_cpp", base_url="http://127.0.0.1:8080"),
+        "ollama": ProviderProfileConfig(adapter="ollama", base_url="http://127.0.0.1:11434"),
+    }
 
 
 class LoggingConfig(StrictModel):
@@ -70,10 +113,27 @@ class LedgerConfig(StrictModel):
 class HamesConfig(StrictModel):
     runtime: RuntimeConfig = RuntimeConfig()
     gateway: GatewayConfig = GatewayConfig()
-    providers: ProvidersConfig = ProvidersConfig()
+    providers: dict[str, ProviderProfileConfig] = Field(default_factory=_default_provider_profiles)
     logging: LoggingConfig = LoggingConfig()
     repl: ReplConfig = ReplConfig()
     ledger: LedgerConfig = LedgerConfig()
+
+    @model_validator(mode="after")
+    def valid_provider_profiles(self) -> HamesConfig:
+        import re
+
+        invalid = [
+            profile_id
+            for profile_id in self.providers
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", profile_id) is None
+        ]
+        if invalid:
+            raise ValueError(f"invalid provider profile id: {invalid[0]}")
+        if self.runtime.default_provider not in self.providers:
+            raise ValueError(
+                f"default provider profile is not configured: {self.runtime.default_provider}"
+            )
+        return self
 
 
 def _environment_overrides(environ: Mapping[str, str]) -> dict[str, Any]:
@@ -154,9 +214,16 @@ def _translate_legacy_config(value: Mapping[str, Any]) -> dict[str, Any]:
         provider_value = cast(Mapping[str, Any], raw_provider)
         mapped: dict[str, Any] = {
             key: provider_value[key]
-            for key in ("base_url", "model", "reasoning_effort", "timeout_seconds")
+            for key in (
+                "base_url",
+                "model",
+                "reasoning_effort",
+                "supported_reasoning_efforts",
+                "timeout_seconds",
+            )
             if key in provider_value
         }
+        mapped["adapter"] = current_name
         base_url = mapped.get("base_url")
         if current_name == "llama_cpp" and isinstance(base_url, str):
             mapped["base_url"] = base_url.rstrip("/").removesuffix("/v1")

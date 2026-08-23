@@ -9,15 +9,20 @@ from hames.providers.ollama import OllamaProvider
 
 
 def configured_providers(config: HamesConfig) -> dict[str, Provider]:
-    llama = config.providers.llama_cpp
-    ollama = config.providers.ollama
-    return {
-        "llama_cpp": LlamaCppProvider(
-            llama.base_url,
-            timeout_seconds=llama.timeout_seconds,
-        ),
-        "ollama": OllamaProvider(
-            ollama.base_url,
-            timeout_seconds=ollama.timeout_seconds,
-        ),
-    }
+    providers: dict[str, Provider] = {}
+    for profile_id, profile in config.providers.items():
+        if profile.adapter == "llama_cpp":
+            providers[profile_id] = LlamaCppProvider(
+                profile.base_url,
+                profile_id=profile_id,
+                timeout_seconds=profile.timeout_seconds,
+                supported_reasoning_efforts=profile.supported_reasoning_efforts,
+            )
+        elif profile.adapter == "ollama":
+            providers[profile_id] = OllamaProvider(
+                profile.base_url,
+                profile_id=profile_id,
+                timeout_seconds=profile.timeout_seconds,
+                supported_reasoning_efforts=profile.supported_reasoning_efforts,
+            )
+    return providers

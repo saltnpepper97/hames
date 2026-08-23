@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from hames import PROTOCOL_VERSION, __version__
 from hames.broker import EventBroker
-from hames.config import HamesConfig, load_config
+from hames.config import HamesConfig, ProviderProfileConfig, load_config
 from hames.database import Database
 from hames.ledger import Event, EventIntegrityError, IntegrityResult, Ledger, Session
 from hames.paths import HamesPaths
@@ -60,11 +60,28 @@ class ForkSessionRequest(ApiModel):
     title: str | None = None
 
 
-class ProviderStatus(ApiModel):
+class ProviderProfile(ApiModel):
     id: str
-    available: bool
+    adapter: str
+    endpoint: str
+    configured_model: str
+    default_reasoning_effort: str
+    supported_reasoning_efforts: list[str]
+
+
+class ProviderProbeError(ApiModel):
+    code: str
+    message: str
+    retryable: bool
+    details: dict[str, object] = Field(default_factory=dict)
+
+
+class ProviderProbe(ApiModel):
+    id: str
+    adapter: str
+    reachable: bool
     models: list[ProviderModel]
-    error: str | None = None
+    error: ProviderProbeError | None = None
 
 
 class Health(ApiModel):
@@ -72,6 +89,9 @@ class Health(ApiModel):
     version: str
     protocol_version: int
     database_ready: bool
+    provider_profiles: list[str]
+    default_provider: str
+    active_runs: int
 
 
 class ApiError(Exception):
@@ -124,6 +144,9 @@ class GatewayState:
         return cls(
             paths, config, ledger, selected_providers, broker, runs, paths.read_gateway_token()
         )
+
+    def provider_profile(self, profile_id: str) -> ProviderProfileConfig | None:
+        return self.config.providers.get(profile_id)
 
 
 def create_app(state: GatewayState) -> FastAPI:
@@ -189,31 +212,43 @@ def create_app(state: GatewayState) -> FastAPI:
             version=__version__,
             protocol_version=PROTOCOL_VERSION,
             database_ready=state.paths.database.exists(),
+            provider_profiles=sorted(state.providers),
+            default_provider=state.config.runtime.default_provider,
+            active_runs=state.runs.active_run_count,
         )
 
-    @app.get("/v1/providers", dependencies=auth, response_model=list[ProviderStatus])
-    async def providers_endpoint() -> list[ProviderStatus]:
-        result: list[ProviderStatus] = []
-        for name, provider in state.providers.items():
-            try:
-                models = await provider.list_models()
-                result.append(ProviderStatus(id=name, available=True, models=models))
-            except ProviderError as exc:
-                result.append(ProviderStatus(id=name, available=False, models=[], error=str(exc)))
-        return result
+    @app.get("/v1/providers", dependencies=auth, response_model=list[ProviderProfile])
+    async def providers_endpoint() -> list[ProviderProfile]:
+        return [
+            _public_profile(state, profile_id, provider)
+            for profile_id, provider in sorted(state.providers.items())
+        ]
 
-    @app.post("/v1/sessions", dependencies=auth, response_model=Session, status_code=201)
-    async def create_session(request: CreateSessionRequest) -> Session:
-        provider_name = request.provider or state.config.runtime.default_provider
-        provider = state.providers.get(provider_name)
+    @app.post(
+        "/v1/providers/{profile_id}/probe",
+        dependencies=auth,
+        response_model=ProviderProbe,
+    )
+    async def probe_provider(profile_id: str) -> ProviderProbe:
+        provider = state.providers.get(profile_id)
         if provider is None:
-            raise ApiError(400, "unknown_provider", f"unknown provider: {provider_name}")
-        model = request.model
-        if not model:
-            try:
-                models = await provider.list_models()
-            except ProviderError as exc:
-                raise ApiError(503, exc.code, str(exc), retryable=exc.retryable) from exc
+            raise ApiError(404, "unknown_provider", f"unknown provider: {profile_id}")
+        return await _probe(profile_id, provider)
+
+    async def resolve_selection(
+        profile_id: str, requested_model: str, requested_effort: str
+    ) -> tuple[str, str]:
+        provider = state.providers.get(profile_id)
+        if provider is None:
+            raise ApiError(400, "unknown_provider", f"unknown provider: {profile_id}")
+        configured = state.provider_profile(profile_id)
+        selected_model_id = requested_model or (configured.model if configured else "")
+        selected_effort = requested_effort or (configured.reasoning_effort if configured else "")
+        try:
+            models = await provider.list_models()
+        except ProviderError as exc:
+            raise ApiError(503, exc.code, str(exc), retryable=exc.retryable) from exc
+        if not selected_model_id:
             if len(models) != 1:
                 raise ApiError(
                     409,
@@ -221,7 +256,33 @@ def create_app(state: GatewayState) -> FastAPI:
                     "provider did not report exactly one model",
                     details={"models": [item.id for item in models]},
                 )
-            model = models[0].id
+            selected_model_id = models[0].id
+        selected = next((item for item in models if item.id == selected_model_id), None)
+        if selected is None:
+            raise ApiError(400, "unknown_model", f"unknown model: {selected_model_id}")
+        efforts = (
+            configured.supported_reasoning_efforts
+            if configured and configured.supported_reasoning_efforts
+            else selected.reasoning_efforts
+        )
+        if selected_effort and selected_effort != "off":
+            if selected.reasoning_supported is False:
+                raise ApiError(400, "reasoning_not_supported", "model does not advertise reasoning")
+            if efforts and selected_effort not in efforts:
+                raise ApiError(
+                    400,
+                    "reasoning_effort_not_supported",
+                    f"unsupported reasoning effort: {selected_effort}",
+                    details={"supported": efforts},
+                )
+        return selected_model_id, selected_effort
+
+    @app.post("/v1/sessions", dependencies=auth, response_model=Session, status_code=201)
+    async def create_session(request: CreateSessionRequest) -> Session:
+        provider_name = request.provider or state.config.runtime.default_provider
+        model, reasoning_effort = await resolve_selection(
+            provider_name, request.model, request.reasoning_effort
+        )
         try:
             return await asyncio.to_thread(
                 state.ledger.create_session,
@@ -229,7 +290,7 @@ def create_app(state: GatewayState) -> FastAPI:
                 agent_id=request.agent_id,
                 provider=provider_name,
                 model=model,
-                reasoning_effort=request.reasoning_effort,
+                reasoning_effort=reasoning_effort,
                 title=request.title,
             )
         except (FileNotFoundError, ValueError) as exc:
@@ -248,33 +309,16 @@ def create_app(state: GatewayState) -> FastAPI:
 
     @app.patch("/v1/sessions/{session_id}", dependencies=auth, response_model=Session)
     async def update_session(session_id: str, request: UpdateSessionRequest) -> Session:
-        provider = state.providers.get(request.provider)
-        if provider is None:
-            raise ApiError(400, "unknown_provider", f"unknown provider: {request.provider}")
-        models = await provider.list_models()
-        selected = next((item for item in models if item.id == request.model), None)
-        if selected is None:
-            raise ApiError(400, "unknown_model", f"unknown model: {request.model}")
-        if request.reasoning_effort and request.reasoning_effort != "off":
-            if selected.reasoning_supported is False:
-                raise ApiError(400, "reasoning_not_supported", "model does not advertise reasoning")
-            if (
-                selected.reasoning_efforts
-                and request.reasoning_effort not in selected.reasoning_efforts
-            ):
-                raise ApiError(
-                    400,
-                    "reasoning_effort_not_supported",
-                    f"unsupported reasoning effort: {request.reasoning_effort}",
-                    details={"supported": selected.reasoning_efforts},
-                )
+        model, reasoning_effort = await resolve_selection(
+            request.provider, request.model, request.reasoning_effort
+        )
         try:
             return await asyncio.to_thread(
                 state.ledger.update_session_settings,
                 session_id,
                 provider=request.provider,
-                model=request.model,
-                reasoning_effort=request.reasoning_effort,
+                model=model,
+                reasoning_effort=reasoning_effort,
             )
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
@@ -409,3 +453,38 @@ def _sse(item: dict[str, object]) -> str:
             event_id = f"id: {event_data['sequence']}\n"
         event_type = str(event_data.get("type", "event"))
     return f"{event_id}event: {event_type}\ndata: {json.dumps(item, separators=(',', ':'))}\n\n"
+
+
+def _public_profile(state: GatewayState, profile_id: str, provider: Provider) -> ProviderProfile:
+    configured = state.provider_profile(profile_id)
+    return ProviderProfile(
+        id=profile_id,
+        adapter=configured.adapter if configured else provider.adapter,
+        endpoint=configured.base_url if configured else provider.base_url,
+        configured_model=configured.model if configured else "",
+        default_reasoning_effort=configured.reasoning_effort if configured else "",
+        supported_reasoning_efforts=(configured.supported_reasoning_efforts if configured else []),
+    )
+
+
+async def _probe(profile_id: str, provider: Provider) -> ProviderProbe:
+    try:
+        models = await provider.list_models()
+        return ProviderProbe(
+            id=profile_id,
+            adapter=provider.adapter,
+            reachable=True,
+            models=models,
+        )
+    except ProviderError as exc:
+        return ProviderProbe(
+            id=profile_id,
+            adapter=provider.adapter,
+            reachable=False,
+            models=[],
+            error=ProviderProbeError(
+                code=exc.code,
+                message=str(exc),
+                retryable=exc.retryable,
+            ),
+        )

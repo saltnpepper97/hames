@@ -8,7 +8,8 @@ use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 
 use crate::api::{
-    GatewayClient, LiveEnvelope, PROTOCOL_VERSION, ProviderModel, ProviderStatus, Session,
+    GatewayClient, LiveEnvelope, PROTOCOL_VERSION, ProviderModel, ProviderProbe, ProviderProfile,
+    Session,
 };
 use crate::local::{LocalPaths, start_backend};
 
@@ -30,10 +31,25 @@ pub async fn run() -> Result<()> {
     }
     let cwd = env::current_dir()?.canonicalize()?;
     let mut provider = paths.configured_provider()?;
+    if !health
+        .provider_profiles
+        .iter()
+        .any(|item| item == &provider)
+    {
+        bail!("provider {provider} is not configured in the gateway");
+    }
     let mut model = paths.configured_model(&provider)?;
     let mut reasoning = paths.configured_reasoning(&provider)?;
-    let statuses = client.providers().await?;
-    model = select_model(&mut editor, &statuses, &provider, &model)?;
+    let profiles = client.providers().await?;
+    let profile = find_profile(&profiles, &provider)?;
+    if model.is_empty() {
+        model.clone_from(&profile.configured_model);
+    }
+    if reasoning.is_empty() {
+        reasoning.clone_from(&profile.default_reasoning_effort);
+    }
+    let probe = client.probe_provider(&provider).await?;
+    model = select_model(&mut editor, &probe, &model)?;
     let mut session = client
         .create_session(&cwd.to_string_lossy(), &provider, &model, &reasoning)
         .await?;
@@ -238,16 +254,24 @@ async fn handle_command(
             println!("resumed session {}", session.id);
         }
         "/provider" => {
-            let statuses = client.providers().await?;
+            let profiles = client.providers().await?;
             let selected_provider = parts.get(1).copied().unwrap_or(provider);
-            let requested_model = parts.get(2).copied().unwrap_or("");
-            let selected_model =
-                select_model(editor, &statuses, selected_provider, requested_model)?;
+            let profile = find_profile(&profiles, selected_provider)?;
+            let requested_model = parts.get(2).copied().unwrap_or(&profile.configured_model);
+            let probe = client.probe_provider(selected_provider).await?;
+            let selected_model = select_model(editor, &probe, requested_model)?;
+            let selected_reasoning = profile.default_reasoning_effort.clone();
             *session = client
-                .update_session(&session.id, selected_provider, &selected_model, reasoning)
+                .update_session(
+                    &session.id,
+                    selected_provider,
+                    &selected_model,
+                    &selected_reasoning,
+                )
                 .await?;
             *provider = selected_provider.to_owned();
             *model = selected_model;
+            *reasoning = selected_reasoning;
             println!("provider: {provider} / {model}");
         }
         "/model" => println!(
@@ -270,7 +294,7 @@ async fn handle_command(
             *reasoning = (*effort).to_owned();
             println!("reasoning effort: {reasoning}");
         }
-        "/status" => print_statuses(&client.providers().await?),
+        "/status" => print_statuses(client).await?,
         unknown => bail!("unknown command: {unknown}; use /help"),
     }
     Ok(CommandOutcome::Continue)
@@ -278,34 +302,34 @@ async fn handle_command(
 
 fn select_model(
     editor: &mut DefaultEditor,
-    statuses: &[ProviderStatus],
-    provider: &str,
+    probe: &ProviderProbe,
     requested: &str,
 ) -> Result<String> {
-    let status = statuses
-        .iter()
-        .find(|item| item.id == provider)
-        .with_context(|| format!("provider {provider} is not configured"))?;
-    if !status.available {
+    if !probe.reachable {
         bail!(
-            "provider {provider} is unavailable: {}",
-            status.error.as_deref().unwrap_or("unknown error")
+            "provider {} is unavailable: {}",
+            probe.id,
+            probe
+                .error
+                .as_ref()
+                .map(|error| error.message.as_str())
+                .unwrap_or("unknown error")
         );
     }
     if !requested.is_empty() {
-        if status.models.iter().any(|item| item.id == requested) {
+        if probe.models.iter().any(|item| item.id == requested) {
             return Ok(requested.to_owned());
         }
-        bail!("provider {provider} does not report model {requested}");
+        bail!("provider {} does not report model {requested}", probe.id);
     }
-    if status.models.len() == 1 {
-        return Ok(status.models[0].id.clone());
+    if probe.models.len() == 1 {
+        return Ok(probe.models[0].id.clone());
     }
-    if status.models.is_empty() {
-        bail!("provider {provider} reports no models");
+    if probe.models.is_empty() {
+        bail!("provider {} reports no models", probe.id);
     }
-    println!("Select a model for {provider}:");
-    for (index, item) in status.models.iter().enumerate() {
+    println!("Select a model for {}:", probe.id);
+    for (index, item) in probe.models.iter().enumerate() {
         println!("  {}. {} ({})", index + 1, item.id, model_summary(item));
     }
     let choice = editor.readline("model> ")?;
@@ -313,28 +337,80 @@ fn select_model(
         .trim()
         .parse()
         .context("model choice must be a number")?;
-    status
+    probe
         .models
         .get(index.saturating_sub(1))
         .map(|item| item.id.clone())
         .context("model choice is outside the displayed range")
 }
 
-fn print_statuses(statuses: &[ProviderStatus]) {
-    for provider in statuses {
-        if provider.available {
-            println!("{}: available", provider.id);
+fn find_profile<'a>(
+    profiles: &'a [ProviderProfile],
+    provider: &str,
+) -> Result<&'a ProviderProfile> {
+    profiles
+        .iter()
+        .find(|item| item.id == provider)
+        .with_context(|| format!("provider {provider} is not configured"))
+}
+
+async fn print_statuses(client: &GatewayClient) -> Result<()> {
+    let health = client.health().await?;
+    println!(
+        "gateway: {} · default: {} · active runs: {}",
+        health.status, health.default_provider, health.active_runs
+    );
+    let profiles = client.providers().await?;
+    let probes = futures_util::future::join_all(
+        profiles
+            .iter()
+            .map(|profile| client.probe_provider(&profile.id)),
+    )
+    .await;
+    for (profile, result) in profiles.iter().zip(probes) {
+        let provider = result?;
+        if provider.adapter != profile.adapter {
+            bail!(
+                "provider {} reported adapter {} but is configured as {}",
+                provider.id,
+                provider.adapter,
+                profile.adapter
+            );
+        }
+        if provider.reachable {
+            println!(
+                "{} [{}] {}: available",
+                provider.id, profile.adapter, profile.endpoint
+            );
+            if !profile.supported_reasoning_efforts.is_empty() {
+                println!(
+                    "  declared thinking levels: {}",
+                    profile.supported_reasoning_efforts.join("/")
+                );
+            }
             for model in &provider.models {
                 println!("  {} — {}", model.id, model_summary(model));
             }
         } else {
             println!(
-                "{}: unavailable ({})",
+                "{} [{}]: unavailable ({}: {}; retryable: {})",
                 provider.id,
-                provider.error.as_deref().unwrap_or("unknown error")
+                profile.adapter,
+                provider
+                    .error
+                    .as_ref()
+                    .map(|error| error.code.as_str())
+                    .unwrap_or("unknown_error"),
+                provider
+                    .error
+                    .as_ref()
+                    .map(|error| error.message.as_str())
+                    .unwrap_or("unknown error"),
+                provider.error.as_ref().is_some_and(|error| error.retryable)
             );
         }
     }
+    Ok(())
 }
 
 fn model_summary(model: &ProviderModel) -> String {
@@ -349,6 +425,9 @@ fn model_summary(model: &ProviderModel) -> String {
         fields.push(format!("{context} ctx"));
     }
     match model.reasoning_supported {
+        Some(true) if model.reasoning_efforts.is_empty() => {
+            fields.push("thinking: supported; levels unknown".to_owned());
+        }
         Some(true) => fields.push(format!("thinking: {}", model.reasoning_efforts.join("/"))),
         None => fields.push("thinking: unknown until loaded".to_owned()),
         Some(false) => {}

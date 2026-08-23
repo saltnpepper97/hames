@@ -8,7 +8,9 @@ from hames.providers.base import ModelRequest, ProviderModel, StreamEvent
 
 
 class FakeProvider:
-    name = "fake"
+    profile_id = "fake"
+    adapter = "fake"
+    base_url = ""
 
     def __init__(self, events: Iterable[StreamEvent]) -> None:
         self.events = list(events)
@@ -18,7 +20,7 @@ class FakeProvider:
         return [
             ProviderModel(
                 id="fixture",
-                provider=self.name,
+                provider=self.profile_id,
                 status="available",
                 input_modalities=["text"],
                 output_modalities=["text"],

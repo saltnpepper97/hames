@@ -19,16 +19,20 @@ from hames.providers.base import (
 
 
 class OllamaProvider:
-    name = "ollama"
+    adapter = "ollama"
 
     def __init__(
         self,
         base_url: str,
         *,
+        profile_id: str = "ollama",
         timeout_seconds: float = 120.0,
+        supported_reasoning_efforts: list[str] | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        self.profile_id = profile_id
         self.base_url = base_url.rstrip("/")
+        self.supported_reasoning_efforts = supported_reasoning_efforts or []
         self._owned_client = client is None
         self.client = client or httpx.AsyncClient(timeout=timeout_seconds)
 
@@ -61,7 +65,7 @@ class OllamaProvider:
             models.append(
                 ProviderModel(
                     id=model_id,
-                    provider=self.name,
+                    provider=self.profile_id,
                     status="available",
                     parameter_size=_optional_str(details.get("parameter_size")),
                     quantization=_optional_str(details.get("quantization_level")),
