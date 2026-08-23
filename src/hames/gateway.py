@@ -23,6 +23,8 @@ from hames.broker import EventBroker
 from hames.config import HamesConfig, ProviderProfileConfig, load_config
 from hames.control import ControlStore
 from hames.database import Database
+from hames.evolution import Scar, ScarStatus, ScarStore
+from hames.evolution_runtime import EvolutionManager
 from hames.inspection import (
     AgentUsageProjection,
     ContextInspection,
@@ -140,6 +142,11 @@ class SkillControlRequest(ApiModel):
     reason: str = Field(default="user_override", min_length=1, max_length=240)
 
 
+class CorrectionRequest(ApiModel):
+    content: str = Field(min_length=1, max_length=8000)
+    target_event_id: str | None = None
+
+
 class AgentPublic(ApiModel):
     id: str
     name: str
@@ -219,6 +226,7 @@ class GatewayState:
     runs: RunManager
     memory: MemoryManager
     skills: SkillManager
+    evolution: EvolutionManager
     token: str
 
     @classmethod
@@ -261,8 +269,16 @@ class GatewayState:
             broker=broker,
             registry=runs.skills,
         )
+        evolution = EvolutionManager(
+            ledger=ledger,
+            config=config,
+            broker=broker,
+            store=ScarStore(ledger),
+            skills=runs.skills,
+        )
         runs.attach_memory_manager(memory)
         runs.attach_skill_manager(skills)
+        runs.attach_evolution_manager(evolution)
         return cls(
             paths,
             config,
@@ -273,6 +289,7 @@ class GatewayState:
             runs,
             memory,
             skills,
+            evolution,
             paths.read_gateway_token(),
         )
 
@@ -945,6 +962,49 @@ def create_app(state: GatewayState) -> FastAPI:
             raise ApiError(404, "skill_not_found", f"unknown visible Skill: {slug}") from exc
         except ValueError as exc:
             raise ApiError(409, "invalid_skill_transition", str(exc)) from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/correct",
+        dependencies=auth,
+        response_model=Scar,
+        status_code=201,
+    )
+    async def submit_correction(session_id: str, request: CorrectionRequest) -> Scar:
+        try:
+            await asyncio.to_thread(state.ledger.get_session, session_id)
+            return await state.evolution.submit_correction(
+                session_id,
+                content=request.content,
+                target_event_id=request.target_event_id,
+            )
+        except KeyError as exc:
+            raise ApiError(404, "session_or_event_not_found", str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(400, "invalid_correction", str(exc)) from exc
+
+    @app.get("/v1/sessions/{session_id}/scars", dependencies=auth, response_model=list[Scar])
+    async def list_scars(
+        session_id: str,
+        status: ScarStatus | None = None,
+        limit: int = Query(default=100, ge=1, le=200),
+    ) -> list[Scar]:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            return await asyncio.to_thread(
+                state.evolution.store.list_scars, session, status=status, limit=limit
+            )
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+        except ValueError as exc:
+            raise ApiError(422, "invalid_status_filter", str(exc)) from exc
+
+    @app.get("/v1/sessions/{session_id}/scars/{scar_id}", dependencies=auth, response_model=Scar)
+    async def get_scar(session_id: str, scar_id: str) -> Scar:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            return await asyncio.to_thread(state.evolution.store.get_visible, session, scar_id)
+        except KeyError as exc:
+            raise ApiError(404, "scar_not_found", f"unknown visible Scar: {scar_id}") from exc
 
     @app.get("/v1/sessions/{session_id}/events", dependencies=auth, response_model=list[Event])
     async def list_events(session_id: str, after_sequence: int = 0) -> list[Event]:

@@ -375,6 +375,26 @@ class Ledger:
             ).fetchall()
         return [self._event_from_row(row) for row in rows]
 
+    def list_recent_workspace_events(
+        self,
+        event_types: set[str],
+        *,
+        working_directory: str,
+        limit: int = 200,
+    ) -> list[Event]:
+        placeholders = ",".join("?" for _ in event_types)
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT e.* FROM events e
+                JOIN sessions s ON s.id = e.session_id
+                WHERE e.type IN ({placeholders}) AND s.working_directory = ?
+                ORDER BY e.sequence DESC LIMIT ?
+                """,
+                (*event_types, working_directory, limit),
+            ).fetchall()
+        return [self._event_from_row(row) for row in rows]
+
     def replay(self, session_id: str, *, after_sequence: int = 0) -> list[Event]:
         events = self._replay(session_id, active=set())
         return [event for event in events if event.sequence > after_sequence]

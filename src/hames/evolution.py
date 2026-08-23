@@ -53,6 +53,45 @@ TRANSITIONS: dict[str, frozenset[str]] = {
 }
 
 _SIGNATURE_NOISE = re.compile(r"\s+")
+_SUMMARY_NOISE = re.compile(r"[\d\x80-\xff]+")
+_CORRECTION_MARKERS = (
+    "actually",
+    "that was wrong",
+    "that's wrong",
+    "you were wrong",
+    "correct that",
+    "that is incorrect",
+    "fix that",
+    "do this instead",
+    "not like that",
+    "next time",
+    "from now on",
+)
+
+
+def looks_like_correction(text: str) -> bool:
+    lowered = text.casefold()
+    return any(marker in lowered for marker in _CORRECTION_MARKERS)
+
+
+def normalize_failure_signature(event: Event) -> str | None:
+    """Reduce a runtime event to a stable comparable failure signature."""
+    if event.type in {"tool.failed", "tool.rejected"}:
+        name = str(event.payload.get("name", "")).strip()
+        summary = str(event.payload.get("summary", ""))
+        normalized = _SUMMARY_NOISE.sub("#", summary.strip().casefold())
+        normalized = _SIGNATURE_NOISE.sub(" ", normalized)[:96]
+        return f"tool:{name}:{normalized}"
+    if event.type in {"model.response.failed", "run.failed", "runtime.error"}:
+        code = str(event.payload.get("code", "")).strip() or "unknown"
+        return f"provider:{code}"
+    if event.type == "policy.decided":
+        decision = str(event.payload.get("decision", ""))
+        if decision == "allow":
+            return None
+        reason = _SIGNATURE_NOISE.sub("_", str(event.payload.get("reason", "")).strip().casefold())
+        return f"policy:{reason or decision}"
+    return None
 
 
 def failure_signature_hash(signature: str) -> str:

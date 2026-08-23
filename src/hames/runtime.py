@@ -35,6 +35,7 @@ from hames.tools import (
 )
 
 if TYPE_CHECKING:
+    from hames.evolution_runtime import EvolutionManager
     from hames.memory_runtime import MemoryManager
     from hames.skill_runtime import SkillManager
 
@@ -162,6 +163,7 @@ class RunManager:
         self._scratch_base = Path("/tmp/hames/runs")
         self.memory_manager: MemoryManager | None = None
         self.skill_manager: SkillManager | None = None
+        self.evolution_manager: EvolutionManager | None = None
         self._skill_catalogs: dict[str, list[SkillSummary]] = {}
         self._loaded_skills: dict[str, dict[str, SkillVersion]] = {}
         self._prune_scratch()
@@ -171,6 +173,9 @@ class RunManager:
 
     def attach_skill_manager(self, manager: SkillManager) -> None:
         self.skill_manager = manager
+
+    def attach_evolution_manager(self, manager: EvolutionManager) -> None:
+        self.evolution_manager = manager
 
     async def start(self, session_id: str, content: str, *, remember: bool = False) -> str:
         session = await asyncio.to_thread(self.ledger.get_session, session_id)
@@ -346,6 +351,20 @@ class RunManager:
                     await self.memory_manager.enqueue_run(session_id, run_id)
             if self.skill_manager is not None and session is not None:
                 await self.skill_manager.observe_run(session_id, run_id)
+            if self.evolution_manager is not None and session is not None:
+                try:
+                    await self.evolution_manager.observe_run(session_id, run_id)
+                except (KeyError, ValueError) as exc:
+                    await self._append(
+                        session_id=session_id,
+                        run_id=run_id,
+                        event_type="runtime.notice",
+                        payload={
+                            "code": "evolution_observation_failed",
+                            "message": str(exc),
+                            "details": {},
+                        },
+                    )
             if scratch_root is not None:
                 await asyncio.to_thread(self._remove_scratch, scratch_root)
 

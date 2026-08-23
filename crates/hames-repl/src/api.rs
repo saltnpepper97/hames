@@ -249,6 +249,24 @@ pub struct MemoryJob {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Scar {
+    pub id: String,
+    pub title: String,
+    pub scope: String,
+    pub status: String,
+    pub severity: String,
+    pub failure_signature: String,
+    pub description: String,
+    pub expected_behavior: String,
+    pub detection: String,
+    pub last_triggered_at: String,
+    pub successful_guard_count: i64,
+    pub regression_count: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SkillScript {
     pub id: String,
     pub path: String,
@@ -446,6 +464,11 @@ struct CreateAgent<'a> {
     id: &'a str,
     name: &'a str,
     authority: &'a str,
+}
+
+#[derive(Serialize)]
+struct SubmitCorrection<'a> {
+    content: &'a str,
 }
 
 impl GatewayClient {
@@ -724,6 +747,16 @@ impl GatewayClient {
         decode(
             self.post(&format!("/v1/sessions/{session_id}/memories/capture"))
                 .json(&serde_json::json!({"content": content}))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn submit_correction(&self, session_id: &str, content: &str) -> Result<Scar> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/correct"))
+                .json(&SubmitCorrection { content })
                 .send()
                 .await?,
         )

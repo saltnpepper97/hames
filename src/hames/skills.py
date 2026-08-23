@@ -178,6 +178,13 @@ class SkillMutation:
     events: tuple[Event, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class SkillUsageFailure:
+    version_id: str
+    skill_id: str
+    failures: int
+
+
 def parse_skill(raw: str) -> tuple[SkillMetadata, str]:
     lines = raw.splitlines()
     if not lines or lines[0] != "---":
@@ -706,6 +713,29 @@ class SkillRegistry:
                 (start,),
             ).fetchone()
         return int(row["value"])
+
+    def repeated_failure_versions(self, threshold: int) -> list[SkillUsageFailure]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT v.id AS version_id, v.skill_id, count(*) AS failures
+                FROM skill_usage u
+                JOIN skill_versions v ON v.id = u.version_id
+                WHERE u.correction = 1 OR u.outcome = 'failed'
+                GROUP BY v.id, v.skill_id
+                HAVING count(*) >= ?
+                ORDER BY failures DESC, v.id
+                """,
+                (threshold,),
+            ).fetchall()
+        return [
+            SkillUsageFailure(
+                version_id=str(row["version_id"]),
+                skill_id=str(row["skill_id"]),
+                failures=int(row["failures"]),
+            )
+            for row in rows
+        ]
 
     def record_usage(
         self,

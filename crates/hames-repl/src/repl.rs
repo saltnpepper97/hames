@@ -430,6 +430,19 @@ async fn handle_command(
         }
         "/memory" => handle_memory_command(client, session, &parts).await?,
         "/skills" => handle_skills_command(client, session, &parts).await?,
+        "/correct" => {
+            let content = input.strip_prefix("/correct").unwrap_or("").trim();
+            if content.is_empty() {
+                bail!("usage: /correct <short explanation of what Hames got wrong>");
+            }
+            let scar = client.submit_correction(&session.id, content).await?;
+            println!(
+                "correct> scar {} recorded as {} ({})",
+                &scar.id[..8.min(scar.id.len())],
+                scar.status,
+                scar.title
+            );
+        }
         "/export" => {
             let path = parts
                 .get(1)
@@ -1344,6 +1357,7 @@ fn print_help() {
          /skills [list|search <query>|show <id>|history <id>|jobs]\n\
          /skills author <goal>|correct <id> <change>|retry <job-id>\n\
          /skills pin|unpin|archive|restore|rollback <id>\n\
+         /correct <short explanation>\n\
          /usage\n/inspect [run-id]\n/context [context-event-id]\n\
          /export <path> [markdown|jsonl]\n/status\n/cancel (Ctrl-C during a run)\n/quit"
     );

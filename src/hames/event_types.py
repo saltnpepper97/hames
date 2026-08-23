@@ -53,6 +53,11 @@ class MessagePayload(EventPayload):
     remember: bool = False
 
 
+class CorrectionPayload(EventPayload):
+    content: str
+    target_event_id: str | None = None
+
+
 class AssistantOutputPayload(EventPayload):
     content: str
     status: str
@@ -518,6 +523,7 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "session.settings.changed": SessionSettingsPayload,
     "session.agent.changed": SessionAgentChangedPayload,
     "user.message": MessagePayload,
+    "user.correction": CorrectionPayload,
     "assistant.message": AssistantOutputPayload,
     "assistant.reasoning": AssistantOutputPayload,
     "context.compiled": ContextCompiledPayload,
