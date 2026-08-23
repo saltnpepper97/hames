@@ -5,7 +5,13 @@ import json
 import httpx
 import pytest
 
-from hames.providers import ModelRequest, ProviderMessage, StreamEventKind
+from hames.providers import (
+    ModelRequest,
+    ProviderError,
+    ProviderMessage,
+    StreamEventKind,
+    ToolDefinition,
+)
 from hames.providers.llama_cpp import LlamaCppProvider
 from hames.providers.ollama import OllamaProvider
 
@@ -44,9 +50,10 @@ async def test_llama_cpp_discovers_reasoning_and_streams_separate_channels() -> 
                 [
                     'data: {"id":"one","choices":[{"delta":{"reasoning_content":"think "}}]}',
                     'data: {"id":"one","choices":[{"delta":{"content":"answer"}}]}',
-                    'data: {"id":"one","choices":[],"usage":'
-                    '{"prompt_tokens":10,"completion_tokens":4}}',
                     'data: {"id":"one","choices":[{"delta":{},"finish_reason":"stop"}]}',
+                    'data: {"id":"one","choices":[],"usage":'
+                    '{"prompt_tokens":10,"completion_tokens":4,'
+                    '"completion_tokens_details":{"reasoning_tokens":2},"cost":0.25}}',
                     "data: [DONE]",
                 ]
             )
@@ -76,6 +83,9 @@ async def test_llama_cpp_discovers_reasoning_and_streams_separate_channels() -> 
         "enable_thinking": True,
         "reasoning_effort": "medium",
     }
+    assert events[-2].usage is not None
+    assert events[-2].usage.reasoning_tokens == 2
+    assert events[-2].usage.provider_reported_cost == 0.25
     await client.aclose()
 
 
@@ -116,6 +126,7 @@ async def test_ollama_discovers_capabilities_and_streams_usage() -> None:
     provider = OllamaProvider("http://ollama", client=client)
     models = await provider.list_models()
     assert models[0].reasoning_supported
+    assert models[0].reasoning_efforts == ["on"]
     events = [
         event
         async for event in provider.stream(
@@ -123,7 +134,7 @@ async def test_ollama_discovers_capabilities_and_streams_usage() -> None:
                 model="qwen3",
                 messages=[ProviderMessage(role="user", content="hello")],
                 system="",
-                reasoning_effort="low",
+                reasoning_effort="on",
             )
         )
     ]
@@ -134,7 +145,7 @@ async def test_ollama_discovers_capabilities_and_streams_usage() -> None:
         StreamEventKind.USAGE,
         StreamEventKind.COMPLETED,
     ]
-    assert seen_request["think"] == "low"
+    assert seen_request["think"] is True
     await client.aclose()
 
 
@@ -174,4 +185,110 @@ async def test_llama_cpp_does_not_wake_unloaded_models_for_capabilities() -> Non
     models = await LlamaCppProvider("http://llama", client=client).list_models()
     assert models[0].reasoning_supported is None
     assert paths == ["/v1/models"]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_llama_cpp_normalizes_streamed_tool_calls() -> None:
+    seen_request: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_request.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            text="\n".join(
+                [
+                    'data: {"id":"one","choices":[{"delta":{"tool_calls":['
+                    '{"index":0,"id":"call-1","function":{"name":"read_file",'
+                    '"arguments":"{\\"pa"}}]}}]}',
+                    'data: {"id":"one","choices":[{"delta":{"tool_calls":['
+                    '{"index":0,"function":{"arguments":"th\\":\\"README.md\\"}"}}]},'
+                    '"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            ),
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = LlamaCppProvider("http://llama", client=client)
+    events = [
+        event
+        async for event in provider.stream(
+            ModelRequest(
+                model="fixture",
+                messages=[ProviderMessage(role="user", content="inspect")],
+                system="",
+                tools=[
+                    ToolDefinition(
+                        name="read_file",
+                        description="Read one file",
+                        input_schema={
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                        },
+                    )
+                ],
+            )
+        )
+    ]
+
+    tool_events = [event for event in events if event.kind is StreamEventKind.TOOL_CALL_DELTA]
+    assert len(tool_events) == 2
+    assert tool_events[0].tool_call is not None
+    assert tool_events[0].tool_call.name == "read_file"
+    assert "tools" in seen_request
+    assert events[-1].finish_reason == "tool_calls"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_llama_cpp_timeout_is_typed() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("fixture timeout", request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = LlamaCppProvider("http://llama", client=client)
+    with pytest.raises(ProviderError, match="fixture timeout") as raised:
+        _ = [
+            event
+            async for event in provider.stream(
+                ModelRequest(
+                    model="fixture",
+                    messages=[ProviderMessage(role="user", content="hello")],
+                    system="",
+                )
+            )
+        ]
+    assert raised.value.code == "provider_timeout"
+    assert raised.value.retryable is True
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_ollama_rejects_data_after_completed_chunk() -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text="\n".join(
+                [
+                    '{"message":{"content":"done"},"done":true}',
+                    '{"message":{"content":"late"},"done":false}',
+                ]
+            ),
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = OllamaProvider("http://ollama", client=client)
+    with pytest.raises(ProviderError, match="after its completed chunk") as raised:
+        _ = [
+            event
+            async for event in provider.stream(
+                ModelRequest(
+                    model="fixture",
+                    messages=[ProviderMessage(role="user", content="hello")],
+                    system="",
+                )
+            )
+        ]
+    assert raised.value.code == "malformed_provider_event"
     await client.aclose()

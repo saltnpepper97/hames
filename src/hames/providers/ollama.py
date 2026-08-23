@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from typing import cast
 
@@ -9,11 +10,13 @@ import httpx
 
 from hames.providers.base import (
     JSON_OBJECT,
+    JsonValue,
     ModelRequest,
     ProviderError,
     ProviderModel,
     StreamEvent,
     StreamEventKind,
+    ToolCallDelta,
     Usage,
 )
 
@@ -62,6 +65,8 @@ class OllamaProvider:
             if not isinstance(details, dict):
                 details = {}
             capabilities = await self._capabilities(model_id)
+            reasoning = "thinking" in capabilities
+            efforts = _reasoning_efforts(model_id, reasoning, self.supported_reasoning_efforts)
             models.append(
                 ProviderModel(
                     id=model_id,
@@ -71,10 +76,8 @@ class OllamaProvider:
                     quantization=_optional_str(details.get("quantization_level")),
                     input_modalities=["text"],
                     output_modalities=["text"],
-                    reasoning_supported="thinking" in capabilities,
-                    reasoning_efforts=["low", "medium", "high"]
-                    if "thinking" in capabilities
-                    else [],
+                    reasoning_supported=reasoning,
+                    reasoning_efforts=efforts,
                 )
             )
         return models
@@ -98,18 +101,34 @@ class OllamaProvider:
         ]
         if request.system:
             messages.insert(0, {"role": "system", "content": request.system})
+        options: dict[str, object] = {"num_predict": request.max_tokens}
+        if request.temperature is not None:
+            options["temperature"] = request.temperature
         body: dict[str, object] = {
             "model": request.model,
             "messages": messages,
             "stream": True,
-            "options": {"num_predict": request.max_tokens},
+            "options": options,
         }
+        if request.tools:
+            body["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.input_schema,
+                    },
+                }
+                for tool in request.tools
+            ]
         if request.reasoning_effort == "off":
             body["think"] = False
         elif request.reasoning_effort:
-            body["think"] = request.reasoning_effort
+            body["think"] = True if request.reasoning_effort == "on" else request.reasoning_effort
 
         started = False
+        finish_reason: str | None = None
         try:
             async with self.client.stream(
                 "POST", f"{self.base_url}/api/chat", json=body
@@ -124,6 +143,11 @@ class OllamaProvider:
                         raise ProviderError(
                             "malformed_provider_event", "Ollama emitted invalid NDJSON"
                         ) from exc
+                    if finish_reason is not None:
+                        raise ProviderError(
+                            "malformed_provider_event",
+                            "Ollama emitted data after its completed chunk",
+                        )
                     if not started:
                         started = True
                         yield StreamEvent(kind=StreamEventKind.STARTED)
@@ -137,18 +161,34 @@ class OllamaProvider:
                             )
                         if content:
                             yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text=str(content))
+                        for tool_call in _tool_call_deltas(message.get("tool_calls")):
+                            yield StreamEvent(
+                                kind=StreamEventKind.TOOL_CALL_DELTA,
+                                tool_call=tool_call,
+                            )
                     if bool(chunk.get("done", False)):
+                        if finish_reason is not None:
+                            raise ProviderError(
+                                "malformed_provider_event",
+                                "Ollama emitted more than one completed chunk",
+                            )
                         usage = Usage(
                             input_tokens=_int_default(chunk.get("prompt_eval_count")),
                             output_tokens=_int_default(chunk.get("eval_count")),
                         )
                         yield StreamEvent(kind=StreamEventKind.USAGE, usage=usage)
-                        yield StreamEvent(
-                            kind=StreamEventKind.COMPLETED,
-                            finish_reason=str(chunk.get("done_reason", "stop")),
-                        )
+                        finish_reason = str(chunk.get("done_reason", "stop"))
                 if not started:
                     raise ProviderError("empty_provider_response", "Ollama emitted no events")
+                if finish_reason is None:
+                    raise ProviderError(
+                        "incomplete_provider_response",
+                        "Ollama stream ended without a completed chunk",
+                    )
+                yield StreamEvent(
+                    kind=StreamEventKind.COMPLETED,
+                    finish_reason=finish_reason,
+                )
         except ProviderError:
             raise
         except httpx.TimeoutException as exc:
@@ -163,6 +203,42 @@ class OllamaProvider:
 
 def _optional_str(value: object) -> str | None:
     return str(value) if value is not None else None
+
+
+def _tool_call_deltas(value: JsonValue) -> list[ToolCallDelta]:
+    if not isinstance(value, list):
+        return []
+    result: list[ToolCallDelta] = []
+    for index, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            continue
+        function = raw.get("function", {})
+        if not isinstance(function, dict):
+            function = {}
+        arguments = function.get("arguments", "")
+        result.append(
+            ToolCallDelta(
+                index=index,
+                provider_call_id=_optional_str(raw.get("id")),
+                name=_optional_str(function.get("name")),
+                arguments_delta=(
+                    arguments
+                    if isinstance(arguments, str)
+                    else json.dumps(arguments, separators=(",", ":"))
+                ),
+            )
+        )
+    return result
+
+
+def _reasoning_efforts(model_id: str, supported: bool, configured: list[str]) -> list[str]:
+    if not supported:
+        return []
+    if configured:
+        return configured
+    if "gpt-oss" in model_id.lower():
+        return ["low", "medium", "high"]
+    return ["on"]
 
 
 def _int_default(value: object) -> int:

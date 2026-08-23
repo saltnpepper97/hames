@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from typing import cast
 
@@ -15,6 +16,7 @@ from hames.providers.base import (
     ProviderModel,
     StreamEvent,
     StreamEventKind,
+    ToolCallDelta,
     Usage,
 )
 
@@ -71,6 +73,11 @@ class LlamaCppProvider:
             if not isinstance(caps, dict):
                 caps = {}
             reasoning = bool(caps.get("supports_reasoning_effort", False)) if props else None
+            if reasoning is None and self.supported_reasoning_efforts:
+                reasoning = True
+            efforts = _reasoning_efforts(model_id, reasoning, self.supported_reasoning_efforts)
+            if reasoning is None and efforts:
+                reasoning = True
             meta = raw.get("meta", {})
             if not isinstance(meta, dict):
                 meta = {}
@@ -89,7 +96,7 @@ class LlamaCppProvider:
                     input_modalities=_string_list(architecture.get("input_modalities")),
                     output_modalities=_string_list(architecture.get("output_modalities")),
                     reasoning_supported=reasoning,
-                    reasoning_efforts=["low", "medium", "xhigh"] if reasoning is True else [],
+                    reasoning_efforts=efforts,
                 )
             )
         return models
@@ -117,13 +124,27 @@ class LlamaCppProvider:
             "max_tokens": request.max_tokens,
             "reasoning_format": "deepseek",
         }
+        if request.temperature is not None:
+            body["temperature"] = request.temperature
+        if request.tools:
+            body["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.input_schema,
+                    },
+                }
+                for tool in request.tools
+            ]
         if request.reasoning_effort == "off":
             body["chat_template_kwargs"] = {"enable_thinking": False}
         elif request.reasoning_effort:
-            body["chat_template_kwargs"] = {
-                "enable_thinking": True,
-                "reasoning_effort": request.reasoning_effort,
-            }
+            template_options: dict[str, object] = {"enable_thinking": True}
+            if request.reasoning_effort != "on":
+                template_options["reasoning_effort"] = request.reasoning_effort
+            body["chat_template_kwargs"] = template_options
 
         try:
             async with self.client.stream(
@@ -131,6 +152,8 @@ class LlamaCppProvider:
             ) as response:
                 response.raise_for_status()
                 started = False
+                finish_reason: str | None = None
+                provider_request_id: str | None = None
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -144,6 +167,7 @@ class LlamaCppProvider:
                             "malformed_provider_event", "llama.cpp emitted invalid SSE JSON"
                         ) from exc
                     request_id = _optional_str(chunk.get("id"))
+                    provider_request_id = request_id or provider_request_id
                     if not started:
                         started = True
                         yield StreamEvent(
@@ -172,15 +196,32 @@ class LlamaCppProvider:
                                 yield StreamEvent(
                                     kind=StreamEventKind.TEXT_DELTA, text=str(content)
                                 )
+                            for tool_call in _tool_call_deltas(delta.get("tool_calls")):
+                                yield StreamEvent(
+                                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                                    tool_call=tool_call,
+                                )
                         finish = choice.get("finish_reason")
                         if finish:
-                            yield StreamEvent(
-                                kind=StreamEventKind.COMPLETED,
-                                finish_reason=str(finish),
-                                provider_request_id=request_id,
-                            )
+                            value = str(finish)
+                            if finish_reason is not None and finish_reason != value:
+                                raise ProviderError(
+                                    "malformed_provider_event",
+                                    "llama.cpp emitted conflicting finish reasons",
+                                )
+                            finish_reason = value
                 if not started:
                     raise ProviderError("empty_provider_response", "llama.cpp emitted no events")
+                if finish_reason is None:
+                    raise ProviderError(
+                        "incomplete_provider_response",
+                        "llama.cpp stream ended without a finish reason",
+                    )
+                yield StreamEvent(
+                    kind=StreamEventKind.COMPLETED,
+                    finish_reason=finish_reason,
+                    provider_request_id=provider_request_id,
+                )
         except ProviderError:
             raise
         except httpx.TimeoutException as exc:
@@ -198,11 +239,55 @@ def _usage_from_openai(value: JsonValue) -> Usage | None:
         return None
     details = value.get("prompt_tokens_details", {})
     cached = details.get("cached_tokens") if isinstance(details, dict) else None
+    completion_details = value.get("completion_tokens_details", {})
+    reasoning = (
+        completion_details.get("reasoning_tokens") if isinstance(completion_details, dict) else None
+    )
     return Usage(
         input_tokens=_int_default(value.get("prompt_tokens")),
         output_tokens=_int_default(value.get("completion_tokens")),
         cached_input_tokens=_optional_int(cached),
+        reasoning_tokens=_optional_int(reasoning),
+        provider_reported_cost=_optional_float(value.get("cost")),
     )
+
+
+def _tool_call_deltas(value: JsonValue) -> list[ToolCallDelta]:
+    if not isinstance(value, list):
+        return []
+    result: list[ToolCallDelta] = []
+    for fallback_index, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            continue
+        function = raw.get("function", {})
+        if not isinstance(function, dict):
+            function = {}
+        raw_index = raw.get("index", fallback_index)
+        index = int(raw_index) if isinstance(raw_index, int | float) else fallback_index
+        arguments = function.get("arguments", "")
+        result.append(
+            ToolCallDelta(
+                index=index,
+                provider_call_id=_optional_str(raw.get("id")),
+                name=_optional_str(function.get("name")),
+                arguments_delta=(
+                    arguments
+                    if isinstance(arguments, str)
+                    else json.dumps(arguments, separators=(",", ":"))
+                ),
+            )
+        )
+    return result
+
+
+def _reasoning_efforts(model_id: str, supported: bool | None, configured: list[str]) -> list[str]:
+    if supported is False:
+        return []
+    if configured:
+        return configured
+    if "qwen3.8" in model_id.lower():
+        return ["low", "medium", "xhigh"]
+    return ["on"] if supported is True else []
 
 
 def _nested_optional_int(value: dict[str, JsonValue], outer: str, inner: str) -> int | None:
@@ -212,6 +297,10 @@ def _nested_optional_int(value: dict[str, JsonValue], outer: str, inner: str) ->
 
 def _optional_int(value: object) -> int | None:
     return int(value) if isinstance(value, int | float) else None
+
+
+def _optional_float(value: object) -> float | None:
+    return float(value) if isinstance(value, int | float) else None
 
 
 def _int_default(value: object) -> int:

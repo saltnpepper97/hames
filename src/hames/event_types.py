@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from hames.providers.base import JSON_OBJECT, JsonValue
 
@@ -73,6 +73,15 @@ class ModelUsagePayload(EventPayload):
     output_tokens: int = 0
     cached_input_tokens: int | None = None
     reasoning_tokens: int | None = None
+    provider_reported_cost: float | None = None
+
+
+class ModelToolCallPayload(EventPayload):
+    index: int
+    provider_call_id: str | None
+    name: str
+    arguments: dict[str, JsonValue]
+    status: str
 
 
 class ModelCompletedPayload(EventPayload):
@@ -83,12 +92,13 @@ class FailurePayload(EventPayload):
     code: str
     message: str
     retryable: bool
+    details: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class RuntimeNoticePayload(EventPayload):
     code: str = "notice"
     message: str
-    details: dict[str, Any] = {}
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
@@ -103,6 +113,7 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "model.requested": ModelRequestedPayload,
     "model.response.started": ModelStartedPayload,
     "model.usage": ModelUsagePayload,
+    "model.tool_call": ModelToolCallPayload,
     "model.response.completed": ModelCompletedPayload,
     "model.response.failed": FailurePayload,
     "run.cancelled": EmptyPayload,

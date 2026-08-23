@@ -247,7 +247,13 @@ def create_app(state: GatewayState) -> FastAPI:
         try:
             models = await provider.list_models()
         except ProviderError as exc:
-            raise ApiError(503, exc.code, str(exc), retryable=exc.retryable) from exc
+            raise ApiError(
+                503,
+                exc.code,
+                str(exc),
+                retryable=exc.retryable,
+                details=dict(exc.details),
+            ) from exc
         if not selected_model_id:
             if len(models) != 1:
                 raise ApiError(
@@ -268,6 +274,12 @@ def create_app(state: GatewayState) -> FastAPI:
         if selected_effort and selected_effort != "off":
             if selected.reasoning_supported is False:
                 raise ApiError(400, "reasoning_not_supported", "model does not advertise reasoning")
+            if selected.reasoning_supported is None and not efforts:
+                raise ApiError(
+                    409,
+                    "reasoning_capability_unknown",
+                    "model reasoning capability is unknown until it is loaded or declared",
+                )
             if efforts and selected_effort not in efforts:
                 raise ApiError(
                     400,
@@ -486,5 +498,6 @@ async def _probe(profile_id: str, provider: Provider) -> ProviderProbe:
                 code=exc.code,
                 message=str(exc),
                 retryable=exc.retryable,
+                details=dict(exc.details),
             ),
         )

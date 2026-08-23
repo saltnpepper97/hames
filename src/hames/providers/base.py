@@ -22,12 +22,21 @@ class ProviderMessage(ProviderBoundary):
     reasoning_content: str = ""
 
 
+class ToolDefinition(ProviderBoundary):
+    name: str
+    description: str
+    input_schema: dict[str, JsonValue]
+
+
 class ModelRequest(ProviderBoundary):
     model: str
     messages: list[ProviderMessage]
     system: str
     reasoning_effort: str = ""
     max_tokens: int = Field(default=4096, gt=0)
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    tools: list[ToolDefinition] = []
 
 
 class ProviderModel(ProviderBoundary):
@@ -48,31 +57,48 @@ class Usage(ProviderBoundary):
     output_tokens: int = 0
     cached_input_tokens: int | None = None
     reasoning_tokens: int | None = None
+    provider_reported_cost: float | None = Field(default=None, ge=0)
+
+
+class ToolCallDelta(ProviderBoundary):
+    index: int = Field(ge=0)
+    provider_call_id: str | None = None
+    name: str | None = None
+    arguments_delta: str = ""
 
 
 class StreamEventKind(StrEnum):
     STARTED = "response.started"
     REASONING_DELTA = "response.reasoning_delta"
     TEXT_DELTA = "response.text_delta"
+    TOOL_CALL_DELTA = "response.tool_call_delta"
     USAGE = "response.usage"
     COMPLETED = "response.completed"
-    FAILED = "response.failed"
 
 
 class StreamEvent(ProviderBoundary):
     kind: StreamEventKind
     text: str = ""
     usage: Usage | None = None
+    tool_call: ToolCallDelta | None = None
     finish_reason: str | None = None
     provider_request_id: str | None = None
     error_code: str | None = None
 
 
 class ProviderError(RuntimeError):
-    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retryable: bool = False,
+        details: dict[str, JsonValue] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.retryable = retryable
+        self.details = details or {}
 
 
 class Provider(Protocol):

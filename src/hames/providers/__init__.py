@@ -8,6 +8,8 @@ from hames.providers.base import (
     ProviderModel,
     StreamEvent,
     StreamEventKind,
+    ToolCallDelta,
+    ToolDefinition,
     Usage,
 )
 
@@ -19,5 +21,7 @@ __all__ = [
     "ProviderModel",
     "StreamEvent",
     "StreamEventKind",
+    "ToolCallDelta",
+    "ToolDefinition",
     "Usage",
 ]

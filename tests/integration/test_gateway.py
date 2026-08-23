@@ -11,7 +11,14 @@ from pydantic import TypeAdapter
 
 from hames.gateway import GatewayState, create_app
 from hames.paths import HamesPaths
-from hames.providers import ModelRequest, ProviderModel, StreamEvent, StreamEventKind, Usage
+from hames.providers import (
+    ModelRequest,
+    ProviderModel,
+    StreamEvent,
+    StreamEventKind,
+    ToolCallDelta,
+    Usage,
+)
 from hames.providers.base import JSON_OBJECT, JsonValue
 from hames.providers.fake import FakeProvider
 
@@ -299,3 +306,109 @@ async def test_runtime_failure_is_durable_and_terminal(tmp_path: Path) -> None:
             assert failure["code"] == "runtime_error"
     finally:
         await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_rejects_malformed_provider_order(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    fake = FakeProvider(
+        [
+            StreamEvent(kind=StreamEventKind.STARTED),
+            StreamEvent(kind=StreamEventKind.STARTED),
+        ]
+    )
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Trigger malformed order"},
+            )
+            events = await _wait_for_event(client, headers, session_id, "model.response.failed")
+            failure = events[-1]["payload"]
+            assert isinstance(failure, dict)
+            assert failure["code"] == "provider_protocol_error"
+            assert "model.response.completed" not in [event["type"] for event in events]
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_records_but_does_not_execute_tool_calls(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    fake = FakeProvider(
+        [
+            StreamEvent(kind=StreamEventKind.STARTED),
+            StreamEvent(
+                kind=StreamEventKind.TOOL_CALL_DELTA,
+                tool_call=ToolCallDelta(
+                    index=0,
+                    provider_call_id="call-1",
+                    name="read_file",
+                    arguments_delta='{"path":"README.md"}',
+                ),
+            ),
+            StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+        ]
+    )
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Inspect README"},
+            )
+            events = await _wait_for_event(client, headers, session_id, "model.response.failed")
+            call = next(event for event in events if event["type"] == "model.tool_call")
+            payload = call["payload"]
+            assert isinstance(payload, dict)
+            assert payload["name"] == "read_file"
+            assert payload["arguments"] == {"path": "README.md"}
+            failure = events[-1]["payload"]
+            assert isinstance(failure, dict)
+            assert failure["code"] == "unexpected_tool_call"
+            assert "model.response.completed" not in [event["type"] for event in events]
+    finally:
+        await state.runs.close()
+
+
+async def _wait_for_event(
+    client: httpx.AsyncClient,
+    headers: dict[str, str],
+    session_id: str,
+    event_type: str,
+) -> list[dict[str, JsonValue]]:
+    events: list[dict[str, JsonValue]] = []
+    for _ in range(100):
+        response = await client.get(f"/v1/sessions/{session_id}/events", headers=headers)
+        events = EVENT_LIST.validate_python(cast(object, response.json()))
+        if any(event["type"] == event_type for event in events):
+            return events
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"event did not arrive: {event_type}")
