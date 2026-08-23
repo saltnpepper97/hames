@@ -58,6 +58,12 @@ Every setting can be overridden with a nested environment name such as
 persistent state from its private default at `~/.hames`; it is particularly useful
 for isolated tests.
 
+If `~/.hames/config.toml` is from the pre-rewrite `schema_version` format, M0
+recognizes it without rewriting it. The active `llamacpp`/Ollama provider and its
+endpoint, model, reasoning effort, and timeout are translated in memory. Other
+legacy settings remain preserved but inactive until their corresponding milestone
+is implemented; `hames doctor` reports when this compatibility mode is active.
+
 Inside the REPL, `/help` lists session, provider, model, status, and reasoning
 commands. A trailing `\` continues input on the next line. Ctrl-C during a model
 run requests cancellation; Ctrl-D or `/quit` exits the client.

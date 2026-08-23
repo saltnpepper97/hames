@@ -6,12 +6,13 @@ import platform
 import shutil
 import sqlite3
 import sys
+import tomllib
 
 from pydantic import BaseModel
 
 from hames import PROTOCOL_VERSION, __version__
 from hames.agent import load_agent
-from hames.config import load_config
+from hames.config import is_legacy_config, load_config
 from hames.paths import HamesPaths
 
 
@@ -27,6 +28,7 @@ class DoctorReport(BaseModel):
     sqlite_fts5: bool
     bubblewrap: bool
     default_agent_hash: str
+    config_compatibility: str | None
 
 
 def _has_fts5() -> bool:
@@ -59,4 +61,15 @@ def run_doctor(paths: HamesPaths) -> DoctorReport:
         sqlite_fts5=fts5,
         bubblewrap=shutil.which("bwrap") is not None,
         default_agent_hash=agent.content_hash,
+        config_compatibility=_config_compatibility(paths),
     )
+
+
+def _config_compatibility(paths: HamesPaths) -> str | None:
+    if not paths.config_file.exists():
+        return None
+    with paths.config_file.open("rb") as handle:
+        value = tomllib.load(handle)
+    if is_legacy_config(value):
+        return "legacy config detected; compatible M0 provider fields are translated in memory"
+    return None

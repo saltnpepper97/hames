@@ -65,11 +65,15 @@ impl LocalPaths {
 
     pub fn configured_provider(&self) -> Result<String> {
         if let Ok(value) = env::var("HAMES_RUNTIME__DEFAULT_PROVIDER") {
-            return Ok(value);
+            return Ok(normalize_provider(&value));
         }
-        Ok(self
-            .config_value(&["runtime", "default_provider"])?
-            .unwrap_or_else(|| "llama_cpp".to_owned()))
+        if let Some(value) = self.config_value(&["runtime", "default_provider"])? {
+            return Ok(normalize_provider(&value));
+        }
+        if let Some(value) = self.config_value(&["active_provider"])? {
+            return Ok(normalize_provider(&value));
+        }
+        Ok("llama_cpp".to_owned())
     }
 
     pub fn configured_model(&self, provider: &str) -> Result<String> {
@@ -77,8 +81,11 @@ impl LocalPaths {
         if let Ok(value) = env::var(key) {
             return Ok(value);
         }
+        if let Some(value) = self.config_value(&["providers", provider, "model"])? {
+            return Ok(value);
+        }
         Ok(self
-            .config_value(&["providers", provider, "model"])?
+            .legacy_provider_value(provider, "model")?
             .unwrap_or_default())
     }
 
@@ -90,9 +97,20 @@ impl LocalPaths {
         if let Ok(value) = env::var(key) {
             return Ok(value);
         }
+        if let Some(value) = self.config_value(&["providers", provider, "reasoning_effort"])? {
+            return Ok(value);
+        }
         Ok(self
-            .config_value(&["providers", provider, "reasoning_effort"])?
+            .legacy_provider_value(provider, "reasoning_effort")?
             .unwrap_or_default())
+    }
+
+    fn legacy_provider_value(&self, provider: &str, field: &str) -> Result<Option<String>> {
+        let legacy = match provider {
+            "llama_cpp" => "llamacpp",
+            value => value,
+        };
+        self.config_value(&["providers", legacy, field])
     }
 
     fn config_toml(&self) -> Result<toml::Value> {
@@ -114,6 +132,13 @@ impl LocalPaths {
             current = next;
         }
         Ok(current.as_str().map(str::to_owned))
+    }
+}
+
+fn normalize_provider(value: &str) -> String {
+    match value {
+        "llamacpp" => "llama_cpp".to_owned(),
+        other => other.to_owned(),
     }
 }
 
@@ -146,7 +171,7 @@ fn backend_command() -> OsString {
 
 #[cfg(test)]
 mod tests {
-    use super::LocalPaths;
+    use super::{LocalPaths, normalize_provider};
 
     #[test]
     fn default_gateway_url_is_loopback() {
@@ -157,5 +182,11 @@ mod tests {
             config: "/tmp/example/missing.toml".into(),
         };
         assert_eq!(paths.gateway_url().unwrap(), "http://127.0.0.1:7411");
+    }
+
+    #[test]
+    fn legacy_llamacpp_name_is_normalized() {
+        assert_eq!(normalize_provider("llamacpp"), "llama_cpp");
+        assert_eq!(normalize_provider("ollama"), "ollama");
     }
 }

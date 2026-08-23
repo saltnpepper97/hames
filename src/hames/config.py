@@ -7,7 +7,7 @@ import os
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -108,9 +108,57 @@ def load_config(
     source = HamesConfig().model_dump()
     if paths.config_file.exists():
         with paths.config_file.open("rb") as handle:
-            _deep_merge(source, tomllib.load(handle))
+            file_config = tomllib.load(handle)
+        if is_legacy_config(file_config):
+            _deep_merge(source, _translate_legacy_config(file_config))
+        else:
+            _deep_merge(source, file_config)
     merged = _deep_merge(source, _environment_overrides(env))
     return HamesConfig.model_validate(merged)
+
+
+def is_legacy_config(value: Mapping[str, Any]) -> bool:
+    """Recognize the pre-rewrite config without weakening strict M0 parsing."""
+
+    return "schema_version" in value and "active_provider" in value
+
+
+def _translate_legacy_config(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Map the safe M0 subset of a legacy config without changing the file."""
+
+    provider_aliases = {"llamacpp": "llama_cpp", "llama_cpp": "llama_cpp", "ollama": "ollama"}
+    active = value.get("active_provider")
+    selected = provider_aliases.get(active) if isinstance(active, str) else None
+    translated: dict[str, Any] = {}
+    if selected is not None:
+        translated["runtime"] = {"default_provider": selected}
+
+    raw_providers = value.get("providers")
+    if not isinstance(raw_providers, Mapping):
+        return translated
+    provider_values = cast(Mapping[str, Any], raw_providers)
+    providers: dict[str, Any] = {}
+    for legacy_name, current_name in (
+        ("llamacpp", "llama_cpp"),
+        ("llama_cpp", "llama_cpp"),
+        ("ollama", "ollama"),
+    ):
+        raw_provider = provider_values.get(legacy_name)
+        if not isinstance(raw_provider, Mapping):
+            continue
+        provider_value = cast(Mapping[str, Any], raw_provider)
+        mapped: dict[str, Any] = {
+            key: provider_value[key]
+            for key in ("base_url", "model", "reasoning_effort", "timeout_seconds")
+            if key in provider_value
+        }
+        base_url = mapped.get("base_url")
+        if current_name == "llama_cpp" and isinstance(base_url, str):
+            mapped["base_url"] = base_url.rstrip("/").removesuffix("/v1")
+        providers[current_name] = mapped
+    if providers:
+        translated["providers"] = providers
+    return translated
 
 
 def configured_database_path(paths: HamesPaths, configured: str = "") -> Path:

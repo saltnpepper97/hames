@@ -60,6 +60,39 @@ def test_nested_provider_override_keeps_default_endpoint(hames_paths: HamesPaths
     assert config.providers.llama_cpp.base_url == "http://127.0.0.1:8080"
 
 
+def test_legacy_config_is_translated_without_rewriting(hames_paths: HamesPaths) -> None:
+    hames_paths.ensure_foundation()
+    legacy = """\
+schema_version = 10
+active_provider = "llamacpp"
+
+[providers.llamacpp]
+type = "llamacpp"
+base_url = "http://127.0.0.1:8080/v1"
+model = "qwen3.8-27b"
+models = ["qwen3.8-27b", "gemma"]
+reasoning_effort = "medium"
+timeout_seconds = 600.0
+
+[runtime]
+tool_loop_limit = 999
+
+[skills]
+self_authoring = "automatic"
+"""
+    hames_paths.config_file.write_text(legacy, encoding="utf-8")
+
+    config = load_config(hames_paths, environ={})
+
+    assert config.runtime.default_provider == "llama_cpp"
+    assert config.providers.llama_cpp.base_url == "http://127.0.0.1:8080"
+    assert config.providers.llama_cpp.model == "qwen3.8-27b"
+    assert config.providers.llama_cpp.reasoning_effort == "medium"
+    assert config.providers.llama_cpp.timeout_seconds == 600.0
+    assert hames_paths.config_file.read_text(encoding="utf-8") == legacy
+    assert run_doctor(hames_paths).config_compatibility is not None
+
+
 def test_agent_rejects_unknown_frontmatter(hames_paths: HamesPaths) -> None:
     hames_paths.ensure_foundation()
     hames_paths.default_agent.write_text("---\nid: default\nname: Hames\ntyop: true\n---\nHello\n")
