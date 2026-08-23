@@ -108,7 +108,13 @@ async def test_ollama_discovers_capabilities_and_streams_usage() -> None:
                 },
             )
         if request.url.path == "/api/show":
-            return httpx.Response(200, json={"capabilities": ["completion", "thinking"]})
+            return httpx.Response(
+                200,
+                json={
+                    "capabilities": ["completion", "thinking"],
+                    "model_info": {"qwen3.context_length": 65_536},
+                },
+            )
         if request.url.path == "/api/chat":
             seen_request.update(json.loads(request.content))
             return httpx.Response(
@@ -128,6 +134,7 @@ async def test_ollama_discovers_capabilities_and_streams_usage() -> None:
     models = await provider.list_models()
     assert models[0].reasoning_supported
     assert models[0].reasoning_efforts == ["on"]
+    assert models[0].context_length == 65_536
     events = [
         event
         async for event in provider.stream(

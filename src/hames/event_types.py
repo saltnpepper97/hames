@@ -22,6 +22,8 @@ class SessionOpenedPayload(EventPayload):
     provider: str
     model: str
     reasoning_effort: str
+    context_window_tokens: int = 32_768
+    context_window_source: str = "fallback"
 
 
 class SessionClosedPayload(EventPayload):
@@ -38,6 +40,8 @@ class SessionSettingsPayload(EventPayload):
     provider: str
     model: str
     reasoning_effort: str
+    context_window_tokens: int = 32_768
+    context_window_source: str = "fallback"
 
 
 class MessagePayload(EventPayload):

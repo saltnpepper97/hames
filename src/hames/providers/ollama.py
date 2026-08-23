@@ -64,7 +64,7 @@ class OllamaProvider:
             details = raw.get("details", {})
             if not isinstance(details, dict):
                 details = {}
-            capabilities = await self._capabilities(model_id)
+            capabilities, context_length = await self._model_details(model_id)
             reasoning = "thinking" in capabilities
             efforts = _reasoning_efforts(model_id, reasoning, self.supported_reasoning_efforts)
             models.append(
@@ -72,6 +72,7 @@ class OllamaProvider:
                     id=model_id,
                     provider=self.profile_id,
                     status="available",
+                    context_length=context_length,
                     parameter_size=_optional_str(details.get("parameter_size")),
                     quantization=_optional_str(details.get("quantization_level")),
                     input_modalities=["text"],
@@ -82,18 +83,26 @@ class OllamaProvider:
             )
         return models
 
-    async def _capabilities(self, model_id: str) -> set[str]:
+    async def _model_details(self, model_id: str) -> tuple[set[str], int | None]:
         try:
             response = await self.client.post(f"{self.base_url}/api/show", json={"model": model_id})
             if response.status_code >= 400:
-                return set()
+                return set(), None
             body = JSON_OBJECT.validate_python(cast(object, response.json()))
             capabilities = body.get("capabilities", [])
-            return (
+            supported = (
                 {str(value) for value in capabilities} if isinstance(capabilities, list) else set()
             )
+            model_info = body.get("model_info", {})
+            context_length = None
+            if isinstance(model_info, dict):
+                for key, value in model_info.items():
+                    if str(key).endswith(".context_length") and isinstance(value, int | float):
+                        context_length = int(value)
+                        break
+            return supported, context_length
         except (httpx.HTTPError, ValueError):
-            return set()
+            return set(), None
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
         messages = [_ollama_message(message) for message in request.messages]

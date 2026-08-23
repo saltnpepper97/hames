@@ -267,7 +267,7 @@ def create_app(state: GatewayState) -> FastAPI:
 
     async def resolve_selection(
         profile_id: str, requested_model: str, requested_effort: str
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, int, str]:
         provider = state.providers.get(profile_id)
         if provider is None:
             raise ApiError(400, "unknown_provider", f"unknown provider: {profile_id}")
@@ -317,14 +317,24 @@ def create_app(state: GatewayState) -> FastAPI:
                     f"unsupported reasoning effort: {selected_effort}",
                     details={"supported": efforts},
                 )
-        return selected_model_id, selected_effort
+        if configured and configured.context_window_tokens is not None:
+            context_window_tokens = configured.context_window_tokens
+            context_window_source = "profile"
+        elif selected.context_length is not None:
+            context_window_tokens = selected.context_length
+            context_window_source = "provider"
+        else:
+            context_window_tokens = state.config.context.fallback_window_tokens
+            context_window_source = "fallback"
+        return selected_model_id, selected_effort, context_window_tokens, context_window_source
 
     @app.post("/v1/sessions", dependencies=auth, response_model=Session, status_code=201)
     async def create_session(request: CreateSessionRequest) -> Session:
         provider_name = request.provider or state.config.runtime.default_provider
-        model, reasoning_effort = await resolve_selection(
+        selection = await resolve_selection(
             provider_name, request.model, request.reasoning_effort
         )
+        model, reasoning_effort, context_window_tokens, context_window_source = selection
         try:
             return await asyncio.to_thread(
                 state.ledger.create_session,
@@ -333,6 +343,8 @@ def create_app(state: GatewayState) -> FastAPI:
                 provider=provider_name,
                 model=model,
                 reasoning_effort=reasoning_effort,
+                context_window_tokens=context_window_tokens,
+                context_window_source=context_window_source,
                 title=request.title,
             )
         except (FileNotFoundError, ValueError) as exc:
@@ -409,9 +421,10 @@ def create_app(state: GatewayState) -> FastAPI:
 
     @app.patch("/v1/sessions/{session_id}", dependencies=auth, response_model=Session)
     async def update_session(session_id: str, request: UpdateSessionRequest) -> Session:
-        model, reasoning_effort = await resolve_selection(
+        selection = await resolve_selection(
             request.provider, request.model, request.reasoning_effort
         )
+        model, reasoning_effort, context_window_tokens, context_window_source = selection
         try:
             return await asyncio.to_thread(
                 state.ledger.update_session_settings,
@@ -419,6 +432,8 @@ def create_app(state: GatewayState) -> FastAPI:
                 provider=request.provider,
                 model=model,
                 reasoning_effort=reasoning_effort,
+                context_window_tokens=context_window_tokens,
+                context_window_source=context_window_source,
             )
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc

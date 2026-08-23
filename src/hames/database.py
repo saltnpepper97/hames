@@ -181,6 +181,17 @@ MIGRATIONS = (
         CREATE INDEX approvals_pending_idx ON approvals(status) WHERE status = 'pending';
         """,
     ),
+    Migration(
+        5,
+        "model context capacity",
+        """
+        ALTER TABLE sessions
+            ADD COLUMN context_window_tokens INTEGER NOT NULL DEFAULT 32768;
+        ALTER TABLE sessions
+            ADD COLUMN context_window_source TEXT NOT NULL DEFAULT 'fallback'
+            CHECK (context_window_source IN ('profile', 'provider', 'fallback'));
+        """,
+    ),
 )
 
 

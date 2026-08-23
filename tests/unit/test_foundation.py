@@ -116,6 +116,20 @@ def test_agent_runtime_limits_are_configurable(hames_paths: HamesPaths) -> None:
     assert config.tools.shell_timeout_seconds == 30
 
 
+def test_context_capacity_is_strict_and_configurable(hames_paths: HamesPaths) -> None:
+    config = load_config(
+        hames_paths,
+        environ={
+            "HAMES_CONTEXT__FALLBACK_WINDOW_TOKENS": "65536",
+            "HAMES_CONTEXT__OUTPUT_RESERVE_TOKENS": "8192",
+            "HAMES_PROVIDERS__LLAMA_CPP__CONTEXT_WINDOW_TOKENS": "131072",
+        },
+    )
+    assert config.context.fallback_window_tokens == 65_536
+    assert config.context.output_reserve_tokens == 8_192
+    assert config.providers["llama_cpp"].context_window_tokens == 131_072
+
+
 def test_legacy_config_is_translated_without_rewriting(hames_paths: HamesPaths) -> None:
     hames_paths.ensure_foundation()
     legacy = """\

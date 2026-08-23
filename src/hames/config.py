@@ -26,6 +26,21 @@ class RuntimeConfig(StrictModel):
     max_active_seconds_per_run: float = Field(default=1800.0, gt=0)
 
 
+class ContextConfig(StrictModel):
+    fallback_window_tokens: int = Field(default=32_768, ge=8_192)
+    output_reserve_tokens: int = Field(default=4_096, ge=256)
+    stable_instruction_limit_tokens: int = Field(default=8_192, ge=1_024)
+    agent_identity_limit_tokens: int = Field(default=4_096, ge=512)
+    tool_schema_limit_tokens: int = Field(default=8_192, ge=1_024)
+    retrieved_context_limit_tokens: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def reserve_fits_fallback(self) -> ContextConfig:
+        if self.output_reserve_tokens >= self.fallback_window_tokens:
+            raise ValueError("output_reserve_tokens must be smaller than fallback_window_tokens")
+        return self
+
+
 class ToolsConfig(StrictModel):
     shell_timeout_seconds: float = Field(default=120.0, gt=0)
     shell_max_timeout_seconds: float = Field(default=600.0, gt=0)
@@ -59,6 +74,7 @@ class ProviderProfileConfig(StrictModel):
     model: str = ""
     reasoning_effort: str = ""
     supported_reasoning_efforts: list[str] = Field(default_factory=list)
+    context_window_tokens: int | None = Field(default=None, ge=8_192)
     timeout_seconds: float = Field(default=120.0, gt=0)
 
     @field_validator("adapter")
@@ -130,6 +146,7 @@ class LedgerConfig(StrictModel):
 
 class HamesConfig(StrictModel):
     runtime: RuntimeConfig = RuntimeConfig()
+    context: ContextConfig = ContextConfig()
     tools: ToolsConfig = ToolsConfig()
     gateway: GatewayConfig = GatewayConfig()
     providers: dict[str, ProviderProfileConfig] = Field(default_factory=_default_provider_profiles)
@@ -238,6 +255,7 @@ def _translate_legacy_config(value: Mapping[str, Any]) -> dict[str, Any]:
                 "model",
                 "reasoning_effort",
                 "supported_reasoning_efforts",
+                "context_window_tokens",
                 "timeout_seconds",
             )
             if key in provider_value

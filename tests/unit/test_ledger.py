@@ -21,7 +21,7 @@ def test_migrations_are_idempotent_and_private(hames_paths: HamesPaths) -> None:
     with database.connect() as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
-        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 4
+        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 5
 
 
 def test_failed_migration_does_not_advance_schema(tmp_path: Path) -> None:
@@ -110,6 +110,29 @@ def test_m00_migration_preserves_events(hames_paths: HamesPaths, tmp_path: Path)
     event = Ledger(migrated).list_events("old-session")[0]
     assert event.payload == {"content": "preserved"}
     assert len(event.payload_hash) == 64
+
+
+def test_m03_database_gains_context_capacity_without_losing_sessions(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    old_database = Database(hames_paths.database, migrations=MIGRATIONS[:4])
+    old_database.migrate()
+    with old_database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO sessions(
+                id, created_at, status, working_directory, agent_id, provider, model,
+                reasoning_effort
+            ) VALUES ('m03-session', '2026-01-01', 'open', ?, 'default', 'fake', 'fixture', '')
+            """,
+            (str(tmp_path),),
+        )
+
+    migrated = Database(hames_paths.database)
+    migrated.migrate()
+    session = Ledger(migrated).get_session("m03-session")
+    assert session.context_window_tokens == 32_768
+    assert session.context_window_source == "fallback"
 
 
 def test_unknown_event_append_is_rejected(hames_paths: HamesPaths, tmp_path: Path) -> None:

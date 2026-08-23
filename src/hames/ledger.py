@@ -43,6 +43,8 @@ class Session(LedgerModel):
     provider: str
     model: str
     reasoning_effort: str
+    context_window_tokens: int
+    context_window_source: str
     parent_session_id: str | None
     fork_event_id: str | None
 
@@ -105,6 +107,8 @@ class Ledger:
         provider: str,
         model: str,
         reasoning_effort: str = "",
+        context_window_tokens: int = 32_768,
+        context_window_source: str = "fallback",
         title: str | None = None,
     ) -> Session:
         canonical = working_directory.expanduser().resolve(strict=True)
@@ -118,8 +122,9 @@ class Ledger:
                 """
                 INSERT INTO sessions(
                     id, created_at, status, title, working_directory, agent_id,
-                    provider, model, reasoning_effort
-                ) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?)
+                    provider, model, reasoning_effort, context_window_tokens,
+                    context_window_source
+                ) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
@@ -130,6 +135,8 @@ class Ledger:
                     provider,
                     model,
                     reasoning_effort,
+                    context_window_tokens,
+                    context_window_source,
                 ),
             )
             self._append_on_connection(
@@ -142,6 +149,8 @@ class Ledger:
                     "provider": provider,
                     "model": model,
                     "reasoning_effort": reasoning_effort,
+                    "context_window_tokens": context_window_tokens,
+                    "context_window_source": context_window_source,
                 },
             )
             connection.commit()
@@ -329,7 +338,9 @@ class Ledger:
             if target is None:
                 raise ValueError("fork event is not visible in the parent session")
 
-        provider, model, reasoning_effort = self._settings_at(history, target.sequence)
+        provider, model, reasoning_effort, context_window_tokens, context_window_source = (
+            self._settings_at(history, target.sequence)
+        )
         session_id = new_id()
         created_at = utc_now()
         branch_title = title or f"Branch of {parent.title or parent.id} @ {target.sequence}"
@@ -339,8 +350,9 @@ class Ledger:
                 """
                 INSERT INTO sessions(
                     id, created_at, status, title, working_directory, agent_id,
-                    provider, model, reasoning_effort, parent_session_id, fork_event_id
-                ) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)
+                    provider, model, reasoning_effort, context_window_tokens,
+                    context_window_source, parent_session_id, fork_event_id
+                ) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
@@ -351,6 +363,8 @@ class Ledger:
                     provider,
                     model,
                     reasoning_effort,
+                    context_window_tokens,
+                    context_window_source,
                     parent.id,
                     target.id,
                 ),
@@ -365,6 +379,8 @@ class Ledger:
                     "provider": provider,
                     "model": model,
                     "reasoning_effort": reasoning_effort,
+                    "context_window_tokens": context_window_tokens,
+                    "context_window_source": context_window_source,
                 },
                 causation_id=target.id,
                 correlation_id=session_id,
@@ -386,8 +402,8 @@ class Ledger:
         return self.get_session(session_id)
 
     @staticmethod
-    def _settings_at(history: list[Event], sequence: int) -> tuple[str, str, str]:
-        settings: tuple[str, str, str] | None = None
+    def _settings_at(history: list[Event], sequence: int) -> tuple[str, str, str, int, str]:
+        settings: tuple[str, str, str, int, str] | None = None
         for event in history:
             if event.sequence > sequence:
                 break
@@ -396,6 +412,8 @@ class Ledger:
                     str(event.payload["provider"]),
                     str(event.payload["model"]),
                     str(event.payload["reasoning_effort"]),
+                    int(event.payload.get("context_window_tokens", 32_768)),
+                    str(event.payload.get("context_window_source", "fallback")),
                 )
         if settings is None:
             raise EventIntegrityError("session history has no settings origin")
@@ -457,16 +475,26 @@ class Ledger:
         provider: str,
         model: str,
         reasoning_effort: str,
+        context_window_tokens: int = 32_768,
+        context_window_source: str = "fallback",
     ) -> Session:
         with self._write_lock, self.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 """
                 UPDATE sessions
-                SET provider = ?, model = ?, reasoning_effort = ?
+                SET provider = ?, model = ?, reasoning_effort = ?,
+                    context_window_tokens = ?, context_window_source = ?
                 WHERE id = ? AND status = 'open'
                 """,
-                (provider, model, reasoning_effort, session_id),
+                (
+                    provider,
+                    model,
+                    reasoning_effort,
+                    context_window_tokens,
+                    context_window_source,
+                    session_id,
+                ),
             )
             if cursor.rowcount != 1:
                 raise KeyError(session_id)
@@ -478,6 +506,8 @@ class Ledger:
                     "provider": provider,
                     "model": model,
                     "reasoning_effort": reasoning_effort,
+                    "context_window_tokens": context_window_tokens,
+                    "context_window_source": context_window_source,
                 },
             )
             connection.commit()
