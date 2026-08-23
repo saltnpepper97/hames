@@ -47,6 +47,8 @@ class Session(LedgerModel):
     context_window_source: str
     parent_session_id: str | None
     fork_event_id: str | None
+    lineage_kind: str
+    delegation_depth: int
 
 
 class Event(LedgerModel):
@@ -123,8 +125,8 @@ class Ledger:
                 INSERT INTO sessions(
                     id, created_at, status, title, working_directory, agent_id,
                     provider, model, reasoning_effort, context_window_tokens,
-                    context_window_source
-                ) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)
+                    context_window_source, lineage_kind, delegation_depth
+                ) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, 'root', 0)
                 """,
                 (
                     session_id,
@@ -305,7 +307,7 @@ class Ledger:
         try:
             session = self.get_session(session_id)
             inherited: list[Event] = []
-            if session.parent_session_id is not None:
+            if session.parent_session_id is not None and session.lineage_kind == "branch":
                 if session.fork_event_id is None:
                     raise EventIntegrityError(f"branch {session.id} has no fork event")
                 fork = self.get_event(session.fork_event_id)
@@ -325,6 +327,7 @@ class Ledger:
         *,
         fork_event_id: str | None = None,
         title: str | None = None,
+        agent_id: str | None = None,
     ) -> Session:
         parent = self.get_session(parent_session_id)
         history = self.replay(parent_session_id)
@@ -358,15 +361,16 @@ class Ledger:
                 INSERT INTO sessions(
                     id, created_at, status, title, working_directory, agent_id,
                     provider, model, reasoning_effort, context_window_tokens,
-                    context_window_source, parent_session_id, fork_event_id
-                ) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    context_window_source, parent_session_id, fork_event_id,
+                    lineage_kind, delegation_depth
+                ) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'branch', 0)
                 """,
                 (
                     session_id,
                     created_at,
                     branch_title,
                     parent.working_directory,
-                    parent.agent_id,
+                    agent_id or parent.agent_id,
                     provider,
                     model,
                     reasoning_effort,
@@ -380,7 +384,7 @@ class Ledger:
                 connection,
                 session_id=session_id,
                 event_type="session.opened",
-                agent_id=parent.agent_id,
+                agent_id=agent_id or parent.agent_id,
                 payload={
                     "working_directory": parent.working_directory,
                     "provider": provider,

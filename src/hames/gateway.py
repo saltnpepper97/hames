@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from hames import PROTOCOL_VERSION, __version__
+from hames.agent import AgentCapsule, AgentRegistry, AgentSummary
 from hames.broker import EventBroker
 from hames.config import HamesConfig, ProviderProfileConfig, load_config
 from hames.control import ControlStore
@@ -88,6 +89,30 @@ class ApprovalResolution(ApiModel):
 class ForkSessionRequest(ApiModel):
     at: str | None = None
     title: str | None = None
+    agent_id: str | None = None
+
+
+class AgentCreateRequest(ApiModel):
+    id: str
+    name: str = Field(min_length=1, max_length=80)
+    authority: Literal["standard", "read_only"] = "standard"
+
+
+class AgentPublic(ApiModel):
+    id: str
+    name: str
+    authority: str
+    path: str
+    content_hash: str
+
+
+class AgentDetail(AgentPublic):
+    instructions: str
+    tools_allow: list[str]
+    tools_deny: list[str]
+    delegation_allowed: bool
+    delegation_targets: list[str]
+    deprecated_fields: list[str]
 
 
 class ProviderProfile(ApiModel):
@@ -188,6 +213,10 @@ class GatewayState:
 
     def provider_profile(self, profile_id: str) -> ProviderProfileConfig | None:
         return self.config.providers.get(profile_id)
+
+    @property
+    def agents(self) -> AgentRegistry:
+        return AgentRegistry(self.paths.agents)
 
 
 def create_app(state: GatewayState) -> FastAPI:
@@ -341,6 +370,10 @@ def create_app(state: GatewayState) -> FastAPI:
 
     @app.post("/v1/sessions", dependencies=auth, response_model=Session, status_code=201)
     async def create_session(request: CreateSessionRequest) -> Session:
+        try:
+            await asyncio.to_thread(state.agents.load, request.agent_id)
+        except (FileNotFoundError, ValueError) as exc:
+            raise ApiError(400, "unknown_agent", str(exc)) from exc
         provider_name = request.provider or state.config.runtime.default_provider
         selection = await resolve_selection(provider_name, request.model, request.reasoning_effort)
         model, reasoning_effort, context_window_tokens, context_window_source = selection
@@ -362,6 +395,43 @@ def create_app(state: GatewayState) -> FastAPI:
     @app.get("/v1/sessions", dependencies=auth, response_model=list[Session])
     async def list_sessions() -> list[Session]:
         return await asyncio.to_thread(state.ledger.list_sessions)
+
+    @app.get("/v1/agents", dependencies=auth, response_model=list[AgentPublic])
+    async def list_agents() -> list[AgentPublic]:
+        return [_agent_public(item) for item in await asyncio.to_thread(state.agents.list)]
+
+    @app.get("/v1/agents/{agent_id}", dependencies=auth, response_model=AgentDetail)
+    async def get_agent(agent_id: str) -> AgentDetail:
+        try:
+            return _agent_detail(await asyncio.to_thread(state.agents.load, agent_id))
+        except (FileNotFoundError, ValueError) as exc:
+            raise ApiError(404, "agent_not_found", str(exc)) from exc
+
+    @app.post("/v1/agents", dependencies=auth, response_model=AgentDetail, status_code=201)
+    async def create_agent(request: AgentCreateRequest) -> AgentDetail:
+        try:
+            capsule = await asyncio.to_thread(
+                state.agents.create, request.id, request.name, authority=request.authority
+            )
+            return _agent_detail(capsule)
+        except FileExistsError as exc:
+            raise ApiError(409, "agent_exists", str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(400, "invalid_agent", str(exc)) from exc
+
+    @app.post("/v1/agents/{agent_id}/validate", dependencies=auth, response_model=AgentDetail)
+    async def validate_agent(agent_id: str) -> AgentDetail:
+        return await get_agent(agent_id)
+
+    @app.delete("/v1/agents/{agent_id}", dependencies=auth)
+    async def retire_agent(agent_id: str) -> dict[str, str]:
+        try:
+            retired = await asyncio.to_thread(state.agents.retire, agent_id)
+            return {"retired_to": str(retired)}
+        except FileNotFoundError as exc:
+            raise ApiError(404, "agent_not_found", str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(409, "agent_retirement_rejected", str(exc)) from exc
 
     @app.get("/v1/sessions/{session_id}", dependencies=auth, response_model=Session)
     async def get_session(session_id: str) -> Session:
@@ -532,11 +602,14 @@ def create_app(state: GatewayState) -> FastAPI:
             except KeyError as exc:
                 raise ApiError(404, "fork_event_not_found", str(exc)) from exc
         try:
+            if request.agent_id is not None:
+                await asyncio.to_thread(state.agents.load, request.agent_id)
             return await asyncio.to_thread(
                 state.ledger.fork_session,
                 session_id,
                 fork_event_id=fork_event_id,
                 title=request.title,
+                agent_id=request.agent_id,
             )
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
@@ -691,6 +764,36 @@ def _public_profile(state: GatewayState, profile_id: str, provider: Provider) ->
         configured_model=configured.model if configured else "",
         default_reasoning_effort=configured.reasoning_effort if configured else "",
         supported_reasoning_efforts=(configured.supported_reasoning_efforts if configured else []),
+    )
+
+
+def _agent_public(agent: AgentSummary) -> AgentPublic:
+    return AgentPublic(
+        id=agent.id,
+        name=agent.name,
+        authority=agent.authority,
+        path=str(agent.path),
+        content_hash=agent.content_hash,
+    )
+
+
+def _agent_detail(capsule: AgentCapsule) -> AgentDetail:
+    return AgentDetail(
+        **_agent_public(
+            AgentSummary(
+                id=capsule.metadata.id,
+                name=capsule.metadata.name,
+                authority=capsule.metadata.authority,
+                path=capsule.path,
+                content_hash=capsule.content_hash,
+            )
+        ).model_dump(),
+        instructions=capsule.instructions,
+        tools_allow=capsule.metadata.tools.allow,
+        tools_deny=capsule.metadata.tools.deny,
+        delegation_allowed=capsule.metadata.delegation.allow,
+        delegation_targets=capsule.metadata.delegation.allowed_agents,
+        deprecated_fields=capsule.deprecated_fields,
     )
 
 

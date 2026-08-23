@@ -53,7 +53,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 5
+            assert health_body["protocol_version"] == 6
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -372,7 +372,7 @@ async def test_explicit_cancellation_persists_partial_reasoning(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_runtime_failure_is_durable_and_terminal(tmp_path: Path) -> None:
+async def test_gateway_rejects_invalid_agent_before_creating_session(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
     paths.default_agent.write_text("invalid capsule", encoding="utf-8")
@@ -389,30 +389,10 @@ async def test_runtime_failure_is_durable_and_terminal(tmp_path: Path) -> None:
                     "model": "fixture",
                 },
             )
-            session_id = str(response_object(created)["id"])
-            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
-            accepted = await client.post(
-                f"/v1/sessions/{session_id}/messages",
-                headers=headers,
-                json={"content": "Trigger invalid capsule"},
-            )
-            assert accepted.status_code == 202
-
-            events: list[dict[str, JsonValue]] = []
-            for _ in range(100):
-                response = await client.get(f"/v1/sessions/{session_id}/events", headers=headers)
-                events = EVENT_LIST.validate_python(cast(object, response.json()))
-                if any(event["type"] == "run.failed" for event in events):
-                    break
-                await asyncio.sleep(0.01)
-
-            assert [event["type"] for event in events][-2:] == [
-                "runtime.error",
-                "run.failed",
-            ]
-            failure = events[-1]["payload"]
-            assert isinstance(failure, dict)
-            assert failure["code"] == "runtime_error"
+            assert created.status_code == 400
+            error = response_object(created)["error"]
+            assert isinstance(error, dict)
+            assert error["code"] == "unknown_agent"
     finally:
         await state.runs.close()
 

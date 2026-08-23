@@ -192,6 +192,18 @@ MIGRATIONS = (
             CHECK (context_window_source IN ('profile', 'provider', 'fallback'));
         """,
     ),
+    Migration(
+        6,
+        "agent lineage",
+        """
+        ALTER TABLE sessions
+            ADD COLUMN lineage_kind TEXT NOT NULL DEFAULT 'root'
+            CHECK (lineage_kind IN ('root', 'branch', 'delegation'));
+        ALTER TABLE sessions
+            ADD COLUMN delegation_depth INTEGER NOT NULL DEFAULT 0;
+        UPDATE sessions SET lineage_kind = 'branch' WHERE parent_session_id IS NOT NULL;
+        """,
+    ),
 )
 
 
