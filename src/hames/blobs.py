@@ -25,7 +25,8 @@ class BlobStore:
         digest = hashlib.sha256(content).hexdigest()
         target = self.path_for(digest)
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        target.parent.chmod(0o700)
+        for directory in (self.root, self.root / "sha256", target.parent):
+            directory.chmod(0o700)
         if target.exists():
             self.read(digest)
             return digest

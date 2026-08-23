@@ -99,6 +99,14 @@ def read_pid(paths: HamesPaths) -> int | None:
         return None
 
 
+def is_owned_gateway_process(pid: int) -> bool:
+    try:
+        command = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return False
+    return b"hames.cli" in command and b"serve" in command
+
+
 def gateway_status(paths: HamesPaths) -> GatewayProcessStatus:
     config = load_config(paths)
     url = gateway_url(config)
@@ -142,7 +150,7 @@ def start(paths: HamesPaths, *, wait_seconds: float = 10.0) -> GatewayProcessSta
     if current.healthy:
         if current.protocol_version == PROTOCOL_VERSION and current.version == __version__:
             return current
-        if current.pid is None:
+        if current.pid is None or not is_owned_gateway_process(current.pid):
             raise RuntimeError("incompatible process is using the configured gateway port")
         stop(paths, wait_seconds=wait_seconds)
     log_handle = (paths.logs / "gateway-bootstrap.log").open("ab")
@@ -175,6 +183,8 @@ def stop(paths: HamesPaths, *, wait_seconds: float = 10.0) -> GatewayProcessStat
     if status.pid is None:
         paths.gateway_pid.unlink(missing_ok=True)
         return status
+    if not is_owned_gateway_process(status.pid):
+        raise RuntimeError("gateway PID file does not identify an owned Hames gateway process")
     os.kill(status.pid, signal.SIGTERM)
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:

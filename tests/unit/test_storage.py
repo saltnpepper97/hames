@@ -24,8 +24,13 @@ def test_blob_store_deduplicates_and_detects_corruption(tmp_path: Path) -> None:
     assert store.read(digest) == b"same content"
     target = store.path_for(digest)
     assert target.stat().st_mode & 0o777 == 0o600
+    assert store.root.stat().st_mode & 0o777 == 0o700
     target.write_bytes(b"corrupt")
     with pytest.raises(BlobIntegrityError, match="corrupt blob"):
+        store.read(digest)
+
+    target.unlink()
+    with pytest.raises(BlobIntegrityError, match="missing blob"):
         store.read(digest)
 
 
@@ -78,7 +83,8 @@ def test_redaction_precedes_blob_persistence(hames_paths: HamesPaths, tmp_path: 
     assert secret not in str(event.payload)
     assert event.blob_hash is not None
     assert secret.encode() not in ledger.blob_store.read(event.blob_hash)
-    assert secret.encode() not in hames_paths.database.read_bytes()
+    for database_file in hames_paths.root.glob("hames.db*"):
+        assert secret.encode() not in database_file.read_bytes()
 
 
 def test_inline_payload_hash_mismatch_is_detected(hames_paths: HamesPaths, tmp_path: Path) -> None:
