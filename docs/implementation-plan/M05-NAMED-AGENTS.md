@@ -27,7 +27,7 @@ Supported frontmatter:
 ```yaml
 id: researcher
 name: Researcher
-model: inherit
+authority: read_only
 
 tools:
   allow:
@@ -38,33 +38,18 @@ tools:
     - write_file
     - edit_file
 
-policy: research
-
-memory:
-  read:
-    - global
-    - workspace
-    - agent:researcher
-  write:
-    - agent:researcher
-    - proposals
-
-skills:
-  scopes:
-    - global
-    - workspace
-    - agent:researcher
-
 delegation:
   allow: true
-  max_depth: 1
   allowed_agents:
     - critic
 ```
 
 Markdown body is the agent’s instructions/purpose.
 
-Unknown frontmatter keys are rejected or warned under one documented compatibility rule.
+Unknown frontmatter keys are rejected. Legacy `provider` and `model` fields are
+accepted only as inert compatibility input and never select a provider or model.
+Those execution settings belong to the session, alongside its workspace and
+transcript. Memory and Skills scopes arrive in later milestones.
 
 Agent IDs are stable machine identifiers; display names may change.
 
@@ -98,7 +83,10 @@ Hames core constraints
 
 An agent may restrict its tool set below global/project policy but cannot broaden policy permissions.
 
-`model: inherit` resolves through current Hames config.
+Provider, model, and reasoning settings are session-owned. Selecting an agent
+creates a fresh sibling session with the current execution settings; it does not
+mutate the existing session. A history-carrying change of agent is an explicit
+fork operation.
 
 ## Context integration
 
@@ -146,7 +134,7 @@ requested_result_format optional
 
 Rules:
 
-- child creates branch session linked to parent event;
+- child creates a delegation session linked to the parent event (not a replaying branch);
 - child has its own loop limits;
 - child receives only allowed context;
 - child cannot exceed parent policy/capability authority;
@@ -184,7 +172,8 @@ Extend usage projection:
 - errors;
 - session count.
 
-Web Inspector adds agent labels and branch visualization.
+The gateway exposes a ledger-derived per-agent usage projection. Web Inspector
+labels and visualization arrive with the later web milestone.
 
 ## Tests
 

@@ -10,7 +10,7 @@ for the milestone plan.
 
 ## Status
 
-M4 is implemented. In addition to the local conversation and branching slices, Hames provides
+M5 is implemented. In addition to the local conversation and branching slices, Hames provides
 immutable session branching, ancestry-aware replay, typed and integrity-checked
 events, irreversible secret redaction, and content-addressed payload blobs. Hames
 also has named local-provider profiles, explicit health probes, strict normalized
@@ -23,6 +23,13 @@ compiler. Attributed manifests record selected, compacted, and omitted sources,
 while content-addressed request snapshots make the exact normalized input
 reconstructable. Ledger-derived REPL inspection and Markdown/JSONL audit exports
 show reasoning, answers, tools, policy, context decisions, failures, and usage.
+Portable `AGENT.md` capsules now separate an agent's role and authority from a
+session's provider, model, reasoning level, workspace, and transcript. The REPL
+can list agents with `/agent`, begin a clean sibling session with `/agent <id>`,
+or intentionally preserve history while changing agent with `/fork-agent <id>`.
+Capsules may narrow tool authority and permit only named child agents. Delegation
+creates a separate, bounded child session with an explicit task card and selected
+evidence; it never silently copies the parent conversation.
 
 ## Quick start
 
@@ -56,6 +63,8 @@ default_provider = "llama_cpp" # or "ollama"
 max_model_turns_per_user_message = 24
 max_tool_calls_per_run = 96
 max_active_seconds_per_run = 1800.0
+max_delegation_depth = 1
+max_child_runs_per_parent_run = 4
 
 [tools]
 shell_timeout_seconds = 120.0
@@ -112,7 +121,10 @@ advertised named levels can be selected. A trailing `\` continues input on the
 next line. Ctrl-C during a model run requests cancellation; Ctrl-D or `/quit`
 exits the client.
 
-After a completed answer, `/fork` creates a branch and switches to it. `/events`
+After a completed answer, `/fork` creates a branch and switches to it. `/agent`
+lists portable capsules; `/agent <id>` starts a new session with that agent while
+keeping the current project and model settings, and `/fork-agent <id>` is the
+explicit history-preserving alternative. `/events`
 shows the effective inherited history and `/session` shows the current ancestry.
 Tool requests and results are printed concisely. Scratch work requested by the
 model lives under `/tmp/hames/runs/<run-id>/<agent-id>/workspace` for that run and
@@ -132,6 +144,8 @@ target/debug/hames session show <session-id>
 target/debug/hames session fork <session-id> --at <event-id-or-sequence>
 target/debug/hames session export <session-id> --format markdown --output audit.md
 target/debug/hames event verify <event-id>
+target/debug/hames agent list
+target/debug/hames agent create reviewer --authority read-only
 ```
 
 Use `--force` explicitly when replacing an existing noninteractive export. Audit
