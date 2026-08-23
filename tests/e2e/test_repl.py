@@ -99,8 +99,16 @@ async def test_rust_repl_through_gateway_and_ledger(tmp_path: Path) -> None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        repl_export = tmp_path / "repl-audit.md"
         stdout, stderr = await asyncio.wait_for(
-            process.communicate(b"y\nhello\n/fork\n/session\n/events\n/quit\n"), timeout=10
+            process.communicate(
+                (
+                    "y\nhello\n/usage\n/inspect\n/context\n"
+                    f"/export {repl_export} markdown\n"
+                    "/fork\n/session\n/events\n/quit\n"
+                ).encode()
+            ),
+            timeout=10,
         )
         output = stdout.decode()
         assert process.returncode == 0, stderr.decode()
@@ -108,6 +116,12 @@ async def test_rust_repl_through_gateway_and_ledger(tmp_path: Path) -> None:
         assert "assistant> hello from fake" in output
         assert "forked session" in output
         assert "fork event:" in output
+        assert "estimated input:" in output
+        assert "selected sources:" in output
+        assert "request hash:" in output
+        assert "exported markdown audit transcript" in output
+        assert "Derived view only" in repl_export.read_text(encoding="utf-8")
+        assert repl_export.stat().st_mode & 0o777 == 0o600
 
         sessions = state.ledger.list_sessions()
         assert len(sessions) == 2
@@ -139,6 +153,48 @@ async def test_rust_repl_through_gateway_and_ledger(tmp_path: Path) -> None:
         code, created, error = await run_hames(environment, "session", "new", "--json")
         assert code == 0, error
         assert json.loads(created)["parent_session_id"] is None
+
+        cli_export = tmp_path / "audit.jsonl"
+        code, exported, error = await run_hames(
+            environment,
+            "session",
+            "export",
+            branch.id,
+            "--format",
+            "jsonl",
+            "--output",
+            str(cli_export),
+        )
+        assert code == 0, error
+        assert "exported jsonl" in exported
+        header = json.loads(cli_export.read_text(encoding="utf-8").splitlines()[0])
+        assert header["provenance_authority"] == "event-ledger"
+
+        code, _, error = await run_hames(
+            environment,
+            "session",
+            "export",
+            branch.id,
+            "--format",
+            "jsonl",
+            "--output",
+            str(cli_export),
+        )
+        assert code != 0
+        assert "use --force to overwrite" in error
+
+        code, _, error = await run_hames(
+            environment,
+            "session",
+            "export",
+            branch.id,
+            "--format",
+            "jsonl",
+            "--output",
+            str(cli_export),
+            "--force",
+        )
+        assert code == 0, error
     finally:
         server.should_exit = True
         await server_task

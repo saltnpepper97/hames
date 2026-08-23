@@ -1,6 +1,7 @@
 use std::env;
 use std::ffi::OsString;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -155,6 +156,35 @@ pub fn run_backend<const N: usize>(args: [&str; N]) -> Result<()> {
 
 pub fn start_backend() -> Result<()> {
     run_backend(["start", "--json"])
+}
+
+pub fn write_private_export(path: &Path, content: &str, force: bool) -> Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create(true);
+    if force {
+        options.truncate(true);
+    } else {
+        options.create_new(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).with_context(|| {
+        format!(
+            "failed to create export {}; use --force to overwrite",
+            path.display()
+        )
+    })?;
+    file.write_all(content.as_bytes())?;
+    file.sync_all()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
 }
 
 fn backend_command() -> OsString {

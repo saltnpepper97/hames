@@ -75,6 +75,8 @@ pub struct Session {
     pub provider: String,
     pub model: String,
     pub reasoning_effort: String,
+    pub context_window_tokens: u64,
+    pub context_window_source: String,
     pub parent_session_id: Option<String>,
     pub fork_event_id: Option<String>,
 }
@@ -123,6 +125,99 @@ pub struct TrustStatus {
 #[derive(Clone, Debug, Deserialize)]
 pub struct ApprovalResolution {
     pub status: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct UsageProjection {
+    pub estimated_input_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub provider_reported_cost: f64,
+    pub model_requests: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ContextSource {
+    pub source_id: String,
+    pub source_type: String,
+    pub content_hash: String,
+    pub priority: i64,
+    pub estimated_tokens: u64,
+    pub selected_tokens: u64,
+    pub visibility: String,
+    pub truncation: String,
+    pub reason: String,
+    pub event_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ContextManifest {
+    pub compiler_version: u32,
+    pub estimator_version: String,
+    pub provider: String,
+    pub model: String,
+    pub reasoning_effort: String,
+    pub context_window_tokens: u64,
+    pub context_window_source: String,
+    pub input_budget_tokens: u64,
+    pub output_reserve_tokens: u64,
+    pub estimated_input_tokens: u64,
+    pub selected_sources: Vec<ContextSource>,
+    pub omitted_sources: Vec<ContextSource>,
+    pub source_order: Vec<String>,
+    pub contributing_event_ids: Vec<String>,
+    pub request_hash: String,
+    pub request_snapshot_blob_hash: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ContextInspection {
+    pub event_id: String,
+    pub session_id: String,
+    pub run_id: String,
+    pub manifest: ContextManifest,
+    pub request_snapshot: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RunSummary {
+    pub run_id: String,
+    pub session_id: String,
+    pub status: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub model_requests: u64,
+    pub tool_calls: u64,
+    pub usage: UsageProjection,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct TimelineItem {
+    pub sequence: u64,
+    pub event_id: String,
+    pub session_id: String,
+    pub run_id: Option<String>,
+    pub created_at: String,
+    pub event_type: String,
+    pub channel: String,
+    pub summary: String,
+    pub payload: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RunInspection {
+    pub run_id: String,
+    pub session_id: String,
+    pub status: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub model_requests: u64,
+    pub tool_calls: u64,
+    pub usage: UsageProjection,
+    pub timeline: Vec<TimelineItem>,
+    pub contexts: Vec<ContextInspection>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -261,6 +356,50 @@ impl GatewayClient {
                 .await?,
         )
         .await
+    }
+
+    pub async fn runs(&self, session_id: &str) -> Result<Vec<RunSummary>> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/runs"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn usage(&self, session_id: &str) -> Result<UsageProjection> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/usage"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn inspect_run(&self, run_id: &str) -> Result<RunInspection> {
+        decode(
+            self.get(&format!("/v1/runs/{run_id}/inspection"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn inspect_context(&self, event_id: &str) -> Result<ContextInspection> {
+        decode(self.get(&format!("/v1/contexts/{event_id}")).send().await?).await
+    }
+
+    pub async fn transcript(&self, session_id: &str, format: &str) -> Result<String> {
+        ensure_success(
+            self.get(&format!("/v1/sessions/{session_id}/transcript"))
+                .query(&[("format", format)])
+                .send()
+                .await?,
+        )
+        .await?
+        .text()
+        .await
+        .context("gateway returned an invalid transcript")
     }
 
     pub async fn fork_session(&self, session_id: &str, at: Option<&str>) -> Result<Session> {

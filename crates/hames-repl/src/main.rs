@@ -3,13 +3,14 @@ mod local;
 mod repl;
 
 use std::env;
+use std::path::PathBuf;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
 use crate::api::GatewayClient;
-use crate::local::LocalPaths;
+use crate::local::{LocalPaths, write_private_export};
 
 #[derive(Debug, Parser)]
 #[command(name = "hames", version, about = "The Hames Rust REPL")]
@@ -74,6 +75,31 @@ enum SessionAction {
         #[arg(long)]
         json: bool,
     },
+    /// Export a derived, read-only audit transcript.
+    Export {
+        id: String,
+        #[arg(long, value_enum, default_value_t = AuditFormat::Markdown)]
+        format: AuditFormat,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum AuditFormat {
+    Markdown,
+    Jsonl,
+}
+
+impl AuditFormat {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Markdown => "markdown",
+            Self::Jsonl => "jsonl",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Subcommand)]
@@ -199,6 +225,21 @@ async fn run_session_command(action: SessionAction) -> Result<()> {
                 );
                 Ok(())
             }
+        }
+        SessionAction::Export {
+            id,
+            format,
+            output,
+            force,
+        } => {
+            let transcript = client.transcript(&id, format.as_str()).await?;
+            write_private_export(&output, &transcript, force)?;
+            println!(
+                "exported {} audit transcript to {}",
+                format.as_str(),
+                output.display()
+            );
+            Ok(())
         }
     }
 }

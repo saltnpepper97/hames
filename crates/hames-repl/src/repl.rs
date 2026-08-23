@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::io::{self, Write};
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
@@ -8,10 +9,10 @@ use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 
 use crate::api::{
-    Event, GatewayClient, LiveEnvelope, PROTOCOL_VERSION, ProviderModel, ProviderProbe,
-    ProviderProfile, Session,
+    ContextInspection, Event, GatewayClient, LiveEnvelope, PROTOCOL_VERSION, ProviderModel,
+    ProviderProbe, ProviderProfile, RunInspection, Session,
 };
-use crate::local::{LocalPaths, start_backend};
+use crate::local::{LocalPaths, start_backend, write_private_export};
 
 pub async fn run() -> Result<()> {
     let paths = LocalPaths::resolve()?;
@@ -343,6 +344,47 @@ async fn handle_command(
         }
         "/status" => print_statuses(client).await?,
         "/usage" => print_usage(client, session).await?,
+        "/inspect" => {
+            let inspection = if let Some(run_id) = parts.get(1) {
+                client.inspect_run(run_id).await?
+            } else {
+                let runs = client.runs(&session.id).await?;
+                let latest = runs
+                    .last()
+                    .context("session has no model runs to inspect")?;
+                client.inspect_run(&latest.run_id).await?
+            };
+            print_inspection(&inspection);
+        }
+        "/context" => {
+            let context = if let Some(event_id) = parts.get(1) {
+                client.inspect_context(event_id).await?
+            } else {
+                let runs = client.runs(&session.id).await?;
+                let latest = runs
+                    .last()
+                    .context("session has no model runs to inspect")?;
+                let inspection = client.inspect_run(&latest.run_id).await?;
+                inspection
+                    .contexts
+                    .last()
+                    .cloned()
+                    .context("latest run has no compiled context")?
+            };
+            print_context(&context);
+        }
+        "/export" => {
+            let path = parts
+                .get(1)
+                .context("usage: /export <path> [markdown|jsonl]")?;
+            let format = parts.get(2).copied().unwrap_or("markdown");
+            if !matches!(format, "markdown" | "jsonl") {
+                bail!("usage: /export <path> [markdown|jsonl]");
+            }
+            let transcript = client.transcript(&session.id, format).await?;
+            write_private_export(Path::new(path), &transcript, false)?;
+            println!("exported {format} audit transcript to {path}");
+        }
         "/cancel" => println!("no active run; press Ctrl-C while a run is active to cancel it"),
         "/trust" => match parts.get(1).copied() {
             None | Some("status") => print_trust(client, session).await?,
@@ -494,7 +536,7 @@ fn model_summary(model: &ProviderModel) -> String {
 
 fn print_session(session: &Session) {
     println!(
-        "session: {}\nstatus: {}\nworking directory: {}\nagent: {}\nprovider: {}\nmodel: {}\nreasoning: {}\nparent: {}\nfork event: {}",
+        "session: {}\nstatus: {}\nworking directory: {}\nagent: {}\nprovider: {}\nmodel: {}\nreasoning: {}\ncontext window: {} ({})\nparent: {}\nfork event: {}",
         session.id,
         session.status,
         session.working_directory,
@@ -506,6 +548,8 @@ fn print_session(session: &Session) {
         } else {
             &session.reasoning_effort
         },
+        session.context_window_tokens,
+        session.context_window_source,
         session.parent_session_id.as_deref().unwrap_or("none"),
         session.fork_event_id.as_deref().unwrap_or("none"),
     );
@@ -556,22 +600,87 @@ async fn print_trust(client: &GatewayClient, session: &Session) -> Result<()> {
 }
 
 async fn print_usage(client: &GatewayClient, session: &Session) -> Result<()> {
-    let history = client.history(&session.id).await?;
-    let mut input = 0_u64;
-    let mut output = 0_u64;
-    let mut cached = 0_u64;
-    let mut reasoning = 0_u64;
-    for event in history
-        .iter()
-        .filter(|event| event.event_type == "model.usage")
-    {
-        input += event.payload["input_tokens"].as_u64().unwrap_or(0);
-        output += event.payload["output_tokens"].as_u64().unwrap_or(0);
-        cached += event.payload["cached_input_tokens"].as_u64().unwrap_or(0);
-        reasoning += event.payload["reasoning_tokens"].as_u64().unwrap_or(0);
-    }
-    println!("input: {input} · output: {output} · cached: {cached} · reasoning: {reasoning}");
+    let usage = client.usage(&session.id).await?;
+    println!(
+        "estimated input: {} · reported input: {} · output: {} · cached: {} · reasoning: {} · requests: {} · cost: {:.6}",
+        usage.estimated_input_tokens,
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cached_input_tokens,
+        usage.reasoning_tokens,
+        usage.model_requests,
+        usage.provider_reported_cost,
+    );
     Ok(())
+}
+
+fn print_inspection(inspection: &RunInspection) {
+    println!(
+        "run: {} · {} · requests: {} · tools: {}",
+        inspection.run_id, inspection.status, inspection.model_requests, inspection.tool_calls,
+    );
+    println!(
+        "usage: estimated input {} · reported input {} · output {} · reasoning {}",
+        inspection.usage.estimated_input_tokens,
+        inspection.usage.input_tokens,
+        inspection.usage.output_tokens,
+        inspection.usage.reasoning_tokens,
+    );
+    for item in &inspection.timeline {
+        let short_id = item.event_id.get(..8).unwrap_or(&item.event_id);
+        println!(
+            "{:>6}  {}  {:<9}  {:<28} {}",
+            item.sequence,
+            short_id,
+            item.channel,
+            item.event_type,
+            item.summary.replace('\n', " "),
+        );
+    }
+}
+
+fn print_context(context: &ContextInspection) {
+    let manifest = &context.manifest;
+    println!(
+        "context: {} · run {} · compiler {} ({})",
+        context.event_id, context.run_id, manifest.compiler_version, manifest.estimator_version
+    );
+    println!(
+        "{} / {} · reasoning {} · window {} ({}) · input budget {} · estimated {} · output reserve {}",
+        manifest.provider,
+        manifest.model,
+        if manifest.reasoning_effort.is_empty() {
+            "provider default"
+        } else {
+            &manifest.reasoning_effort
+        },
+        manifest.context_window_tokens,
+        manifest.context_window_source,
+        manifest.input_budget_tokens,
+        manifest.estimated_input_tokens,
+        manifest.output_reserve_tokens,
+    );
+    println!("selected sources:");
+    for source in &manifest.selected_sources {
+        println!(
+            "  {:>6} tokens  {:<14} {}",
+            source.selected_tokens, source.source_type, source.source_id
+        );
+    }
+    if !manifest.omitted_sources.is_empty() {
+        println!("omitted or compacted sources:");
+        for source in &manifest.omitted_sources {
+            println!(
+                "  {:>6} tokens  {:<14} {} · {} · {}",
+                source.estimated_tokens,
+                source.source_type,
+                source.source_id,
+                source.reason,
+                source.truncation,
+            );
+        }
+    }
+    println!("request hash: {}", manifest.request_hash);
 }
 
 async fn stream_message(
@@ -861,7 +970,8 @@ fn print_help() {
         "/help\n/new\n/session\n/sessions\n/resume <id>\n/events [count]\n\
          /fork [event-id-or-sequence]\n/project\n/trust [status|revoke]\n\
          /provider [provider] [model]\n/model\n/reasoning [default|off|on|level]\n\
-         /usage\n/status\n/cancel (Ctrl-C during a run)\n/quit"
+         /usage\n/inspect [run-id]\n/context [context-event-id]\n\
+         /export <path> [markdown|jsonl]\n/status\n/cancel (Ctrl-C during a run)\n/quit"
     );
 }
 
