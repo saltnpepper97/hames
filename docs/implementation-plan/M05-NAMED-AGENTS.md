@@ -84,9 +84,11 @@ Hames core constraints
 An agent may restrict its tool set below global/project policy but cannot broaden policy permissions.
 
 Provider, model, and reasoning settings are session-owned. Selecting an agent
-creates a fresh sibling session with the current execution settings; it does not
-mutate the existing session. A history-carrying change of agent is an explicit
-fork operation.
+changes only the capsule used for future turns in the current session and emits a
+durable `session.agent.changed` event. It is rejected while a run is active, and
+never rewrites historical event attribution. `/new` begins a separate chat;
+`/clear` clears the display and begins one. `/fork` remains the explicit way to
+carry history into a branch before selecting another agent.
 
 ## Context integration
 

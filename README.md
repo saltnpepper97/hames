@@ -25,8 +25,8 @@ reconstructable. Ledger-derived REPL inspection and Markdown/JSONL audit exports
 show reasoning, answers, tools, policy, context decisions, failures, and usage.
 Portable `AGENT.md` capsules now separate an agent's role and authority from a
 session's provider, model, reasoning level, workspace, and transcript. The REPL
-can list agents with `/agent`, begin a clean sibling session with `/agent <id>`,
-or intentionally preserve history while changing agent with `/fork-agent <id>`.
+can list agents with `/agent` and select one for subsequent turns with
+`/agent <id>`.
 Capsules may narrow tool authority and permit only named child agents. Delegation
 creates a separate, bounded child session with an explicit task card and selected
 evidence; it never silently copies the parent conversation.
@@ -122,9 +122,9 @@ next line. Ctrl-C during a model run requests cancellation; Ctrl-D or `/quit`
 exits the client.
 
 After a completed answer, `/fork` creates a branch and switches to it. `/agent`
-lists portable capsules; `/agent <id>` starts a new session with that agent while
-keeping the current project and model settings, and `/fork-agent <id>` is the
-explicit history-preserving alternative. `/events`
+lists portable capsules; `/agent <id>` changes the selected agent for the next
+turn while preserving historical attribution. `/new` creates a separate fresh
+chat; `/clear` also clears the display before beginning one. `/events`
 shows the effective inherited history and `/session` shows the current ancestry.
 Tool requests and results are printed concisely. Scratch work requested by the
 model lives under `/tmp/hames/runs/<run-id>/<agent-id>/workspace` for that run and
