@@ -275,6 +275,8 @@ class GatewayState:
             broker=broker,
             store=ScarStore(ledger),
             skills=runs.skills,
+            memory=runs.memory,
+            skill_manager=skills,
         )
         runs.attach_memory_manager(memory)
         runs.attach_skill_manager(skills)

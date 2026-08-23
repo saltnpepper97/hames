@@ -99,6 +99,190 @@ def failure_signature_hash(signature: str) -> str:
     return hashlib.sha256(normalized.encode()).hexdigest()
 
 
+_PREFERENCE_MARKERS = (
+    "i prefer",
+    "i like",
+    "i love",
+    "i hate",
+    "i always",
+    "i never",
+    "my name",
+    "call me",
+    "ask me",
+    "remember that i",
+)
+
+_MISSING_CAPABILITY_MARKERS = (
+    "not found",
+    "no such",
+    "is not installed",
+    "unknown tool",
+    "unsupported",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RepairPlan:
+    """Weakest-sufficient repair decision derived from one scar."""
+
+    repair_layer: RepairLayer
+    proposal: dict[str, JsonValue]
+    rationale: str
+    risk: Literal["low", "medium", "high"]
+    required_authority: RepairAuthority
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutedRepair:
+    """Result of carrying out a repair that needs no user approval."""
+
+    reason: str
+    checks: dict[str, JsonValue]
+
+
+def override_plan(scar: Scar, layer: str) -> RepairPlan:
+    """Build an explicit user-directed repair plan for one scar."""
+    if layer not in REPAIR_LAYERS:
+        raise ValueError(f"unknown repair layer: {layer}")
+    if layer in {"semantic_memory", "relationship_memory", "episodic_memory"}:
+        memory_layer: RepairLayer = layer  # type: ignore[assignment]
+        return RepairPlan(
+            repair_layer=memory_layer,
+            proposal={
+                "kind": "memory_record",
+                "subject": "user_directed" if layer == "relationship_memory" else "corrected_fact",
+                "predicate": "user_correction",
+                "value_text": scar.description,
+                "summary": scar.title,
+            },
+            rationale="User directed this scar to a specific memory layer.",
+            risk="low",
+            required_authority="memory_write",
+        )
+    if layer == "skill":
+        return RepairPlan(
+            repair_layer=layer,
+            proposal={
+                "kind": "skill_patch",
+                "target_version_id": (scar.trigger.skill_ids[0] if scar.trigger.skill_ids else ""),
+                "goal": scar.expected_behavior,
+            },
+            rationale="User directed this scar into the Skill authoring pipeline.",
+            risk="medium",
+            required_authority="skill_write",
+        )
+    if layer == "policy_rule":
+        return RepairPlan(
+            repair_layer=layer,
+            proposal={
+                "kind": "policy_rule",
+                "description": scar.expected_behavior,
+                "signature": scar.failure_signature,
+            },
+            rationale="User proposed a declarative safety rule from this scar.",
+            risk="high",
+            required_authority="policy_write",
+        )
+    if layer == "context_rule":
+        return RepairPlan(
+            repair_layer=layer,
+            proposal={
+                "kind": "context_rule",
+                "description": scar.expected_behavior,
+                "trigger": json.dumps(
+                    scar.trigger.model_dump(mode="json", exclude_defaults=True),
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            },
+            rationale="User proposed a versioned context rule from this scar.",
+            risk="medium",
+            required_authority="context_write",
+        )
+    return RepairPlan(
+        repair_layer="capability_requirement",
+        proposal={
+            "kind": "capability_requirement",
+            "signature": scar.failure_signature,
+            "description": scar.description,
+        },
+        rationale="User recorded a missing-capability requirement from this scar.",
+        risk="high",
+        required_authority="plugin_write",
+    )
+
+
+def plan_repair(scar: Scar) -> RepairPlan | None:
+    """Choose the weakest sufficient repair layer for a scar, or None."""
+    if scar.detection == "skill_outcome_regression":
+        version_id = scar.trigger.skill_ids[0] if scar.trigger.skill_ids else ""
+        return RepairPlan(
+            repair_layer="skill",
+            proposal={
+                "kind": "skill_patch",
+                "target_version_id": version_id,
+                "goal": scar.expected_behavior,
+            },
+            rationale=(
+                "A repeatable procedure produced failed or corrected runs; the M07 "
+                "lifecycle must patch it."
+            ),
+            risk="medium",
+            required_authority="skill_write",
+        )
+    if scar.detection in {"explicit_correction", "conversational_correction"}:
+        lowered = scar.description.casefold()
+        if any(marker in lowered for marker in _PREFERENCE_MARKERS):
+            return RepairPlan(
+                repair_layer="relationship_memory",
+                proposal={
+                    "kind": "memory_record",
+                    "subject": "user",
+                    "predicate": "stated_preference",
+                    "value_text": scar.description,
+                    "summary": scar.title,
+                },
+                rationale="The correction restates a user preference or relationship fact.",
+                risk="low",
+                required_authority="memory_write",
+            )
+        return RepairPlan(
+            repair_layer="semantic_memory",
+            proposal={
+                "kind": "memory_record",
+                "subject": "corrected_fact",
+                "predicate": "user_correction",
+                "value_text": scar.description,
+                "summary": scar.title,
+            },
+            rationale=(
+                "A stable fact was stated wrongly or was missing; the user's own wording "
+                "is authoritative."
+            ),
+            risk="low",
+            required_authority="memory_write",
+        )
+    if scar.detection == "repeated_failure":
+        lowered = scar.failure_signature.casefold()
+        if any(marker in lowered for marker in _MISSING_CAPABILITY_MARKERS):
+            return RepairPlan(
+                repair_layer="capability_requirement",
+                proposal={
+                    "kind": "capability_requirement",
+                    "signature": scar.failure_signature,
+                    "description": scar.description,
+                },
+                rationale=(
+                    "The same missing capability keeps failing; M09 plugin proposals can "
+                    "consume this requirement."
+                ),
+                risk="high",
+                required_authority="plugin_write",
+            )
+        return None
+    return None
+
+
 class EvolutionModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

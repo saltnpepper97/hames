@@ -2,18 +2,27 @@
 
 import asyncio
 from collections.abc import Iterable
+from typing import cast
 
 from hames.broker import EventBroker
 from hames.config import HamesConfig
 from hames.evolution import (
+    ExecutedRepair,
+    RepairPlan,
     Scar,
+    ScarMutation,
+    ScarRepair,
     ScarStore,
     ScarTrigger,
     failure_signature_hash,
     looks_like_correction,
     normalize_failure_signature,
+    override_plan,
+    plan_repair,
 )
 from hames.ledger import Event, Ledger, Session
+from hames.memory import MemoryCandidate, MemoryLayer, MemoryStore, MemoryVisibility
+from hames.skill_runtime import SkillManager
 from hames.skills import SkillRegistry
 
 FAILURE_EVENT_TYPES = {
@@ -39,12 +48,140 @@ class EvolutionManager:
         broker: EventBroker,
         store: ScarStore,
         skills: SkillRegistry,
+        memory: MemoryStore,
+        skill_manager: SkillManager | None = None,
     ) -> None:
         self.ledger = ledger
         self.config = config
         self.broker = broker
         self.store = store
         self.skills = skills
+        self.memory = memory
+        self.skill_manager = skill_manager
+
+    async def propose_repair(
+        self,
+        session_id: str,
+        scar_id: str,
+        *,
+        layer_override: str | None = None,
+    ) -> tuple[Scar, ScarRepair]:
+        """Route an open scar to the weakest sufficient repair layer."""
+        session = await asyncio.to_thread(self.ledger.get_session, session_id)
+        scar = await asyncio.to_thread(self.store.get_visible, session, scar_id)
+        if layer_override is not None:
+            plan = override_plan(scar, layer_override)
+        else:
+            plan = plan_repair(scar)
+        if plan is None:
+            raise ValueError(
+                "no autonomous repair is available for this scar; "
+                "propose one explicitly with a repair_layer"
+            )
+
+        def _record() -> tuple[ScarRepair, ScarMutation]:
+            return self.store.propose_repair(
+                session=session,
+                scar_id=scar_id,
+                repair_layer=plan.repair_layer,
+                proposal=plan.proposal,
+                rationale=plan.rationale,
+                risk=plan.risk,
+                required_authority=plan.required_authority,
+                evidence_event_ids=list(scar.evidence_event_ids),
+                created_by="automatic" if layer_override is None else "user",
+            )
+
+        repair, mutation = await asyncio.to_thread(_record)
+        await self._publish(mutation.events)
+        executed = await self._execute_repair(session, scar, plan, mutation.events[0].id)
+        if executed is not None:
+            promoted = await asyncio.to_thread(
+                self.store.decide_repair,
+                session=session,
+                repair_id=repair.id,
+                promote=True,
+                reason=executed.reason,
+                checks=executed.checks,
+                causation_id=mutation.events[-1].id,
+            )
+            await self._publish(promoted.events)
+            return promoted.scar, repair
+        return mutation.scar, repair
+
+    async def _execute_repair(
+        self,
+        session: Session,
+        scar: Scar,
+        plan: RepairPlan,
+        proposal_event_id: str,
+    ) -> ExecutedRepair | None:
+        """Carry out the weakest repairs that need no approval. None = still pending."""
+        if plan.repair_layer == "skill":
+            await self._dispatch_skill_patch(session, scar, plan)
+            return None
+        if plan.required_authority != "memory_write":
+            return None
+        if not self.config.evolution.auto_promote_memory_repairs:
+            return None
+        visibility = {
+            "global": "global",
+            "workspace": "workspace",
+            "agent": "agent_private",
+        }[scar.scope]
+        layer = {
+            "semantic_memory": "semantic",
+            "relationship_memory": "relationship",
+            "episodic_memory": "episodic",
+        }.get(plan.repair_layer)
+        if layer is None:
+            return None
+        candidate = MemoryCandidate(
+            layer=cast(MemoryLayer, layer),
+            visibility=cast(MemoryVisibility, visibility),
+            subject=str(plan.proposal.get("subject", "corrected_fact")),
+            predicate=str(plan.proposal.get("predicate", "user_correction")),
+            value={"text": plan.proposal.get("value_text", scar.description)},
+            summary=str(plan.proposal.get("summary", scar.title)),
+            confidence=1.0,
+            importance=0.8,
+            anchors=[],
+            provenance_event_ids=list(scar.evidence_event_ids),
+            evidence_basis="explicit_user",
+        )
+        memory_mutation = await asyncio.to_thread(
+            self.memory.create_candidate,
+            session=session,
+            candidate=candidate,
+            run_id=None,
+            origin_kind="explicit",
+            activate=True,
+            causation_id=proposal_event_id,
+        )
+        await self._publish(memory_mutation.events)
+        return ExecutedRepair(
+            reason="memory repair grounded in direct user correction",
+            checks={"memory_id": memory_mutation.record.id},
+        )
+
+    async def _dispatch_skill_patch(self, session: Session, scar: Scar, plan: RepairPlan) -> None:
+        if self.skill_manager is None:
+            return
+        target_version_id = str(plan.proposal.get("target_version_id", ""))
+        target_skill_id: str | None = None
+        if target_version_id:
+            try:
+                version = await asyncio.to_thread(self.skills.get, target_version_id)
+                target_skill_id = version.skill_id
+            except KeyError:
+                target_skill_id = None
+        scope = "agent" if scar.scope == "agent" else scar.scope
+        await self.skill_manager.author(
+            session,
+            goal=str(plan.proposal.get("goal", scar.expected_behavior)),
+            scope=scope,
+            target_skill_id=target_skill_id,
+        )
 
     async def observe_run(self, session_id: str, run_id: str) -> list[Scar]:
         """Inspect one finished run and open scars for detected problems."""

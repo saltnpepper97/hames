@@ -14,9 +14,11 @@ from hames.evolution import (
     failure_signature_hash,
     looks_like_correction,
     normalize_failure_signature,
+    plan_repair,
 )
 from hames.evolution_runtime import EvolutionManager
 from hames.ledger import Ledger, Session
+from hames.memory import MemoryStore
 from hames.paths import HamesPaths
 from hames.skills import SkillDraft, SkillRegistry
 
@@ -247,6 +249,7 @@ def _manager(
         broker=EventBroker(),
         store=store,
         skills=registry,
+        memory=MemoryStore(ledger),
     )
     return manager, store
 
@@ -490,6 +493,7 @@ async def test_skill_regression_references_exact_version(
         broker=EventBroker(),
         store=store,
         skills=registry,
+        memory=MemoryStore(ledger),
     )
     session = _session(ledger, tmp_path)
     evidence = ledger.append(
@@ -576,3 +580,116 @@ async def test_skill_regression_references_exact_version(
     assert scar.detection == "skill_outcome_regression"
     assert scar.severity == "high"
     assert scar.trigger.skill_ids == [draft.version.id]
+
+
+def test_plan_repair_routes_to_weakest_layer(
+    store: tuple[ScarStore, Ledger], tmp_path: Path
+) -> None:
+    _, ledger = store
+    session = _session(ledger, tmp_path)
+    preference = Scar(
+        id="s1",
+        title="Correction: I prefer short answers",
+        scope="workspace",
+        status="open",
+        severity="high",
+        failure_signature="explicit-correction:i prefer short answers",
+        description="I prefer short answers without restating the question.",
+        trigger=ScarTrigger(),
+        expected_behavior="Answers must be short.",
+        detection="explicit_correction",
+        owner_agent_id=None,
+        workspace_path=str(tmp_path),
+        source_session_id=session.id,
+        source_run_id=None,
+        repair_layer=None,
+        repair_reference=None,
+        last_triggered_at="2026-01-01",
+        successful_guard_count=0,
+        regression_count=0,
+        dismissed_reason=None,
+        created_at="2026-01-01",
+        updated_at="2026-01-01",
+        evidence_event_ids=[],
+    )
+    plan = plan_repair(preference)
+    assert plan is not None and plan.repair_layer == "relationship_memory"
+    factual = preference.model_copy(update={"description": "the milestone file is docs/plan.md"})
+    assert plan_repair(factual) is not None
+    assert plan_repair(factual).repair_layer == "semantic_memory"  # type: ignore[union-attr]
+    skill_scar = preference.model_copy(update={"detection": "skill_outcome_regression"})
+    assert plan_repair(skill_scar).repair_layer == "skill"  # type: ignore[union-attr]
+    missing_tool = preference.model_copy(
+        update={
+            "detection": "repeated_failure",
+            "failure_signature": "tool:shell:rg: command not found",
+        }
+    )
+    capability_plan = plan_repair(missing_tool)
+    assert capability_plan is not None
+    assert capability_plan.repair_layer == "capability_requirement"
+    opaque = preference.model_copy(
+        update={"detection": "repeated_failure", "failure_signature": "tool:shell:timeout #"}
+    )
+    assert plan_repair(opaque) is None
+
+
+async def test_memory_repair_auto_promotes_and_guards(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    manager, store = _manager(hames_paths, ledger, tmp_path)
+    session = _session(ledger, tmp_path)
+    scar = await manager.submit_correction(session.id, content="always cite the docs/plan.md file")
+    assert scar.status == "open"
+
+    routed, repair = await manager.propose_repair(session.id, scar.id)
+    assert repair.repair_layer == "semantic_memory"
+    assert routed.status == "guarded"
+    memories = manager.memory.list_visible(session, layer="semantic")
+    assert any("docs/plan.md" in record.summary for record in memories)
+
+    repairs = store.repairs_for_scar(scar.id)
+    assert len(repairs) == 1
+    assert repairs[0].status == "promoted"
+
+
+async def test_unroutable_scar_requires_explicit_layer(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    manager, store = _manager(hames_paths, ledger, tmp_path)
+    session = _session(ledger, tmp_path)
+    evidence = ledger.append(
+        session_id=session.id,
+        agent_id=session.agent_id,
+        event_type="tool.failed",
+        payload={
+            "tool_call_id": "c1",
+            "name": "shell",
+            "status": "failed",
+            "summary": "command timed out after 120 seconds",
+            "content": "",
+        },
+    )
+    mutation = store.record_candidate(
+        session=session,
+        title="Repeated timeout",
+        severity="medium",
+        failure_signature="tool:shell:timed out after # seconds",
+        description="Shell commands keep timing out.",
+        expected_behavior="Timeouts must be diagnosed and avoided.",
+        evidence_event_ids=[evidence.id],
+        detection="repeated_failure",
+        causation_id=evidence.id,
+    )
+    store.open(session=session, scar_id=mutation.scar.id, reason="evidence sufficient")
+    with pytest.raises(ValueError, match="no autonomous repair"):
+        await manager.propose_repair(session.id, mutation.scar.id)
+
+    directed, repair = await manager.propose_repair(
+        session.id, mutation.scar.id, layer_override="context_rule"
+    )
+    assert repair.repair_layer == "context_rule"
+    assert repair.required_authority == "context_write"
+    assert directed.status == "repair_proposed"
