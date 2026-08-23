@@ -493,11 +493,12 @@ class ScarStore:
         return ScarMutation(self.get(scar_id), tuple(events))
 
     def find_active_by_signature(self, session: Session, signature: str) -> Scar | None:
+        """Match any non-dismissed scar with this signature, including healed ones."""
         signature_hash = failure_signature_hash(signature)
         with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM scars WHERE signature_hash = ? "
-                "AND status NOT IN ('dismissed', 'healed') ORDER BY created_at DESC",
+                "AND status != 'dismissed' ORDER BY created_at DESC",
                 (signature_hash,),
             ).fetchall()
         for row in rows:
