@@ -4,19 +4,21 @@ Run every step against your live `qwen3.8-27b` llama.cpp profile and record what
 you see. M8 is tagged only when every section passes. Fill results into the
 "Observed" line of each step, then save this file with the date and state root.
 
-- Date: _
+- Date: 2026-08-23
 - Provider: live local llama.cpp
 - Model: `qwen3.8-27b`
-- Reasoning: _
-- Context window: _
+- Reasoning: medium
+- Context window: 131072 (provider)
 - Hames protocol: v9
-- Isolated state root: _
+- Isolated state root: `/tmp/hames-m8-accept`
+- Demo workspace: `/tmp/m8-accept-demo`
+- Session (explicit/heal/regress/policy/inspection): `83cb0326-dcb7-4045-a45d-6f33174d8511`
 
 Setup:
 
 ```bash
-HAMES_HOME=/tmp/hames-m8-live target/debug/hames gateway start
-HAMES_HOME=/tmp/hames-m8-live target/debug/hames
+HAMES_HOME=/tmp/hames-m8-accept target/debug/hames gateway start
+HAMES_HOME=/tmp/hames-m8-accept target/debug/hames
 ```
 
 Create a session in any scratch project directory (e.g. `/tmp/m8-demo`), then
@@ -45,7 +47,13 @@ trust it when prompted.
 6. Confirm the memory exists: `/memory search milestone` shows a workspace
    semantic record containing your correction text.
 
-Observed: _
+Observed: PASS. Scar `f8a706dd-96f4-4feb-a62c-12fbdcea9151` opened from
+`POST /v1/sessions/.../correct` (the same gateway path `/correct` uses), status
+`guarded`, detection `explicit_correction`, severity `high`, layer
+`semantic_memory`, one promoted repair. `/memory` search for `milestone` returned
+a workspace semantic record containing `docs/plan.md`. Qwen's prior turn had
+already named `docs/plan.md` correctly; the correction still opened and repaired
+the Scar as specified.
 
 ## 2. Guard counting heals the Scar
 
@@ -55,7 +63,9 @@ Observed: _
    - `guards: 3 clean` and status flips to `healed`,
    - live stream printed `evolution> guard pass recorded (n clean)` after each run.
 
-Observed: _
+Observed: PASS. After the context-injection follow-up, guards=1/`guarded`; after
+"What directory holds application settings?", guards=2; after "Name one file
+under src/.", status `healed`, guards=3, regressions=0.
 
 ## 3. Regression on repeated correction
 
@@ -66,7 +76,10 @@ Observed: _
    - because memory repairs are grounded in user correction, it re-promotes to
      `guarded`.
 
-Observed: _
+Observed: PASS. Same scar id `f8a706dd` returned (no duplicate). Lineage:
+`candidate → open → repair_proposed → guarded → healed → regressed →
+repair_proposed → guarded`. Repairs v1 and v2 both `promoted` (`semantic_memory`).
+`regressions: 1`, status back to `guarded`.
 
 ## 4. Conversational correction is noticed without /correct
 
@@ -80,7 +93,10 @@ Observed: _
      `conversational_correction`, severity `medium`,
    - no reviewer-model call happened (default off).
 
-Observed: _
+Observed: PASS. Fresh session `4655bc90`. Qwen had already named
+`conf/settings.toml`; the contradiction phrasing still opened scar `085f37e2`
+(`conversational_correction`, severity `medium`, auto-promoted to `guarded`).
+No `evolution_evaluation` / reviewer-model request.
 
 ## 5. Repeated failures open a Scar
 
@@ -95,7 +111,11 @@ Expected: a `repeated_failure` scar titled `Repeated failure: tool:shell:...`
 once the same signature occurred 3 times; later identical failures print
 `triggered` events instead of new scars.
 
-Observed: _
+Observed: PASS. Session `f7c81867`. After three identical
+`ls /definitely-not-here-42` failures, scar `a45522a2` opened (`open`,
+`repeated_failure`, signature `tool:shell:shell exited with code #`). A fourth
+identical run did not create another scar; `scar.triggered` was recorded. The
+scar stays `open` (opaque repeated failure is not auto-routed).
 
 ## 6. Active guard enters model context
 
@@ -108,7 +128,10 @@ Observed: _
    (`source_type scar`, origin `evolution`) whose payload JSON contains the
    scar title and expected behavior. It must disappear once the Scar is healed.
 
-Observed: _
+Observed: PASS. While scar `f8a706dd` was still `guarded`, the follow-up
+"What is the current milestone name?" compiled context with `evolution.scar` in
+`source_order`. Qwen answered M8 from `docs/plan.md`. After healing, later
+manifests in this run no longer listed that source.
 
 ## 7. Policy rule blocks after approval
 
@@ -119,7 +142,7 @@ curl -s http://127.0.0.1:7411/v1/policy-rules -H "Authorization: Bearer $(cat ~/
 Simpler: propose+activate through Python against the running gateway:
 
 ```bash
-TOKEN=$(cat "$HAMES_HOME/runtime/gateway-token" 2>/dev/null || cat /tmp/hames-m8-live/runtime/gateway-token)
+TOKEN=$(cat "$HAMES_HOME/runtime/gateway.token" 2>/dev/null || cat /tmp/hames-m8-live/runtime/gateway.token)
 curl -s -X POST http://127.0.0.1:7411/v1/sessions/<session-id>/policy-rules \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"action":"deny","pattern":"touch\\s+/tmp/m8-demo/forbidden","reason":"forbidden file protection"}'
@@ -133,7 +156,12 @@ Then ask Qwen to `touch /tmp/m8-demo/forbidden`.
 Expected: the tool result reports rejection citing `forbidden file protection`;
 the transcript shows a `policy.decided` deny attributed to the declarative rule.
 
-Observed: _
+Observed: PASS. Rule `b50caf03` proposed with Python regex
+`touch\s+/tmp/m8-accept-demo/FORBIDDEN` (POSIX `[[:space:]]` is now rejected at
+propose time — that silent no-op is what stalled the previous live attempt) and
+activated. Qwen issued `touch /tmp/m8-accept-demo/FORBIDDEN`. `policy.decided`
+was `deny` / `forbidden file protection`. Qwen reported the harness rejection.
+`/tmp/m8-accept-demo/FORBIDDEN` was not created.
 
 ## 8. Full lineage inspection
 
@@ -147,7 +175,13 @@ ordered transitions (recorded → opened → repair_proposed → guarded → hea
 regressed → guarded), both repair versions with decisions, evaluation entries,
 guard/regression counts, and a plain explanation sentence.
 
-Observed: _
+Observed: PASS. `GET /v1/sessions/83cb0326-.../scars/f8a706dd-.../inspection`
+returned evidence (1 event), transitions
+`scar.recorded/candidate → opened/open → repair_proposed → guarded → healed →
+regressed → repair_proposed → guarded`, repairs v1 and v2 both promoted
+semantic_memory, `successful_guard_count=3`, `regression_count=1`, explanation
+"The user explicitly corrected Hames with /correct; the user's own statement is
+the authoritative diagnosis."
 
 ---
 
@@ -165,3 +199,9 @@ Record anything that failed here, then tag:
 ```bash
 git tag -a m08 -m "Hames milestone M08 complete"
 ```
+
+Observed: the full cycle passed on 2026-08-23 against live `qwen3.8-27b`. Two
+product bugs found during the earlier stalled live run are fixed on `main`:
+duplicate dequeue no longer kills the memory/skill workers, and POSIX character
+classes are rejected when proposing policy rules. `gateway.log` for this
+acceptance root contains no `memory job is not pending`. Tagged `m08`.
