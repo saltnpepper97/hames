@@ -331,6 +331,7 @@ pub enum MenuAction {
     OpenEfforts,
     OpenAgents,
     OpenModes,
+    OpenThemes,
     ShowSession,
     Help,
     CancelRun,
@@ -361,6 +362,12 @@ pub enum MenuAction {
     SetAgent(String),
     SetMode(String),
     SetEffort(String),
+    SetTitle(String),
+    ChooseModel {
+        provider: String,
+        model: String,
+    },
+    SetTheme(ThemeKind),
 }
 
 #[derive(Clone, Debug)]
@@ -378,6 +385,36 @@ pub enum SheetKind {
     Efforts,
     Agents,
     Modes,
+    Themes,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ThemeKind {
+    Hames,
+    Terminal,
+}
+
+impl ThemeKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Hames => "Hames",
+            Self::Terminal => "Terminal",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScrollTarget {
+    Transcript,
+    Composer,
+}
+
+#[derive(Clone, Debug)]
+pub struct ScrollDrag {
+    pub target: ScrollTarget,
+    pub y: u16,
+    pub height: u16,
+    pub max_top: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -396,9 +433,13 @@ pub enum HitAction {
     CloseModal,
     TrustWorkspace,
     Quit,
-    OpenModes,
     ShowSession,
     FocusComposer,
+    Scrollbar {
+        target: ScrollTarget,
+        content_len: usize,
+        viewport_len: usize,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -429,6 +470,8 @@ pub struct App {
     pub sheet: Option<Sheet>,
     pub notice: Option<String>,
     pub scroll: usize,
+    pub composer_scroll: Option<usize>,
+    pub scroll_drag: Option<ScrollDrag>,
     pub last_sequence: u64,
     pub seen_events: HashSet<String>,
     pub context_tokens: u64,
@@ -437,6 +480,7 @@ pub struct App {
     pub hits: Vec<HitRegion>,
     pub should_quit: bool,
     pub focused_thought: Option<usize>,
+    pub theme: ThemeKind,
 }
 
 impl App {
@@ -452,6 +496,8 @@ impl App {
             sheet: None,
             notice: None,
             scroll: 0,
+            composer_scroll: None,
+            scroll_drag: None,
             last_sequence: 0,
             seen_events: HashSet::new(),
             context_tokens: 0,
@@ -460,6 +506,7 @@ impl App {
             hits: Vec::new(),
             should_quit: false,
             focused_thought: None,
+            theme: ThemeKind::Hames,
         };
         for event in events {
             app.ingest_durable(event, false);
@@ -501,6 +548,7 @@ impl App {
             ),
             option("Agent", "change the active capsule", MenuAction::OpenAgents),
             option("Mode", "manual, auto, or plan", MenuAction::OpenModes),
+            option("Themes", "Hames or terminal colors", MenuAction::OpenThemes),
             option(
                 "Session info",
                 "identity and continuity",
@@ -562,6 +610,27 @@ impl App {
         self.modal = None;
     }
 
+    pub fn open_themes(&mut self) {
+        self.sheet = Some(Sheet {
+            kind: SheetKind::Themes,
+            title: "Color theme".to_owned(),
+            options: vec![
+                option(
+                    "Hames",
+                    "calm custom RGB palette",
+                    MenuAction::SetTheme(ThemeKind::Hames),
+                ),
+                option(
+                    "Terminal",
+                    "terminal-native ANSI colors",
+                    MenuAction::SetTheme(ThemeKind::Terminal),
+                ),
+            ],
+            selected: usize::from(self.theme == ThemeKind::Terminal),
+        });
+        self.modal = None;
+    }
+
     pub fn update_slash_sheet(&mut self) {
         let content = self.composer.text();
         if !content.starts_with('/') || content.contains(char::is_whitespace) {
@@ -586,6 +655,7 @@ impl App {
     }
 
     pub fn handle_composer_key(&mut self, key: KeyEvent) -> bool {
+        self.composer_scroll = None;
         match key.code {
             KeyCode::Backspace => self.composer.backspace(),
             KeyCode::Delete => self.composer.delete(),
@@ -593,7 +663,11 @@ impl App {
             KeyCode::Right => self.composer.move_right(),
             KeyCode::Home => self.composer.move_home(),
             KeyCode::End => self.composer.move_end(),
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+            KeyCode::Enter
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) =>
+            {
                 self.composer.insert_text("\n")
             }
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -668,6 +742,9 @@ impl App {
         self.last_sequence = self.last_sequence.max(event.sequence);
         let run_id = event.run_id.clone().unwrap_or_default();
         match event.event_type.as_str() {
+            "session.title.changed" => {
+                self.session.title = Some(string(&event.payload, "title"));
+            }
             "user.message" => {
                 self.collapse_completed_thoughts();
                 self.transcript.push(TranscriptItem::User {
@@ -1034,7 +1111,7 @@ fn approval_from(payload: &Value) -> ApprovalModal {
 fn category_for_tool(name: &str) -> ActivityCategory {
     match name {
         "read_file" | "list_dir" => ActivityCategory::Explore,
-        "write_file" | "edit_file" => ActivityCategory::Change,
+        "write_file" | "edit_file" | "session_title_set" => ActivityCategory::Change,
         "shell" | "skill_run" => ActivityCategory::Run,
         "spawn_agent" => ActivityCategory::Delegate,
         "skill_load" | "skill_author" | "skill_catalog" | "skill_control" => {
@@ -1061,6 +1138,7 @@ fn display_path(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use serde_json::json;
 
     use super::{App, Composer, ComposerUnit, TranscriptItem};
@@ -1109,6 +1187,29 @@ mod tests {
         composer.cursor = 0;
         assert!(composer.remove_adjacent_paste());
         assert!(composer.is_empty());
+    }
+
+    #[test]
+    fn alt_and_shift_enter_insert_composer_newlines() {
+        let mut app = App::new(session(), Vec::new(), true);
+        assert!(app.handle_composer_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)));
+        assert!(app.handle_composer_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)));
+        assert_eq!(app.composer.text(), "\n\n");
+    }
+
+    #[test]
+    fn durable_title_event_refreshes_session_presentation() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_durable(
+            event(
+                1,
+                "session.title.changed",
+                "run-title",
+                json!({"title": "Palette polish"}),
+            ),
+            true,
+        );
+        assert_eq!(app.session.title.as_deref(), Some("Palette polish"));
     }
 
     #[test]

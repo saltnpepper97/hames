@@ -101,12 +101,21 @@ conversation.
 
 The TUI keeps the transcript, activity continuity, and an expanding composer on
 one screen. The composer grows through eight visible content rows and then
-scrolls. Enter sends; Alt+Enter or Ctrl+J inserts a new line. Shift+Tab cycles
+scrolls. Enter sends; Alt+Enter, Shift+Enter, or Ctrl+J inserts a new line.
+Shift+Tab cycles
 Manual, Auto, and Plan modes, with a distinct composer border for each. Ctrl+K
 opens the command palette, Page Up/Page Down and the mouse wheel scroll the
 transcript, and Enter or Space expands a selected Thought. Large pastes become
 compact capsules without losing their exact durable content. Recent sessions for
-the current directory are offered when the TUI opens.
+the current directory are offered when the TUI opens. Scrollbar tracks and solid
+thumbs support clicking and dragging. `/themes` switches between the default
+custom Hames palette and terminal-native colors.
+
+The top-right header shows the durable session title beside the current activity
+instead of repeating model controls. The model can set or revise that title with
+the safe `session_title_set` tool; `/title <name>` provides the equivalent direct
+control. `/model` lists only reachable configured providers, then asks for the
+model's reasoning effort on a second sheet before applying the change.
 
 Hames defaults to the `llama_cpp` profile at `http://127.0.0.1:8080`. Model
 selection prefers the request, then the profile default, then a sole discovered

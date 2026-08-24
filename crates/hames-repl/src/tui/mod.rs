@@ -7,11 +7,15 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use app::{App, HitAction, MenuAction, MenuOption, Modal, Sheet, SheetKind};
+use app::{
+    App, HitAction, MenuAction, MenuOption, Modal, ScrollDrag, ScrollTarget, Sheet, SheetKind,
+    ThemeKind,
+};
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
-    EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
-    MouseEventKind,
+    EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+    MouseButton, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -113,7 +117,9 @@ pub async fn run() -> Result<()> {
         match apply_effect(&client, &paths, &mut app, effect).await {
             Ok(Some(session)) => {
                 stream_task.abort();
+                let theme = app.theme;
                 app = load_app(&client, session).await?;
+                app.theme = theme;
                 stream_task = spawn_event_stream(
                     client.clone(),
                     app.session.id.clone(),
@@ -282,6 +288,14 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             }
             None
         }
+        KeyCode::Enter
+            if key
+                .modifiers
+                .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) =>
+        {
+            app.handle_composer_key(key);
+            None
+        }
         KeyCode::Enter => send_or_command(app),
         _ => {
             app.focused_thought = None;
@@ -347,21 +361,45 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
 fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
-            app.scroll = app.scroll.saturating_add(3);
+            if mouse_over_composer(app, mouse.column, mouse.row) {
+                scroll_composer(app, -3);
+            } else {
+                app.scroll = app.scroll.saturating_add(3);
+            }
             None
         }
         MouseEventKind::ScrollDown => {
-            app.scroll = app.scroll.saturating_sub(3);
+            if mouse_over_composer(app, mouse.column, mouse.row) {
+                scroll_composer(app, 3);
+            } else {
+                app.scroll = app.scroll.saturating_sub(3);
+            }
             None
         }
         MouseEventKind::Down(MouseButton::Left) => {
-            let action = app
+            let region = app
                 .hits
                 .iter()
                 .rev()
                 .find(|region| region.contains(mouse.column, mouse.row))
-                .map(|region| region.action.clone());
-            match action {
+                .cloned();
+            match region.as_ref().map(|item| item.action.clone()) {
+                Some(HitAction::Scrollbar {
+                    target,
+                    content_len,
+                    viewport_len,
+                }) => {
+                    let region = region.expect("scrollbar region");
+                    let drag = ScrollDrag {
+                        target,
+                        y: region.y,
+                        height: region.height,
+                        max_top: content_len.saturating_sub(viewport_len),
+                    };
+                    scroll_to_pointer(app, &drag, mouse.row);
+                    app.scroll_drag = Some(drag);
+                    None
+                }
                 Some(HitAction::ToggleThought(index)) => {
                     app.focused_thought = Some(index);
                     app.toggle_thought(index);
@@ -383,10 +421,6 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                     app.modal = None;
                     None
                 }
-                Some(HitAction::OpenModes) => {
-                    app.open_modes();
-                    None
-                }
                 Some(HitAction::ShowSession) => {
                     app.modal = Some(Modal::Session);
                     None
@@ -394,8 +428,69 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                 Some(HitAction::FocusComposer) | None => None,
             }
         }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if let Some(drag) = app.scroll_drag.clone() {
+                scroll_to_pointer(app, &drag, mouse.row);
+            }
+            None
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            app.scroll_drag = None;
+            None
+        }
         _ => None,
     }
+}
+
+fn mouse_over_composer(app: &App, x: u16, y: u16) -> bool {
+    app.hits.iter().rev().any(|region| {
+        region.contains(x, y)
+            && matches!(
+                region.action,
+                HitAction::FocusComposer
+                    | HitAction::Scrollbar {
+                        target: ScrollTarget::Composer,
+                        ..
+                    }
+            )
+    })
+}
+
+fn scroll_composer(app: &mut App, delta: isize) {
+    let max_top = app.hits.iter().find_map(|region| match region.action {
+        HitAction::Scrollbar {
+            target: ScrollTarget::Composer,
+            content_len,
+            viewport_len,
+        } => Some(content_len.saturating_sub(viewport_len)),
+        _ => None,
+    });
+    let Some(max_top) = max_top else {
+        return;
+    };
+    let current = app.composer_scroll.unwrap_or(max_top);
+    app.composer_scroll = Some(if delta.is_negative() {
+        current.saturating_sub(delta.unsigned_abs())
+    } else {
+        current.saturating_add(delta as usize).min(max_top)
+    });
+}
+
+fn scroll_to_pointer(app: &mut App, drag: &ScrollDrag, row: u16) {
+    let top = pointer_top(drag, row);
+    match drag.target {
+        ScrollTarget::Transcript => app.scroll = drag.max_top.saturating_sub(top),
+        ScrollTarget::Composer => app.composer_scroll = Some(top),
+    }
+}
+
+fn pointer_top(drag: &ScrollDrag, row: u16) -> usize {
+    let track = usize::from(drag.height.saturating_sub(1).max(1));
+    let offset = usize::from(
+        row.saturating_sub(drag.y)
+            .min(drag.height.saturating_sub(1)),
+    );
+    drag.max_top.saturating_mul(offset) / track
 }
 
 fn send_or_command(app: &mut App) -> Option<Effect> {
@@ -442,7 +537,17 @@ fn parse_command(value: &str) -> Option<MenuAction> {
             .next()
             .map(|mode| MenuAction::SetMode(mode.to_owned()))
             .or(Some(MenuAction::OpenModes)),
+        "/theme" | "/themes" => match parts.next() {
+            Some("hames") => Some(MenuAction::SetTheme(ThemeKind::Hames)),
+            Some("terminal") => Some(MenuAction::SetTheme(ThemeKind::Terminal)),
+            Some(_) => None,
+            None => Some(MenuAction::OpenThemes),
+        },
         "/session" => Some(MenuAction::ShowSession),
+        "/title" => {
+            let title = parts.collect::<Vec<_>>().join(" ");
+            (!title.is_empty()).then_some(MenuAction::SetTitle(title))
+        }
         "/project" | "/trust" => match parts.next() {
             Some("revoke") => Some(MenuAction::RevokeTrust),
             _ => Some(MenuAction::Trust),
@@ -580,11 +685,7 @@ async fn apply_menu_action(
         MenuAction::OpenModels => {
             app.notice = Some("Loading provider models…".to_owned());
             let profiles = client.providers().await?;
-            let mut options = vec![MenuOption {
-                label: "Reasoning effort…".to_owned(),
-                detail: format!("currently {}", effort_label(&app.session.reasoning_effort)),
-                action: MenuAction::OpenEfforts,
-            }];
+            let mut options = Vec::new();
             for profile in profiles {
                 match client.probe_provider(&profile.id).await {
                     Ok(probe) if probe.reachable => {
@@ -596,31 +697,69 @@ async fn apply_menu_action(
                                     profile.id,
                                     model.parameter_size.unwrap_or_else(|| model.status.clone())
                                 ),
-                                action: MenuAction::SetModel {
+                                action: MenuAction::ChooseModel {
                                     provider: profile.id.clone(),
                                     model: model.id,
-                                    reasoning: profile.default_reasoning_effort.clone(),
                                 },
                             });
                         }
                     }
-                    Ok(_) => options.push(MenuOption {
-                        label: profile.id,
-                        detail: "provider unavailable".to_owned(),
-                        action: MenuAction::OpenModels,
-                    }),
-                    Err(error) => options.push(MenuOption {
-                        label: profile.id,
-                        detail: format!("probe failed: {error}"),
-                        action: MenuAction::OpenModels,
-                    }),
+                    Ok(_) | Err(_) => {}
                 }
+            }
+            if options.is_empty() {
+                app.notice = Some("No reachable configured models".to_owned());
+                app.sheet = None;
+            } else {
+                app.notice = None;
+                app.sheet = Some(Sheet {
+                    kind: SheetKind::Models,
+                    title: "Provider and model".to_owned(),
+                    options,
+                    selected: 0,
+                });
+            }
+        }
+        MenuAction::ChooseModel { provider, model } => {
+            app.notice = Some("Loading reasoning efforts…".to_owned());
+            let profiles = client.providers().await?;
+            let profile = profiles
+                .into_iter()
+                .find(|profile| profile.id == provider)
+                .with_context(|| format!("provider {provider} is not configured"))?;
+            let mut efforts = profile.supported_reasoning_efforts;
+            if let Ok(probe) = client.probe_provider(&provider).await
+                && let Some(selected) = probe.models.into_iter().find(|item| item.id == model)
+            {
+                for effort in selected.reasoning_efforts {
+                    if !efforts.contains(&effort) {
+                        efforts.push(effort);
+                    }
+                }
+            }
+            if !efforts.iter().any(|effort| effort == "default") {
+                efforts.insert(0, "default".to_owned());
             }
             app.notice = None;
             app.sheet = Some(Sheet {
-                kind: SheetKind::Models,
-                title: "Provider and model".to_owned(),
-                options,
+                kind: SheetKind::Efforts,
+                title: format!("Reasoning effort · {model}"),
+                options: efforts
+                    .into_iter()
+                    .map(|effort| MenuOption {
+                        label: effort.clone(),
+                        detail: "select to finish".to_owned(),
+                        action: MenuAction::SetModel {
+                            provider: provider.clone(),
+                            model: model.clone(),
+                            reasoning: if effort == "default" {
+                                String::new()
+                            } else {
+                                effort
+                            },
+                        },
+                    })
+                    .collect(),
                 selected: 0,
             });
         }
@@ -690,6 +829,7 @@ async fn apply_menu_action(
             });
         }
         MenuAction::OpenModes => app.open_modes(),
+        MenuAction::OpenThemes => app.open_themes(),
         MenuAction::ShowSession => app.modal = Some(Modal::Session),
         MenuAction::Help => app.modal = Some(Modal::Help),
         MenuAction::CancelRun => {
@@ -937,6 +1077,18 @@ async fn apply_menu_action(
                 effort_label(&app.session.reasoning_effort)
             ));
         }
+        MenuAction::SetTitle(title) => {
+            app.session = client.update_session_title(&app.session.id, &title).await?;
+            app.notice = Some(format!(
+                "Session titled · {}",
+                app.session.title.as_deref().unwrap_or("New session")
+            ));
+        }
+        MenuAction::SetTheme(theme) => {
+            app.theme = theme;
+            app.sheet = None;
+            app.notice = Some(format!("Theme · {}", theme.label()));
+        }
     }
     Ok(None)
 }
@@ -1072,7 +1224,8 @@ impl TerminalGuard {
             stdout,
             EnterAlternateScreen,
             EnableMouseCapture,
-            EnableBracketedPaste
+            EnableBracketedPaste,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         ) {
             let _ = disable_raw_mode();
             return Err(error.into());
@@ -1095,6 +1248,7 @@ impl Drop for TerminalGuard {
             self.terminal.backend_mut(),
             DisableBracketedPaste,
             DisableMouseCapture,
+            PopKeyboardEnhancementFlags,
             LeaveAlternateScreen
         );
         let _ = self.terminal.show_cursor();
@@ -1133,8 +1287,8 @@ fn info(title: &str, lines: Vec<String>) -> Modal {
 
 #[cfg(test)]
 mod tests {
-    use super::{SseDecoder, next_mode, parse_command};
-    use crate::tui::app::MenuAction;
+    use super::{SseDecoder, next_mode, parse_command, pointer_top};
+    use crate::tui::app::{MenuAction, ScrollDrag, ScrollTarget, ThemeKind};
 
     #[test]
     fn sse_decoder_handles_fragmented_frames() {
@@ -1166,6 +1320,14 @@ mod tests {
             parse_command("/effort xhigh"),
             Some(MenuAction::SetEffort(effort)) if effort == "xhigh"
         ));
+        assert!(matches!(
+            parse_command("/themes terminal"),
+            Some(MenuAction::SetTheme(ThemeKind::Terminal))
+        ));
+        assert!(matches!(
+            parse_command("/title Refine the TUI"),
+            Some(MenuAction::SetTitle(title)) if title == "Refine the TUI"
+        ));
     }
 
     #[test]
@@ -1173,5 +1335,18 @@ mod tests {
         assert_eq!(next_mode("manual"), "auto");
         assert_eq!(next_mode("auto"), "plan");
         assert_eq!(next_mode("plan"), "manual");
+    }
+
+    #[test]
+    fn scrollbar_pointer_maps_the_full_track() {
+        let drag = ScrollDrag {
+            target: ScrollTarget::Transcript,
+            y: 4,
+            height: 11,
+            max_top: 100,
+        };
+        assert_eq!(pointer_top(&drag, 4), 0);
+        assert_eq!(pointer_top(&drag, 9), 50);
+        assert_eq!(pointer_top(&drag, 14), 100);
     }
 }

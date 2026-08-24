@@ -99,6 +99,30 @@ def test_session_mode_is_persisted_and_attributed(hames_paths: HamesPaths, tmp_p
     assert event.payload == {"mode": "plan"}
 
 
+def test_session_title_is_normalized_and_attributed(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    session = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    event = ledger.update_session_title(
+        session.id,
+        title="  Refine   the TUI  ",
+        run_id="run-title",
+        agent_id="default",
+        causation_id=ledger.list_events(session.id)[-1].id,
+    )
+    assert ledger.get_session(session.id).title == "Refine the TUI"
+    assert event.type == "session.title.changed"
+    assert event.run_id == "run-title"
+    assert event.agent_id == "default"
+    assert event.payload == {"title": "Refine the TUI"}
+
+
 def test_recent_open_session_uses_canonical_cwd_and_latest_activity(
     hames_paths: HamesPaths, tmp_path: Path
 ) -> None:

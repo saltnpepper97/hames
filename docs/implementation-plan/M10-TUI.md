@@ -26,10 +26,16 @@ composer grows to eight visible content rows and then scrolls independently. It
 uses a visible prompt caret, side padding, a right-aligned model/effort/mode label,
 and mode-colored borders without imposing a filled background.
 
-Enter sends a message. Alt+Enter or Ctrl+J inserts a new line. Large pastes are
-shown as compact capsules while their exact bytes and ranges remain durable in
-the user-message event. The transcript and composer both render proportional
-scrollbars when content exceeds their viewport.
+The header's right edge presents a durable, human-readable session title and the
+current activity (`Ready`, `Thinking`, `Exploring`, `Writing`, and related states).
+The model may maintain the title through `session_title_set`, which emits a typed
+`session.title.changed` event; `/title` uses the matching gateway endpoint.
+
+Enter sends a message. Alt+Enter, Shift+Enter, or Ctrl+J inserts a new line.
+Large pastes are shown as compact capsules while their exact bytes and ranges
+remain durable in the user-message event. The transcript and composer both
+render proportional scrollbars with solid thumbs when content exceeds their
+viewport. Their tracks support mouse clicks and dragging.
 
 ## Controls and modes
 
@@ -41,6 +47,10 @@ scrollbars when content exceeds their viewport.
   code-writing operations.
 - Ctrl+K opens the command palette. Runtime model, reasoning effort, agent, and
   mode controls appear as native sheets above the composer.
+- `/model` shows reachable configured providers only. Model choice leads to a
+  second reasoning-effort sheet, and both selections apply atomically at the end.
+- `/themes` switches between the custom Hames RGB palette and terminal-native
+  ANSI colors. The selection survives session changes within the running client.
 - Trust and approval decisions use focused modals. Approvals preserve the
   gateway's allow-for-session, allow-once, and deny semantics.
 - Status, usage, events, inspection, context, memory, Skills, Scars, plugins,

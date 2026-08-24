@@ -55,6 +55,7 @@ from hames.tools import (
     ScarControlArguments,
     ScarListArguments,
     ScarRecordArguments,
+    SessionTitleArguments,
     ShellArguments,
     SkillAuthorArguments,
     SkillCatalogArguments,
@@ -79,6 +80,7 @@ SELF_MANAGEMENT_TOOLS = frozenset(
         "scar_control",
         "skill_catalog",
         "skill_control",
+        "session_title_set",
     }
 )
 
@@ -1234,6 +1236,22 @@ class RunManager:
                     structured_data=JSON_OBJECT.validate_python(
                         {"count": len(values), "memories": values}
                     ),
+                )
+            if isinstance(arguments, SessionTitleArguments):
+                event = await asyncio.to_thread(
+                    self.ledger.update_session_title,
+                    session.id,
+                    title=arguments.title,
+                    run_id=run_id,
+                    agent_id=session.agent_id,
+                    causation_id=causation_id,
+                )
+                await self._publish_store_events((event,))
+                title = str(event.payload["title"])
+                return ToolResult(
+                    status="completed",
+                    summary=f"session titled {title}",
+                    structured_data={"title": title},
                 )
             if isinstance(arguments, MemoryAddArguments):
                 candidate = MemoryCandidate(

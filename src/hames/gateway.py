@@ -144,6 +144,10 @@ class UpdateSessionModeRequest(ApiModel):
     mode: Literal["manual", "auto", "plan"]
 
 
+class UpdateSessionTitleRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=80)
+
+
 class RunAccepted(ApiModel):
     run_id: str
 
@@ -837,6 +841,18 @@ def create_app(state: GatewayState) -> FastAPI:
             )
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+
+    @app.put("/v1/sessions/{session_id}/title", dependencies=auth, response_model=Session)
+    async def update_session_title(session_id: str, request: UpdateSessionTitleRequest) -> Session:
+        try:
+            await asyncio.to_thread(
+                state.ledger.update_session_title, session_id, title=request.title
+            )
+            return await asyncio.to_thread(state.ledger.get_session, session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+        except ValueError as exc:
+            raise ApiError(400, "invalid_session_title", str(exc)) from exc
 
     @app.get(
         "/v1/sessions/{session_id}/memories",

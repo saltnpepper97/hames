@@ -55,7 +55,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 11
+            assert health_body["protocol_version"] == 12
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -208,6 +208,21 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                 params={"format": "jsonl"},
             )
             assert json.loads(jsonl.text.splitlines()[0])["provenance_authority"] == "event-ledger"
+
+            titled = await client.put(
+                f"/v1/sessions/{session_id}/title",
+                headers=headers,
+                json={"title": "  Durable   gateway conversation  "},
+            )
+            assert titled.status_code == 200
+            assert response_object(titled)["title"] == "Durable gateway conversation"
+            title_events = await _wait_for_event(
+                client, headers, session_id, "session.title.changed"
+            )
+            title_event = next(
+                event for event in title_events if event["type"] == "session.title.changed"
+            )
+            assert title_event["payload"] == {"title": "Durable gateway conversation"}
 
             reopened = Ledger.open(paths.database)
             assert (
@@ -552,6 +567,70 @@ async def test_runtime_executes_tool_and_continues_model_loop(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_model_can_title_the_active_session(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    fake = FakeProvider(
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="title-1",
+                        name="session_title_set",
+                        arguments_delta='{"title":"Theme and composer polish"}',
+                    ),
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="The session is titled."),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
+    )
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Polish the current interface."},
+            )
+            events = await _wait_for_event(client, headers, session_id, "run.completed")
+            title_event = next(
+                event for event in events if event["type"] == "session.title.changed"
+            )
+            assert title_event["payload"] == {"title": "Theme and composer polish"}
+            assert title_event["run_id"] is not None
+            assert state.ledger.get_session(session_id).title == "Theme and composer polish"
+            completed = next(
+                event
+                for event in events
+                if event["type"] == "tool.completed"
+                and isinstance(event["payload"], dict)
+                and event["payload"].get("name") == "session_title_set"
+            )
+            assert completed["payload"]["structured_data"] == {  # type: ignore[index]
+                "title": "Theme and composer polish"
+            }
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
 async def test_runtime_manages_memory_from_the_chat_tool_loop(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     fake = FakeProvider(
@@ -871,6 +950,7 @@ async def test_runtime_delegates_with_an_explicit_task_card(tmp_path: Path) -> N
                 "memory_search",
                 "scar_list",
                 "skill_catalog",
+                "session_title_set",
             ]
             assert fake.requests[2].messages[-1].tool_name == "spawn_agent"
             assert run_id
@@ -941,6 +1021,7 @@ async def test_agent_selection_changes_only_future_turns(tmp_path: Path) -> None
                 "memory_search",
                 "scar_list",
                 "skill_catalog",
+                "session_title_set",
             ]
     finally:
         await state.runs.close()

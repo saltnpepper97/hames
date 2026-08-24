@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 #[derive(Clone)]
 pub struct GatewayClient {
@@ -518,6 +518,11 @@ struct UpdateSessionMode<'a> {
 }
 
 #[derive(Serialize)]
+struct UpdateSessionTitle<'a> {
+    title: &'a str,
+}
+
+#[derive(Serialize)]
 struct ForkSession<'a> {
     at: Option<&'a str>,
     title: Option<&'a str>,
@@ -651,6 +656,18 @@ impl GatewayClient {
                 .put(format!("{}/v1/sessions/{session_id}/mode", self.base_url))
                 .bearer_auth(&self.token)
                 .json(&UpdateSessionMode { mode })
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn update_session_title(&self, session_id: &str, title: &str) -> Result<Session> {
+        decode(
+            self.http
+                .put(format!("{}/v1/sessions/{session_id}/title", self.base_url))
+                .bearer_auth(&self.token)
+                .json(&UpdateSessionTitle { title })
                 .send()
                 .await?,
         )

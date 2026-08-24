@@ -199,6 +199,14 @@ class SkillControlArguments(ToolArguments):
     reason: str = Field(min_length=1, max_length=1000)
 
 
+class SessionTitleArguments(ToolArguments):
+    title: str = Field(
+        min_length=1,
+        max_length=80,
+        description="Concise human-readable title for this conversation",
+    )
+
+
 class ToolResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -593,6 +601,16 @@ class SkillControlTool(ToolBase):
     arguments_type: ClassVar[type[ToolArguments]] = SkillControlArguments
 
 
+class SessionTitleTool(ToolBase):
+    name = "session_title_set"
+    description = (
+        "Set a concise session title that summarizes the conversation. Use it early and update "
+        "it only when the conversation's purpose materially changes."
+    )
+    side_effect_class = "session_metadata"
+    arguments_type: ClassVar[type[ToolArguments]] = SessionTitleArguments
+
+
 class ToolRegistry:
     def __init__(self) -> None:
         values: list[ToolBase] = [
@@ -614,6 +632,7 @@ class ToolRegistry:
             ScarControlTool(),
             SkillCatalogTool(),
             SkillControlTool(),
+            SessionTitleTool(),
         ]
         self._tools = {tool.name: tool for tool in values}
 

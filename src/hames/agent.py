@@ -17,7 +17,15 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 AGENT_ID = re.compile(r"[a-z][a-z0-9-]{0,62}")
 _NON_SLUG = re.compile(r"[^a-z0-9]+")
 READ_ONLY_TOOLS = frozenset(
-    {"read_file", "list_dir", "skill_load", "memory_search", "scar_list", "skill_catalog"}
+    {
+        "read_file",
+        "list_dir",
+        "skill_load",
+        "memory_search",
+        "scar_list",
+        "skill_catalog",
+        "session_title_set",
+    }
 )
 DEFAULT_INSTRUCTIONS = (
     "You are {name}. Follow the assigned task carefully and report evidence clearly."

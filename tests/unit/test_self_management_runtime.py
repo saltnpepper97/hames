@@ -18,6 +18,7 @@ from hames.tools import (
     ScarControlArguments,
     ScarListArguments,
     ScarRecordArguments,
+    SessionTitleArguments,
     SkillCatalogArguments,
     SkillControlArguments,
 )
@@ -44,6 +45,16 @@ async def test_runtime_self_management_memory_and_scar_lifecycles(tmp_path: Path
         model="fixture",
     )
     try:
+        titled = await state.runs._handle_self_management_tool(
+            "run-title",
+            session,
+            SessionTitleArguments(title="Memory and scar controls"),
+            "session_title_set",
+            _evidence(state, session.id, "session-title"),
+        )
+        assert titled.status == "completed"
+        assert state.ledger.get_session(session.id).title == "Memory and scar controls"
+
         added = await state.runs._handle_self_management_tool(
             "run-add",
             session,

@@ -10,7 +10,8 @@ use ratatui::widgets::{
 use unicode_width::UnicodeWidthStr;
 
 use super::app::{
-    ActivityCategory, ActivityPhase, App, ComposerUnit, HitAction, HitRegion, Modal, TranscriptItem,
+    ActivityCategory, ActivityPhase, App, ComposerUnit, HitAction, HitRegion, Modal, ScrollTarget,
+    ThemeKind, TranscriptItem,
 };
 
 const MINT: Color = Color::Rgb(116, 226, 192);
@@ -18,7 +19,8 @@ const SKY: Color = Color::Rgb(112, 177, 255);
 const LILAC: Color = Color::Rgb(193, 154, 255);
 const CORAL: Color = Color::Rgb(255, 139, 116);
 const GOLD: Color = Color::Rgb(240, 190, 92);
-const MUTED: Color = Color::Rgb(125, 134, 151);
+const MUTED: Color = Color::Rgb(86, 94, 108);
+const INPUT: Color = Color::Rgb(156, 164, 178);
 const PANEL: Color = Color::Rgb(19, 23, 31);
 const PANEL_BRIGHT: Color = Color::Rgb(29, 35, 46);
 
@@ -46,6 +48,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             .alignment(Alignment::Center),
             centered(area, 38, 7),
         );
+        apply_theme(frame, area, app.theme);
         return;
     }
 
@@ -94,20 +97,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     render_composer(frame, app, footer[2]);
     render_status_bar(frame, app, footer[3]);
     render_modal(frame, app, area);
+    apply_theme(frame, area, app.theme);
 }
 
 fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    let mode = app.session.interaction_mode.to_uppercase();
-    let run = if app.active_run.is_some() {
-        "RUNNING"
-    } else {
-        "READY"
-    };
-    let reasoning = if app.session.reasoning_effort.is_empty() {
-        "default"
-    } else {
-        &app.session.reasoning_effort
-    };
+    let activity = current_activity(app);
     let left = Line::from(vec![
         Span::styled(" ◈ Hames", Style::default().fg(MINT).bold()),
         Span::styled(
@@ -115,21 +109,19 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             Style::default().fg(MUTED),
         ),
     ]);
-    let runtime = Line::from(vec![
+    let session = Line::from(vec![
         Span::styled(
-            format!("{} / {}", app.session.provider, app.session.model),
-            Style::default().fg(Color::White),
+            app.session.title.as_deref().unwrap_or("New session"),
+            Style::default().fg(INPUT).bold(),
         ),
-        Span::styled(format!(" ({reasoning})"), Style::default().fg(MUTED)),
+        Span::styled(" · ", Style::default().fg(MUTED)),
         Span::styled(
-            format!("   {mode}"),
-            Style::default()
-                .fg(mode_color(&app.session.interaction_mode))
-                .bold(),
-        ),
-        Span::styled(
-            format!(" · {run}  "),
-            Style::default().fg(if run == "RUNNING" { GOLD } else { SKY }),
+            format!("{activity}  "),
+            Style::default().fg(if app.active_run.is_some() {
+                GOLD
+            } else {
+                MUTED
+            }),
         ),
     ])
     .right_aligned();
@@ -138,7 +130,7 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .border_style(Style::default().fg(Color::Rgb(54, 63, 78)));
     frame.render_widget(Paragraph::new(left).block(block.clone()), area);
     frame.render_widget(
-        Paragraph::new(runtime),
+        Paragraph::new(session),
         Rect::new(
             area.x + 20.min(area.width),
             area.y,
@@ -147,19 +139,40 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         ),
     );
     app.hits.push(HitRegion {
-        x: area.x.saturating_add(area.width.saturating_sub(24)),
-        y: area.y,
-        width: 12,
-        height: 1,
-        action: HitAction::OpenModes,
-    });
-    app.hits.push(HitRegion {
         x: area.x,
         y: area.y,
         width: area.width,
         height: 1,
         action: HitAction::ShowSession,
     });
+}
+
+fn current_activity(app: &App) -> &'static str {
+    if app.active_run.is_none() {
+        return "Ready";
+    }
+    for item in app.transcript.iter().rev() {
+        match item {
+            TranscriptItem::Thought { live: true, .. } => return "Thinking",
+            TranscriptItem::Assistant { live: true, .. } => return "Responding",
+            TranscriptItem::Activity { rows, .. } => {
+                if let Some(row) = rows.iter().rev().find(|row| !row.phase.terminal()) {
+                    return match row.category() {
+                        ActivityCategory::Explore => "Exploring",
+                        ActivityCategory::Change => "Writing",
+                        ActivityCategory::Run => "Running",
+                        ActivityCategory::Delegate => "Delegating",
+                        ActivityCategory::Skills => "Skills",
+                        ActivityCategory::Memory => "Memory",
+                        ActivityCategory::Scars => "Scars",
+                        ActivityCategory::Plugin => "Plugin",
+                    };
+                }
+            }
+            _ => {}
+        }
+    }
+    "Working"
 }
 
 struct RenderLine<'a> {
@@ -194,14 +207,25 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
             .end_symbol(None)
-            .track_symbol(Some("│"))
-            .thumb_symbol("┃")
+            .track_symbol(Some("░"))
+            .thumb_symbol("█")
             .track_style(Style::default().fg(Color::Rgb(49, 56, 69)))
-            .thumb_style(Style::default().fg(LILAC));
+            .thumb_style(Style::default().fg(INPUT));
         let mut state = ScrollbarState::new(lines.len())
             .position(start)
             .viewport_content_length(height);
         frame.render_stateful_widget(scrollbar, area, &mut state);
+        app.hits.push(HitRegion {
+            x: area.x.saturating_add(area.width.saturating_sub(1)),
+            y: area.y,
+            width: 1,
+            height: area.height,
+            action: HitAction::Scrollbar {
+                target: ScrollTarget::Transcript,
+                content_len: lines.len(),
+                viewport_len: height,
+            },
+        });
     }
 }
 
@@ -465,14 +489,20 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     };
     let accent = mode_color(&app.session.interaction_mode);
     let title = Line::from(vec![
-        Span::styled("─ ", Style::default().fg(MUTED)),
+        Span::styled(
+            "─ ",
+            Style::default().fg(mode_outline(&app.session.interaction_mode)),
+        ),
         Span::styled(
             format!("{} ({reasoning})", app.session.model),
             Style::default().fg(MUTED).bold(),
         ),
         Span::styled(" · ", Style::default().fg(MUTED)),
         Span::styled(mode, Style::default().fg(accent).bold()),
-        Span::styled(" ─", Style::default().fg(MUTED)),
+        Span::styled(
+            " ─",
+            Style::default().fg(mode_outline(&app.session.interaction_mode)),
+        ),
     ])
     .right_aligned();
     let block = Block::default()
@@ -480,7 +510,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .padding(Padding::horizontal(1))
-        .border_style(Style::default().fg(MUTED));
+        .border_style(Style::default().fg(mode_outline(&app.session.interaction_mode)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.hits.push(HitRegion {
@@ -494,9 +524,13 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let content_area = Rect::new(inner.x, inner.y, content_width, inner.height);
     let (lines, cursor_x, cursor_y) = composer_lines(app, usize::from(content_width));
     let available = usize::from(inner.height);
-    let start = cursor_y
+    let automatic_start = cursor_y
         .saturating_add(1)
         .saturating_sub(available)
+        .min(lines.len().saturating_sub(available));
+    let start = app
+        .composer_scroll
+        .unwrap_or(automatic_start)
         .min(lines.len().saturating_sub(available));
     let end = (start + available).min(lines.len());
     frame.render_widget(Paragraph::new(lines[start..end].to_vec()), content_area);
@@ -504,14 +538,25 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
             .end_symbol(None)
-            .track_symbol(Some("│"))
-            .thumb_symbol("┃")
+            .track_symbol(Some("░"))
+            .thumb_symbol("█")
             .track_style(Style::default().fg(Color::Rgb(49, 56, 69)))
-            .thumb_style(Style::default().fg(SKY));
+            .thumb_style(Style::default().fg(INPUT));
         let mut state = ScrollbarState::new(lines.len())
             .position(start)
             .viewport_content_length(available);
         frame.render_stateful_widget(scrollbar, inner, &mut state);
+        app.hits.push(HitRegion {
+            x: inner.x.saturating_add(inner.width.saturating_sub(1)),
+            y: inner.y,
+            width: 1,
+            height: inner.height,
+            action: HitAction::Scrollbar {
+                target: ScrollTarget::Composer,
+                content_len: lines.len(),
+                viewport_len: available,
+            },
+        });
     }
     if app.modal.is_none() {
         let adjusted_y = cursor_y.saturating_sub(start);
@@ -531,24 +576,15 @@ fn composer_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize)
     if app.composer.units.is_empty() {
         return (
             vec![Line::from(vec![
-                Span::styled(
-                    "❯ ",
-                    Style::default()
-                        .fg(mode_color(&app.session.interaction_mode))
-                        .bold(),
-                ),
-                Span::styled("Message Hames…", Style::default().fg(Color::White)),
+                Span::styled("❯ ", Style::default().fg(INPUT).bold()),
+                Span::styled("Message Hames…", Style::default().fg(MUTED)),
             ])],
             2,
             0,
         );
     }
-    let mut rows: Vec<Vec<Span<'static>>> = vec![vec![Span::styled(
-        "❯ ",
-        Style::default()
-            .fg(mode_color(&app.session.interaction_mode))
-            .bold(),
-    )]];
+    let mut rows: Vec<Vec<Span<'static>>> =
+        vec![vec![Span::styled("❯ ", Style::default().fg(INPUT).bold())]];
     let mut x = 2;
     let mut cursor = (2, 0);
     for (index, unit) in app.composer.units.iter().enumerate() {
@@ -561,7 +597,7 @@ fn composer_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize)
                 x = 2;
                 continue;
             }
-            ComposerUnit::Text(value) => (value.clone(), Style::default().fg(Color::White)),
+            ComposerUnit::Text(value) => (value.clone(), Style::default().fg(INPUT)),
             ComposerUnit::Paste(value) => (
                 paste_capsule(value),
                 Style::default().fg(Color::Black).bg(LILAC).bold(),
@@ -590,32 +626,12 @@ fn composer_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize)
     )
 }
 
-fn render_status_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let state = if app.active_run.is_some() {
-        "working"
-    } else {
-        "connected"
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!("  session {}", short_id(&app.session.id)),
-                Style::default().fg(MUTED),
-            ),
-            Span::styled(" · ", Style::default().fg(Color::Rgb(64, 72, 87))),
-            Span::styled(
-                state,
-                Style::default().fg(mode_color(&app.session.interaction_mode)),
-            ),
-        ])),
-        area,
-    );
+fn render_status_bar(frame: &mut Frame<'_>, _app: &App, area: Rect) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "Shift+Tab mode · Ctrl+K commands  ",
+            "  Shift+Tab mode · Ctrl+K commands",
             Style::default().fg(MUTED),
-        )))
-        .alignment(Alignment::Right),
+        ))),
         area,
     );
 }
@@ -635,7 +651,7 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             vec![
                 Line::from(Span::styled(
                     compact_home(&app.session.working_directory),
-                    Style::default().fg(Color::White).bold(),
+                    Style::default().fg(INPUT).bold(),
                 )),
                 Line::from(""),
                 Line::from(Span::styled(
@@ -716,7 +732,7 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             "Hames shortcuts",
             vec![
                 help_line("Enter", "send"),
-                help_line("Alt+Enter / Ctrl+J", "new line"),
+                help_line("Alt+Enter / Shift+Enter / Ctrl+J", "new line"),
                 help_line("Ctrl+K", "command palette"),
                 help_line("Shift+Tab", "cycle Manual, Auto, and Plan mode"),
                 help_line("Ctrl+C", "cancel active work"),
@@ -1037,7 +1053,45 @@ fn phase_color(phase: ActivityPhase) -> Color {
 fn mode_color(mode: &str) -> Color {
     match mode {
         "plan" => GOLD,
+        "auto" => SKY,
         _ => MUTED,
+    }
+}
+
+fn mode_outline(mode: &str) -> Color {
+    if mode == "plan" { GOLD } else { MUTED }
+}
+
+fn apply_theme(frame: &mut Frame<'_>, area: Rect, theme: ThemeKind) {
+    if theme != ThemeKind::Terminal {
+        return;
+    }
+    let buffer = frame.buffer_mut();
+    for y in area.y..area.y.saturating_add(area.height) {
+        for x in area.x..area.x.saturating_add(area.width) {
+            let Some(cell) = buffer.cell_mut((x, y)) else {
+                continue;
+            };
+            cell.fg = terminal_color(cell.fg);
+            cell.bg = terminal_color(cell.bg);
+        }
+    }
+}
+
+fn terminal_color(color: Color) -> Color {
+    match color {
+        MINT => Color::Green,
+        SKY => Color::Blue,
+        LILAC => Color::Magenta,
+        CORAL => Color::Red,
+        GOLD => Color::Yellow,
+        MUTED => Color::DarkGray,
+        INPUT => Color::Gray,
+        PANEL => Color::Black,
+        PANEL_BRIGHT => Color::DarkGray,
+        Color::White => Color::Reset,
+        Color::Rgb(_, _, _) => Color::Reset,
+        value => value,
     }
 }
 
@@ -1050,10 +1104,6 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
         width,
         height,
     )
-}
-
-fn short_id(value: &str) -> &str {
-    value.get(..8).unwrap_or(value)
 }
 
 fn compact_home(value: &str) -> String {
@@ -1081,8 +1131,11 @@ fn help_line(key: &str, description: &str) -> Line<'static> {
 mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
 
-    use super::{draw, pasted_display, thought_label};
+    use super::{
+        GOLD, INPUT, MUTED, SKY, draw, mode_color, mode_outline, pasted_display, thought_label,
+    };
     use crate::api::{PasteSpan, Session};
     use crate::tui::app::App;
 
@@ -1091,6 +1144,17 @@ mod tests {
         assert_eq!(thought_label(9.4), "Thought");
         assert_eq!(thought_label(10.0), "Thought (10s)");
         assert_eq!(thought_label(68.0), "Thought (1m 8s)");
+    }
+
+    #[test]
+    fn composer_mode_colors_keep_the_caret_neutral() {
+        assert_eq!(INPUT, Color::Rgb(156, 164, 178));
+        assert_eq!(mode_color("manual"), MUTED);
+        assert_eq!(mode_color("auto"), SKY);
+        assert_eq!(mode_color("plan"), GOLD);
+        assert_eq!(mode_outline("manual"), MUTED);
+        assert_eq!(mode_outline("auto"), MUTED);
+        assert_eq!(mode_outline("plan"), GOLD);
     }
 
     #[test]
@@ -1126,7 +1190,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("◈ Hames"));
-        assert!(rendered.contains("fake / fixture"));
+        assert!(rendered.contains("New session · Ready"));
         assert!(rendered.contains("Message Hames"));
         assert!(rendered.contains("─ fixture (medium) · Auto"));
         assert!(rendered.contains("A fresh canvas"));
@@ -1163,11 +1227,34 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(rendered.contains('┃'));
+        assert!(rendered.contains('█'));
         assert!(app.hits.iter().any(|region| {
-            matches!(region.action, crate::tui::app::HitAction::FocusComposer)
-                && region.height == 10
+            matches!(
+                region.action,
+                crate::tui::app::HitAction::Scrollbar {
+                    target: crate::tui::app::ScrollTarget::Composer,
+                    ..
+                }
+            ) && region.height == 8
         }));
+    }
+
+    #[test]
+    fn terminal_theme_maps_custom_rgb_colors_to_terminal_native_colors() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.theme = crate::tui::app::ThemeKind::Terminal;
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .all(|cell| !matches!(cell.fg, Color::Rgb(_, _, _))
+                    && !matches!(cell.bg, Color::Rgb(_, _, _)))
+        );
     }
 
     fn session() -> Session {

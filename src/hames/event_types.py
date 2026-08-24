@@ -52,6 +52,10 @@ class SessionModeChangedPayload(EventPayload):
     mode: str
 
 
+class SessionTitleChangedPayload(EventPayload):
+    title: str = Field(min_length=1, max_length=80)
+
+
 class PasteSpanPayload(EventPayload):
     start_byte: int = Field(ge=0)
     end_byte: int = Field(gt=0)
@@ -613,6 +617,7 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "session.settings.changed": SessionSettingsPayload,
     "session.agent.changed": SessionAgentChangedPayload,
     "session.mode.changed": SessionModeChangedPayload,
+    "session.title.changed": SessionTitleChangedPayload,
     "user.message": MessagePayload,
     "user.correction": CorrectionPayload,
     "assistant.message": AssistantOutputPayload,

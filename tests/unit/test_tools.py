@@ -243,6 +243,7 @@ def test_self_management_tools_are_typed_and_destructive_controls_confirm(
         "scar_control",
         "skill_catalog",
         "skill_control",
+        "session_title_set",
     } <= registry.names()
     with pytest.raises(ValueError, match="replacement field"):
         registry.validate("memory_edit", {"memory_id": "memory-1"})

@@ -673,6 +673,43 @@ class Ledger:
             connection.commit()
         return self.get_session(session_id)
 
+    def update_session_title(
+        self,
+        session_id: str,
+        *,
+        title: str,
+        run_id: str | None = None,
+        agent_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> Event:
+        """Set concise presentation metadata and return its durable continuity event."""
+
+        normalized = " ".join(title.split())
+        if not normalized:
+            raise ValueError("session title must not be blank")
+        if len(normalized) > 80:
+            raise ValueError("session title must not exceed 80 characters")
+        with self._write_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "UPDATE sessions SET title = ? WHERE id = ? AND status = 'open'",
+                (normalized, session_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(session_id)
+            event = self._append_on_connection(
+                connection,
+                session_id=session_id,
+                run_id=run_id,
+                agent_id=agent_id,
+                event_type="session.title.changed",
+                payload={"title": normalized},
+                causation_id=causation_id,
+                correlation_id=session_id,
+            )
+            connection.commit()
+        return event
+
     def update_session_mode(
         self, session_id: str, *, mode: Literal["manual", "auto", "plan"]
     ) -> Session:
