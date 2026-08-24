@@ -35,6 +35,50 @@ def response_object(response: httpx.Response) -> dict[str, JsonValue]:
     return JSON_OBJECT.validate_python(cast(object, response.json()))
 
 
+class ForegroundOverlapProvider:
+    profile_id = "fake"
+    adapter = "fake"
+    base_url = ""
+
+    def __init__(self) -> None:
+        self.requests: list[ModelRequest] = []
+        self.second_started = asyncio.Event()
+        self.release_second = asyncio.Event()
+
+    async def list_models(self) -> list[ProviderModel]:
+        return [
+            ProviderModel(
+                id="fixture",
+                provider="fake",
+                status="available",
+                input_modalities=["text"],
+                output_modalities=["text"],
+            )
+        ]
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+        self.requests.append(request)
+        yield StreamEvent(kind=StreamEventKind.STARTED)
+        if len(self.requests) == 2:
+            self.second_started.set()
+            await self.release_second.wait()
+        yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="done")
+        yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
+
+    async def aclose(self) -> None:
+        return None
+
+
+class BlockingPostRunObserver:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def observe_run(self, _session_id: str, _run_id: str) -> None:
+        self.started.set()
+        await self.release.wait()
+
+
 @pytest.mark.asyncio
 async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
@@ -267,6 +311,62 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             assert verified.status_code == 200
             assert response_object(verified)["ok"] is True
     finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_new_foreground_run_can_start_during_post_terminal_observation(
+    tmp_path: Path,
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    provider = ForegroundOverlapProvider()
+    observer = BlockingPostRunObserver()
+    state = GatewayState.create(paths, providers={"fake": provider})
+    state.runs.evolution_manager = cast(object, observer)  # type: ignore[assignment]
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+
+            first = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "first"},
+            )
+            assert first.status_code == 202
+            await _wait_for_event(client, headers, session_id, "run.completed")
+            await asyncio.wait_for(observer.started.wait(), timeout=1)
+            assert state.runs.active_run_count == 0
+            assert not state.runs.is_session_active(session_id)
+
+            second = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "second"},
+            )
+            assert second.status_code == 202
+            await asyncio.wait_for(provider.second_started.wait(), timeout=1)
+
+            observer.release.set()
+            await asyncio.sleep(0)
+            assert state.runs.is_session_active(session_id)
+
+            provider.release_second.set()
+            await _wait_for_event(client, headers, session_id, "run.completed", occurrences=2)
+    finally:
+        observer.release.set()
+        provider.release_second.set()
         await state.runs.close()
 
 

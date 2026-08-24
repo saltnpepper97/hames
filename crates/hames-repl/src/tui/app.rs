@@ -381,10 +381,24 @@ pub enum TranscriptItem {
         run_id: String,
         rows: Vec<ActivityRow>,
     },
+    Dream {
+        job_id: String,
+        label: String,
+        phase: DreamPhase,
+        detail: String,
+    },
     Status {
         text: String,
         error: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DreamPhase {
+    Queued,
+    Running,
+    Completed,
+    Failed,
 }
 
 #[derive(Clone, Debug)]
@@ -1171,7 +1185,6 @@ impl App {
             }
             _ => {}
         }
-        self.scroll = 0;
     }
 
     pub fn ingest_durable(&mut self, event: Event, live: bool) {
@@ -1189,6 +1202,9 @@ impl App {
                 self.transcript.push(TranscriptItem::User {
                     content: string(&event.payload, "content"),
                 });
+                if live {
+                    self.scroll = 0;
+                }
             }
             "run.started" => {
                 self.active_run = Some(run_id);
@@ -1319,9 +1335,66 @@ impl App {
                     });
                 }
             }
+            "memory.job.queued"
+            | "memory.job.started"
+            | "memory.job.completed"
+            | "memory.job.failed" => {
+                let kind = string(&event.payload, "kind");
+                let automatic = kind != "explicit_capture";
+                let label = if automatic {
+                    "Memory consolidation"
+                } else {
+                    "Requested memory capture"
+                };
+                let phase = dream_phase(&event.event_type);
+                let detail = dream_detail(label, phase, &event.payload);
+                self.update_dream(
+                    string(&event.payload, "job_id"),
+                    label.to_owned(),
+                    phase,
+                    detail,
+                );
+            }
+            "skill.job.queued"
+            | "skill.job.started"
+            | "skill.job.completed"
+            | "skill.job.failed" => {
+                let label = "Skill refinement";
+                let phase = dream_phase(&event.event_type);
+                let detail = dream_detail(label, phase, &event.payload);
+                self.update_dream(
+                    string(&event.payload, "job_id"),
+                    label.to_owned(),
+                    phase,
+                    detail,
+                );
+            }
             _ => {}
         }
-        self.scroll = 0;
+    }
+
+    fn update_dream(&mut self, job_id: String, label: String, phase: DreamPhase, detail: String) {
+        if let Some(TranscriptItem::Dream {
+            label: current_label,
+            phase: current_phase,
+            detail: current_detail,
+            ..
+        }) =
+            self.transcript.iter_mut().rev().find(
+                |item| matches!(item, TranscriptItem::Dream { job_id: id, .. } if id == &job_id),
+            )
+        {
+            *current_label = label;
+            *current_phase = phase;
+            *current_detail = detail;
+            return;
+        }
+        self.transcript.push(TranscriptItem::Dream {
+            job_id,
+            label,
+            phase,
+            detail,
+        });
     }
 
     pub fn toggle_thought(&mut self, index: usize) {
@@ -1719,6 +1792,45 @@ fn string(payload: &Value, key: &str) -> String {
         .to_owned()
 }
 
+fn dream_phase(event_type: &str) -> DreamPhase {
+    if event_type.ends_with(".completed") {
+        DreamPhase::Completed
+    } else if event_type.ends_with(".failed") {
+        DreamPhase::Failed
+    } else if event_type.ends_with(".started") {
+        DreamPhase::Running
+    } else {
+        DreamPhase::Queued
+    }
+}
+
+fn dream_detail(label: &str, phase: DreamPhase, payload: &Value) -> String {
+    if phase == DreamPhase::Failed {
+        let message = string(payload, "error_message");
+        return if message.is_empty() {
+            format!("{label} paused")
+        } else {
+            format!("{label} paused · {message}")
+        };
+    }
+    match phase {
+        DreamPhase::Queued => format!("{label} queued"),
+        DreamPhase::Running => match label {
+            "Memory consolidation" => "Consolidating memory in the background".to_owned(),
+            "Requested memory capture" => "Capturing requested memory in the background".to_owned(),
+            "Skill refinement" => "Refining a reusable Skill in the background".to_owned(),
+            _ => format!("{label} in the background"),
+        },
+        DreamPhase::Completed => match label {
+            "Memory consolidation" => "Memory consolidated".to_owned(),
+            "Requested memory capture" => "Requested memory captured".to_owned(),
+            "Skill refinement" => "Skill refinement complete".to_owned(),
+            _ => format!("{label} complete"),
+        },
+        DreamPhase::Failed => unreachable!(),
+    }
+}
+
 fn approval_from(payload: &Value) -> ApprovalModal {
     ApprovalModal {
         approval_id: string(payload, "approval_id"),
@@ -1768,7 +1880,10 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use serde_json::json;
 
-    use super::{App, Composer, ComposerUnit, TranscriptItem, TranscriptPoint, TranscriptViewport};
+    use super::{
+        App, Composer, ComposerUnit, DreamPhase, TranscriptItem, TranscriptPoint,
+        TranscriptViewport,
+    };
     use crate::api::{Event, Session};
 
     #[test]
@@ -1967,6 +2082,95 @@ mod tests {
             item,
             TranscriptItem::Thought { run_id, .. } if run_id == "background-memory-job"
         )));
+    }
+
+    #[test]
+    fn streamed_output_respects_manual_scroll_until_the_user_returns_to_bottom() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.scroll = 12;
+        app.ingest_transient(
+            "run-scroll",
+            "response.text_delta",
+            &json!({"text": "first"}),
+        );
+        assert_eq!(app.scroll, 12);
+
+        app.ingest_durable(
+            event(
+                1,
+                "assistant.message",
+                "run-scroll",
+                json!({"content": "first", "status": "completed"}),
+            ),
+            true,
+        );
+        assert_eq!(app.scroll, 12);
+
+        app.scroll = 0;
+        app.ingest_transient(
+            "run-scroll",
+            "response.text_delta",
+            &json!({"text": " second"}),
+        );
+        assert_eq!(app.scroll, 0);
+    }
+
+    #[test]
+    fn a_live_user_message_rearms_bottom_following() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.scroll = 20;
+        app.ingest_durable(
+            event(
+                1,
+                "user.message",
+                "run-new",
+                json!({"content": "new request"}),
+            ),
+            true,
+        );
+        assert_eq!(app.scroll, 0);
+    }
+
+    #[test]
+    fn background_memory_lifecycle_is_one_dormant_transcript_item() {
+        let mut app = App::new(session(), Vec::new(), true);
+        let payload = |status: &str| {
+            json!({
+                "job_id": "memory-job",
+                "kind": "extraction",
+                "status": status,
+                "attempts": 1
+            })
+        };
+        app.ingest_durable(
+            event(1, "memory.job.queued", "source-run", payload("pending")),
+            true,
+        );
+        app.ingest_durable(
+            event(2, "memory.job.started", "source-run", payload("running")),
+            true,
+        );
+        app.ingest_durable(
+            event(
+                3,
+                "memory.job.completed",
+                "source-run",
+                payload("completed"),
+            ),
+            true,
+        );
+
+        let dreams = app
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Dream { phase, detail, .. } => Some((*phase, detail.as_str())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(dreams, vec![(DreamPhase::Completed, "Memory consolidated")]);
+        assert!(app.active_run.is_none());
+        assert!(!app.animating());
     }
 
     #[test]

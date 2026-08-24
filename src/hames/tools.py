@@ -378,6 +378,7 @@ class WriteFileTool(ToolBase):
                         args.content.splitlines(keepends=True),
                         fromfile=f"a/{args.path}" if existed else "/dev/null",
                         tofile=f"b/{args.path}",
+                        n=1,
                     )
                 )
             display, truncated, references = _bounded_content(diff, context)
@@ -423,6 +424,7 @@ class EditFileTool(ToolBase):
                     after.splitlines(keepends=True),
                     fromfile=f"a/{args.path}",
                     tofile=f"b/{args.path}",
+                    n=1,
                 )
             )
             content, truncated, references = _bounded_content(diff, context)

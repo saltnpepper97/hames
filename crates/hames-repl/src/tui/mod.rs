@@ -974,6 +974,7 @@ fn send_or_command(app: &mut App) -> Option<Effect> {
     }
     app.composer.clear();
     app.sheet = None;
+    app.scroll = 0;
     app.notice = Some("Sending…".to_owned());
     Some(Effect::Send(content, pastes))
 }

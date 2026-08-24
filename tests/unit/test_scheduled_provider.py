@@ -7,6 +7,7 @@ import pytest
 
 from hames.providers import (
     ModelRequest,
+    ProviderError,
     ProviderMessage,
     ProviderModel,
     StreamEvent,
@@ -71,3 +72,23 @@ async def test_foreground_request_runs_before_waiting_maintenance() -> None:
     assert inner.started == ["memory_extraction", "agent", "skill_authoring"]
     second_release.set()
     await asyncio.gather(first, foreground, second)
+
+
+@pytest.mark.asyncio
+async def test_foreground_preempts_long_running_maintenance_after_a_short_grace() -> None:
+    inner = BlockingProvider()
+    provider = SerializedProvider(inner, foreground_grace_seconds=0.01)
+    maintenance = asyncio.create_task(_consume(provider, "memory_extraction"))
+    await inner.releases.get()
+
+    foreground = asyncio.create_task(_consume(provider, "agent"))
+    foreground_release = await asyncio.wait_for(inner.releases.get(), timeout=1)
+
+    with pytest.raises(ProviderError, match="yielded to a foreground request") as raised:
+        await maintenance
+    assert raised.value.code == "maintenance_preempted"
+    assert raised.value.retryable is True
+    assert inner.started == ["memory_extraction", "agent"]
+
+    foreground_release.set()
+    await foreground

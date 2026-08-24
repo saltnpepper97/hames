@@ -106,6 +106,7 @@ def _explicit_memory_maintenance_request(content: str) -> bool:
         and not _NEGATED_MEMORY_CHANGE.search(content)
     )
 
+
 if TYPE_CHECKING:
     from hames.evolution_runtime import EvolutionManager
     from hames.memory_runtime import MemoryManager
@@ -249,6 +250,7 @@ class RunManager:
         self.scar_store = ScarStore(ledger)
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._session_runs: dict[str, str] = {}
+        self._post_terminal_runs: dict[str, set[str]] = {}
         self._approval_waiters: dict[str, asyncio.Future[str]] = {}
         self._children_by_parent: dict[str, set[str]] = {}
         self._child_count_by_parent: dict[str, int] = {}
@@ -309,8 +311,15 @@ class RunManager:
         session = await asyncio.to_thread(self.ledger.get_session, session_id)
         if session.status != "open":
             raise ValueError("session is not open")
-        if session_id in self._session_runs:
-            raise ValueError("session already has an active run")
+        active_run = self._session_runs.get(session_id)
+        if active_run is not None:
+            terminal = any(
+                event.type in {"run.completed", "run.failed", "run.cancelled"}
+                for event in await asyncio.to_thread(self.ledger.list_run_events, active_run)
+            )
+            if not terminal:
+                raise ValueError("session already has an active run")
+            self._mark_post_terminal(active_run, session_id)
         if session.provider not in self.providers:
             raise KeyError(f"unknown provider: {session.provider}")
         trust = await asyncio.to_thread(self.controls.get_trust, Path(session.working_directory))
@@ -340,11 +349,22 @@ class RunManager:
 
     def _finish(self, run_id: str, session_id: str) -> None:
         self._tasks.pop(run_id, None)
-        self._session_runs.pop(session_id, None)
+        if self._session_runs.get(session_id) == run_id:
+            self._session_runs.pop(session_id, None)
+        post_terminal = self._post_terminal_runs.get(session_id)
+        if post_terminal is not None:
+            post_terminal.discard(run_id)
+            if not post_terminal:
+                self._post_terminal_runs.pop(session_id, None)
         self._children_by_parent.pop(run_id, None)
         self._child_count_by_parent.pop(run_id, None)
         self._skill_catalogs.pop(run_id, None)
         self._loaded_skills.pop(run_id, None)
+
+    def _mark_post_terminal(self, run_id: str, session_id: str) -> None:
+        if self._session_runs.get(session_id) == run_id:
+            self._session_runs.pop(session_id, None)
+        self._post_terminal_runs.setdefault(session_id, set()).add(run_id)
 
     def is_session_active(self, session_id: str) -> bool:
         return session_id in self._session_runs
@@ -353,17 +373,21 @@ class RunManager:
         """Wait for post-terminal bookkeeping, but never wait on a live model/tool run."""
 
         run_id = self._session_runs.get(session_id)
-        if run_id is None:
-            return True
-        terminal = any(
-            event.type in {"run.completed", "run.failed", "run.cancelled"}
-            for event in await asyncio.to_thread(self.ledger.list_run_events, run_id)
-        )
-        if not terminal:
-            return False
-        task = self._tasks.get(run_id)
-        if task is not None:
-            await asyncio.shield(task)
+        if run_id is not None:
+            terminal = any(
+                event.type in {"run.completed", "run.failed", "run.cancelled"}
+                for event in await asyncio.to_thread(self.ledger.list_run_events, run_id)
+            )
+            if not terminal:
+                return False
+            self._mark_post_terminal(run_id, session_id)
+        tasks = [
+            self._tasks[post_run]
+            for post_run in self._post_terminal_runs.get(session_id, set())
+            if post_run in self._tasks
+        ]
+        if tasks:
+            await asyncio.gather(*(asyncio.shield(task) for task in tasks))
         return True
 
     def is_working_directory_active(self, working_directory: str) -> bool:
@@ -374,9 +398,11 @@ class RunManager:
 
     @property
     def active_run_count(self) -> int:
-        return len(self._tasks)
+        return len(self._session_runs)
 
     async def cancel(self, run_id: str) -> bool:
+        if run_id not in self._session_runs.values():
+            return False
         task = self._tasks.get(run_id)
         if task is None or task.done():
             return False
@@ -484,6 +510,7 @@ class RunManager:
             )
             await self._append_failure(session_id, run_id, error.id, "runtime_error", str(exc), {})
         finally:
+            self._mark_post_terminal(run_id, session_id)
             if self.config.memory.enabled:
                 await self._project_episode(session_id, run_id)
             if self.memory_manager is not None and session is not None:

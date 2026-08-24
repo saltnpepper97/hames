@@ -14,7 +14,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::{
-    ActivityCategory, ActivityPhase, App, Composer, ComposerUnit, HitAction, HitRegion,
+    ActivityCategory, ActivityPhase, App, Composer, ComposerUnit, DreamPhase, HitAction, HitRegion,
     MemoryBrowser, Modal, ScarBrowser, ScarEditField, ScarEditor, ScrollTarget, SheetKind,
     ThemeKind, TranscriptItem, TranscriptViewport,
 };
@@ -36,6 +36,8 @@ const INPUT_LIGHT: Color = Color::Rgb(190, 197, 208);
 const RULE: Color = Color::Rgb(49, 56, 69);
 const RULE_LIGHT: Color = Color::Rgb(82, 90, 105);
 const DELETE_BG: Color = Color::Rgb(78, 31, 39);
+const ADDITION_BG: Color = Color::Rgb(20, 50, 40);
+const REMOVAL_BG: Color = Color::Rgb(58, 31, 36);
 const PANEL: Color = Color::Rgb(19, 23, 31);
 const PANEL_BRIGHT: Color = Color::Rgb(29, 35, 46);
 const TEXT_IDLE: Duration = Duration::from_millis(350);
@@ -453,7 +455,8 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                         ActivityPhase::Rejected => "!",
                     };
                     let color = phase_color(row.phase);
-                    let mut detail = row.target();
+                    let target = row.target();
+                    let mut detail = target.clone();
                     let summary_is_redundant = row.name == "memory_forget"
                         && row
                             .arguments
@@ -471,13 +474,29 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                         row.phase,
                         ActivityPhase::Preparing | ActivityPhase::Checking | ActivityPhase::Running
                     );
-                    let line = Line::from(vec![
-                        Span::styled(
-                            format!("  {glyph} {}  ", row.verb()),
-                            Style::default().fg(color),
-                        ),
-                        Span::styled(fitted, Style::default().fg(MUTED)),
-                    ]);
+                    let mut spans = vec![Span::styled(
+                        format!("  {glyph} {}  ", row.verb()),
+                        Style::default().fg(color),
+                    )];
+                    if row
+                        .arguments
+                        .get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some()
+                    {
+                        if let Some(remainder) = fitted.strip_prefix(&target) {
+                            spans.push(Span::styled(target, Style::default().fg(SKY)));
+                            spans.push(Span::styled(
+                                remainder.to_owned(),
+                                Style::default().fg(MUTED),
+                            ));
+                        } else {
+                            spans.push(Span::styled(fitted, Style::default().fg(SKY)));
+                        }
+                    } else {
+                        spans.push(Span::styled(fitted, Style::default().fg(MUTED)));
+                    }
+                    let line = Line::from(spans);
                     lines.push(RenderLine {
                         line,
                         thought: None,
@@ -492,6 +511,30 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                         push_diff(&mut lines, &row.content, width, row.truncated);
                     }
                 }
+            }
+            TranscriptItem::Dream { phase, detail, .. } => {
+                let (glyph, color) = match phase {
+                    DreamPhase::Queued => ("·", MUTED),
+                    DreamPhase::Running => ("○", INPUT),
+                    DreamPhase::Completed => ("✓", MUTED),
+                    DreamPhase::Failed => ("!", CORAL),
+                };
+                lines.push(RenderLine {
+                    line: Line::from(vec![
+                        Span::styled("☾ ", Style::default().fg(MUTED)),
+                        Span::styled("Dream", Style::default().fg(INPUT).bold()),
+                    ]),
+                    thought: None,
+                    sheen: None,
+                });
+                lines.push(RenderLine {
+                    line: Line::from(vec![
+                        Span::styled(format!("  {glyph} "), Style::default().fg(color)),
+                        Span::styled(detail.clone(), Style::default().fg(MUTED)),
+                    ]),
+                    thought: None,
+                    sheen: None,
+                });
             }
             TranscriptItem::Assistant { .. } => {}
             TranscriptItem::Status { text, error } => {
@@ -511,11 +554,18 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 });
             }
         }
-        lines.push(RenderLine {
-            line: Line::from(""),
-            thought: None,
-            sheen: None,
-        });
+        let compact_tool_handoff = matches!(item, TranscriptItem::Assistant { .. })
+            && matches!(
+                app.transcript.get(index + 1),
+                Some(TranscriptItem::Activity { .. })
+            );
+        if !compact_tool_handoff {
+            lines.push(RenderLine {
+                line: Line::from(""),
+                thought: None,
+                sheen: None,
+            });
+        }
     }
     if lines.is_empty() {
         lines.extend([
@@ -1784,8 +1834,8 @@ fn push_markdown(
                     lines,
                     vec![Span::styled(raw.to_owned(), Style::default().fg(INPUT))],
                     width,
-                    "  │ ",
-                    Style::default().fg(RULE),
+                    "    ",
+                    Style::default(),
                 );
             }
             continue;
@@ -2010,18 +2060,44 @@ fn looks_like_unified_diff(value: &str) -> bool {
 }
 
 fn push_diff(lines: &mut Vec<RenderLine<'static>>, value: &str, width: usize, truncated: bool) {
+    let source_lines = compact_diff_lines(value);
+    let additions = source_lines
+        .iter()
+        .flatten()
+        .filter(|line| line.value.starts_with('+'))
+        .count();
+    let removals = source_lines
+        .iter()
+        .flatten()
+        .filter(|line| line.value.starts_with('-'))
+        .count();
     lines.push(RenderLine {
         line: Line::from(vec![
             Span::styled("  ── ", Style::default().fg(RULE)),
             Span::styled("diff", Style::default().fg(MUTED)),
+            Span::styled("  (", Style::default().fg(MUTED)),
+            Span::styled(format!("+{additions}"), Style::default().fg(MINT)),
+            Span::styled(" ", Style::default()),
+            Span::styled(format!("-{removals}"), Style::default().fg(CORAL)),
+            Span::styled(")", Style::default().fg(MUTED)),
         ]),
         thought: None,
         sheen: None,
     });
-    for line in value.lines().take(160) {
-        push_diff_source_line(lines, line, width);
+    for line in source_lines.iter().take(160) {
+        if let Some(line) = line {
+            push_numbered_diff_source_line(lines, *line, width);
+        } else {
+            push_styled_wrapped(
+                lines,
+                vec![Span::styled("⋯".to_owned(), Style::default().fg(MUTED))],
+                width,
+                "    ",
+                Style::default(),
+            );
+        }
     }
-    if truncated || value.lines().count() > 160 {
+    if truncated || source_lines.len() > 160 {
         push_styled_wrapped(
             lines,
             vec![Span::styled(
@@ -2029,32 +2105,151 @@ fn push_diff(lines: &mut Vec<RenderLine<'static>>, value: &str, width: usize, tr
                 Style::default().fg(GOLD),
             )],
             width,
-            "  │ ",
-            Style::default().fg(RULE),
+            "    ",
+            Style::default(),
         );
     }
     lines.push(markdown_rule(width));
 }
 
+#[derive(Clone, Copy)]
+struct NumberedDiffLine<'a> {
+    line_number: usize,
+    value: &'a str,
+}
+
+fn compact_diff_lines(value: &str) -> Vec<Option<NumberedDiffLine<'_>>> {
+    let mut result = Vec::new();
+    let mut hunk = Vec::new();
+    let mut old_line = 0usize;
+    let mut new_line = 0usize;
+    for line in value.lines() {
+        if line.starts_with("--- ") || line.starts_with("+++ ") {
+            continue;
+        }
+        if line.starts_with("@@") {
+            append_compact_hunk(&mut result, &hunk);
+            hunk.clear();
+            if let Some((old_start, new_start)) = hunk_starts(line) {
+                old_line = old_start;
+                new_line = new_start;
+            }
+        } else if line.starts_with('+') {
+            hunk.push(NumberedDiffLine {
+                line_number: new_line,
+                value: line,
+            });
+            new_line += 1;
+        } else if line.starts_with('-') {
+            hunk.push(NumberedDiffLine {
+                line_number: old_line,
+                value: line,
+            });
+            old_line += 1;
+        } else if line.starts_with(' ') {
+            hunk.push(NumberedDiffLine {
+                line_number: new_line,
+                value: line,
+            });
+            old_line += 1;
+            new_line += 1;
+        }
+    }
+    append_compact_hunk(&mut result, &hunk);
+    result
+}
+
+fn hunk_starts(value: &str) -> Option<(usize, usize)> {
+    let mut parts = value.split_whitespace();
+    (parts.next()? == "@@").then_some(())?;
+    let old = parts.next()?.strip_prefix('-')?;
+    let new = parts.next()?.strip_prefix('+')?;
+    Some((diff_range_start(old)?, diff_range_start(new)?))
+}
+
+fn diff_range_start(value: &str) -> Option<usize> {
+    value.split(',').next()?.parse().ok()
+}
+
+fn append_compact_hunk<'a>(
+    result: &mut Vec<Option<NumberedDiffLine<'a>>>,
+    hunk: &[NumberedDiffLine<'a>],
+) {
+    if hunk.is_empty() {
+        return;
+    }
+    let changed = hunk
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            (line.value.starts_with('+') || line.value.starts_with('-')).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    if changed.is_empty() {
+        return;
+    }
+    if !result.is_empty() {
+        result.push(None);
+    }
+    for (index, line) in hunk.iter().enumerate() {
+        if changed.iter().any(|changed| changed.abs_diff(index) <= 1) {
+            result.push(Some(*line));
+        }
+    }
+}
+
+fn push_numbered_diff_source_line(
+    lines: &mut Vec<RenderLine<'static>>,
+    source: NumberedDiffLine<'_>,
+    width: usize,
+) {
+    let prefix = format!("  {:>4} ", source.line_number);
+    push_diff_source_line_with_prefix(lines, source.value, width, &prefix);
+}
+
 fn push_diff_source_line(lines: &mut Vec<RenderLine<'static>>, value: &str, width: usize) {
-    let style = if value.starts_with("+++") || value.starts_with("---") {
-        Style::default().fg(MUTED).bold()
+    push_diff_source_line_with_prefix(lines, value, width, "    ");
+}
+
+fn push_diff_source_line_with_prefix(
+    lines: &mut Vec<RenderLine<'static>>,
+    value: &str,
+    width: usize,
+    prefix: &str,
+) {
+    let (style, rail, background) = if value.starts_with("+++") || value.starts_with("---") {
+        (Style::default().fg(MUTED).bold(), RULE, None)
     } else if value.starts_with('+') {
-        Style::default().fg(MINT)
+        (Style::default().fg(MINT), MINT, Some(ADDITION_BG))
     } else if value.starts_with('-') {
-        Style::default().fg(CORAL)
+        (Style::default().fg(CORAL), CORAL, Some(REMOVAL_BG))
     } else if value.starts_with("@@") {
-        Style::default().fg(INPUT).bold()
+        (Style::default().fg(SKY).bold(), SKY, Some(PANEL_BRIGHT))
     } else {
-        Style::default().fg(INPUT)
+        (Style::default().fg(INPUT), RULE, None)
     };
+    let start = lines.len();
     push_styled_wrapped(
         lines,
         vec![Span::styled(value.to_owned(), style)],
         width,
-        "  │ ",
-        Style::default().fg(RULE),
+        prefix,
+        Style::default().fg(rail),
     );
+    if let Some(background) = background {
+        for item in &mut lines[start..] {
+            let used = item.line.width();
+            for span in &mut item.line.spans {
+                span.style = span.style.bg(background);
+            }
+            if used < width {
+                item.line.spans.push(Span::styled(
+                    " ".repeat(width - used),
+                    Style::default().bg(background),
+                ));
+            }
+        }
+    }
 }
 
 fn push_wrapped(
@@ -2221,6 +2416,8 @@ fn terminal_color(color: Color) -> Color {
         PANEL => Color::Black,
         PANEL_BRIGHT => Color::DarkGray,
         DELETE_BG => Color::Red,
+        ADDITION_BG => Color::DarkGray,
+        REMOVAL_BG => Color::DarkGray,
         Color::White => Color::Reset,
         Color::Rgb(_, _, _) => Color::Reset,
         value => value,
@@ -2271,15 +2468,15 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        CORAL, DELETE_BG, GOLD, INPUT, INPUT_LIGHT, MINT, MINT_LIGHT, MUTED, PANEL, PANEL_BRIGHT,
-        SKY, draw, format_elapsed, line_text, memory_browser_body, mode_color, mode_outline,
-        scar_browser_body, scar_editor_body, scrollbar_position, sheet_text_color, thought_label,
-        transcript_lines, traveling_sheen,
+        ADDITION_BG, CORAL, DELETE_BG, GOLD, INPUT, INPUT_LIGHT, MINT, MINT_LIGHT, MUTED, PANEL,
+        PANEL_BRIGHT, REMOVAL_BG, SKY, compact_diff_lines, draw, format_elapsed, line_text,
+        memory_browser_body, mode_color, mode_outline, scar_browser_body, scar_editor_body,
+        scrollbar_position, sheet_text_color, thought_label, transcript_lines, traveling_sheen,
     };
     use crate::api::{MemoryRecord, Scar, Session};
     use crate::tui::app::{
-        ActivityPhase, ActivityRow, App, ApprovalModal, HitAction, MemoryBrowser, MenuAction,
-        MenuOption, Modal, ScarBrowser, ScarEditor, Sheet, SheetKind, TranscriptItem,
+        ActivityPhase, ActivityRow, App, ApprovalModal, DreamPhase, HitAction, MemoryBrowser,
+        MenuAction, MenuOption, Modal, ScarBrowser, ScarEditor, Sheet, SheetKind, TranscriptItem,
         TranscriptPoint,
     };
 
@@ -2455,6 +2652,13 @@ mod tests {
         assert!(rendered.contains("── rust"));
         assert!(!rendered.contains("Pasted Text"));
         assert!(!rendered.contains("```"));
+        assert!(
+            !rendered
+                .lines()
+                .find(|line| line.contains("fn main() {}"))
+                .unwrap()
+                .contains('│')
+        );
     }
 
     #[test]
@@ -2493,8 +2697,18 @@ mod tests {
                 argument_parts: String::new(),
                 phase: ActivityPhase::Completed,
                 summary: "edited src/main.rs".to_owned(),
-                content: "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-old\n+new\n"
-                    .to_owned(),
+                content: concat!(
+                    "--- a/src/main.rs\n",
+                    "+++ b/src/main.rs\n",
+                    "@@ -2,5 +2,5 @@\n",
+                    " before two\n",
+                    " before one\n",
+                    "-old\n",
+                    "+new\n",
+                    " after one\n",
+                    " after two\n",
+                )
+                .to_owned(),
                 structured_data: json!({"path": "src/main.rs"}),
                 truncated: false,
                 duration_seconds: 0.01,
@@ -2506,17 +2720,147 @@ mod tests {
             .map(|item| line_text(&item.line))
             .collect::<Vec<_>>();
         assert!(text.iter().any(|line| line.contains("── diff")));
-        assert!(text.iter().any(|line| line.contains("--- a/src/main.rs")));
+        assert!(text.iter().any(|line| line.contains("(+1 -1)")));
+        assert!(!text.iter().any(|line| line.contains("--- a/src/main.rs")));
+        assert!(!text.iter().any(|line| line.contains("@@ -2,5")));
+        assert!(!text.iter().any(|line| line.contains("before two")));
+        assert!(!text.iter().any(|line| line.contains("after two")));
+        assert!(text.iter().any(|line| line.contains("before one")));
+        assert!(text.iter().any(|line| line.contains("after one")));
+        assert!(text.iter().any(|line| line.contains("4 -old")));
+        assert!(text.iter().any(|line| line.contains("4 +new")));
+        assert!(
+            !text
+                .iter()
+                .find(|line| line.contains("4 +new"))
+                .unwrap()
+                .contains('│')
+        );
         let addition = rendered
             .iter()
             .find(|item| line_text(&item.line).contains("+new"))
             .unwrap();
-        assert_eq!(addition.line.spans.last().unwrap().style.fg, Some(MINT));
+        assert!(
+            addition
+                .line
+                .spans
+                .iter()
+                .any(|span| span.style.fg == Some(MINT))
+        );
+        assert!(
+            addition
+                .line
+                .spans
+                .iter()
+                .all(|span| span.style.bg == Some(ADDITION_BG))
+        );
         let removal = rendered
             .iter()
             .find(|item| line_text(&item.line).contains("-old"))
             .unwrap();
-        assert_eq!(removal.line.spans.last().unwrap().style.fg, Some(CORAL));
+        assert!(
+            removal
+                .line
+                .spans
+                .iter()
+                .any(|span| span.style.fg == Some(CORAL))
+        );
+        assert!(
+            removal
+                .line
+                .spans
+                .iter()
+                .all(|span| span.style.bg == Some(REMOVAL_BG))
+        );
+
+        let activity = rendered
+            .iter()
+            .find(|item| line_text(&item.line).contains("src/main.rs · edited"))
+            .unwrap();
+        assert!(
+            activity
+                .line
+                .spans
+                .iter()
+                .any(|span| span.content.contains("src/main.rs") && span.style.fg == Some(SKY))
+        );
+    }
+
+    #[test]
+    fn nearby_diff_edits_share_context_without_a_duplicate_gap() {
+        let compact = compact_diff_lines(concat!(
+            "--- a/file.py\n",
+            "+++ b/file.py\n",
+            "@@ -4,5 +4,5 @@\n",
+            "-old one\n",
+            "+new one\n",
+            " between\n",
+            "-old two\n",
+            "+new two\n",
+        ));
+        let values = compact
+            .iter()
+            .flatten()
+            .map(|line| line.value)
+            .collect::<Vec<_>>();
+        assert_eq!(values.iter().filter(|line| **line == " between").count(), 1);
+        assert!(!compact.iter().any(Option::is_none));
+    }
+
+    #[test]
+    fn dormant_consolidation_is_visible_without_becoming_live_activity() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::Dream {
+            job_id: "memory-job".to_owned(),
+            label: "Memory consolidation".to_owned(),
+            phase: DreamPhase::Running,
+            detail: "Consolidating memory in the background".to_owned(),
+        });
+        let rendered = transcript_lines(&app, 80)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("☾ Dream"));
+        assert!(rendered.contains("Consolidating memory in the background"));
+        assert_eq!(super::current_activity(&app), "Ready");
+        assert!(!app.animating());
+    }
+
+    #[test]
+    fn assistant_preface_hands_directly_to_tool_activity() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::Assistant {
+            run_id: "run-handoff".to_owned(),
+            content: "Next, I'll write it:".to_owned(),
+            live: false,
+            durable: true,
+        });
+        app.transcript.push(TranscriptItem::Activity {
+            run_id: "run-handoff".to_owned(),
+            rows: vec![ActivityRow {
+                index: 0,
+                tool_call_id: Some("write-1".to_owned()),
+                name: "write_file".to_owned(),
+                arguments: json!({"path": "game.py"}),
+                argument_parts: String::new(),
+                phase: ActivityPhase::Running,
+                summary: String::new(),
+                content: String::new(),
+                structured_data: json!({}),
+                truncated: false,
+                duration_seconds: 0.0,
+            }],
+        });
+        let rendered = transcript_lines(&app, 80)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>();
+        let preface = rendered
+            .iter()
+            .position(|line| line.contains("Next, I'll write it:"))
+            .unwrap();
+        assert!(rendered[preface + 1].contains("◆ Change"));
     }
 
     #[test]
