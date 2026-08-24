@@ -12,7 +12,12 @@ pub const MARK: &str = "⬢";
 pub enum Badge {
     Thinking,
     Compacting,
-    Tool,
+    Explore,
+    Change,
+    Run,
+    Delegate,
+    Skills,
+    Plugin,
     Hames,
     You,
     Error,
@@ -33,15 +38,29 @@ const GREEN: Rgb = Rgb {
 };
 
 static COLOR: AtomicBool = AtomicBool::new(false);
+static INTERACTIVE: AtomicBool = AtomicBool::new(false);
 static SHEEN_TICK: AtomicU32 = AtomicU32::new(0);
 
 pub fn init() {
-    let enabled = io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
-    COLOR.store(enabled, Ordering::Relaxed);
+    let terminal =
+        io::stdout().is_terminal() && std::env::var("TERM").map_or(true, |value| value != "dumb");
+    INTERACTIVE.store(terminal, Ordering::Relaxed);
+    COLOR.store(
+        terminal && std::env::var_os("NO_COLOR").is_none(),
+        Ordering::Relaxed,
+    );
 }
 
 pub fn color_enabled() -> bool {
     COLOR.load(Ordering::Relaxed)
+}
+
+pub fn interactive() -> bool {
+    INTERACTIVE.load(Ordering::Relaxed)
+}
+
+pub fn advance_animation() {
+    SHEEN_TICK.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn paint(ansi: &str, text: &str) -> String {
@@ -144,7 +163,12 @@ impl Badge {
         match self {
             Self::Thinking => "Thinking",
             Self::Compacting => "Compacting",
-            Self::Tool => "Tool",
+            Self::Explore => "Explore",
+            Self::Change => "Change",
+            Self::Run => "Run",
+            Self::Delegate => "Delegate",
+            Self::Skills => "Skills",
+            Self::Plugin => "Plugin",
             Self::Hames => "Hames",
             Self::You => "You",
             Self::Error => "Error",
@@ -159,10 +183,30 @@ impl Badge {
                 g: 124,
                 b: 132,
             },
-            Self::Tool => Rgb {
-                r: 201,
-                g: 148,
-                b: 54,
+            Self::Explore => Rgb {
+                r: 104,
+                g: 174,
+                b: 238,
+            },
+            Self::Change => Rgb {
+                r: 181,
+                g: 142,
+                b: 246,
+            },
+            Self::Run => Rgb {
+                r: 218,
+                g: 168,
+                b: 78,
+            },
+            Self::Delegate => Rgb {
+                r: 73,
+                g: 190,
+                b: 178,
+            },
+            Self::Skills | Self::Plugin => Rgb {
+                r: 153,
+                g: 162,
+                b: 180,
             },
             Self::Hames => Rgb {
                 r: 210,
@@ -189,8 +233,19 @@ impl Badge {
 }
 
 pub fn mark() -> String {
+    mark_with_liveness(false)
+}
+
+fn mark_with_liveness(live: bool) -> String {
     if color_enabled() {
-        rgb_bold(GREEN, MARK)
+        let color = if live {
+            let tick = SHEEN_TICK.load(Ordering::Relaxed) as f32;
+            let wave = (tick * 0.13).sin() * 0.5 + 0.5;
+            lerp(GREEN, WHITE, wave * 0.32)
+        } else {
+            GREEN
+        };
+        rgb_bold(color, MARK)
     } else {
         MARK.to_owned()
     }
@@ -213,7 +268,7 @@ pub fn badge(kind: Badge, live: bool) -> String {
     if kind == Badge::You {
         return painted;
     }
-    format!("{} {painted}", mark())
+    format!("{} {painted}", mark_with_liveness(live))
 }
 
 /// Advance the shine and repaint the live heading `distance` lines above the cursor.
@@ -221,7 +276,7 @@ pub fn sweep_badge(kind: Badge, distance: u16) -> io::Result<()> {
     if !color_enabled() || distance == 0 {
         return Ok(());
     }
-    SHEEN_TICK.fetch_add(1, Ordering::Relaxed);
+    advance_animation();
     let mut out = io::stdout();
     write!(
         out,
@@ -231,30 +286,37 @@ pub fn sweep_badge(kind: Badge, distance: u16) -> io::Result<()> {
     out.flush()
 }
 
-pub fn banner_line(
+pub fn banner_lines(
     version: &str,
-    _gateway: &str,
+    gateway_version: &str,
     provider: &str,
     model: &str,
+    reasoning: &str,
     cwd: &str,
+    session_id: &str,
 ) -> String {
+    let short_session = session_id.get(..8).unwrap_or(session_id);
     format!(
-        "{} {}  {}",
+        "{} {}  {}\n  {}",
         mark(),
         paint("1", "Hames"),
-        paint("2", &format!("{version} · {provider} / {model} · {cwd}"))
+        paint(
+            "2",
+            &format!("{version} · core {gateway_version} · {provider} / {model} · {reasoning}")
+        ),
+        paint("2", &format!("{cwd} · session {short_session}"))
     )
 }
 
 pub fn prompt() -> String {
-    format!("{} ", paint("2", "You"))
+    format!("{} {} ", paint("2", "You"), paint("2", "›"))
 }
 
 pub fn continue_prompt() -> &'static str {
     if color_enabled() {
-        "\x1b[2m    ...\x1b[0m "
+        "\x1b[2m      ›\x1b[0m "
     } else {
-        "    ... "
+        "      › "
     }
 }
 

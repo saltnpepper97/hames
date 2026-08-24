@@ -8,7 +8,9 @@ use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
+use unicode_width::UnicodeWidthChar;
 
+use crate::activity::{ActivityBoard, ActivityCategory};
 use crate::api::{
     ContextInspection, Event, GatewayClient, LiveEnvelope, MemoryJob, MemoryRecord,
     PROTOCOL_VERSION, ProviderModel, ProviderProbe, ProviderProfile, RunInspection, Scar, Session,
@@ -66,12 +68,18 @@ pub async fn run() -> Result<()> {
         .await?;
     println!(
         "{}",
-        style::banner_line(
+        style::banner_lines(
             env!("CARGO_PKG_VERSION"),
             &health.version,
             &provider,
             &model,
+            if reasoning.is_empty() {
+                "default"
+            } else {
+                &reasoning
+            },
             &cwd.display().to_string(),
+            &session.id,
         )
     );
     if !health.database_ready {
@@ -1250,7 +1258,7 @@ async fn stream_message(
     let mut output = RenderedOutput::default();
     let mut cancelled = false;
     let mut reconnects = 0_u8;
-    let mut sheen = tokio::time::interval(Duration::from_millis(40));
+    let mut sheen = tokio::time::interval(Duration::from_millis(80));
     sheen.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
@@ -1285,15 +1293,17 @@ async fn stream_message(
                 for data in decoder.push(&bytes) {
                     let envelope: LiveEnvelope = serde_json::from_str(&data)
                         .context("gateway emitted malformed SSE data")?;
+                    let finished = process_envelope(&envelope, &run_id, &mut output)?;
                     if let Some(event) = &envelope.event {
                         after = after.max(event.sequence);
                         if event.run_id.as_deref() == Some(run_id.as_str())
                             && event.event_type == "approval.requested"
                         {
+                            output.detach_activity();
                             handle_approval(client, editor, event).await?;
                         }
                     }
-                    if process_envelope(&envelope, &run_id, &mut output)? {
+                    if finished {
                         output.finish_turn()?;
                         return Ok(());
                     }
@@ -1302,11 +1312,8 @@ async fn stream_message(
             _ = tokio::signal::ctrl_c(), if !cancelled => {
                 cancelled = true;
                 client.cancel(&run_id).await?;
-                eprintln!(
-                    "\n{} {}",
-                    style::badge(style::Badge::Hames, false),
-                    style::dim("cancelling")
-                );
+                output.cancel_activity()?;
+                output.note_line("cancelling")?;
             }
         }
     }
@@ -1386,19 +1393,9 @@ fn process_envelope(
                     }
                 }
             }
-            "tool.requested" => {
-                let name = event.payload["name"].as_str().unwrap_or("unknown");
-                output.tool_line(&format!("requested {name}"))?;
-            }
-            "tool.started" => {
-                let name = event.payload["name"].as_str().unwrap_or("unknown");
-                output.tool_line(&format!("running {name}"))?;
-            }
-            "tool.completed" | "tool.failed" | "tool.rejected" => {
-                let name = event.payload["name"].as_str().unwrap_or("unknown");
-                let summary = event.payload["summary"].as_str().unwrap_or("");
-                output.tool_line(&format!("{name}: {summary}"))?;
-            }
+            "model.tool_call" | "tool.requested" | "policy.requested" | "policy.decided"
+            | "approval.requested" | "approval.resolved" | "tool.started" | "tool.completed"
+            | "tool.failed" | "tool.rejected" => output.activity_event(event)?,
             "model.response.failed" => {
                 let code = event
                     .payload
@@ -1410,6 +1407,7 @@ fn process_envelope(
                     .get("message")
                     .and_then(|value| value.as_str())
                     .unwrap_or("the model run failed");
+                output.fail_activity(message)?;
                 output.error_line(&format!("{code}: {message}"))?;
             }
             "run.failed" => {
@@ -1417,10 +1415,14 @@ fn process_envelope(
                 let message = event.payload["message"]
                     .as_str()
                     .unwrap_or("the agent run failed");
+                output.fail_activity(message)?;
                 output.error_line(&format!("{code}: {message}"))?;
                 return Ok(true);
             }
             "run.completed" | "run.cancelled" => {
+                if event.event_type == "run.cancelled" {
+                    output.cancel_activity()?;
+                }
                 return Ok(true);
             }
             "scar.recorded" | "scar.opened" | "scar.regressed" | "scar.healed" => {
@@ -1458,6 +1460,11 @@ fn process_envelope(
         Some("response.text_delta") => {
             output.push_answer(text)?;
         }
+        Some("response.tool_call_delta") => {
+            if let Some(payload) = &envelope.payload {
+                output.activity_delta(payload)?;
+            }
+        }
         _ => {}
     }
     Ok(false)
@@ -1474,20 +1481,44 @@ struct RenderedOutput {
     open_line: bool,
     body_started: bool,
     compacted: bool,
+    activity: ActivityBoard,
+    activity_lines: u16,
+    activity_visible: bool,
+    activity_detached: bool,
+    logged_activity: Vec<String>,
+    logged_category: Option<ActivityCategory>,
 }
 
 impl RenderedOutput {
     fn begin_turn(&mut self) -> Result<()> {
-        if self.current.is_some() || self.body_started || !self.reasoning.is_empty() {
-            return Ok(());
-        }
+        let had_output = self.current.is_some()
+            || self.body_started
+            || !self.reasoning.is_empty()
+            || !self.activity.is_empty();
         self.settle()?;
-        println!();
-        *self = Self::default();
+        self.settle_activity();
+        if had_output {
+            println!();
+        }
+        self.reasoning.clear();
+        self.answer.clear();
+        self.body_col = 0;
+        self.open_line = false;
+        self.body_started = false;
+        self.activity.next_turn();
+        self.activity_lines = 0;
+        self.activity_visible = false;
+        self.activity_detached = false;
+        self.logged_activity.clear();
+        self.logged_category = None;
         Ok(())
     }
 
     fn tick_sheen(&mut self) -> Result<()> {
+        if self.activity_visible && self.activity.has_live_rows() && style::interactive() {
+            style::advance_animation();
+            return self.repaint_activity();
+        }
         if !self.live {
             return Ok(());
         }
@@ -1531,6 +1562,7 @@ impl RenderedOutput {
 
     fn finish_turn(&mut self) -> Result<()> {
         self.settle()?;
+        self.settle_activity();
         println!();
         Ok(())
     }
@@ -1539,7 +1571,13 @@ impl RenderedOutput {
         if self.current == Some(kind) && self.live {
             return Ok(());
         }
-        let spacer = matches!(kind, style::Badge::Hames) && self.current.is_some();
+        let had_activity = !self.activity.is_empty();
+        if had_activity {
+            self.settle_activity();
+            self.activity.clear();
+        }
+        let spacer =
+            (matches!(kind, style::Badge::Hames) && self.current.is_some()) || had_activity;
         self.settle()?;
         if spacer {
             println!();
@@ -1578,7 +1616,7 @@ impl RenderedOutput {
                 self.distance = self.distance.saturating_add(1);
                 self.body_col = 0;
             } else {
-                self.body_col += 1;
+                self.body_col += UnicodeWidthChar::width(ch).unwrap_or(0);
             }
         }
     }
@@ -1617,16 +1655,9 @@ impl RenderedOutput {
         Ok(())
     }
 
-    fn tool_line(&mut self, body: &str) -> Result<()> {
-        self.open_badge(style::Badge::Tool)?;
-        self.close_line()?;
-        self.write_body(body, false)?;
-        self.close_line()?;
-        Ok(())
-    }
-
     fn error_line(&mut self, body: &str) -> Result<()> {
         self.settle()?;
+        self.settle_activity();
         eprintln!("{}", style::badge(style::Badge::Error, false));
         eprintln!("  {body}");
         Ok(())
@@ -1634,8 +1665,134 @@ impl RenderedOutput {
 
     fn note_line(&mut self, body: &str) -> Result<()> {
         self.settle()?;
+        self.settle_activity();
         println!("{} {}", style::mark(), style::dim(body));
         Ok(())
+    }
+
+    fn activity_delta(&mut self, payload: &serde_json::Value) -> Result<()> {
+        let was_empty = self.activity.is_empty();
+        let Some(index) = self.activity.transient_delta(payload) else {
+            return Ok(());
+        };
+        self.show_activity_update(index, was_empty)
+    }
+
+    fn activity_event(&mut self, event: &Event) -> Result<()> {
+        let was_empty = self.activity.is_empty();
+        let Some(index) = self
+            .activity
+            .durable_event(&event.event_type, &event.payload)
+        else {
+            return Ok(());
+        };
+        self.show_activity_update(index, was_empty)
+    }
+
+    fn show_activity_update(&mut self, index: usize, was_empty: bool) -> Result<()> {
+        if was_empty {
+            let had_block = self.current.is_some() || self.body_started;
+            self.settle()?;
+            if had_block {
+                println!();
+            }
+        }
+        if style::interactive() && !self.activity_detached {
+            self.repaint_activity()
+        } else {
+            self.append_activity_transition(index)
+        }
+    }
+
+    fn repaint_activity(&mut self) -> Result<()> {
+        if self.activity_detached {
+            return Ok(());
+        }
+        let mut out = io::stdout();
+        if self.activity_visible {
+            for _ in 0..self.activity_lines {
+                write!(out, "\x1b[1A\r\x1b[2K")?;
+            }
+        }
+        let lines = self
+            .activity
+            .render_lines(style::columns().max(24), self.activity.has_live_rows());
+        for line in &lines {
+            writeln!(out, "{line}")?;
+        }
+        out.flush()?;
+        self.activity_lines = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+        self.activity_visible = !lines.is_empty();
+        Ok(())
+    }
+
+    fn append_activity_transition(&mut self, index: usize) -> Result<()> {
+        let Some(line) = self.activity.row_line(index, style::columns().max(24)) else {
+            return Ok(());
+        };
+        if self.logged_activity.get(index) == Some(&line) {
+            return Ok(());
+        }
+        let category = self.activity.row_category(index);
+        if category != self.logged_category {
+            if let Some(category) = category {
+                println!("{}", style::badge(category.badge(), false));
+            }
+            self.logged_category = category;
+        }
+        println!("{line}");
+        if self.logged_activity.len() <= index {
+            self.logged_activity.resize(index + 1, String::new());
+        }
+        self.logged_activity[index] = line;
+        Ok(())
+    }
+
+    fn settle_activity(&mut self) {
+        self.activity_lines = 0;
+        self.activity_visible = false;
+        self.activity_detached = false;
+        self.logged_category = None;
+    }
+
+    fn detach_activity(&mut self) {
+        self.activity_lines = 0;
+        self.activity_visible = false;
+        self.activity_detached = true;
+        self.logged_category = None;
+        self.logged_activity.clear();
+    }
+
+    fn cancel_activity(&mut self) -> Result<()> {
+        if self.activity.is_empty() {
+            return Ok(());
+        }
+        self.activity.cancel_live();
+        if style::interactive() && !self.activity_detached {
+            self.repaint_activity()
+        } else {
+            let rows = self.logged_activity.len().max(1);
+            for index in 0..rows {
+                self.append_activity_transition(index)?;
+            }
+            Ok(())
+        }
+    }
+
+    fn fail_activity(&mut self, summary: &str) -> Result<()> {
+        if self.activity.is_empty() {
+            return Ok(());
+        }
+        self.activity.fail_live(summary);
+        if style::interactive() && !self.activity_detached {
+            self.repaint_activity()
+        } else {
+            let rows = self.logged_activity.len().max(1);
+            for index in 0..rows {
+                self.append_activity_transition(index)?;
+            }
+            Ok(())
+        }
     }
 
     fn reconcile_reasoning(&mut self, content: &str) -> Result<()> {
@@ -1676,13 +1833,14 @@ fn wrap_body(text: &str, start_col: usize, cols: usize) -> String {
             col = 0;
             continue;
         }
-        if col >= width {
+        let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if col + char_width > width {
             out.push('\n');
             out.push_str("  ");
             col = 2;
         }
         out.push(ch);
-        col += 1;
+        col += char_width;
     }
     out
 }
