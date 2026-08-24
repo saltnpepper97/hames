@@ -232,10 +232,7 @@ struct RenderLine<'a> {
 #[derive(Clone, Copy)]
 enum TranscriptDisclosure {
     Thought(usize),
-    Activity {
-        transcript_index: usize,
-        category: ActivityCategory,
-    },
+    Activity(usize),
 }
 
 fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta: Duration) {
@@ -299,13 +296,7 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
         if let Some(disclosure) = item.thought {
             let action = match disclosure {
                 TranscriptDisclosure::Thought(index) => HitAction::ToggleThought(index),
-                TranscriptDisclosure::Activity {
-                    transcript_index,
-                    category,
-                } => HitAction::ToggleActivity {
-                    transcript_index,
-                    category,
-                },
+                TranscriptDisclosure::Activity(index) => HitAction::ToggleActivity(index),
             };
             app.hits.push(HitRegion {
                 x: area.x,
@@ -475,62 +466,48 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
             TranscriptItem::Activity {
                 rows, collapsed, ..
             } => {
-                let mut category = None;
-                for row in rows.iter().filter(|row| !row.name.is_empty()) {
-                    if category != Some(row.category()) {
-                        category = Some(row.category());
-                        let activity_category = row.category();
-                        let category_rows = rows
-                            .iter()
-                            .filter(|item| {
-                                !item.name.is_empty() && item.category() == activity_category
-                            })
-                            .collect::<Vec<_>>();
-                        let count = category_rows.len();
-                        let complete = category_rows.iter().all(|item| item.phase.terminal());
-                        let failed = category_rows.iter().any(|item| {
-                            matches!(
-                                item.phase,
-                                ActivityPhase::Failed
-                                    | ActivityPhase::Rejected
-                                    | ActivityPhase::Cancelled
-                            )
-                        });
-                        let is_collapsed = collapsed.contains(&activity_category);
-                        let state = if failed {
-                            "attention"
-                        } else if complete {
-                            "complete"
-                        } else {
-                            "active"
-                        };
-                        let color = INPUT;
-                        lines.push(RenderLine {
-                            line: Line::from(vec![
-                                Span::styled("◆ ", Style::default().fg(color)),
-                                Span::styled(
-                                    activity_category.label(),
-                                    Style::default().fg(color).bold(),
-                                ),
-                                Span::styled(
-                                    format!(
-                                        " · {count} {} · {state}  {}",
-                                        if count == 1 { "action" } else { "actions" },
-                                        if is_collapsed { "▸" } else { "▾" }
-                                    ),
-                                    Style::default().fg(MUTED),
-                                ),
-                            ]),
-                            thought: Some(TranscriptDisclosure::Activity {
-                                transcript_index: index,
-                                category: activity_category,
-                            }),
-                            sheen: None,
-                        });
-                    }
-                    if collapsed.contains(&row.category()) {
-                        continue;
-                    }
+                let visible_rows = rows
+                    .iter()
+                    .filter(|row| !row.name.is_empty())
+                    .collect::<Vec<_>>();
+                if visible_rows.is_empty() {
+                    continue;
+                }
+                let failed = visible_rows.iter().any(|row| {
+                    matches!(
+                        row.phase,
+                        ActivityPhase::Failed | ActivityPhase::Rejected | ActivityPhase::Cancelled
+                    )
+                });
+                let complete = visible_rows.iter().all(|row| row.phase.terminal());
+                let state = if failed {
+                    "Attention"
+                } else if complete {
+                    "Completed"
+                } else {
+                    "Working"
+                };
+                let count = visible_rows.len();
+                lines.push(RenderLine {
+                    line: Line::from(vec![
+                        Span::styled("◆ ", Style::default().fg(INPUT)),
+                        Span::styled("Work", Style::default().fg(INPUT).bold()),
+                        Span::styled(
+                            format!(
+                                " · {count} {} · {state}  {}",
+                                if count == 1 { "action" } else { "actions" },
+                                if *collapsed { "▸" } else { "▾" }
+                            ),
+                            Style::default().fg(MUTED),
+                        ),
+                    ]),
+                    thought: Some(TranscriptDisclosure::Activity(index)),
+                    sheen: None,
+                });
+                if *collapsed {
+                    continue;
+                }
+                for row in visible_rows {
                     let glyph = match row.phase {
                         ActivityPhase::Preparing => "·",
                         ActivityPhase::Checking | ActivityPhase::Approval => "○",
@@ -3032,9 +3009,9 @@ mod tests {
     };
     use crate::api::{MemoryRecord, Scar, Session};
     use crate::tui::app::{
-        ActivityCategory, ActivityPhase, ActivityRow, AgentEditor, AgentEditorPage, App,
-        ApprovalModal, DreamPhase, HitAction, MemoryBrowser, MenuAction, MenuOption, Modal,
-        ScarBrowser, ScarEditor, Sheet, SheetKind, TranscriptItem, TranscriptPoint,
+        ActivityPhase, ActivityRow, AgentEditor, AgentEditorPage, App, ApprovalModal, DreamPhase,
+        HitAction, MemoryBrowser, MenuAction, MenuOption, Modal, ScarBrowser, ScarEditor, Sheet,
+        SheetKind, TranscriptItem, TranscriptPoint,
     };
 
     #[test]
@@ -3343,7 +3320,7 @@ mod tests {
         let mut app = App::new(session(), Vec::new(), true);
         app.transcript.push(TranscriptItem::Activity {
             run_id: "run-diff".to_owned(),
-            collapsed: Vec::new(),
+            collapsed: false,
             rows: vec![ActivityRow {
                 index: 0,
                 tool_call_id: Some("edit-1".to_owned()),
@@ -3493,7 +3470,7 @@ mod tests {
         });
         app.transcript.push(TranscriptItem::Activity {
             run_id: "run-handoff".to_owned(),
-            collapsed: Vec::new(),
+            collapsed: false,
             rows: vec![ActivityRow {
                 index: 0,
                 tool_call_id: Some("write-1".to_owned()),
@@ -3516,7 +3493,7 @@ mod tests {
             .iter()
             .position(|line| line.contains("Next, I'll write it:"))
             .unwrap();
-        assert!(rendered[preface + 1].contains("◆ Change"));
+        assert!(rendered[preface + 1].contains("◆ Work"));
     }
 
     #[test]
@@ -3910,7 +3887,7 @@ mod tests {
         let mut app = App::new(session(), Vec::new(), true);
         app.transcript.push(TranscriptItem::Activity {
             run_id: "run-memory".to_owned(),
-            collapsed: Vec::new(),
+            collapsed: false,
             rows: vec![
                 ActivityRow {
                     index: 0,
@@ -3952,20 +3929,20 @@ mod tests {
             .map(|item| line_text(&item.line))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains("◆ Memory"));
-        assert!(rendered.contains("1 action · complete  ▾"));
+        assert!(rendered.contains("◆ Work"));
+        assert!(rendered.contains("1 action · Completed  ▾"));
         assert!(rendered.contains("✓ Forgot  memory 8f9b40f1"));
         assert!(!rendered.contains("◆ Run"));
         assert!(!rendered.contains("✦ Hames"));
         assert!(!rendered.contains("ec06-4706"));
 
-        app.toggle_activity(0, ActivityCategory::Memory);
+        app.toggle_activity(0);
         let collapsed = transcript_lines(&app, 90)
             .iter()
             .map(|item| line_text(&item.line))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(collapsed.contains("◆ Memory · 1 action · complete  ▸"));
+        assert!(collapsed.contains("◆ Work · 1 action · Completed  ▸"));
         assert!(!collapsed.contains("✓ Forgot"));
     }
 

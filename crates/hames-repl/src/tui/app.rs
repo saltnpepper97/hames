@@ -169,21 +169,6 @@ pub enum ActivityCategory {
     Plugin,
 }
 
-impl ActivityCategory {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Explore => "Explore",
-            Self::Change => "Change",
-            Self::Run => "Run",
-            Self::Delegate => "Delegate",
-            Self::Skills => "Skills",
-            Self::Memory => "Memory",
-            Self::Scars => "Scars",
-            Self::Plugin => "Plugin",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ActivityPhase {
     Preparing,
@@ -380,7 +365,7 @@ pub enum TranscriptItem {
     Activity {
         run_id: String,
         rows: Vec<ActivityRow>,
-        collapsed: Vec<ActivityCategory>,
+        collapsed: bool,
     },
     Dream {
         job_id: String,
@@ -804,10 +789,7 @@ pub struct Sheet {
 #[derive(Clone, Debug)]
 pub enum HitAction {
     ToggleThought(usize),
-    ToggleActivity {
-        transcript_index: usize,
-        category: ActivityCategory,
-    },
+    ToggleActivity(usize),
     SelectSheet(usize),
     SelectMemory(usize),
     SelectScar(usize),
@@ -916,7 +898,7 @@ pub struct App {
     pub modal_selection: Option<TranscriptSelection>,
     pub selecting_modal: bool,
     pub pending_thought_toggle: Option<usize>,
-    pub pending_activity_toggle: Option<(usize, ActivityCategory)>,
+    pub pending_activity_toggle: Option<usize>,
     pub copy_notice: Option<CopyNotice>,
     pub last_sequence: u64,
     pub seen_events: HashSet<String>,
@@ -1600,16 +1582,12 @@ impl App {
         }
     }
 
-    pub fn toggle_activity(&mut self, index: usize, category: ActivityCategory) {
+    pub fn toggle_activity(&mut self, index: usize) {
         let Some(TranscriptItem::Activity { collapsed, .. }) = self.transcript.get_mut(index)
         else {
             return;
         };
-        if let Some(position) = collapsed.iter().position(|value| *value == category) {
-            collapsed.remove(position);
-        } else {
-            collapsed.push(category);
-        }
+        *collapsed = !*collapsed;
     }
 
     pub fn focus_thought(&mut self, direction: i8) -> bool {
@@ -1699,7 +1677,7 @@ impl App {
         self.transcript.push(TranscriptItem::Activity {
             run_id: run_id.to_owned(),
             rows: Vec::new(),
-            collapsed: Vec::new(),
+            collapsed: false,
         });
         self.transcript.len() - 1
     }
@@ -1887,7 +1865,9 @@ impl App {
                     run_id: id, live, ..
                 } if id == run_id => *live = false,
                 TranscriptItem::Activity {
-                    run_id: id, rows, ..
+                    run_id: id,
+                    rows,
+                    collapsed,
                 } if id == run_id => {
                     for row in rows {
                         if !row.phase.terminal() {
@@ -1898,6 +1878,7 @@ impl App {
                             };
                         }
                     }
+                    *collapsed = true;
                 }
                 _ => {}
             }

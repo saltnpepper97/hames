@@ -940,13 +940,10 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                     }
                     None
                 }
-                Some(HitAction::ToggleActivity {
-                    transcript_index,
-                    category,
-                }) => {
+                Some(HitAction::ToggleActivity(transcript_index)) => {
                     if let Some(point) = app.transcript_viewport.point(mouse.column, mouse.row) {
                         app.begin_transcript_selection(point);
-                        app.pending_activity_toggle = Some((transcript_index, category));
+                        app.pending_activity_toggle = Some(transcript_index);
                     }
                     None
                 }
@@ -1070,8 +1067,8 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                     app.focused_thought = Some(index);
                     app.toggle_thought(index);
                 }
-                if let Some((index, category)) = pending_activity {
-                    app.toggle_activity(index, category);
+                if let Some(index) = pending_activity {
+                    app.toggle_activity(index);
                 }
             }
             None
@@ -2151,9 +2148,9 @@ mod tests {
     };
     use crate::api::{MemoryRecord, ProviderModel, Scar, Session};
     use crate::tui::app::{
-        ActivityCategory, AgentEditor, App, HitAction, HitRegion, MemoryBrowser, MenuAction,
-        MenuOption, Modal, ScarBrowser, ScarEditField, ScrollDrag, ScrollTarget, Sheet, SheetKind,
-        ThemeKind, TranscriptItem, TranscriptViewport,
+        AgentEditor, App, HitAction, HitRegion, MemoryBrowser, MenuAction, MenuOption, Modal,
+        ScarBrowser, ScarEditField, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind,
+        TranscriptItem, TranscriptViewport,
     };
 
     #[test]
@@ -2616,7 +2613,7 @@ mod tests {
         app.transcript.push(TranscriptItem::Activity {
             run_id: "run-1".to_owned(),
             rows: Vec::new(),
-            collapsed: Vec::new(),
+            collapsed: false,
         });
         app.transcript_viewport = TranscriptViewport {
             x: 2,
@@ -2630,10 +2627,7 @@ mod tests {
             y: 3,
             width: 30,
             height: 1,
-            action: HitAction::ToggleActivity {
-                transcript_index: 0,
-                category: ActivityCategory::Run,
-            },
+            action: HitAction::ToggleActivity(0),
         });
 
         for kind in [
@@ -2657,7 +2651,7 @@ mod tests {
         let TranscriptItem::Activity { collapsed, .. } = &app.transcript[0] else {
             panic!("fixture should remain an activity item");
         };
-        assert_eq!(collapsed, &[ActivityCategory::Run]);
+        assert!(*collapsed);
     }
 
     #[test]
