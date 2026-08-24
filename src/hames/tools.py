@@ -184,7 +184,7 @@ class ScarRecordArguments(ToolArguments):
 
 class ScarControlArguments(ToolArguments):
     scar_id: str = Field(min_length=1)
-    action: Literal["open", "dismiss"]
+    action: Literal["open", "dismiss", "delete"]
     reason: str = Field(min_length=1, max_length=1000)
 
 

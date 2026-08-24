@@ -641,6 +641,21 @@ MIGRATIONS = (
         );
         """,
     ),
+    Migration(
+        13,
+        "user-forgettable memory records",
+        """
+        DROP TRIGGER memory_records_no_delete;
+        """,
+    ),
+    Migration(
+        14,
+        "user-removable behavioral scars",
+        """
+        DROP TRIGGER scars_no_delete;
+        DROP TRIGGER scar_repairs_no_delete;
+        """,
+    ),
 )
 
 

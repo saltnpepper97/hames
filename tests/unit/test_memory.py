@@ -101,6 +101,56 @@ def test_memory_activation_retrieval_and_retraction(
     assert store.retrieve(session, "documentation", limit=8, token_budget=2048)[0] == []
 
 
+def test_memory_delete_removes_record_and_retrieval_metadata(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    session = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    user = ledger.append(
+        session_id=session.id,
+        agent_id=session.agent_id,
+        event_type="user.message",
+        payload={"content": "Remember this only until I delete it."},
+    )
+    store = MemoryStore(ledger)
+    mutation = store.create_candidate(
+        session=session,
+        candidate=_candidate(user.id),
+        run_id="run-delete",
+        origin_kind="explicit",
+        activate=True,
+        causation_id=user.id,
+    )
+
+    event = store.delete(
+        session=session,
+        memory_id=mutation.record.id,
+        reason="explicit_user_request",
+    )
+
+    assert event.type == "memory.deleted"
+    with pytest.raises(KeyError):
+        store.get(mutation.record.id)
+    with ledger.database.connect() as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM memory_anchors WHERE memory_id = ?",
+            (mutation.record.id,),
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT count(*) FROM memory_provenance WHERE memory_id = ?",
+            (mutation.record.id,),
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT count(*) FROM memory_fts WHERE memory_id = ?",
+            (mutation.record.id,),
+        ).fetchone()[0] == 0
+
+
 def test_workspace_visibility_and_supersession(hames_paths: HamesPaths, tmp_path: Path) -> None:
     first_root = tmp_path / "first"
     second_root = tmp_path / "second"

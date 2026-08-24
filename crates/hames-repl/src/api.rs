@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 14;
 
 #[derive(Clone)]
 pub struct GatewayClient {
@@ -498,6 +498,8 @@ struct CreateSession<'a> {
     provider: &'a str,
     model: &'a str,
     reasoning_effort: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inherit_session_id: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -609,6 +611,28 @@ impl GatewayClient {
                     provider,
                     model,
                     reasoning_effort,
+                    inherit_session_id: None,
+                })
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn create_session_from(
+        &self,
+        working_directory: &str,
+        session_id: &str,
+    ) -> Result<Session> {
+        decode(
+            self.post("/v1/sessions")
+                .json(&CreateSession {
+                    working_directory,
+                    agent_id: "default",
+                    provider: "",
+                    model: "",
+                    reasoning_effort: "",
+                    inherit_session_id: Some(session_id),
                 })
                 .send()
                 .await?,
@@ -971,6 +995,21 @@ impl GatewayClient {
                 .await?,
         )
         .await
+    }
+
+    pub async fn delete_memory(&self, session_id: &str, memory_id: &str) -> Result<()> {
+        let _: Value = decode(
+            self.http
+                .delete(format!(
+                    "{}/v1/sessions/{session_id}/memories/{memory_id}",
+                    self.base_url
+                ))
+                .bearer_auth(&self.token)
+                .send()
+                .await?,
+        )
+        .await?;
+        Ok(())
     }
 
     pub async fn capture_memory(&self, session_id: &str, content: &str) -> Result<MemoryJob> {

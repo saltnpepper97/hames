@@ -36,9 +36,9 @@ def test_skill_schema_is_migration_eight_and_upgrades_m6(tmp_path: Path) -> None
     path = tmp_path / "m6.db"
     Database(path, migrations=MIGRATIONS[:7]).migrate()
     Database(path).migrate()
-    assert len(MIGRATIONS) == 12
+    assert len(MIGRATIONS) == 14
     with Database(path).connect() as connection:
-        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 12
+        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 14
         tables = {
             str(row["name"])
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")

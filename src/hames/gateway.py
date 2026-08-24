@@ -90,6 +90,7 @@ class CreateSessionRequest(ApiModel):
     model: str = ""
     reasoning_effort: str = ""
     title: str | None = None
+    inherit_session_id: str | None = None
 
 
 class PasteSpan(ApiModel):
@@ -194,6 +195,11 @@ class MemoryTransitionRequest(ApiModel):
 
 class MemoryPromotionRequest(ApiModel):
     visibility: MemoryVisibility
+
+
+class MemoryDeleteResponse(ApiModel):
+    memory_id: str
+    deleted: bool
 
 
 class SkillAuthorRequest(ApiModel):
@@ -577,24 +583,49 @@ def create_app(state: GatewayState) -> FastAPI:
 
     @app.post("/v1/sessions", dependencies=auth, response_model=Session, status_code=201)
     async def create_session(request: CreateSessionRequest) -> Session:
+        inherited: Session | None = None
+        if request.inherit_session_id is not None:
+            try:
+                inherited = await asyncio.to_thread(
+                    state.ledger.get_session, request.inherit_session_id
+                )
+            except KeyError as exc:
+                raise ApiError(
+                    404,
+                    "session_not_found",
+                    f"unknown session: {request.inherit_session_id}",
+                ) from exc
+        agent_id = inherited.agent_id if inherited is not None else request.agent_id
         try:
-            await asyncio.to_thread(state.agents.load, request.agent_id)
+            await asyncio.to_thread(state.agents.load, agent_id)
         except (FileNotFoundError, ValueError) as exc:
             raise ApiError(400, "unknown_agent", str(exc)) from exc
-        provider_name = request.provider or state.config.runtime.default_provider
-        selection = await resolve_selection(provider_name, request.model, request.reasoning_effort)
-        model, reasoning_effort, context_window_tokens, context_window_source = selection
+        if inherited is None:
+            provider_name = request.provider or state.config.runtime.default_provider
+            selection = await resolve_selection(
+                provider_name, request.model, request.reasoning_effort
+            )
+            model, reasoning_effort, context_window_tokens, context_window_source = selection
+            interaction_mode = "auto"
+        else:
+            provider_name = inherited.provider
+            model = inherited.model
+            reasoning_effort = inherited.reasoning_effort
+            context_window_tokens = inherited.context_window_tokens
+            context_window_source = inherited.context_window_source
+            interaction_mode = inherited.interaction_mode
         try:
             return await asyncio.to_thread(
                 state.ledger.create_session,
                 working_directory=Path(request.working_directory),
-                agent_id=request.agent_id,
+                agent_id=agent_id,
                 provider=provider_name,
                 model=model,
                 reasoning_effort=reasoning_effort,
                 context_window_tokens=context_window_tokens,
                 context_window_source=context_window_source,
                 title=request.title,
+                interaction_mode=interaction_mode,
             )
         except (FileNotFoundError, ValueError) as exc:
             raise ApiError(400, "invalid_working_directory", str(exc)) from exc
@@ -857,8 +888,6 @@ def create_app(state: GatewayState) -> FastAPI:
 
     @app.put("/v1/sessions/{session_id}/mode", dependencies=auth, response_model=Session)
     async def update_session_mode(session_id: str, request: UpdateSessionModeRequest) -> Session:
-        if not await state.runs.finish_terminal_session(session_id):
-            raise ApiError(409, "session_run_active", "cannot change mode during an active run")
         try:
             return await asyncio.to_thread(
                 state.ledger.update_session_mode, session_id, mode=request.mode
@@ -980,6 +1009,30 @@ def create_app(state: GatewayState) -> FastAPI:
             raise ApiError(404, "memory_not_found", f"unknown visible memory: {memory_id}") from exc
         except ValueError as exc:
             raise ApiError(409, "invalid_memory_transition", str(exc)) from exc
+
+    @app.delete(
+        "/v1/sessions/{session_id}/memories/{memory_id}",
+        dependencies=auth,
+        response_model=MemoryDeleteResponse,
+    )
+    async def delete_memory(session_id: str, memory_id: str) -> MemoryDeleteResponse:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            event = await asyncio.to_thread(
+                state.memory.store.delete,
+                session=session,
+                memory_id=memory_id,
+                reason="user_request",
+            )
+            await state.broker.publish(
+                event.session_id,
+                {"durable": True, "event": event.model_dump(mode="json")},
+            )
+            return MemoryDeleteResponse(memory_id=memory_id, deleted=True)
+        except KeyError as exc:
+            raise ApiError(404, "memory_not_found", f"unknown visible memory: {memory_id}") from exc
+        except ValueError as exc:
+            raise ApiError(409, "invalid_memory_deletion", str(exc)) from exc
 
     @app.post(
         "/v1/sessions/{session_id}/memories/{memory_id}/promote",

@@ -256,8 +256,36 @@ def test_self_management_tools_are_typed_and_destructive_controls_confirm(
     )
     assert (
         gate.decide(
+            "memory_forget",
+            MemoryForgetArguments(memory_id="memory-1"),
+            context,
+            interaction_mode="auto",
+            user_requested_memory_maintenance=True,
+        ).decision
+        is PolicyDecisionKind.ALLOW
+    )
+    assert (
+        gate.decide(
+            "memory_forget",
+            MemoryForgetArguments(memory_id="memory-1"),
+            context,
+            interaction_mode="manual",
+            user_requested_memory_maintenance=True,
+        ).decision
+        is PolicyDecisionKind.REQUIRE_CONFIRMATION
+    )
+    assert (
+        gate.decide(
             "scar_control",
             ScarControlArguments(scar_id="scar-1", action="dismiss", reason="obsolete"),
+            context,
+        ).decision
+        is PolicyDecisionKind.REQUIRE_CONFIRMATION
+    )
+    assert (
+        gate.decide(
+            "scar_control",
+            ScarControlArguments(scar_id="scar-1", action="delete", reason="recorded in error"),
             context,
         ).decision
         is PolicyDecisionKind.REQUIRE_CONFIRMATION

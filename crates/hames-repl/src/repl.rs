@@ -137,7 +137,14 @@ pub async fn run() -> Result<()> {
     fs::create_dir_all(&paths.root).ok();
     editor.save_history(&paths.history)?;
     make_history_private(&paths.history)?;
-    print_exit_handoff(&session);
+    if session_has_conversation(&client, &session.id).await? {
+        print_exit_handoff(&session);
+    } else {
+        client.close_session(&session.id).await?;
+        println!();
+        println!("{}", style::section("Empty session discarded"));
+        println!("  {}", style::dim("Nothing to resume"));
+    }
     Ok(())
 }
 
@@ -244,31 +251,26 @@ async fn handle_command(
         "/quit" | "/exit" => return Ok(CommandOutcome::Exit),
         "/new" => {
             *remember_next = false;
-            let mode = session.interaction_mode.clone();
-            *session = client
-                .create_session(cwd, &session.agent_id, provider, model, reasoning)
-                .await?;
-            if mode != "auto" {
-                *session = client.update_session_mode(&session.id, &mode).await?;
+            let previous_id = session.id.clone();
+            let discard_previous = !session_has_conversation(client, &previous_id).await?;
+            let created = client.create_session_from(cwd, &previous_id).await?;
+            if discard_previous && let Err(error) = client.close_session(&previous_id).await {
+                let _ = client.close_session(&created.id).await;
+                return Err(error);
             }
+            *session = created;
             ensure_trust(client, editor, session).await?;
             println!("{}", style::success(&format!("New session {}", session.id)));
         }
         "/clear" => {
             *remember_next = false;
-            let mode = session.interaction_mode.clone();
             let previous_id = session.id.clone();
-            let created = client
-                .create_session(cwd, &session.agent_id, provider, model, reasoning)
-                .await?;
+            let created = client.create_session_from(cwd, &previous_id).await?;
             if let Err(error) = client.close_session(&previous_id).await {
                 let _ = client.close_session(&created.id).await;
                 return Err(error);
             }
             *session = created;
-            if mode != "auto" {
-                *session = client.update_session_mode(&session.id, &mode).await?;
-            }
             ensure_trust(client, editor, session).await?;
             print!("\x1b[2J\x1b[H");
             io::stdout().flush()?;
@@ -386,7 +388,11 @@ async fn handle_command(
                 print_open_sessions(client).await?;
                 return Ok(CommandOutcome::Continue);
             };
-            *session = client.session(id).await?;
+            let selected = client.session(id).await?;
+            if *id != session.id && !session_has_conversation(client, &session.id).await? {
+                client.close_session(&session.id).await?;
+            }
+            *session = selected;
             *provider = session.provider.clone();
             *model = session.model.clone();
             *reasoning = session.reasoning_effort.clone();
@@ -604,12 +610,17 @@ async fn handle_command(
 }
 
 async fn print_open_sessions(client: &GatewayClient) -> Result<()> {
-    let sessions = client
+    let mut sessions = Vec::new();
+    for session in client
         .sessions()
         .await?
         .into_iter()
         .filter(|session| session.status == "open")
-        .collect::<Vec<_>>();
+    {
+        if session_has_conversation(client, &session.id).await? {
+            sessions.push(session);
+        }
+    }
     println!("{}", style::section("Sessions"));
     if sessions.is_empty() {
         println!("  {}", style::dim("No sessions"));
@@ -631,6 +642,14 @@ async fn print_open_sessions(client: &GatewayClient) -> Result<()> {
         );
     }
     Ok(())
+}
+
+async fn session_has_conversation(client: &GatewayClient, session_id: &str) -> Result<bool> {
+    Ok(client
+        .history(session_id)
+        .await?
+        .iter()
+        .any(|event| event.event_type == "user.message"))
 }
 
 fn select_model(
@@ -1088,8 +1107,13 @@ async fn handle_memory_command(
                 style::success(&format!("Memory {} is {}", record.id, record.status))
             );
         }
-        Some("forget" | "retract") => {
+        Some("forget") => {
             let id = parts.get(2).context("usage: /memory forget <memory-id>")?;
+            client.delete_memory(&session.id, id).await?;
+            println!("{}", style::success(&format!("Memory {id} deleted")));
+        }
+        Some("retract") => {
+            let id = parts.get(2).context("usage: /memory retract <memory-id>")?;
             let record = client.transition_memory(&session.id, id, "retract").await?;
             println!(
                 "{}",

@@ -513,6 +513,34 @@ class ScarStore:
     def dismiss(self, *, session: Session, scar_id: str, reason: str) -> ScarMutation:
         return self._transition(session, scar_id, "dismissed", reason)
 
+    def delete(self, *, session: Session, scar_id: str, reason: str) -> Event:
+        """Permanently remove one visible scar and its repair projections."""
+
+        scar = self.get_visible(session, scar_id)
+        with self.ledger.transaction_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DELETE FROM scar_evidence WHERE scar_id = ?", (scar_id,))
+            connection.execute("DELETE FROM scar_repairs WHERE scar_id = ?", (scar_id,))
+            deleted = connection.execute("DELETE FROM scars WHERE id = ?", (scar_id,))
+            if deleted.rowcount != 1:
+                connection.execute("ROLLBACK")
+                raise ValueError("scar deletion target changed")
+            event = self.ledger.append_in_transaction(
+                connection,
+                session_id=session.id,
+                agent_id=session.agent_id,
+                event_type="scar.deleted",
+                payload={
+                    "scar_id": scar_id,
+                    "previous_status": scar.status,
+                    "status": "deleted",
+                    "reason": reason,
+                },
+                correlation_id=scar_id,
+            )
+            connection.commit()
+        return event
+
     def mark_guarded(self, *, session: Session, scar_id: str, reason: str) -> ScarMutation:
         now = utc_now()
         with self.ledger.transaction_lock, self.database.connect() as connection:

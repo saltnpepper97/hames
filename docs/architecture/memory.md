@@ -49,8 +49,10 @@ supersedes the prior record. There is no in-place broadening of authority.
 
 A record moves through `proposed`, `active`, `rejected`, `superseded`, or
 `retracted`. Acceptance, rejection, supersession, retraction, and promotion all
-emit typed events. Records cannot be deleted from SQLite. `/memory forget` means
-retraction: the record remains auditable but can no longer enter model context.
+emit typed events. Retraction remains available for lifecycle/audit workflows;
+`/memory forget` and the `memory_forget` tool instead permanently delete the
+selected record, its anchors, provenance links, and full-text retrieval row.
+The event ledger retains a content-free deletion marker by memory ID.
 
 Every candidate requires provenance visible from the creating session. Secret-like
 summaries or values, unsupported provenance, low-confidence candidates, and weak

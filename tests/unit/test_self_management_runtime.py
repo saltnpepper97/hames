@@ -9,6 +9,7 @@ import pytest
 from hames.gateway import GatewayState
 from hames.paths import HamesPaths
 from hames.providers.fake import FakeProvider
+from hames.runtime import _explicit_memory_maintenance_request
 from hames.skills import SkillDraft
 from hames.tools import (
     MemoryAddArguments,
@@ -32,6 +33,21 @@ def _evidence(state: GatewayState, session_id: str, content: str) -> str:
         event_type="tool.started",
         payload={"tool_call_id": content, "name": "fixture"},
     ).id
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("Please do memory maintenance.", True),
+        ("Clean up any stale memories you find.", True),
+        ("Forget that memory about my old preference.", True),
+        ("Tell me what you remember.", False),
+        ("Do not delete any memories.", False),
+        ("Clean up the workspace.", False),
+    ],
+)
+def test_explicit_memory_maintenance_request_is_narrow(content: str, expected: bool) -> None:
+    assert _explicit_memory_maintenance_request(content) is expected
 
 
 @pytest.mark.asyncio
@@ -107,6 +123,8 @@ async def test_runtime_self_management_memory_and_scar_lifecycles(tmp_path: Path
         )
         assert forgotten.status == "completed"
         assert state.runs.memory.list_visible(session) == []
+        with pytest.raises(KeyError):
+            state.runs.memory.get(replacement.id)
 
         recorded = await state.runs._handle_self_management_tool(
             "run-scar",
@@ -142,6 +160,17 @@ async def test_runtime_self_management_memory_and_scar_lifecycles(tmp_path: Path
         )
         assert dismissed.status == "completed"
         assert state.runs.scar_store.get(scar.id).status == "dismissed"
+
+        deleted = await state.runs._handle_self_management_tool(
+            "run-scar-delete",
+            session,
+            ScarControlArguments(scar_id=scar.id, action="delete", reason="recorded in error"),
+            "scar_control",
+            _evidence(state, session.id, "scar-delete"),
+        )
+        assert deleted.status == "completed"
+        with pytest.raises(KeyError):
+            state.runs.scar_store.get(scar.id)
     finally:
         await state.runs.close()
 

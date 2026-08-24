@@ -55,7 +55,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 13
+            assert health_body["protocol_version"] == 14
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -358,6 +358,37 @@ async def test_provider_listing_is_offline_and_probe_is_explicit(tmp_path: Path)
             assert probed.json()["reachable"] is True
             assert fake.probes == 1
 
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            assert created.status_code == 201
+            source_id = str(response_object(created)["id"])
+            await client.put(
+                f"/v1/sessions/{source_id}/mode",
+                headers=headers,
+                json={"mode": "plan"},
+            )
+            probes_before_clone = fake.probes
+            cloned = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "inherit_session_id": source_id,
+                },
+            )
+            assert cloned.status_code == 201
+            cloned_body = response_object(cloned)
+            assert cloned_body["model"] == "fixture"
+            assert cloned_body["interaction_mode"] == "plan"
+            assert fake.probes == probes_before_clone
+
             conflict = await client.get(
                 "/v1/events",
                 headers={**headers, "Last-Event-ID": "5"},
@@ -387,6 +418,80 @@ class StallingProvider(FakeProvider):
         yield StreamEvent(kind=StreamEventKind.STARTED)
         yield StreamEvent(kind=StreamEventKind.REASONING_DELTA, text="partial")
         await asyncio.Event().wait()
+
+
+class GatedToolProvider(FakeProvider):
+    def __init__(self) -> None:
+        super().__init__([])
+        self.started = asyncio.Event()
+        self.release_tool = asyncio.Event()
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+        self.requests.append(request)
+        yield StreamEvent(kind=StreamEventKind.STARTED)
+        self.started.set()
+        await self.release_tool.wait()
+        yield StreamEvent(
+            kind=StreamEventKind.TOOL_CALL_DELTA,
+            tool_call=ToolCallDelta(
+                index=0,
+                provider_call_id="mid-flight-write",
+                name="write_file",
+                arguments_delta='{"path":"mid-flight.txt","content":"blocked"}',
+            ),
+        )
+        yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls")
+
+
+@pytest.mark.asyncio
+async def test_mode_change_applies_at_next_tool_boundary_mid_flight(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    fake = GatedToolProvider()
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Prepare a write."},
+            )
+            await asyncio.wait_for(fake.started.wait(), timeout=1)
+            changed = await client.put(
+                f"/v1/sessions/{session_id}/mode",
+                headers=headers,
+                json={"mode": "manual"},
+            )
+            assert response_object(changed)["interaction_mode"] == "manual"
+            fake.release_tool.set()
+
+            events = await _wait_for_event(client, headers, session_id, "approval.requested")
+            requested = next(event for event in events if event["type"] == "approval.requested")
+            payload = requested["payload"]
+            assert isinstance(payload, dict)
+            assert payload["allow_session"] is True
+            await client.post(
+                f"/v1/approvals/{payload['approval_id']}",
+                headers=headers,
+                json={
+                    "request_hash": payload["request_hash"],
+                    "decision": "denied",
+                },
+            )
+    finally:
+        await state.runs.close()
 
 
 @pytest.mark.asyncio

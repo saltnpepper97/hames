@@ -267,6 +267,7 @@ class MemoryStore:
             "delegation.failed",
             "memory.accepted",
             "memory.retracted",
+            "memory.deleted",
             "memory.superseded",
         }
         notable = [event for event in events if event.type in notable_types]
@@ -398,6 +399,42 @@ class MemoryStore:
             )
             connection.commit()
         return MemoryMutation(self.get(memory_id), (event,))
+
+    def delete(self, *, session: Session, memory_id: str, reason: str) -> Event:
+        """Permanently remove one visible memory and its retrieval metadata."""
+
+        record = self.get_visible(session, memory_id)
+        with self.ledger.transaction_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "UPDATE memory_records SET superseded_by_id = NULL WHERE superseded_by_id = ?",
+                (memory_id,),
+            )
+            connection.execute("DELETE FROM memory_anchors WHERE memory_id = ?", (memory_id,))
+            connection.execute("DELETE FROM memory_provenance WHERE memory_id = ?", (memory_id,))
+            connection.execute("DELETE FROM memory_fts WHERE memory_id = ?", (memory_id,))
+            deleted = connection.execute(
+                "DELETE FROM memory_records WHERE id = ?",
+                (memory_id,),
+            )
+            if deleted.rowcount != 1:
+                connection.execute("ROLLBACK")
+                raise ValueError("memory deletion target changed")
+            event = self.ledger.append_in_transaction(
+                connection,
+                session_id=session.id,
+                agent_id=session.agent_id,
+                event_type="memory.deleted",
+                payload={
+                    "memory_id": memory_id,
+                    "previous_status": record.status,
+                    "status": "deleted",
+                    "reason": reason,
+                },
+                correlation_id=memory_id,
+            )
+            connection.commit()
+        return event
 
     def promote(
         self,

@@ -125,6 +125,7 @@ class PolicyGate:
         declarative_rules: Sequence[PolicyRule] = (),
         interaction_mode: str = "auto",
         session_tool_granted: bool = False,
+        user_requested_memory_maintenance: bool = False,
     ) -> PolicyDecision:
         if allowed_tools is not None and tool_name not in allowed_tools:
             return PolicyDecision(
@@ -149,15 +150,26 @@ class PolicyGate:
                 "plan_mode",
             )
         if isinstance(arguments, MemoryForgetArguments):
+            if interaction_mode == "auto" and user_requested_memory_maintenance:
+                return PolicyDecision(
+                    PolicyDecisionKind.ALLOW,
+                    "the user explicitly requested memory maintenance in auto mode",
+                    "personal_state",
+                )
             return PolicyDecision(
                 PolicyDecisionKind.REQUIRE_CONFIRMATION,
-                "forgetting retracts a durable memory",
+                "forgetting permanently deletes a durable memory",
                 "personal_state",
             )
-        if isinstance(arguments, ScarControlArguments) and arguments.action == "dismiss":
+        if isinstance(arguments, ScarControlArguments) and arguments.action in {
+            "dismiss",
+            "delete",
+        }:
             return PolicyDecision(
                 PolicyDecisionKind.REQUIRE_CONFIRMATION,
-                "dismissing disables a behavioral scar",
+                "deleting permanently removes a behavioral scar"
+                if arguments.action == "delete"
+                else "dismissing disables a behavioral scar",
                 "personal_state",
             )
         if isinstance(arguments, SkillControlArguments) and arguments.action in {

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -83,6 +84,27 @@ SELF_MANAGEMENT_TOOLS = frozenset(
         "session_title_set",
     }
 )
+
+_MEMORY_SUBJECT = re.compile(r"\b(?:memories|memory)\b", re.IGNORECASE)
+_MEMORY_MAINTENANCE = re.compile(
+    r"\b(?:clean\s*up|cleanup|maintain|maintenance|prune|forget|delete|remove|retract|"
+    r"edit|update|correct|fix)\b",
+    re.IGNORECASE,
+)
+_NEGATED_MEMORY_CHANGE = re.compile(
+    r"\b(?:do\s+not|don't|never)\b.{0,40}\b(?:forget|delete|remove|retract|prune)\b",
+    re.IGNORECASE,
+)
+
+
+def _explicit_memory_maintenance_request(content: str) -> bool:
+    """Recognize a narrow, current-turn request to maintain durable memories."""
+
+    return bool(
+        _MEMORY_SUBJECT.search(content)
+        and _MEMORY_MAINTENANCE.search(content)
+        and not _NEGATED_MEMORY_CHANGE.search(content)
+    )
 
 if TYPE_CHECKING:
     from hames.evolution_runtime import EvolutionManager
@@ -543,6 +565,9 @@ class RunManager:
         )
         self._skill_catalogs[run_id] = catalog
         self._loaded_skills[run_id] = {}
+        user_requested_memory_maintenance = _explicit_memory_maintenance_request(
+            str(user_event.payload.get("content", ""))
+        )
         tool_count = 0
         model_turns = 0
         while True:
@@ -596,6 +621,7 @@ class RunManager:
                     clock,
                     turn.allowed_tools,
                     turn.capsule,
+                    user_requested_memory_maintenance,
                 )
 
     async def _model_turn(
@@ -1006,6 +1032,7 @@ class RunManager:
         clock: ActiveClock,
         allowed_tools: frozenset[str],
         capsule: AgentCapsule,
+        user_requested_memory_maintenance: bool,
     ) -> None:
         requested = await self._append(
             session_id=session.id,
@@ -1059,14 +1086,16 @@ class RunManager:
         session_tool_granted = await asyncio.to_thread(
             self.controls.has_session_tool_grant, session.id, invocation.name
         )
+        current_session = await asyncio.to_thread(self.ledger.get_session, session.id)
         decision = self.policy.decide(
             invocation.name,
             arguments,
             context,
             allowed_tools=allowed_tools,
             declarative_rules=active_policy_rules,
-            interaction_mode=session.interaction_mode,
+            interaction_mode=current_session.interaction_mode,
             session_tool_granted=session_tool_granted,
+            user_requested_memory_maintenance=user_requested_memory_maintenance,
         )
         policy_decided = await self._append(
             session_id=session.id,
@@ -1317,18 +1346,20 @@ class RunManager:
                     },
                 )
             if isinstance(arguments, MemoryForgetArguments):
-                mutation = await asyncio.to_thread(
-                    self.memory.transition,
+                deleted = await asyncio.to_thread(
+                    self.memory.delete,
                     session=session,
                     memory_id=arguments.memory_id,
-                    action="retract",
                     reason=arguments.reason,
                 )
-                await self._publish_store_events(mutation.events)
+                await self._publish_store_events((deleted,))
                 return ToolResult(
                     status="completed",
-                    summary=f"forgot memory {mutation.record.id}",
-                    structured_data={"memory": mutation.record.model_dump(mode="json")},
+                    summary=f"deleted memory {arguments.memory_id}",
+                    structured_data={
+                        "memory_id": arguments.memory_id,
+                        "deleted": True,
+                    },
                 )
             if isinstance(arguments, ScarListArguments):
                 scars = await asyncio.to_thread(
@@ -1369,6 +1400,19 @@ class RunManager:
                     structured_data={"scar": opened.scar.model_dump(mode="json")},
                 )
             if isinstance(arguments, ScarControlArguments):
+                if arguments.action == "delete":
+                    deleted = await asyncio.to_thread(
+                        self.scar_store.delete,
+                        session=session,
+                        scar_id=arguments.scar_id,
+                        reason=arguments.reason,
+                    )
+                    await self._publish_store_events((deleted,))
+                    return ToolResult(
+                        status="completed",
+                        summary=f"deleted scar {arguments.scar_id}",
+                        structured_data={"scar_id": arguments.scar_id, "deleted": True},
+                    )
                 operation = (
                     self.scar_store.open if arguments.action == "open" else self.scar_store.dismiss
                 )

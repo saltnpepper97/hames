@@ -113,10 +113,13 @@ class Ledger:
         context_window_tokens: int = 32_768,
         context_window_source: str = "fallback",
         title: str | None = None,
+        interaction_mode: str = "auto",
     ) -> Session:
         canonical = working_directory.expanduser().resolve(strict=True)
         if not canonical.is_dir():
             raise ValueError("working_directory must be a directory")
+        if interaction_mode not in {"manual", "auto", "plan"}:
+            raise ValueError("invalid interaction mode")
         session_id = new_id()
         created_at = utc_now()
         with self._write_lock, self.database.connect() as connection:
@@ -127,7 +130,7 @@ class Ledger:
                     id, created_at, status, title, working_directory, agent_id,
                     provider, model, reasoning_effort, context_window_tokens,
                     context_window_source, lineage_kind, delegation_depth, interaction_mode
-                ) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, 'root', 0, 'auto')
+                ) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, 'root', 0, ?)
                 """,
                 (
                     session_id,
@@ -140,6 +143,7 @@ class Ledger:
                     reasoning_effort,
                     context_window_tokens,
                     context_window_source,
+                    interaction_mode,
                 ),
             )
             self._append_on_connection(

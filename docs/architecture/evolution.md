@@ -101,7 +101,9 @@ explanation of why the Scar triggered. The REPL exposes `/correct` and
 
 Chat runs use typed controller tools rather than generic state-file access:
 `scar_list` inspects visible records, `scar_record` records and opens an explicit
-correction, and `scar_control` opens a candidate or dismisses a visible Scar.
+correction, and `scar_control` opens, dismisses, or permanently deletes a visible
+Scar. Dismissal preserves history; deletion also removes evidence links and repair
+projection rows and is reserved for explicit user control.
 Dismissal is approval-gated. Healing, regression, repair promotion, rule
 activation, and plugin installation remain owned by evaluation or the human
 control plane; the model cannot declare those outcomes for itself.
