@@ -1,12 +1,12 @@
 //! Terminal chrome for the Hames REPL. Honors NO_COLOR and a non-TTY stdout.
 //!
-//! Green is identity (the diamond and a live pulse). Badges are semantic.
-//! Body text is not colored, except thinking which is dim.
+//! The green hex is the AI mark. The user prompt is unmarked. Live headings
+//! get a traveling shine; body text never does.
 
 use std::io::{self, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-pub const DIAMOND: &str = "◆";
+pub const MARK: &str = "⬢";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Badge {
@@ -83,15 +83,47 @@ fn lerp(a: Rgb, b: Rgb, t: f32) -> Rgb {
     }
 }
 
-fn pulse(dim: Rgb, bright: Rgb) -> Rgb {
-    let tick = SHEEN_TICK.fetch_add(1, Ordering::Relaxed);
-    let phase = tick % 12;
-    let t = if phase <= 6 {
-        phase as f32 / 6.0
-    } else {
-        (12 - phase) as f32 / 6.0
-    };
-    lerp(dim, bright, t)
+/// Specular glint that travels across `text`. Body callers must not use this.
+fn shine_text(text: &str, base: Rgb, glint: Rgb, tick: u32) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let width = chars.len() as f32;
+    if width == 0.0 {
+        return String::new();
+    }
+    let span = width + 6.0;
+    let pos = (tick as f32 * 0.28) % span - 2.5;
+    let mut out = String::new();
+    for (index, ch) in chars.iter().enumerate() {
+        let distance = (index as f32 - pos).abs();
+        let weight = (1.0 - distance / 2.4).max(0.0).powf(1.6);
+        let color = lerp(base, glint, weight);
+        out.push_str(&format!(
+            "\x1b[1;38;2;{};{};{}m{ch}",
+            color.r, color.g, color.b
+        ));
+    }
+    out.push_str("\x1b[0m");
+    out
+}
+
+fn glint(kind: Badge) -> Rgb {
+    match kind {
+        Badge::Tool | Badge::Approval => Rgb {
+            r: 255,
+            g: 244,
+            b: 214,
+        },
+        Badge::Error => Rgb {
+            r: 255,
+            g: 210,
+            b: 210,
+        },
+        _ => Rgb {
+            r: 220,
+            g: 255,
+            b: 232,
+        },
+    }
 }
 
 impl Badge {
@@ -141,73 +173,42 @@ impl Badge {
             },
         }
     }
-
-    fn bright_rgb(self) -> Rgb {
-        match self {
-            Self::Thinking | Self::Compacting => Rgb {
-                r: 188,
-                g: 192,
-                b: 200,
-            },
-            Self::Tool => Rgb {
-                r: 240,
-                g: 190,
-                b: 90,
-            },
-            Self::Hames => Rgb {
-                r: 245,
-                g: 245,
-                b: 245,
-            },
-            Self::You => Rgb {
-                r: 180,
-                g: 180,
-                b: 180,
-            },
-            Self::Error => Rgb {
-                r: 255,
-                g: 110,
-                b: 110,
-            },
-            Self::Approval => Rgb {
-                r: 240,
-                g: 190,
-                b: 90,
-            },
-        }
-    }
 }
 
-pub fn diamond() -> String {
+pub fn mark() -> String {
     if color_enabled() {
-        rgb_bold(GREEN, DIAMOND)
+        rgb_bold(GREEN, MARK)
     } else {
-        DIAMOND.to_owned()
+        MARK.to_owned()
     }
 }
 
 pub fn badge(kind: Badge, live: bool) -> String {
-    let bracketed = format!("[{}]", kind.name());
-    let mark = if live && color_enabled() {
-        rgb_bold(GREEN, DIAMOND)
-    } else {
-        diamond()
-    };
-    let name = if !color_enabled() {
-        bracketed
+    let name = kind.name();
+    let painted = if !color_enabled() {
+        name.to_owned()
     } else if live {
-        rgb_bold(pulse(kind.dim_rgb(), kind.bright_rgb()), &bracketed)
+        shine_text(
+            name,
+            kind.dim_rgb(),
+            glint(kind),
+            SHEEN_TICK.load(Ordering::Relaxed),
+        )
     } else {
-        rgb(kind.dim_rgb(), &bracketed)
+        rgb(kind.dim_rgb(), name)
     };
-    format!("{mark} {name}")
+    if kind == Badge::You {
+        return painted;
+    }
+    format!("{} {painted}", mark())
 }
 
-/// Repaint the live badge `distance` lines above the cursor. No-op without color.
-pub fn pulse_badge(kind: Badge, distance: u16) -> io::Result<()> {
+/// Advance the shine and repaint the live heading `distance` lines above the cursor.
+pub fn sweep_badge(kind: Badge, distance: u16) -> io::Result<()> {
     if !color_enabled() || distance == 0 {
         return Ok(());
     }
+    SHEEN_TICK.fetch_add(1, Ordering::Relaxed);
     let mut out = io::stdout();
     write!(
         out,
@@ -217,27 +218,30 @@ pub fn pulse_badge(kind: Badge, distance: u16) -> io::Result<()> {
     out.flush()
 }
 
-pub fn banner_line(version: &str, gateway: &str, provider: &str, model: &str, cwd: &str) -> String {
+pub fn banner_line(
+    version: &str,
+    _gateway: &str,
+    provider: &str,
+    model: &str,
+    cwd: &str,
+) -> String {
     format!(
-        "{} {}\n  {}",
-        diamond(),
+        "{} {}  {}",
+        mark(),
         paint("1", "Hames"),
-        paint(
-            "2",
-            &format!("{version} · gateway {gateway} · {provider} / {model} · {cwd}")
-        )
+        paint("2", &format!("{version} · {provider} / {model} · {cwd}"))
     )
 }
 
 pub fn prompt() -> String {
-    format!("{} ", badge(Badge::You, false))
+    format!("{} ", paint("2", "You"))
 }
 
 pub fn continue_prompt() -> &'static str {
     if color_enabled() {
-        "\x1b[2m     ...\x1b[0m "
+        "\x1b[2m    ...\x1b[0m "
     } else {
-        "     ... "
+        "    ... "
     }
 }
 
@@ -247,13 +251,14 @@ pub fn dim(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Badge, DIAMOND, badge, paint};
+    use super::{Badge, MARK, badge, paint};
 
     #[test]
     fn badges_are_plain_when_color_is_off() {
-        assert_eq!(badge(Badge::Thinking, true), "◆ [Thinking]");
-        assert_eq!(badge(Badge::Hames, false), "◆ [Hames]");
+        assert_eq!(badge(Badge::Thinking, true), "⬢ Thinking");
+        assert_eq!(badge(Badge::Hames, false), "⬢ Hames");
+        assert_eq!(badge(Badge::You, false), "You");
         assert_eq!(paint("31", "boom"), "boom");
-        assert_eq!(DIAMOND, "◆");
+        assert_eq!(MARK, "⬢");
     }
 }

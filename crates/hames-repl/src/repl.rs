@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
@@ -1249,9 +1250,14 @@ async fn stream_message(
     let mut output = RenderedOutput::default();
     let mut cancelled = false;
     let mut reconnects = 0_u8;
+    let mut sheen = tokio::time::interval(Duration::from_millis(40));
+    sheen.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
+            _ = sheen.tick() => {
+                output.tick_sheen()?;
+            }
             chunk = stream.next() => {
                 let bytes = match chunk {
                     Some(Ok(bytes)) => bytes,
@@ -1471,9 +1477,22 @@ struct RenderedOutput {
 
 impl RenderedOutput {
     fn begin_turn(&mut self) -> Result<()> {
+        if self.current.is_some() || self.body_started || !self.reasoning.is_empty() {
+            return Ok(());
+        }
         self.settle()?;
         println!();
         *self = Self::default();
+        Ok(())
+    }
+
+    fn tick_sheen(&mut self) -> Result<()> {
+        if !self.live {
+            return Ok(());
+        }
+        if let Some(kind) = self.current {
+            style::sweep_badge(kind, self.distance)?;
+        }
         Ok(())
     }
 
@@ -1544,11 +1563,6 @@ impl RenderedOutput {
             .distance
             .saturating_add(u16::try_from(newlines).unwrap_or(u16::MAX));
         self.open_line = !text.ends_with('\n');
-        if self.live {
-            if let Some(kind) = self.current {
-                style::pulse_badge(kind, self.distance)?;
-            }
-        }
         io::stdout().flush()?;
         Ok(())
     }
@@ -1565,6 +1579,9 @@ impl RenderedOutput {
     }
 
     fn push_reasoning(&mut self, text: &str) -> Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
         self.open_badge(style::Badge::Thinking)?;
         self.write_body(text, true)?;
         self.reasoning.push_str(text);
@@ -1572,6 +1589,9 @@ impl RenderedOutput {
     }
 
     fn push_answer(&mut self, text: &str) -> Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
         self.open_badge(style::Badge::Hames)?;
         self.write_body(text, false)?;
         self.answer.push_str(text);
@@ -1595,7 +1615,7 @@ impl RenderedOutput {
 
     fn note_line(&mut self, body: &str) -> Result<()> {
         self.settle()?;
-        println!("{} {}", style::diamond(), style::dim(body));
+        println!("{} {}", style::mark(), style::dim(body));
         Ok(())
     }
 
