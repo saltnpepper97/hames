@@ -4,7 +4,7 @@ mod view;
 use std::env;
 use std::io::{self, Stdout, Write};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use app::{
@@ -312,11 +312,17 @@ async fn refresh_agents_sheet(client: &GatewayClient, app: &mut App) -> Result<(
 }
 
 async fn load_app(client: &GatewayClient, session: Session) -> Result<App> {
+    let agent_id = session.agent_id.clone();
     let (events, trust) = tokio::try_join!(
         client.history(&session.id),
         client.trust_status(&session.id)
     )?;
-    Ok(App::new(session, events, trust.trusted))
+    let agent = client.agent(&agent_id).await.ok();
+    let mut app = App::new(session, events, trust.trusted);
+    if let Some(agent) = agent {
+        app.agent_name = agent.agent.name;
+    }
+    Ok(app)
 }
 
 #[derive(Debug)]
@@ -1333,6 +1339,7 @@ async fn apply_effect(
                 app.session = client
                     .update_session_agent(&app.session.id, "default")
                     .await?;
+                app.agent_name = "Hames".to_owned();
             }
             client.retire_agent(&agent_id).await?;
             refresh_agents_sheet(client, app).await?;
@@ -1741,6 +1748,7 @@ async fn apply_menu_action(
         }
         MenuAction::SetAgent(agent) => {
             app.session = client.update_session_agent(&app.session.id, &agent).await?;
+            app.agent_name = client.agent(&agent).await?.agent.name;
             app.notice = Some(format!("Agent changed to {agent}"));
         }
         MenuAction::SetMode(mode) => {
@@ -1908,6 +1916,9 @@ impl SseDecoder {
 struct TerminalGuard {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     last_title: String,
+    title_frame: usize,
+    title_frame_at: Instant,
+    title_working: bool,
 }
 
 impl TerminalGuard {
@@ -1929,11 +1940,23 @@ impl TerminalGuard {
         Ok(Self {
             terminal,
             last_title: String::new(),
+            title_frame: 0,
+            title_frame_at: Instant::now(),
+            title_working: false,
         })
     }
 
     fn draw(&mut self, app: &mut App) -> Result<()> {
-        let title = terminal_tab_title(app);
+        let working = app.active_run.is_some();
+        if working != self.title_working {
+            self.title_working = working;
+            self.title_frame = 0;
+            self.title_frame_at = Instant::now();
+        } else if working && self.title_frame_at.elapsed() >= Duration::from_millis(360) {
+            self.title_frame = (self.title_frame + 1) % 4;
+            self.title_frame_at = Instant::now();
+        }
+        let title = terminal_tab_title(app, self.title_frame);
         if self.last_title != title {
             execute!(self.terminal.backend_mut(), SetTitle(&title))?;
             self.last_title = title;
@@ -1961,23 +1984,13 @@ fn short_id(value: &str) -> &str {
     value.get(..8).unwrap_or(value)
 }
 
-fn terminal_tab_title(app: &App) -> String {
-    let session_title = app
-        .session
-        .title
-        .as_deref()
-        .unwrap_or("New session")
-        .replace(['\n', '\r', '\t'], " ");
-    let mode = match app.session.interaction_mode.as_str() {
-        "manual" => "Manual",
-        "plan" => "Plan",
-        _ => "Auto",
+fn terminal_tab_title(app: &App, frame: usize) -> String {
+    let icon = if app.active_run.is_some() {
+        ["◇", "◈", "◆", "◈"][frame % 4]
+    } else {
+        "◇"
     };
-    format!(
-        "Hames · {} · {mode} · {} — {session_title}",
-        app.session.agent_id,
-        view::current_activity(app)
-    )
+    format!("{icon} {}", app.agent_name.replace(['\n', '\r', '\t'], " "))
 }
 
 fn agent_source(editor: &AgentEditor) -> std::result::Result<String, String> {
@@ -2169,16 +2182,16 @@ mod tests {
     }
 
     #[test]
-    fn terminal_tab_title_surfaces_agent_mode_activity_and_session() {
+    fn terminal_tab_title_is_only_a_pulsing_status_mark_and_agent_name() {
         let mut app = App::new(session(), Vec::new(), true);
-        app.session.title = Some("Agent polish\npass".to_owned());
-        app.session.agent_id = "reviewer".to_owned();
-        app.session.interaction_mode = "plan".to_owned();
+        app.agent_name = "Careful Reviewer".to_owned();
 
-        assert_eq!(
-            terminal_tab_title(&app),
-            "Hames · reviewer · Plan · Ready — Agent polish pass"
-        );
+        assert_eq!(terminal_tab_title(&app, 0), "◇ Careful Reviewer");
+        app.active_run = Some("run-title".to_owned());
+        assert_eq!(terminal_tab_title(&app, 0), "◇ Careful Reviewer");
+        assert_eq!(terminal_tab_title(&app, 1), "◈ Careful Reviewer");
+        assert_eq!(terminal_tab_title(&app, 2), "◆ Careful Reviewer");
+        assert_eq!(terminal_tab_title(&app, 3), "◈ Careful Reviewer");
     }
 
     #[test]

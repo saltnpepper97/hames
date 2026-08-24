@@ -891,6 +891,7 @@ impl HitRegion {
 
 pub struct App {
     pub session: Session,
+    pub agent_name: String,
     pub transcript: Vec<TranscriptItem>,
     pub composer: Composer,
     pub active_run: Option<String>,
@@ -927,8 +928,26 @@ pub struct App {
 impl App {
     pub fn new(session: Session, events: Vec<Event>, trusted: bool) -> Self {
         let context_window = session.context_window_tokens;
+        let agent_name = if session.agent_id == "default" {
+            "Hames".to_owned()
+        } else {
+            session
+                .agent_id
+                .split('-')
+                .filter(|part| !part.is_empty())
+                .map(|part| {
+                    let mut characters = part.chars();
+                    characters
+                        .next()
+                        .map(|first| first.to_uppercase().collect::<String>() + characters.as_str())
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
         let mut app = Self {
             session,
+            agent_name,
             transcript: Vec::new(),
             composer: Composer::default(),
             active_run: None,
