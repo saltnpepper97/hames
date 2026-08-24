@@ -306,24 +306,14 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     },
                     thought: Some(index),
                 });
-                if !*collapsed {
-                    if content.is_empty() {
-                        lines.push(RenderLine {
-                            line: Line::from(Span::styled(
-                                "  Working…",
-                                Style::default().fg(MUTED),
-                            )),
-                            thought: None,
-                        });
-                    } else {
-                        push_wrapped(
-                            &mut lines,
-                            content,
-                            width,
-                            "  ",
-                            Style::default().fg(Color::Rgb(174, 180, 192)),
-                        );
-                    }
+                if !*collapsed && !content.is_empty() {
+                    push_wrapped(
+                        &mut lines,
+                        content,
+                        width,
+                        "  ",
+                        Style::default().fg(Color::Rgb(174, 180, 192)),
+                    );
                 }
             }
             TranscriptItem::Assistant { content, live, .. } => {
@@ -1251,13 +1241,40 @@ mod tests {
         pasted_display, sheet_text_color, thought_label,
     };
     use crate::api::{PasteSpan, Session};
-    use crate::tui::app::{App, TranscriptPoint};
+    use crate::tui::app::{App, TranscriptItem, TranscriptPoint};
 
     #[test]
     fn thought_duration_uses_significance_threshold_and_readable_units() {
         assert_eq!(thought_label(9.4), "Thought");
         assert_eq!(thought_label(10.0), "Thought (10s)");
         assert_eq!(thought_label(68.0), "Thought (1m 8s)");
+    }
+
+    #[test]
+    fn empty_live_thought_has_no_redundant_working_body() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-thinking".to_owned());
+        app.transcript.push(TranscriptItem::Thought {
+            run_id: "run-thinking".to_owned(),
+            content: String::new(),
+            duration_seconds: 0.0,
+            interrupted: false,
+            live: true,
+            collapsed: false,
+        });
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Thinking"));
+        assert!(!rendered.contains("Working…"));
     }
 
     #[test]
