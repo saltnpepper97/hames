@@ -48,6 +48,10 @@ class SessionAgentChangedPayload(EventPayload):
     agent_id: str
 
 
+class SessionModeChangedPayload(EventPayload):
+    mode: str
+
+
 class MessagePayload(EventPayload):
     content: str
     remember: bool = False
@@ -202,12 +206,14 @@ class ApprovalRequestedPayload(EventPayload):
     request_hash: str
     working_directory: str
     reason: str
+    allow_session: bool = False
 
 
 class ApprovalResolvedPayload(EventPayload):
     approval_id: str
     request_hash: str
     decision: str
+    approval_scope: str = "once"
 
 
 class TrustPayload(EventPayload):
@@ -590,6 +596,7 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "session.forked": SessionForkedPayload,
     "session.settings.changed": SessionSettingsPayload,
     "session.agent.changed": SessionAgentChangedPayload,
+    "session.mode.changed": SessionModeChangedPayload,
     "user.message": MessagePayload,
     "user.correction": CorrectionPayload,
     "assistant.message": AssistantOutputPayload,

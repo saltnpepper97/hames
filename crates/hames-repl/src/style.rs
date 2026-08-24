@@ -261,11 +261,11 @@ pub fn badge(kind: Badge, live: bool) -> String {
 }
 
 pub fn banner_lines(
-    version: &str,
-    _gateway_version: &str,
+    versions: (&str, &str),
     provider: &str,
     model: &str,
     reasoning: &str,
+    mode: &str,
     cwd: &str,
     session_id: &str,
 ) -> String {
@@ -278,11 +278,11 @@ pub fn banner_lines(
         "{} {}  {}\n  {}",
         mark(),
         paint("1", "Hames"),
-        paint("2", &format!("v{version}")),
+        paint("2", &format!("{} · core {}", versions.0, versions.1),),
         paint(
             "2",
             &format!(
-                "{provider} / {model} · {reasoning} · {display_cwd} · session {short_session}"
+                "{provider} / {model} · {reasoning} · {mode} · {display_cwd} · session {short_session}"
             )
         )
     )

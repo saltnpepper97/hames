@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -49,6 +49,7 @@ class Session(LedgerModel):
     fork_event_id: str | None
     lineage_kind: str
     delegation_depth: int
+    interaction_mode: Literal["manual", "auto", "plan"] = "auto"
 
 
 class Event(LedgerModel):
@@ -125,8 +126,8 @@ class Ledger:
                 INSERT INTO sessions(
                     id, created_at, status, title, working_directory, agent_id,
                     provider, model, reasoning_effort, context_window_tokens,
-                    context_window_source, lineage_kind, delegation_depth
-                ) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, 'root', 0)
+                    context_window_source, lineage_kind, delegation_depth, interaction_mode
+                ) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, 'root', 0, 'auto')
                 """,
                 (
                     session_id,
@@ -184,8 +185,8 @@ class Ledger:
                     id, created_at, status, title, working_directory, agent_id,
                     provider, model, reasoning_effort, context_window_tokens,
                     context_window_source, parent_session_id, fork_event_id,
-                    lineage_kind, delegation_depth
-                ) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'delegation', ?)
+                    lineage_kind, delegation_depth, interaction_mode
+                ) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'delegation', ?, ?)
                 """,
                 (
                     session_id,
@@ -201,6 +202,7 @@ class Ledger:
                     parent.id,
                     parent_event_id,
                     depth,
+                    parent.interaction_mode,
                 ),
             )
             self._append_on_connection(
@@ -461,8 +463,8 @@ class Ledger:
                     id, created_at, status, title, working_directory, agent_id,
                     provider, model, reasoning_effort, context_window_tokens,
                     context_window_source, parent_session_id, fork_event_id,
-                    lineage_kind, delegation_depth
-                ) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'branch', 0)
+                    lineage_kind, delegation_depth, interaction_mode
+                ) VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'branch', 0, ?)
                 """,
                 (
                     session_id,
@@ -477,6 +479,7 @@ class Ledger:
                     context_window_source,
                     parent.id,
                     target.id,
+                    parent.interaction_mode,
                 ),
             )
             opened = self._append_on_connection(
@@ -640,6 +643,27 @@ class Ledger:
                 agent_id=agent_id,
                 event_type="session.agent.changed",
                 payload={"agent_id": agent_id},
+                correlation_id=session_id,
+            )
+            connection.commit()
+        return self.get_session(session_id)
+
+    def update_session_mode(
+        self, session_id: str, *, mode: Literal["manual", "auto", "plan"]
+    ) -> Session:
+        with self._write_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "UPDATE sessions SET interaction_mode = ? WHERE id = ? AND status = 'open'",
+                (mode, session_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(session_id)
+            self._append_on_connection(
+                connection,
+                session_id=session_id,
+                event_type="session.mode.changed",
+                payload={"mode": mode},
                 correlation_id=session_id,
             )
             connection.commit()

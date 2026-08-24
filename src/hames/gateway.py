@@ -107,6 +107,10 @@ class UpdateSessionAgentRequest(ApiModel):
     agent_id: str
 
 
+class UpdateSessionModeRequest(ApiModel):
+    mode: Literal["manual", "auto", "plan"]
+
+
 class RunAccepted(ApiModel):
     run_id: str
 
@@ -119,7 +123,7 @@ class TrustStatus(ApiModel):
 
 
 class ApprovalDecisionRequest(ApiModel):
-    decision: Literal["approved", "denied"]
+    decision: Literal["approved", "approved_session", "denied"]
     request_hash: str = Field(min_length=64, max_length=64)
 
 
@@ -127,6 +131,7 @@ class ApprovalResolution(ApiModel):
     approval_id: str
     request_hash: str
     status: str
+    approval_scope: str
 
 
 class ForkSessionRequest(ApiModel):
@@ -774,6 +779,17 @@ def create_app(state: GatewayState) -> FastAPI:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
         except (FileNotFoundError, ValueError) as exc:
             raise ApiError(400, "unknown_agent", str(exc)) from exc
+
+    @app.put("/v1/sessions/{session_id}/mode", dependencies=auth, response_model=Session)
+    async def update_session_mode(session_id: str, request: UpdateSessionModeRequest) -> Session:
+        if not await state.runs.finish_terminal_session(session_id):
+            raise ApiError(409, "session_run_active", "cannot change mode during an active run")
+        try:
+            return await asyncio.to_thread(
+                state.ledger.update_session_mode, session_id, mode=request.mode
+            )
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
 
     @app.get(
         "/v1/sessions/{session_id}/memories",
@@ -1463,6 +1479,7 @@ def create_app(state: GatewayState) -> FastAPI:
             approval_id=approval.id,
             request_hash=approval.request_hash,
             status=approval.status,
+            approval_scope=approval.approval_scope,
         )
 
     @app.get("/v1/events", dependencies=auth)

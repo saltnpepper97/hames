@@ -36,6 +36,8 @@ class Approval(ControlModel):
     request_hash: str
     reason: str
     status: str
+    allow_session: bool
+    approval_scope: str
     created_at: str
     resolved_at: str | None
 
@@ -100,6 +102,7 @@ class ControlStore:
         arguments: dict[str, JsonValue],
         request_hash: str,
         reason: str,
+        allow_session: bool = False,
     ) -> Approval:
         approval_id = new_id()
         created_at = utc_now()
@@ -109,8 +112,8 @@ class ControlStore:
                 INSERT INTO approvals(
                     id, session_id, run_id, agent_id, working_directory,
                     tool_call_id, tool_name, arguments_json, request_hash,
-                    reason, status, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                    reason, status, created_at, allow_session
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
                 """,
                 (
                     approval_id,
@@ -124,6 +127,7 @@ class ControlStore:
                     request_hash,
                     reason,
                     created_at,
+                    int(allow_session),
                 ),
             )
         return self.get_approval(approval_id)
@@ -138,12 +142,12 @@ class ControlStore:
         return self._approval(row)
 
     def resolve_approval(self, approval_id: str, request_hash: str, decision: str) -> Approval:
-        if decision not in {"approved", "denied"}:
-            raise ValueError("decision must be approved or denied")
+        if decision not in {"approved", "approved_session", "denied"}:
+            raise ValueError("decision must be approved, approved_session, or denied")
         with self._lock, self.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT request_hash, status FROM approvals WHERE id = ?", (approval_id,)
+                "SELECT * FROM approvals WHERE id = ?", (approval_id,)
             ).fetchone()
             if row is None:
                 raise KeyError(approval_id)
@@ -151,12 +155,30 @@ class ControlStore:
                 raise ValueError("approval request hash does not match")
             if str(row["status"]) != "pending":
                 raise RuntimeError("approval has already been resolved")
+            if decision == "approved_session" and not bool(row["allow_session"]):
+                raise ValueError("this approval cannot be granted for the session")
+            status = "approved" if decision.startswith("approved") else "denied"
+            scope = "session" if decision == "approved_session" else "once"
             connection.execute(
-                "UPDATE approvals SET status = ?, resolved_at = ? WHERE id = ?",
-                (decision, utc_now(), approval_id),
+                "UPDATE approvals SET status = ?, approval_scope = ?, resolved_at = ? WHERE id = ?",
+                (status, scope, utc_now(), approval_id),
             )
+            if decision == "approved_session":
+                connection.execute(
+                    "INSERT OR IGNORE INTO session_tool_grants(session_id, tool_name, created_at) "
+                    "VALUES (?, ?, ?)",
+                    (row["session_id"], row["tool_name"], utc_now()),
+                )
             connection.commit()
         return self.get_approval(approval_id)
+
+    def has_session_tool_grant(self, session_id: str, tool_name: str) -> bool:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM session_tool_grants WHERE session_id = ? AND tool_name = ?",
+                (session_id, tool_name),
+            ).fetchone()
+        return row is not None
 
     def cancel_pending_for_run(self, run_id: str) -> list[Approval]:
         with self._lock, self.database.connect() as connection:

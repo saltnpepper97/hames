@@ -18,6 +18,10 @@ streams, resumable SSE, and model-specific reasoning levels. Its Python runtime
 now executes bounded `read_file`, `list_dir`, `write_file`, `edit_file`, and Bash
 tool calls inside an explicitly trusted project or disposable scratch workspace.
 Risky operations require exact one-shot approval in the Rust REPL.
+Execution mode is session-owned and gateway-enforced: `/mode manual` confirms
+state changes with allow-once/allow-for-session/deny choices, `/mode auto`
+confirms only dangerous work, and `/mode plan` permits inspection and tests
+without writes.
 Every provider request now passes through a deterministic, budgeted context
 compiler. Attributed manifests record selected, compacted, and omitted sources,
 while content-addressed request snapshots make the exact normalized input

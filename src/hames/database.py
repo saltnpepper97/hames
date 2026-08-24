@@ -620,6 +620,27 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        12,
+        "session execution modes",
+        """
+        ALTER TABLE sessions
+            ADD COLUMN interaction_mode TEXT NOT NULL DEFAULT 'auto'
+            CHECK (interaction_mode IN ('manual', 'auto', 'plan'));
+        ALTER TABLE approvals
+            ADD COLUMN allow_session INTEGER NOT NULL DEFAULT 0
+            CHECK (allow_session IN (0, 1));
+        ALTER TABLE approvals
+            ADD COLUMN approval_scope TEXT NOT NULL DEFAULT 'once'
+            CHECK (approval_scope IN ('once', 'session'));
+        CREATE TABLE session_tool_grants (
+            session_id TEXT NOT NULL REFERENCES sessions(id),
+            tool_name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (session_id, tool_name)
+        );
+        """,
+    ),
 )
 
 

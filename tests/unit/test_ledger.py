@@ -21,7 +21,7 @@ def test_migrations_are_idempotent_and_private(hames_paths: HamesPaths) -> None:
     with database.connect() as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
-        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 11
+        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 12
 
 
 def test_failed_migration_does_not_advance_schema(tmp_path: Path) -> None:
@@ -81,6 +81,22 @@ def test_events_are_ordered_append_only_and_restart_safe(
             connection.execute("UPDATE events SET type = 'changed' WHERE id = ?", (first.id,))
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             connection.execute("DELETE FROM events WHERE id = ?", (first.id,))
+
+
+def test_session_mode_is_persisted_and_attributed(hames_paths: HamesPaths, tmp_path: Path) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    session = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    assert session.interaction_mode == "auto"
+    updated = ledger.update_session_mode(session.id, mode="plan")
+    assert updated.interaction_mode == "plan"
+    event = ledger.list_events(session.id)[-1]
+    assert event.type == "session.mode.changed"
+    assert event.payload == {"mode": "plan"}
 
 
 def test_m00_migration_preserves_events(hames_paths: HamesPaths, tmp_path: Path) -> None:

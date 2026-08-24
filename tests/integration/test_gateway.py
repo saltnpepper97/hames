@@ -55,7 +55,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 9
+            assert health_body["protocol_version"] == 10
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -587,6 +587,146 @@ async def test_runtime_manages_memory_from_the_chat_tool_loop(tmp_path: Path) ->
             assert "memory_search" in {tool.name for tool in fake.requests[0].tools}
             assert "scar_record" in {tool.name for tool in fake.requests[0].tools}
             assert "skill_control" in {tool.name for tool in fake.requests[0].tools}
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_manual_mode_offers_a_durable_session_approval(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    fake = FakeProvider(
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="manual-write",
+                        name="write_file",
+                        arguments_delta='{"path":"manual.txt","content":"approved"}',
+                    ),
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="The approved write completed."),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
+    )
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            changed = await client.put(
+                f"/v1/sessions/{session_id}/mode",
+                headers=headers,
+                json={"mode": "manual"},
+            )
+            assert response_object(changed)["interaction_mode"] == "manual"
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Write the approved fixture."},
+            )
+            events = await _wait_for_event(client, headers, session_id, "approval.requested")
+            requested = next(event for event in events if event["type"] == "approval.requested")
+            payload = requested["payload"]
+            assert isinstance(payload, dict)
+            assert payload["allow_session"] is True
+            resolved = await client.post(
+                f"/v1/approvals/{payload['approval_id']}",
+                headers=headers,
+                json={
+                    "request_hash": payload["request_hash"],
+                    "decision": "approved_session",
+                },
+            )
+            resolved_body = response_object(resolved)
+            assert resolved_body["status"] == "approved"
+            assert resolved_body["approval_scope"] == "session"
+            await _wait_for_event(client, headers, session_id, "run.completed")
+            assert (tmp_path / "manual.txt").read_text(encoding="utf-8") == "approved"
+            assert state.controls.has_session_tool_grant(session_id, "write_file")
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_plan_mode_rejects_writes_in_the_gateway(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    fake = FakeProvider(
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="plan-write",
+                        name="write_file",
+                        arguments_delta='{"path":"forbidden.txt","content":"no"}',
+                    ),
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="I stayed in plan mode."),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
+    )
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.put(
+                f"/v1/sessions/{session_id}/mode",
+                headers=headers,
+                json={"mode": "plan"},
+            )
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Plan this change without writing."},
+            )
+            events = await _wait_for_event(client, headers, session_id, "run.completed")
+            rejected = next(event for event in events if event["type"] == "tool.rejected")
+            payload = rejected["payload"]
+            assert isinstance(payload, dict)
+            assert payload["name"] == "write_file"
+            assert "plan mode" in str(payload["summary"])
+            assert not (tmp_path / "forbidden.txt").exists()
+            assert "approval.requested" not in [event["type"] for event in events]
     finally:
         await state.runs.close()
 

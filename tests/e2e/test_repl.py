@@ -105,7 +105,7 @@ async def test_rust_repl_through_gateway_and_ledger(tmp_path: Path) -> None:
         stdout, stderr = await asyncio.wait_for(
             process.communicate(
                 (
-                    "y\nhello\n/usage\n/inspect\n/context\n"
+                    "y\n/mode plan\n/session\nhello\n/usage\n/inspect\n/context\n"
                     f"/export {repl_export} markdown\n"
                     "/fork\n/session\n/events\n/quit\n"
                 ).encode()
@@ -118,6 +118,8 @@ async def test_rust_repl_through_gateway_and_ledger(tmp_path: Path) -> None:
         assert "check" in output
         assert "Hames" in output
         assert "hello from fake" in output
+        assert "Execution mode: plan" in output
+        assert "Mode" in output
         assert "Forked session" in output
         assert "Fork event" in output
         assert "Estimated input" in output
@@ -136,6 +138,7 @@ async def test_rust_repl_through_gateway_and_ledger(tmp_path: Path) -> None:
         assert "assistant.reasoning" in event_types
         assert "assistant.message" in event_types
         assert "model.usage" in event_types
+        assert "session.mode.changed" in event_types
         replay = state.ledger.replay(branch.id)
         assert any(event.type == "assistant.message" for event in replay)
 
@@ -294,11 +297,14 @@ async def test_repl_preserves_tool_preparation_through_completion(tmp_path: Path
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(
-            process.communicate(b"y\nexercise tools\n/quit\n"), timeout=10
+            process.communicate(b"y\n/mode manual\nexercise tools\ns\n/quit\n"), timeout=10
         )
         output = stdout.decode()
         assert process.returncode == 0, stderr.decode()
         assert "⬢ Change" in output
+        assert "Execution mode: manual" in output
+        assert "Approval" in output
+        assert "approved (session)" in output
         assert "Preparing write" in output
         assert "Checking policy" in output
         assert "Writing" in output

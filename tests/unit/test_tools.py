@@ -173,6 +173,62 @@ def test_policy_classifies_safe_dangerous_and_protected_actions(tmp_path: Path) 
     )
 
 
+def test_execution_modes_are_gateway_policy_not_client_convention(tmp_path: Path) -> None:
+    context = tool_context(tmp_path)
+    gate = PolicyGate(tmp_path / "hames-home")
+    write = WriteFileArguments(path="plan.txt", content="no")
+
+    assert gate.decide("write_file", write, context).decision is PolicyDecisionKind.ALLOW
+    manual = gate.decide("write_file", write, context, interaction_mode="manual")
+    assert manual.decision is PolicyDecisionKind.REQUIRE_CONFIRMATION
+    assert manual.risk == "manual_mode"
+    assert (
+        gate.decide(
+            "write_file",
+            write,
+            context,
+            interaction_mode="manual",
+            session_tool_granted=True,
+        ).decision
+        is PolicyDecisionKind.ALLOW
+    )
+    assert (
+        gate.decide("write_file", write, context, interaction_mode="plan").decision
+        is PolicyDecisionKind.DENY
+    )
+    assert (
+        gate.decide(
+            "shell", ShellArguments(command="cargo test"), context, interaction_mode="plan"
+        ).decision
+        is PolicyDecisionKind.ALLOW
+    )
+    assert (
+        gate.decide(
+            "shell", ShellArguments(command="cargo fmt"), context, interaction_mode="plan"
+        ).decision
+        is PolicyDecisionKind.DENY
+    )
+    assert (
+        gate.decide(
+            "shell",
+            ShellArguments(command="pytest && rm -rf src"),
+            context,
+            interaction_mode="plan",
+        ).decision
+        is PolicyDecisionKind.DENY
+    )
+    assert (
+        gate.decide(
+            "shell",
+            ShellArguments(command="rm -rf target"),
+            context,
+            interaction_mode="manual",
+            session_tool_granted=True,
+        ).decision
+        is PolicyDecisionKind.REQUIRE_CONFIRMATION
+    )
+
+
 def test_self_management_tools_are_typed_and_destructive_controls_confirm(
     tmp_path: Path,
 ) -> None:
@@ -266,5 +322,32 @@ def test_trust_and_approvals_are_exact_durable_and_one_shot(tmp_path: Path) -> N
     assert controls.resolve_approval(approval.id, request_hash, "denied").status == "denied"
     with pytest.raises(RuntimeError, match="already"):
         controls.resolve_approval(approval.id, request_hash, "approved")
+
+    session_request_hash = approval_request_hash(
+        tool_name="write_file",
+        arguments={"path": "notes.txt", "content": "fixture"},
+        session_id=session.id,
+        run_id="run-2",
+        agent_id="default",
+        working_directory=str(project.resolve()),
+    )
+    session_approval = controls.create_approval(
+        session_id=session.id,
+        run_id="run-2",
+        agent_id="default",
+        working_directory=str(project.resolve()),
+        tool_call_id="call-2",
+        tool_name="write_file",
+        arguments={"path": "notes.txt", "content": "fixture"},
+        request_hash=session_request_hash,
+        reason="manual mode",
+        allow_session=True,
+    )
+    resolved = controls.resolve_approval(
+        session_approval.id, session_request_hash, "approved_session"
+    )
+    assert resolved.status == "approved"
+    assert resolved.approval_scope == "session"
+    assert controls.has_session_tool_grant(session.id, "write_file")
     assert controls.revoke_trust(project)
     assert controls.get_trust(project) is None

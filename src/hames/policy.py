@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -83,6 +84,32 @@ _SECRET_DIRECTORIES = {".ssh", ".gnupg", ".aws", ".kube"}
 
 _OUTSIDE_PATH = re.compile(r"(?<![\w$])/(?:home|root|etc|var|opt|srv|mnt|media)/[^\s'\";&|]+")
 
+_PLAN_DENIED_TOOLS = {
+    "write_file",
+    "edit_file",
+    "spawn_agent",
+    "skill_author",
+    "skill_control",
+    "memory_add",
+    "memory_edit",
+    "memory_forget",
+    "scar_record",
+    "scar_control",
+}
+
+_MANUAL_CONFIRM_TOOLS = {
+    "write_file",
+    "edit_file",
+    "shell",
+    "skill_author",
+    "skill_control",
+    "memory_add",
+    "memory_edit",
+    "memory_forget",
+    "scar_record",
+    "scar_control",
+}
+
 
 class PolicyGate:
     def __init__(self, protected_root: Path) -> None:
@@ -96,12 +123,30 @@ class PolicyGate:
         *,
         allowed_tools: frozenset[str] | None = None,
         declarative_rules: Sequence[PolicyRule] = (),
+        interaction_mode: str = "auto",
+        session_tool_granted: bool = False,
     ) -> PolicyDecision:
         if allowed_tools is not None and tool_name not in allowed_tools:
             return PolicyDecision(
                 PolicyDecisionKind.DENY,
                 "the active agent is not allowed to use this tool",
                 "agent_scope",
+            )
+        if interaction_mode == "plan" and (tool_name in _PLAN_DENIED_TOOLS or "." in tool_name):
+            return PolicyDecision(
+                PolicyDecisionKind.DENY,
+                "plan mode does not permit code or durable state changes",
+                "plan_mode",
+            )
+        if (
+            interaction_mode == "plan"
+            and isinstance(arguments, ShellArguments)
+            and not _plan_shell_allowed(arguments.command)
+        ):
+            return PolicyDecision(
+                PolicyDecisionKind.DENY,
+                "plan mode permits only inspection and test commands",
+                "plan_mode",
             )
         if isinstance(arguments, MemoryForgetArguments):
             return PolicyDecision(
@@ -216,7 +261,60 @@ class PolicyGate:
             return rule_denial
         if rule_confirmation is not None:
             return rule_confirmation
+        if (
+            interaction_mode == "manual"
+            and tool_name in _MANUAL_CONFIRM_TOOLS
+            and not session_tool_granted
+        ):
+            return PolicyDecision(
+                PolicyDecisionKind.REQUIRE_CONFIRMATION,
+                "manual mode requires approval for state-changing tools",
+                "manual_mode",
+            )
         return PolicyDecision(PolicyDecisionKind.ALLOW, "allowed by trusted-root policy")
+
+
+def _plan_shell_allowed(command: str) -> bool:
+    if re.search(r"(?:>>?|<)|`|\$\(", command):
+        return False
+    clauses = [part.strip() for part in re.split(r"(?:&&|\|\||[;\n|])", command)]
+    if not clauses or any(not clause for clause in clauses):
+        return False
+    return all(_plan_clause_allowed(clause) for clause in clauses)
+
+
+def _plan_clause_allowed(clause: str) -> bool:
+    try:
+        words = shlex.split(clause)
+    except ValueError:
+        return False
+    while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):
+        words.pop(0)
+    if not words:
+        return False
+    command = words[0].removeprefix("./")
+    args = words[1:]
+    if command in {"pwd", "ls", "rg", "grep", "find", "head", "tail", "wc"}:
+        return not any(arg in {"--delete", "-delete"} for arg in args)
+    if command == "sed":
+        return "-i" not in args and not any(arg.startswith("--in-place") for arg in args)
+    if command == "git":
+        return bool(args) and args[0] in {"status", "diff", "log", "show", "grep"}
+    if command == "cargo":
+        if not args or args[0] not in {"test", "check", "clippy", "fmt"}:
+            return False
+        return args[0] != "fmt" or "--check" in args
+    if (
+        command in {"pytest", "pyright"}
+        or command.endswith("/pytest")
+        or command.endswith("/pyright")
+    ):
+        return True
+    if command == "ruff" or command.endswith("/ruff"):
+        return "--fix" not in args and (not args or args[0] != "format" or "--check" in args)
+    if command == "uv" and len(args) >= 2 and args[0] == "run":
+        return _plan_clause_allowed(shlex.join(args[1:]))
+    return False
 
 
 def approval_request_hash(

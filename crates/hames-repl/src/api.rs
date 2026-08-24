@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 #[derive(Clone)]
 pub struct GatewayClient {
@@ -81,6 +81,7 @@ pub struct Session {
     pub fork_event_id: Option<String>,
     pub lineage_kind: String,
     pub delegation_depth: u64,
+    pub interaction_mode: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -198,6 +199,7 @@ pub struct TrustStatus {
 #[derive(Clone, Debug, Deserialize)]
 pub struct ApprovalResolution {
     pub status: String,
+    pub approval_scope: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -503,6 +505,11 @@ struct UpdateSessionAgent<'a> {
 }
 
 #[derive(Serialize)]
+struct UpdateSessionMode<'a> {
+    mode: &'a str,
+}
+
+#[derive(Serialize)]
 struct ForkSession<'a> {
     at: Option<&'a str>,
     title: Option<&'a str>,
@@ -624,6 +631,18 @@ impl GatewayClient {
                 .put(format!("{}/v1/sessions/{session_id}/agent", self.base_url))
                 .bearer_auth(&self.token)
                 .json(&UpdateSessionAgent { agent_id })
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn update_session_mode(&self, session_id: &str, mode: &str) -> Result<Session> {
+        decode(
+            self.http
+                .put(format!("{}/v1/sessions/{session_id}/mode", self.base_url))
+                .bearer_auth(&self.token)
+                .json(&UpdateSessionMode { mode })
                 .send()
                 .await?,
         )

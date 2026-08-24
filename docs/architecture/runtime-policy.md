@@ -1,7 +1,7 @@
 # Runtime and policy boundary
 
 The Python runtime is the only component allowed to execute model-requested work.
-Clients send messages and decisions through protocol v9; provider adapters only
+Clients send messages and decisions through protocol v10; provider adapters only
 translate normalized messages and streams. Neither the Rust REPL nor a provider
 adapter directly reads files, writes files, or starts commands.
 
@@ -17,9 +17,10 @@ recording `run.cancelled`.
 
 ## Workspaces and tools
 
-Every core tool chooses `project` or `scratch`; it cannot supply an arbitrary
-working directory. Project resolves to the session's exact canonical launch
-directory. Scratch is created lazily at
+Filesystem tools choose `project`, `scratch`, or confirmed `home`; they cannot
+supply an arbitrary working directory. A leading `~/` is normalized to the home
+workspace before policy evaluation. Project resolves to the session's exact
+canonical launch directory. Scratch is created lazily at
 `/tmp/hames/runs/<run-id>/<agent-id>/workspace` and is never a deliverable.
 
 File operations reject absolute paths, parent traversal, and symlink escape.
@@ -42,8 +43,27 @@ traversal in shell strings also require confirmation.
 
 An approval request hashes canonical tool arguments together with run, session,
 agent, and working-directory identity. The REPL displays that exact request and
-submits the hash with an approve-once or deny decision. A mutation or replay cannot
-reuse it. Pending approvals are cancelled with their run on gateway shutdown.
+submits the hash with an allow-once or deny decision. Manual-mode state changes
+also offer allow-for-session. That grant is scoped to the exact session and tool
+name; built-in dangerous-operation checks still run and can require a fresh
+one-shot approval. A mutation or replay cannot reuse an exact approval. Pending
+approvals are cancelled with their run on gateway shutdown.
+
+## Execution modes
+
+The gateway persists and enforces the mode for each session. Clients only select
+and display it, so the REPL, TUI, and web client share identical semantics:
+
+- `manual` confirms state-changing tools. The user may allow the exact action,
+  allow that tool for the session, or deny it.
+- `auto` runs ordinary trusted work automatically and confirms only dangerous
+  or out-of-workspace actions.
+- `plan` permits inspection and a narrow set of test/check shell commands, but
+  denies code writes, delegation, plugin tools, and durable memory/Scar/Skill
+  mutation.
+
+Mode policy is included in the model's compiled system context and enforced again
+at each tool call. A client cannot weaken it by omitting mode UI.
 
 The shell classifier is deliberately a policy gate rather than a containment
 sandbox. Bash is expressive enough to obscure filesystem and network behavior;

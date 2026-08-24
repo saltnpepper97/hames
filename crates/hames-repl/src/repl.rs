@@ -68,8 +68,7 @@ pub async fn run() -> Result<()> {
     println!(
         "{}",
         style::banner_lines(
-            env!("CARGO_PKG_VERSION"),
-            &health.version,
+            (env!("CARGO_PKG_VERSION"), &health.version),
             &provider,
             &model,
             if reasoning.is_empty() {
@@ -77,6 +76,7 @@ pub async fn run() -> Result<()> {
             } else {
                 &reasoning
             },
+            &session.interaction_mode,
             &cwd.display().to_string(),
             &session.id,
         )
@@ -232,17 +232,25 @@ async fn handle_command(
         "/quit" | "/exit" => return Ok(CommandOutcome::Exit),
         "/new" => {
             *remember_next = false;
+            let mode = session.interaction_mode.clone();
             *session = client
                 .create_session(cwd, &session.agent_id, provider, model, reasoning)
                 .await?;
+            if mode != "auto" {
+                *session = client.update_session_mode(&session.id, &mode).await?;
+            }
             ensure_trust(client, editor, session).await?;
             println!("{}", style::success(&format!("New session {}", session.id)));
         }
         "/clear" => {
             *remember_next = false;
+            let mode = session.interaction_mode.clone();
             *session = client
                 .create_session(cwd, &session.agent_id, provider, model, reasoning)
                 .await?;
+            if mode != "auto" {
+                *session = client.update_session_mode(&session.id, &mode).await?;
+            }
             ensure_trust(client, editor, session).await?;
             print!("\x1b[2J\x1b[H");
             io::stdout().flush()?;
@@ -259,12 +267,13 @@ async fn handle_command(
             }
             for item in sessions {
                 println!(
-                    "{}  {:<8}  {}  {} / {}  {}  {}{}",
+                    "{}  {:<8}  {}  {} / {}  {:<6}  {}  {}{}",
                     item.id,
                     item.status,
                     item.created_at,
                     item.provider,
                     item.model,
+                    item.interaction_mode,
                     item.agent_id,
                     item.title.as_deref().unwrap_or(&item.working_directory),
                     item.parent_session_id
@@ -353,6 +362,27 @@ async fn handle_command(
                         agent.id, agent.authority, agent.name
                     );
                 }
+            }
+        }
+        "/mode" => {
+            if let Some(mode) = parts.get(1) {
+                if !matches!(*mode, "manual" | "auto" | "plan") {
+                    bail!("usage: /mode [manual|auto|plan]");
+                }
+                *session = client.update_session_mode(&session.id, mode).await?;
+                println!(
+                    "{}",
+                    style::success(&format!("Execution mode: {}", session.interaction_mode))
+                );
+            } else {
+                println!("{}", style::section("Execution mode"));
+                println!("{}", style::key_value("Current", &session.interaction_mode));
+                println!(
+                    "  {}",
+                    style::dim(
+                        "manual confirms state changes · auto confirms danger · plan cannot write"
+                    )
+                );
             }
         }
         "/resume" => {
@@ -742,6 +772,7 @@ fn print_session(session: &Session) {
         style::key_value("Directory", &session.working_directory)
     );
     println!("{}", style::key_value("Agent", &session.agent_id));
+    println!("{}", style::key_value("Mode", &session.interaction_mode));
     println!("{}", style::key_value("Provider", &session.provider));
     println!("{}", style::key_value("Model", &session.model));
     println!(
@@ -1566,6 +1597,7 @@ async fn handle_approval(
     let reason = event.payload["reason"]
         .as_str()
         .unwrap_or("policy confirmation");
+    let allow_session = event.payload["allow_session"].as_bool().unwrap_or(false);
     let arguments = serde_json::to_string_pretty(&event.payload["arguments"])?;
     println!();
     println!("{}", style::badge(style::Badge::Approval, false));
@@ -1573,17 +1605,25 @@ async fn handle_approval(
     println!("{}", style::key_value("Reason", reason));
     println!("{}", style::key_value("Arguments", &arguments));
     println!("{}", style::key_value("Request hash", request_hash));
-    let answer = editor.readline("Approve this exact action once? [y/N] › ")?;
-    let decision = if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-        "approved"
+    let prompt = if allow_session {
+        "Allow [s]ession / [y] once / [N] deny › "
     } else {
-        "denied"
+        "Approve this exact action once? [y/N] › "
+    };
+    let answer = editor.readline(prompt)?;
+    let decision = match answer.trim().to_ascii_lowercase().as_str() {
+        "s" | "session" if allow_session => "approved_session",
+        "y" | "yes" => "approved",
+        _ => "denied",
     };
     let resolved = client
         .resolve_approval(approval_id, request_hash, decision)
         .await?;
     let settled = if resolved.status == "approved" {
-        style::success(&resolved.status)
+        style::success(&format!(
+            "{} ({})",
+            resolved.status, resolved.approval_scope
+        ))
     } else {
         format!(
             "{} {}",
@@ -2100,6 +2140,10 @@ fn print_help() {
         ("/session · /sessions", "Inspect or list sessions"),
         ("/resume <id> · /fork [event]", "Resume or branch history"),
         ("/agent [id]", "Inspect or change the active agent"),
+        (
+            "/mode [manual|auto|plan]",
+            "Inspect or change execution mode",
+        ),
         ("/events [count]", "Show recent durable events"),
     ]);
     println!();

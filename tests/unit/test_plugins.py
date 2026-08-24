@@ -36,7 +36,7 @@ def test_plugin_schema_is_migration_eleven(tmp_path: Path) -> None:
     path = tmp_path / "m8.db"
     Database(path, migrations=MIGRATIONS[:10]).migrate()
     Database(path).migrate()
-    assert len(MIGRATIONS) == 11
+    assert len(MIGRATIONS) == 12
     with Database(path).connect() as connection:
         tables = {
             str(row["name"])

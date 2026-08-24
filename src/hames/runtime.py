@@ -95,6 +95,21 @@ POLICY_SUMMARY = (
     "are denied. High-risk shell operations require one-shot human approval."
 )
 
+MODE_POLICY_SUMMARIES = {
+    "manual": (
+        "Execution mode is manual: inspect freely, but state-changing tool calls require "
+        "human approval unless that tool was allowed for this session."
+    ),
+    "auto": (
+        "Execution mode is auto: ordinary trusted-workspace work proceeds automatically; "
+        "dangerous or out-of-workspace actions still require approval."
+    ),
+    "plan": (
+        "Execution mode is plan: inspect and run safe tests, but do not write code, delegate, "
+        "or mutate durable agent state."
+    ),
+}
+
 
 class RunFailure(RuntimeError):
     def __init__(
@@ -351,6 +366,7 @@ class RunManager:
                 "approval_id": resolved.id,
                 "request_hash": resolved.request_hash,
                 "decision": resolved.status,
+                "approval_scope": resolved.approval_scope,
             },
             correlation_id=resolved.run_id,
         )
@@ -626,7 +642,7 @@ class RunManager:
             history,
             capsule,
             definitions,
-            POLICY_SUMMARY,
+            f"{POLICY_SUMMARY} {MODE_POLICY_SUMMARIES[session.interaction_mode]}",
             self.config.context,
             run_id=run_id,
             memories=memories,
@@ -1005,12 +1021,17 @@ class RunManager:
             if isinstance(arguments, ShellArguments)
             else []
         )
+        session_tool_granted = await asyncio.to_thread(
+            self.controls.has_session_tool_grant, session.id, invocation.name
+        )
         decision = self.policy.decide(
             invocation.name,
             arguments,
             context,
             allowed_tools=allowed_tools,
             declarative_rules=active_policy_rules,
+            interaction_mode=session.interaction_mode,
+            session_tool_granted=session_tool_granted,
         )
         policy_decided = await self._append(
             session_id=session.id,
@@ -1037,7 +1058,13 @@ class RunManager:
             return
         if decision.decision is PolicyDecisionKind.REQUIRE_CONFIRMATION:
             approved = await self._request_approval(
-                run_id, session, invocation, request_hash, decision.reason, policy_decided.id
+                run_id,
+                session,
+                invocation,
+                request_hash,
+                decision.reason,
+                policy_decided.id,
+                allow_session=decision.risk == "manual_mode",
             )
             if not approved:
                 await self._persist_tool_result(
@@ -1813,6 +1840,8 @@ class RunManager:
         request_hash: str,
         reason: str,
         causation_id: str,
+        *,
+        allow_session: bool,
     ) -> bool:
         approval = await asyncio.to_thread(
             self.controls.create_approval,
@@ -1825,6 +1854,7 @@ class RunManager:
             arguments=invocation.arguments,
             request_hash=request_hash,
             reason=reason,
+            allow_session=allow_session,
         )
         waiter = asyncio.get_running_loop().create_future()
         self._approval_waiters[approval.id] = waiter
@@ -1841,6 +1871,7 @@ class RunManager:
                 "request_hash": request_hash,
                 "working_directory": session.working_directory,
                 "reason": reason,
+                "allow_session": allow_session,
             },
             causation_id=causation_id,
             correlation_id=run_id,
@@ -1865,6 +1896,7 @@ class RunManager:
                     "approval_id": approval.id,
                     "request_hash": approval.request_hash,
                     "decision": "cancelled",
+                    "approval_scope": approval.approval_scope,
                 },
                 correlation_id=approval.run_id,
             )
