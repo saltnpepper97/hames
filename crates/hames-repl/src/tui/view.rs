@@ -1058,10 +1058,7 @@ fn render_inline_editor(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(editor) = &app.inline_editor else {
         return;
     };
-    let title = match editor.kind {
-        crate::tui::app::InlineEditorKind::PlanExecutionNote => "Execution note",
-        crate::tui::app::InlineEditorKind::NewTask => "New task",
-    };
+    let title = "Execution note";
     let width = usize::from(area.width.saturating_sub(4).max(1));
     let value = composer_edit_text(&editor.input, true);
     let mut lines = Vec::new();
@@ -1282,23 +1279,13 @@ fn scrollbar_position(top: usize, content_len: usize, viewport_len: usize) -> us
 }
 
 fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta: Duration) {
-    let left = if let Some(editor) = &app.inline_editor {
-        match editor.kind {
-            crate::tui::app::InlineEditorKind::PlanExecutionNote => Line::from(vec![
-                Span::styled("  Enter", Style::default().fg(INPUT).bold()),
-                Span::styled(" approve and execute · ", Style::default().fg(MUTED)),
-                Span::styled("Esc", Style::default().fg(INPUT).bold()),
-                Span::styled(" choices", Style::default().fg(MUTED)),
-            ]),
-            crate::tui::app::InlineEditorKind::NewTask => Line::from(vec![
-                Span::styled("  Enter", Style::default().fg(INPUT).bold()),
-                Span::styled(" add · ", Style::default().fg(MUTED)),
-                Span::styled("Shift/Alt+Enter", Style::default().fg(INPUT).bold()),
-                Span::styled(" newline · ", Style::default().fg(MUTED)),
-                Span::styled("Esc", Style::default().fg(INPUT).bold()),
-                Span::styled(" back", Style::default().fg(MUTED)),
-            ]),
-        }
+    let left = if app.inline_editor.is_some() {
+        Line::from(vec![
+            Span::styled("  Enter", Style::default().fg(INPUT).bold()),
+            Span::styled(" approve and execute · ", Style::default().fg(MUTED)),
+            Span::styled("Esc", Style::default().fg(INPUT).bold()),
+            Span::styled(" choices", Style::default().fg(MUTED)),
+        ])
     } else if matches!(app.modal, Some(Modal::Approval(_))) {
         Line::from(vec![
             Span::styled("  ←→", Style::default().fg(INPUT).bold()),
@@ -1418,13 +1405,6 @@ fn sheet_shortcuts(app: &App) -> Line<'static> {
                 Span::styled(" delete · ", Style::default().fg(MUTED)),
             ]);
         }
-    } else if sheet.kind == SheetKind::Tasks {
-        spans.extend([
-            Span::styled("Ctrl+N", Style::default().fg(INPUT).bold()),
-            Span::styled(" add · ", Style::default().fg(MUTED)),
-            Span::styled("Ctrl+D", Style::default().fg(INPUT).bold()),
-            Span::styled(" delete · ", Style::default().fg(MUTED)),
-        ]);
     }
     spans.extend([
         Span::styled("Esc", Style::default().fg(INPUT).bold()),
@@ -1438,28 +1418,56 @@ fn activity_bar(app: &App) -> Line<'static> {
         Span::raw("  "),
         Span::styled("──────", Style::default().fg(MUTED)),
     ];
-    spans.push(Span::styled(
-        format!("  {}", current_activity(app)),
-        Style::default().fg(INPUT),
-    ));
+    let activity = current_activity(app);
+    if activity != "Thinking" {
+        spans.push(Span::styled(
+            format!("  {activity}"),
+            Style::default().fg(INPUT),
+        ));
+    }
     let elapsed = app
         .run_started_at
         .map(|started| format_elapsed(started.elapsed().as_secs()))
         .unwrap_or_else(|| "0s".to_owned());
-    let queue_hint = if app.queued_messages.len() >= 2 {
-        "Queue full 2/2"
-    } else if app.session.interaction_mode == "plan" {
-        "Enter add plan note"
-    } else {
-        "Enter queue · Alt+↑ now · ↑ edit"
-    };
-    let escape_hint = if app.active_run_is_goal_step() {
-        "Esc pause"
-    } else {
-        "Esc interrupt"
-    };
     spans.push(Span::styled(
-        format!(" · {elapsed} · {queue_hint} · {escape_hint}"),
+        format!(
+            "{} {elapsed}",
+            if activity == "Thinking" { " " } else { " ·" }
+        ),
+        Style::default().fg(MUTED),
+    ));
+
+    if !app.composer.is_empty() {
+        spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
+        if app.queued_messages.len() >= 2 {
+            spans.push(Span::styled("Queue full 2/2", Style::default().fg(MUTED)));
+        } else {
+            spans.push(Span::styled("Enter", Style::default().fg(INPUT).bold()));
+            spans.push(Span::styled(
+                if app.session.interaction_mode == "plan" {
+                    " add plan note · "
+                } else {
+                    " queue · "
+                },
+                Style::default().fg(MUTED),
+            ));
+            spans.push(Span::styled("Alt+↑", Style::default().fg(INPUT).bold()));
+            spans.push(Span::styled(" now", Style::default().fg(MUTED)));
+        }
+    }
+    if !app.queued_messages.is_empty() {
+        spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
+        spans.push(Span::styled("↑", Style::default().fg(INPUT).bold()));
+        spans.push(Span::styled(" edit", Style::default().fg(MUTED)));
+    }
+    spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
+    spans.push(Span::styled("Esc", Style::default().fg(INPUT).bold()));
+    spans.push(Span::styled(
+        if app.active_run_is_goal_step() {
+            " pause"
+        } else {
+            " interrupt"
+        },
         Style::default().fg(MUTED),
     ));
     Line::from(spans)
@@ -4204,15 +4212,72 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("──────"));
-        assert!(
-            rendered.contains("Working · 12s · Enter queue · Alt+↑ now · ↑ edit · Esc interrupt")
-        );
+        assert!(rendered.contains("Working · 12s · Esc interrupt"));
+        assert!(!rendered.contains("Enter queue"));
+        assert!(!rendered.contains("Alt+↑ now"));
         assert!(rendered.contains("[connected]"));
         assert!(!rendered.contains("Shift+Tab mode"));
         let footer_y = terminal.size().unwrap().height - 1;
         let buffer = terminal.backend().buffer();
         assert!((2..8).all(|x| buffer.cell((x, footer_y)).unwrap().fg == MUTED));
         assert_eq!(buffer.cell((4, footer_y)).unwrap().fg, MUTED);
+    }
+
+    #[test]
+    fn active_footer_only_offers_queue_actions_for_composer_text() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-1".to_owned());
+        app.run_started_at = Some(Instant::now() - Duration::from_secs(12));
+        app.composer.insert_text("follow up");
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let footer_y = terminal.size().unwrap().height - 1;
+        let buffer = terminal.backend().buffer();
+        let footer = (0..terminal.size().unwrap().width)
+            .map(|x| buffer.cell((x, footer_y)).unwrap().symbol())
+            .collect::<String>();
+        assert!(footer.contains("Enter queue · Alt+↑ now · Esc interrupt"));
+
+        let enter_x = UnicodeWidthStr::width(&footer[..footer.find("Enter").unwrap()]) as u16;
+        let alt_x = UnicodeWidthStr::width(&footer[..footer.find("Alt+↑").unwrap()]) as u16;
+        let escape_x = UnicodeWidthStr::width(&footer[..footer.find("Esc").unwrap()]) as u16;
+        assert_eq!(buffer.cell((enter_x, footer_y)).unwrap().fg, INPUT);
+        assert_eq!(buffer.cell((alt_x, footer_y)).unwrap().fg, INPUT);
+        assert_eq!(buffer.cell((escape_x, footer_y)).unwrap().fg, INPUT);
+    }
+
+    #[test]
+    fn active_footer_does_not_repeat_thinking_state() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-thinking".to_owned());
+        app.run_started_at = Some(Instant::now() - Duration::from_secs(4));
+        app.transcript.push(TranscriptItem::Thought {
+            run_id: "run-thinking".to_owned(),
+            content: String::new(),
+            live: true,
+            interrupted: false,
+            collapsed: true,
+            duration_seconds: 0.0,
+        });
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let footer_y = terminal.size().unwrap().height - 1;
+        let footer = (0..terminal.size().unwrap().width)
+            .map(|x| {
+                terminal
+                    .backend()
+                    .buffer()
+                    .cell((x, footer_y))
+                    .unwrap()
+                    .symbol()
+            })
+            .collect::<String>();
+        assert!(!footer.contains("Thinking"));
+        assert!(footer.contains("4s · Esc interrupt"));
     }
 
     #[test]
@@ -4251,7 +4316,7 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("Queued 1/2  first queued request"));
         assert!(rendered.contains("Queued 2/2  second queued request"));
-        assert!(rendered.contains("Queue full 2/2"));
+        assert!(!rendered.contains("Queue full 2/2"));
         assert!(app.hits.iter().any(|region| matches!(
             &region.action,
             HitAction::QueuedMessage(id) if id == "queue-1"

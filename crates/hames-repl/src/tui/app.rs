@@ -751,10 +751,6 @@ pub enum MenuAction {
     OpenPlanNote,
     ExecutePlanWithNote(String),
     ExecutePlan(String),
-    ToggleTask {
-        task_id: String,
-        status: String,
-    },
     Compact,
     ShowGoal,
     StartGoal(String),
@@ -832,7 +828,6 @@ pub enum SheetKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InlineEditorKind {
     PlanExecutionNote,
-    NewTask,
 }
 
 #[derive(Clone, Debug)]
@@ -1213,14 +1208,7 @@ impl App {
                 .map(|item| MenuOption {
                     label: task_checkbox(item).to_owned(),
                     detail: item.text.clone(),
-                    action: MenuAction::ToggleTask {
-                        task_id: item.id.clone(),
-                        status: if item.status == "completed" {
-                            "pending".to_owned()
-                        } else {
-                            "completed".to_owned()
-                        },
-                    },
+                    action: MenuAction::OpenTasks,
                 })
                 .collect(),
             selected: 0,

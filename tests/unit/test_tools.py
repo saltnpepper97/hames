@@ -236,6 +236,46 @@ def test_execution_modes_are_gateway_policy_not_client_convention(tmp_path: Path
         ).decision
         is PolicyDecisionKind.ALLOW
     )
+    probe = (
+        'python3 --version && python3 -c "import curses, pty, json; '
+        "print('curses ok, pty ok', curses.version)\""
+    )
+    assert (
+        gate.decide(
+            "shell", ShellArguments(command=probe), context, interaction_mode="plan"
+        ).decision
+        is PolicyDecisionKind.ALLOW
+    )
+    availability_probe = (
+        'python3 --version && python3 -c "import pygame; '
+        "print('pygame', pygame.version.ver)\" 2>&1 | tail -1"
+    )
+    assert (
+        gate.decide(
+            "shell", ShellArguments(command=availability_probe), context, interaction_mode="plan"
+        ).decision
+        is PolicyDecisionKind.ALLOW
+    )
+    assert (
+        gate.decide(
+            "shell",
+            ShellArguments(
+                command='command -v python3 && python3 -c "import pygame"; echo "exit=$?"'
+            ),
+            context,
+            interaction_mode="plan",
+        ).decision
+        is PolicyDecisionKind.ALLOW
+    )
+    assert (
+        gate.decide(
+            "shell",
+            ShellArguments(command="python3 -c \"open('plan-write.txt', 'w').write('bad')\""),
+            context,
+            interaction_mode="plan",
+        ).decision
+        is PolicyDecisionKind.DENY
+    )
     assert (
         gate.decide(
             "shell", ShellArguments(command="cargo fmt"), context, interaction_mode="plan"

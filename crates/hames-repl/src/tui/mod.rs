@@ -432,8 +432,6 @@ enum Effect {
     SendPlanNote(String, Vec<PasteSpan>),
     ExecutePlanWithNote(String),
     SendNow(String, Vec<PasteSpan>),
-    AddTask(String),
-    DeleteTask(String),
     TakeQueued(String),
     TakeLatestQueued,
     Cancel,
@@ -518,7 +516,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         };
         if !matches!(
             sheet.kind,
-            SheetKind::Sessions | SheetKind::Agents | SheetKind::Queue | SheetKind::Tasks
+            SheetKind::Sessions | SheetKind::Agents | SheetKind::Queue
         ) || sheet.options.is_empty()
         {
             return None;
@@ -533,7 +531,6 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                 MenuAction::Resume(session_id) => Some(Effect::DeleteSession(session_id.clone())),
                 MenuAction::SetAgent(agent_id) => Some(Effect::DeleteAgent(agent_id.clone())),
                 MenuAction::EditQueued(queue_id) => Some(Effect::DeleteQueued(queue_id.clone())),
-                MenuAction::ToggleTask { task_id, .. } => Some(Effect::DeleteTask(task_id.clone())),
                 _ => None,
             };
         }
@@ -548,20 +545,6 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             .is_some_and(|sheet| sheet.kind == SheetKind::Agents)
     {
         return Some(Effect::Menu(MenuAction::CreateAgent));
-    }
-    if key.modifiers.contains(KeyModifiers::CONTROL)
-        && key.code == KeyCode::Char('n')
-        && app
-            .sheet
-            .as_ref()
-            .is_some_and(|sheet| sheet.kind == SheetKind::Tasks)
-    {
-        app.sheet = None;
-        app.inline_editor = Some(InlineEditor {
-            kind: InlineEditorKind::NewTask,
-            input: Default::default(),
-        });
-        return None;
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         if app.active_run.is_some() {
@@ -630,6 +613,14 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             }
             None
         }
+        KeyCode::Enter
+            if app
+                .sheet
+                .as_ref()
+                .is_some_and(|sheet| sheet.kind == SheetKind::Tasks) =>
+        {
+            None
+        }
         KeyCode::Enter if app.sheet.is_some() => {
             let action = app.selected_sheet_action();
             app.sheet = None;
@@ -648,6 +639,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         }
         KeyCode::Down if app.history_index.is_some() => {
             app.history_next();
+            None
+        }
+        KeyCode::Enter if app.composer.is_empty() && app.plan_ready() => {
+            app.focused_thought = None;
+            app.open_plan_review();
             None
         }
         KeyCode::Enter | KeyCode::Char(' ')
@@ -698,10 +694,7 @@ fn handle_inline_editor_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             app.notice = Some("Type a note first".to_owned());
             return None;
         }
-        return Some(match editor.kind {
-            InlineEditorKind::PlanExecutionNote => Effect::ExecutePlanWithNote(content),
-            InlineEditorKind::NewTask => Effect::AddTask(content),
-        });
+        return Some(Effect::ExecutePlanWithNote(content));
     }
     let Some(editor) = &mut app.inline_editor else {
         return None;
@@ -713,14 +706,6 @@ fn handle_inline_editor_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         KeyCode::Right => editor.input.move_right(),
         KeyCode::Home => editor.input.move_home(),
         KeyCode::End => editor.input.move_end(),
-        KeyCode::Enter
-            if key
-                .modifiers
-                .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
-                && editor.kind == InlineEditorKind::NewTask =>
-        {
-            editor.input.insert_text("\n");
-        }
         KeyCode::Char(value)
             if !key
                 .modifiers
@@ -1694,19 +1679,6 @@ async fn apply_effect(
                 client.cancel(&run_id).await?;
             }
         }
-        Effect::AddTask(content) => {
-            let tasks = client.add_task(&app.session.id, &content).await?;
-            app.set_tasks(tasks);
-            app.inline_editor = None;
-            app.open_tasks();
-            app.notice = Some("Task added".to_owned());
-        }
-        Effect::DeleteTask(task_id) => {
-            let tasks = client.delete_task(&app.session.id, &task_id).await?;
-            app.set_tasks(tasks);
-            app.open_tasks();
-            app.notice = Some("Task removed".to_owned());
-        }
         Effect::PauseGoal => {
             let goal = client.pause_goal(&app.session.id).await?;
             app.goal = Some(goal.clone());
@@ -1905,13 +1877,6 @@ async fn apply_menu_action(
             app.run_started_at = Some(Instant::now());
             app.sheet = None;
             app.inline_editor = None;
-        }
-        MenuAction::ToggleTask { task_id, status } => {
-            let tasks = client
-                .update_task(&app.session.id, &task_id, &status)
-                .await?;
-            app.set_tasks(tasks);
-            app.open_tasks();
         }
         MenuAction::Compact => {
             let accepted = client.compact_session(&app.session.id).await?;
@@ -2903,6 +2868,7 @@ mod tests {
         plan_session.interaction_mode = "plan".to_owned();
         let mut app = App::new(plan_session, Vec::new(), true);
         app.set_plan(ready_plan());
+        app.focused_thought = Some(0);
 
         assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).is_none());
         assert!(
@@ -2944,7 +2910,7 @@ mod tests {
     }
 
     #[test]
-    fn task_sheet_toggles_adds_and_confirms_deletion_in_place() {
+    fn task_sheet_is_read_only_for_the_user() {
         let mut app = App::new(session(), Vec::new(), true);
         app.set_tasks(SessionTaskList {
             session_id: "session-1".to_owned(),
@@ -2960,13 +2926,8 @@ mod tests {
             updated_at: "now".to_owned(),
         });
         app.open_tasks();
-        assert!(matches!(
-            handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            Some(Effect::Menu(MenuAction::ToggleTask { task_id, status }))
-                if task_id == "task-1" && status == "completed"
-        ));
-
-        app.open_tasks();
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).is_none());
+        assert!(app.sheet.is_some());
         assert!(
             handle_key(
                 &mut app,
@@ -2974,10 +2935,8 @@ mod tests {
             )
             .is_none()
         );
-        assert!(app.inline_editor.is_some());
+        assert!(app.inline_editor.is_none());
 
-        app.inline_editor = None;
-        app.open_tasks();
         assert!(
             handle_key(
                 &mut app,
@@ -2987,15 +2946,8 @@ mod tests {
         );
         assert_eq!(
             app.sheet.as_ref().and_then(|sheet| sheet.pending_delete),
-            Some(0)
+            None
         );
-        assert!(matches!(
-            handle_key(
-                &mut app,
-                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)
-            ),
-            Some(Effect::DeleteTask(task_id)) if task_id == "task-1"
-        ));
         assert!(app.sheet.is_some());
     }
 

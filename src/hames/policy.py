@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -291,12 +292,50 @@ class PolicyGate:
 
 
 def _plan_shell_allowed(command: str) -> bool:
+    command = re.sub(r"\s+2>&1(?=\s*(?:$|&&|\|\||[;|]))", "", command)
     if re.search(r"(?:>>?|<)|`|\$\(", command):
         return False
-    clauses = [part.strip() for part in re.split(r"(?:&&|\|\||[;\n|])", command)]
+    clauses = _plan_shell_clauses(command)
     if not clauses or any(not clause for clause in clauses):
         return False
     return all(_plan_clause_allowed(clause) for clause in clauses)
+
+
+def _plan_shell_clauses(command: str) -> list[str]:
+    """Split shell clauses without treating punctuation inside quotes as control syntax."""
+    clauses: list[str] = []
+    start = 0
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(command):
+        character = command[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if character == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if character in {"'", '"'}:
+            if quote is None:
+                quote = character
+            elif quote == character:
+                quote = None
+            index += 1
+            continue
+        if quote is None and character in {";", "\n", "|", "&"}:
+            separator_length = 1
+            if character in {"|", "&"} and command[index : index + 2] in {"||", "&&"}:
+                separator_length = 2
+            clauses.append(command[start:index].strip())
+            index += separator_length
+            start = index
+            continue
+        index += 1
+    clauses.append(command[start:].strip())
+    return clauses
 
 
 def _plan_clause_allowed(clause: str) -> bool:
@@ -312,6 +351,10 @@ def _plan_clause_allowed(clause: str) -> bool:
     args = words[1:]
     if command in {"pwd", "ls", "rg", "grep", "find", "head", "tail", "wc"}:
         return not any(arg in {"--delete", "-delete"} for arg in args)
+    if command == "command":
+        return len(args) == 2 and args[0] in {"-v", "-V"}
+    if command == "echo":
+        return all(not re.search(r"[`<>]", arg) for arg in args)
     if command == "sed":
         return "-i" not in args and not any(arg.startswith("--in-place") for arg in args)
     if command == "git":
@@ -330,7 +373,58 @@ def _plan_clause_allowed(clause: str) -> bool:
         return "--fix" not in args and (not args or args[0] != "format" or "--check" in args)
     if command == "uv" and len(args) >= 2 and args[0] == "run":
         return _plan_clause_allowed(shlex.join(args[1:]))
+    if Path(command).name in {"python", "python3"}:
+        if args in (["--version"], ["-V"]):
+            return True
+        return len(args) == 2 and args[0] == "-c" and _plan_python_probe_allowed(args[1])
     return False
+
+
+_PLAN_PYTHON_PROBE_MODULES = {
+    "curses",
+    "json",
+    "platform",
+    "pygame",
+    "pty",
+    "sys",
+}
+
+
+def _plan_python_probe_allowed(source: str) -> bool:
+    """Allow environment introspection without making Python a plan-mode escape hatch."""
+    try:
+        tree = ast.parse(source, mode="exec")
+    except SyntaxError:
+        return False
+
+    for statement in tree.body:
+        if isinstance(statement, ast.Import):
+            if any(
+                alias.name.split(".", 1)[0] not in _PLAN_PYTHON_PROBE_MODULES
+                for alias in statement.names
+            ):
+                return False
+            continue
+        if isinstance(statement, ast.ImportFrom):
+            if (
+                statement.level
+                or (statement.module or "").split(".", 1)[0] not in _PLAN_PYTHON_PROBE_MODULES
+            ):
+                return False
+            continue
+        if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
+            call = statement.value
+            if not isinstance(call.func, ast.Name) or call.func.id != "print":
+                return False
+            if any(
+                isinstance(node, ast.Call)
+                for argument in (*call.args, *[keyword.value for keyword in call.keywords])
+                for node in ast.walk(argument)
+            ):
+                return False
+            continue
+        return False
+    return bool(tree.body)
 
 
 def approval_request_hash(

@@ -1185,50 +1185,6 @@ impl GatewayClient {
         .await
     }
 
-    pub async fn add_task(&self, session_id: &str, content: &str) -> Result<SessionTaskList> {
-        decode(
-            self.post(&format!("/v1/sessions/{session_id}/tasks"))
-                .json(&serde_json::json!({"text": content}))
-                .send()
-                .await?,
-        )
-        .await
-    }
-
-    pub async fn update_task(
-        &self,
-        session_id: &str,
-        task_id: &str,
-        status: &str,
-    ) -> Result<SessionTaskList> {
-        decode(
-            self.http
-                .patch(format!(
-                    "{}/v1/sessions/{session_id}/tasks/{task_id}",
-                    self.base_url
-                ))
-                .bearer_auth(&self.token)
-                .json(&serde_json::json!({"status": status}))
-                .send()
-                .await?,
-        )
-        .await
-    }
-
-    pub async fn delete_task(&self, session_id: &str, task_id: &str) -> Result<SessionTaskList> {
-        decode(
-            self.http
-                .delete(format!(
-                    "{}/v1/sessions/{session_id}/tasks/{task_id}",
-                    self.base_url
-                ))
-                .bearer_auth(&self.token)
-                .send()
-                .await?,
-        )
-        .await
-    }
-
     pub async fn queue_state(&self, session_id: &str) -> Result<QueueState> {
         decode(
             self.get(&format!("/v1/sessions/{session_id}/queue"))
