@@ -274,7 +274,14 @@ class RunManager:
                 break
         return selected
 
-    async def start(self, session_id: str, content: str, *, remember: bool = False) -> str:
+    async def start(
+        self,
+        session_id: str,
+        content: str,
+        *,
+        remember: bool = False,
+        paste_spans: list[dict[str, int]] | None = None,
+    ) -> str:
         session = await asyncio.to_thread(self.ledger.get_session, session_id)
         if session.status != "open":
             raise ValueError("session is not open")
@@ -288,7 +295,11 @@ class RunManager:
         user_event = await self._append(
             session_id=session_id,
             event_type="user.message",
-            payload={"content": content, "remember": remember},
+            payload={
+                "content": content,
+                "remember": remember,
+                "paste_spans": paste_spans or [],
+            },
             agent_id=session.agent_id,
         )
         return self._launch(session_id, user_event)
@@ -701,6 +712,17 @@ class RunManager:
         )
         started = completed = usage_seen = False
         finish_reason = "stop"
+        reasoning_started_at: float | None = None
+        reasoning_finished_at: float | None = None
+
+        def reasoning_duration() -> float:
+            if reasoning_started_at is None:
+                return 0.0
+            return max(
+                0.0,
+                (reasoning_finished_at or time.monotonic()) - reasoning_started_at,
+            )
+
         try:
             async for stream_event in self.providers[session.provider].stream(request):
                 if stream_event.kind is StreamEventKind.STARTED:
@@ -731,12 +753,18 @@ class RunManager:
                         f"provider emitted {stream_event.kind.value} after response.completed",
                     )
                 if stream_event.kind is StreamEventKind.REASONING_DELTA:
+                    if stream_event.text and reasoning_started_at is None:
+                        reasoning_started_at = time.monotonic()
                     reasoning_parts.append(stream_event.text)
                     await self._publish_transient(session.id, run_id, stream_event)
                 elif stream_event.kind is StreamEventKind.TEXT_DELTA:
+                    if reasoning_started_at is not None and reasoning_finished_at is None:
+                        reasoning_finished_at = time.monotonic()
                     answer_parts.append(stream_event.text)
                     await self._publish_transient(session.id, run_id, stream_event)
                 elif stream_event.kind is StreamEventKind.TOOL_CALL_DELTA:
+                    if reasoning_started_at is not None and reasoning_finished_at is None:
+                        reasoning_finished_at = time.monotonic()
                     if stream_event.tool_call is None:
                         raise ProviderError(
                             "provider_protocol_error", "tool-call event omitted its payload"
@@ -763,6 +791,8 @@ class RunManager:
                         correlation_id=run_id,
                     )
                 elif stream_event.kind is StreamEventKind.COMPLETED:
+                    if reasoning_started_at is not None and reasoning_finished_at is None:
+                        reasoning_finished_at = time.monotonic()
                     completed = True
                     finish_reason = stream_event.finish_reason or "stop"
             if not completed:
@@ -776,6 +806,7 @@ class RunManager:
                 "interrupted" if invocations else "completed",
                 request_event.id,
                 force_message=bool(invocations),
+                reasoning_duration_seconds=reasoning_duration(),
             )
             for invocation in invocations:
                 await self._append(
@@ -812,6 +843,7 @@ class RunManager:
                 "".join(answer_parts),
                 "interrupted",
                 request_event.id,
+                reasoning_duration_seconds=reasoning_duration(),
             )
             raise
         except ProviderError as exc:
@@ -822,6 +854,7 @@ class RunManager:
                 "".join(answer_parts),
                 "interrupted",
                 request_event.id,
+                reasoning_duration_seconds=reasoning_duration(),
             )
             await self._append(
                 session_id=session.id,
@@ -1938,6 +1971,7 @@ class RunManager:
         causation_id: str,
         *,
         force_message: bool = False,
+        reasoning_duration_seconds: float = 0.0,
     ) -> None:
         if reasoning:
             await self._append(
@@ -1945,7 +1979,11 @@ class RunManager:
                 run_id=run_id,
                 agent_id=session.agent_id,
                 event_type="assistant.reasoning",
-                payload={"content": reasoning, "status": status},
+                payload={
+                    "content": reasoning,
+                    "status": status,
+                    "duration_seconds": reasoning_duration_seconds,
+                },
                 causation_id=causation_id,
                 correlation_id=run_id,
             )

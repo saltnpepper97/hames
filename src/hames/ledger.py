@@ -8,7 +8,7 @@ import sqlite3
 import threading
 import uuid
 from collections.abc import Iterable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -357,6 +357,31 @@ class Ledger:
         with self.database.connect() as connection:
             rows = connection.execute("SELECT * FROM sessions ORDER BY created_at DESC").fetchall()
         return [Session.model_validate(dict(row)) for row in rows]
+
+    def recent_open_session(
+        self, working_directory: Path, *, active_within_seconds: int
+    ) -> Session | None:
+        if active_within_seconds <= 0:
+            raise ValueError("active_within_seconds must be positive")
+        canonical = working_directory.expanduser().resolve(strict=True)
+        if not canonical.is_dir():
+            raise ValueError("working_directory must be a directory")
+        cutoff = (datetime.now(UTC) - timedelta(seconds=active_within_seconds)).isoformat()
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT s.*
+                FROM sessions s
+                JOIN events e ON e.session_id = s.id
+                WHERE s.working_directory = ? AND s.status = 'open'
+                GROUP BY s.id
+                HAVING MAX(e.created_at) >= ?
+                ORDER BY MAX(e.sequence) DESC
+                LIMIT 1
+                """,
+                (str(canonical), cutoff),
+            ).fetchone()
+        return Session.model_validate(dict(row)) if row is not None else None
 
     def list_events(self, session_id: str, *, after_sequence: int = 0) -> list[Event]:
         with self.database.connect() as connection:

@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 #[derive(Clone)]
 pub struct GatewayClient {
@@ -483,6 +483,14 @@ pub struct LiveEnvelope {
     pub payload: Option<Value>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct PasteSpan {
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub line_count: usize,
+    pub byte_count: usize,
+}
+
 #[derive(Serialize)]
 struct CreateSession<'a> {
     working_directory: &'a str,
@@ -651,6 +659,25 @@ impl GatewayClient {
 
     pub async fn sessions(&self) -> Result<Vec<Session>> {
         decode(self.get("/v1/sessions").send().await?).await
+    }
+
+    #[allow(dead_code)] // Consumed by the Ratatui entrypoint in the next implementation slice.
+    pub async fn recent_session(
+        &self,
+        working_directory: &str,
+        active_within_seconds: u64,
+    ) -> Result<Option<Session>> {
+        let active_within_seconds = active_within_seconds.to_string();
+        decode(
+            self.get("/v1/sessions/recent")
+                .query(&[
+                    ("working_directory", working_directory),
+                    ("active_within_seconds", &active_within_seconds),
+                ])
+                .send()
+                .await?,
+        )
+        .await
     }
 
     pub async fn agents(&self) -> Result<Vec<Agent>> {
@@ -870,9 +897,24 @@ impl GatewayClient {
         content: &str,
         remember: bool,
     ) -> Result<RunAccepted> {
+        self.send_message_with_pastes(session_id, content, remember, &[])
+            .await
+    }
+
+    pub async fn send_message_with_pastes(
+        &self,
+        session_id: &str,
+        content: &str,
+        remember: bool,
+        paste_spans: &[PasteSpan],
+    ) -> Result<RunAccepted> {
         decode(
             self.post(&format!("/v1/sessions/{session_id}/messages"))
-                .json(&serde_json::json!({"content": content, "remember": remember}))
+                .json(&serde_json::json!({
+                    "content": content,
+                    "remember": remember,
+                    "paste_spans": paste_spans,
+                }))
                 .send()
                 .await?,
         )

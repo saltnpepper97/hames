@@ -15,7 +15,7 @@ from typing import Annotated, Literal, cast
 from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from hames import PROTOCOL_VERSION, __version__
 from hames.agent import (
@@ -92,9 +92,42 @@ class CreateSessionRequest(ApiModel):
     title: str | None = None
 
 
+class PasteSpan(ApiModel):
+    start_byte: int = Field(ge=0)
+    end_byte: int = Field(gt=0)
+    line_count: int = Field(ge=1)
+    byte_count: int = Field(ge=1)
+
+
+def _empty_paste_spans() -> list[PasteSpan]:
+    return []
+
+
 class MessageRequest(ApiModel):
     content: str = Field(min_length=1)
     remember: bool = False
+    paste_spans: list[PasteSpan] = Field(default_factory=_empty_paste_spans, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_paste_spans(self) -> MessageRequest:
+        encoded = self.content.encode()
+        previous_end = 0
+        for span in self.paste_spans:
+            if span.start_byte < previous_end:
+                raise ValueError("paste spans must be sorted and non-overlapping")
+            if span.start_byte >= span.end_byte or span.end_byte > len(encoded):
+                raise ValueError("paste span is outside message content")
+            value = encoded[span.start_byte : span.end_byte]
+            try:
+                value.decode()
+            except UnicodeDecodeError as exc:
+                raise ValueError("paste span must align to UTF-8 boundaries") from exc
+            if span.byte_count != len(value):
+                raise ValueError("paste span byte_count does not match content")
+            if span.line_count != value.count(b"\n") + 1:
+                raise ValueError("paste span line_count does not match content")
+            previous_end = span.end_byte
+        return self
 
 
 class UpdateSessionRequest(ApiModel):
@@ -562,6 +595,20 @@ def create_app(state: GatewayState) -> FastAPI:
     @app.get("/v1/sessions", dependencies=auth, response_model=list[Session])
     async def list_sessions() -> list[Session]:
         return await asyncio.to_thread(state.ledger.list_sessions)
+
+    @app.get("/v1/sessions/recent", dependencies=auth, response_model=Session | None)
+    async def recent_session(
+        working_directory: Annotated[str, Query(min_length=1)],
+        active_within_seconds: Annotated[int, Query(ge=60, le=31_536_000)] = 604_800,
+    ) -> Session | None:
+        try:
+            return await asyncio.to_thread(
+                state.ledger.recent_open_session,
+                Path(working_directory),
+                active_within_seconds=active_within_seconds,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            raise ApiError(400, "invalid_working_directory", str(exc)) from exc
 
     @app.get("/v1/agents", dependencies=auth, response_model=list[AgentPublic])
     async def list_agents() -> list[AgentPublic]:
@@ -1439,7 +1486,10 @@ def create_app(state: GatewayState) -> FastAPI:
         try:
             return RunAccepted(
                 run_id=await state.runs.start(
-                    session_id, request.content, remember=request.remember
+                    session_id,
+                    request.content,
+                    remember=request.remember,
+                    paste_spans=[span.model_dump(mode="json") for span in request.paste_spans],
                 )
             )
         except KeyError as exc:

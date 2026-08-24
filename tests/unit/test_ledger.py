@@ -99,6 +99,40 @@ def test_session_mode_is_persisted_and_attributed(hames_paths: HamesPaths, tmp_p
     assert event.payload == {"mode": "plan"}
 
 
+def test_recent_open_session_uses_canonical_cwd_and_latest_activity(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    first = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    second = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    ledger.append(
+        session_id=first.id,
+        event_type="user.message",
+        payload={"content": "most recently active"},
+    )
+
+    selected = ledger.recent_open_session(tmp_path / ".", active_within_seconds=604_800)
+    assert selected is not None
+    assert selected.id == first.id
+
+    ledger.close_session(first.id)
+    selected = ledger.recent_open_session(tmp_path, active_within_seconds=604_800)
+    assert selected is not None
+    assert selected.id == second.id
+    with pytest.raises(ValueError, match="positive"):
+        ledger.recent_open_session(tmp_path, active_within_seconds=0)
+
+
 def test_m00_migration_preserves_events(hames_paths: HamesPaths, tmp_path: Path) -> None:
     old_database = Database(hames_paths.database, migrations=MIGRATIONS[:2])
     old_database.migrate()

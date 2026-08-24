@@ -52,9 +52,21 @@ class SessionModeChangedPayload(EventPayload):
     mode: str
 
 
+class PasteSpanPayload(EventPayload):
+    start_byte: int = Field(ge=0)
+    end_byte: int = Field(gt=0)
+    line_count: int = Field(ge=1)
+    byte_count: int = Field(ge=1)
+
+
+def _empty_paste_spans() -> list[PasteSpanPayload]:
+    return []
+
+
 class MessagePayload(EventPayload):
     content: str
     remember: bool = False
+    paste_spans: list[PasteSpanPayload] = Field(default_factory=_empty_paste_spans, max_length=64)
 
 
 class CorrectionPayload(EventPayload):
@@ -65,6 +77,10 @@ class CorrectionPayload(EventPayload):
 class AssistantOutputPayload(EventPayload):
     content: str
     status: str
+
+
+class AssistantReasoningPayload(AssistantOutputPayload):
+    duration_seconds: float = Field(default=0.0, ge=0)
 
 
 def _empty_anchor_dicts() -> list[dict[str, str]]:
@@ -600,7 +616,7 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "user.message": MessagePayload,
     "user.correction": CorrectionPayload,
     "assistant.message": AssistantOutputPayload,
-    "assistant.reasoning": AssistantOutputPayload,
+    "assistant.reasoning": AssistantReasoningPayload,
     "context.compiled": ContextCompiledPayload,
     "model.requested": ModelRequestedPayload,
     "model.response.started": ModelStartedPayload,

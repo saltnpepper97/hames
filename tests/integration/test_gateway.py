@@ -55,7 +55,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 10
+            assert health_body["protocol_version"] == 11
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -71,13 +71,36 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             )
             assert created.status_code == 201
             session_id = str(response_object(created)["id"])
+            recent = await client.get(
+                "/v1/sessions/recent",
+                headers=headers,
+                params={"working_directory": str(tmp_path)},
+            )
+            assert recent.status_code == 200
+            assert response_object(recent)["id"] == session_id
             assert (
                 await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
             ).status_code == 200
+            invalid_paste = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={
+                    "content": "é",
+                    "paste_spans": [
+                        {"start_byte": 1, "end_byte": 2, "line_count": 1, "byte_count": 1}
+                    ],
+                },
+            )
+            assert invalid_paste.status_code == 422
             accepted = await client.post(
                 f"/v1/sessions/{session_id}/messages",
                 headers=headers,
-                json={"content": "Hi"},
+                json={
+                    "content": "Hi",
+                    "paste_spans": [
+                        {"start_byte": 0, "end_byte": 2, "line_count": 1, "byte_count": 2}
+                    ],
+                },
             )
             assert accepted.status_code == 202
             run_id = str(response_object(accepted)["run_id"])
@@ -117,7 +140,16 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             assert isinstance(reasoning_payload, dict)
             assert isinstance(answer_payload, dict)
             assert reasoning_payload["content"] == "check "
+            duration = reasoning_payload["duration_seconds"]
+            assert isinstance(duration, (int, float))
+            assert duration >= 0
             assert answer_payload["content"] == "hello"
+            user_message = next(event for event in events if event["type"] == "user.message")
+            user_payload = user_message["payload"]
+            assert isinstance(user_payload, dict)
+            assert user_payload["paste_spans"] == [
+                {"start_byte": 0, "end_byte": 2, "line_count": 1, "byte_count": 2}
+            ]
             assert fake.requests[0].reasoning_effort == "medium"
             context_event = next(event for event in events if event["type"] == "context.compiled")
             context_payload = context_event["payload"]
@@ -360,7 +392,11 @@ async def test_explicit_cancellation_persists_partial_reasoning(tmp_path: Path) 
             reasoning = next(event for event in events if event["type"] == "assistant.reasoning")
             payload = reasoning["payload"]
             assert isinstance(payload, dict)
-            assert payload == {"content": "partial", "status": "interrupted"}
+            assert payload["content"] == "partial"
+            assert payload["status"] == "interrupted"
+            duration = payload["duration_seconds"]
+            assert isinstance(duration, (int, float))
+            assert duration >= 0
             assert sum(event["type"] == "run.cancelled" for event in events) == 1
             for _ in range(100):
                 if state.runs.active_run_count == 0:
