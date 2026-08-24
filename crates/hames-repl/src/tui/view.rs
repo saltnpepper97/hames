@@ -1834,7 +1834,7 @@ fn push_markdown(
                     lines,
                     vec![Span::styled(raw.to_owned(), Style::default().fg(INPUT))],
                     width,
-                    "    ",
+                    "",
                     Style::default(),
                 );
             }
@@ -2208,7 +2208,7 @@ fn push_numbered_diff_source_line(
 }
 
 fn push_diff_source_line(lines: &mut Vec<RenderLine<'static>>, value: &str, width: usize) {
-    push_diff_source_line_with_prefix(lines, value, width, "    ");
+    push_diff_source_line_with_prefix(lines, value, width, "");
 }
 
 fn push_diff_source_line_with_prefix(
@@ -2652,12 +2652,12 @@ mod tests {
         assert!(rendered.contains("── rust"));
         assert!(!rendered.contains("Pasted Text"));
         assert!(!rendered.contains("```"));
-        assert!(
-            !rendered
+        assert_eq!(
+            rendered
                 .lines()
                 .find(|line| line.contains("fn main() {}"))
-                .unwrap()
-                .contains('│')
+                .unwrap(),
+            "fn main() {}"
         );
     }
 
