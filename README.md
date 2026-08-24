@@ -111,6 +111,10 @@ the current directory are offered when the TUI opens. Scrollbar tracks and solid
 thumbs support clicking and dragging. `/themes` switches between the default
 custom Hames palette and terminal-native colors.
 
+The bottom row keeps a right-aligned `[connected]` badge. While idle it shows the
+shortcut hints on the left; during work those hints become an animated diamond
+activity bar with elapsed time and `Esc interrupt`.
+
 The top-right header shows the durable session title beside the current activity
 instead of repeating model controls. The model can set or revise that title with
 the safe `session_title_set` tool; `/title <name>` provides the equivalent direct

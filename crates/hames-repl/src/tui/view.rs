@@ -441,7 +441,7 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         let style = if selected {
             Style::default().fg(Color::Black).bg(MINT).bold()
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(sheet_text_color(app.theme))
         };
         let detail_style = if selected {
             Style::default().fg(Color::Rgb(38, 55, 54)).bg(MINT)
@@ -626,14 +626,80 @@ fn composer_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize)
     )
 }
 
-fn render_status_bar(frame: &mut Frame<'_>, _app: &App, area: Rect) {
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
+fn render_status_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let left = if app.active_run.is_some() {
+        activity_bar(app)
+    } else {
+        Line::from(Span::styled(
             "  Shift+Tab mode · Ctrl+K commands",
             Style::default().fg(MUTED),
-        ))),
+        ))
+    };
+    frame.render_widget(Paragraph::new(left), area);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("[", Style::default().fg(MUTED)),
+            Span::styled("connected", Style::default().fg(MINT)),
+            Span::styled("]  ", Style::default().fg(MUTED)),
+        ]))
+        .alignment(Alignment::Right),
         area,
     );
+}
+
+fn activity_bar(app: &App) -> Line<'static> {
+    const TRACK_WIDTH: usize = 16;
+    let cycle = (TRACK_WIDTH - 1) * 2;
+    let step = usize::try_from(app.tick / 2).unwrap_or(0) % cycle;
+    let head = if step < TRACK_WIDTH {
+        step
+    } else {
+        cycle - step
+    };
+    let pulse = match (app.tick / 2) % 4 {
+        0 => "◇",
+        1 | 3 => "◈",
+        _ => "◆",
+    };
+    let mut spans = vec![Span::styled(
+        format!("  {pulse} "),
+        Style::default().fg(LILAC).bold(),
+    )];
+    for index in 0..TRACK_WIDTH {
+        let distance = index.abs_diff(head);
+        spans.push(match distance {
+            0 => Span::styled("◆", Style::default().fg(GOLD).bold()),
+            1 => Span::styled("━", Style::default().fg(LILAC).bold()),
+            2 => Span::styled("━", Style::default().fg(SKY)),
+            _ => Span::styled("·", Style::default().fg(MUTED)),
+        });
+    }
+    spans.push(Span::styled(
+        format!("  {}", current_activity(app)),
+        Style::default().fg(INPUT),
+    ));
+    let elapsed = app
+        .run_started_at
+        .map(|started| format_elapsed(started.elapsed().as_secs()))
+        .unwrap_or_else(|| "0s".to_owned());
+    spans.push(Span::styled(
+        format!(" · {elapsed} · Esc interrupt"),
+        Style::default().fg(MUTED),
+    ));
+    Line::from(spans)
+}
+
+fn format_elapsed(seconds: u64) -> String {
+    match seconds {
+        0..=59 => format!("{seconds}s"),
+        60..=3599 => format!("{}m {:02}s", seconds / 60, seconds % 60),
+        _ => format!(
+            "{}h {:02}m {:02}s",
+            seconds / 3600,
+            (seconds % 3600) / 60,
+            seconds % 60
+        ),
+    }
 }
 
 fn composer_rows(app: &App, width: u16) -> u16 {
@@ -1062,6 +1128,13 @@ fn mode_outline(mode: &str) -> Color {
     if mode == "plan" { GOLD } else { MUTED }
 }
 
+fn sheet_text_color(theme: ThemeKind) -> Color {
+    match theme {
+        ThemeKind::Hames => Color::White,
+        ThemeKind::Terminal => Color::DarkGray,
+    }
+}
+
 fn apply_theme(frame: &mut Frame<'_>, area: Rect, theme: ThemeKind) {
     if theme != ThemeKind::Terminal {
         return;
@@ -1129,12 +1202,15 @@ fn help_line(key: &str, description: &str) -> Line<'static> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
 
     use super::{
-        GOLD, INPUT, MUTED, SKY, draw, mode_color, mode_outline, pasted_display, thought_label,
+        GOLD, INPUT, MUTED, SKY, draw, format_elapsed, mode_color, mode_outline, pasted_display,
+        sheet_text_color, thought_label,
     };
     use crate::api::{PasteSpan, Session};
     use crate::tui::app::App;
@@ -1155,6 +1231,17 @@ mod tests {
         assert_eq!(mode_outline("manual"), MUTED);
         assert_eq!(mode_outline("auto"), MUTED);
         assert_eq!(mode_outline("plan"), GOLD);
+        assert_eq!(
+            sheet_text_color(crate::tui::app::ThemeKind::Terminal),
+            Color::DarkGray
+        );
+    }
+
+    #[test]
+    fn elapsed_time_formats_for_status_bar_density() {
+        assert_eq!(format_elapsed(9), "9s");
+        assert_eq!(format_elapsed(68), "1m 08s");
+        assert_eq!(format_elapsed(3_661), "1h 01m 01s");
     }
 
     #[test]
@@ -1191,9 +1278,31 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("◈ Hames"));
         assert!(rendered.contains("New session · Ready"));
+        assert!(rendered.contains("[connected]"));
         assert!(rendered.contains("Message Hames"));
         assert!(rendered.contains("─ fixture (medium) · Auto"));
         assert!(rendered.contains("A fresh canvas"));
+    }
+
+    #[test]
+    fn active_run_replaces_shortcuts_with_diamond_interrupt_bar() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-1".to_owned());
+        app.run_started_at = Some(Instant::now() - Duration::from_secs(12));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("◆"));
+        assert!(rendered.contains("Working · 12s · Esc interrupt"));
+        assert!(rendered.contains("[connected]"));
+        assert!(!rendered.contains("Shift+Tab mode"));
     }
 
     #[test]

@@ -240,6 +240,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     }
     match key.code {
         KeyCode::Esc => {
+            if app.active_run.is_some() {
+                app.notice = Some("Interrupting current work…".to_owned());
+                return Some(Effect::Cancel);
+            }
             app.sheet = None;
             app.focused_thought = None;
             None
@@ -624,6 +628,7 @@ async fn apply_effect(
                 .send_message_with_pastes(&app.session.id, &content, false, &pastes)
                 .await?;
             app.active_run = Some(accepted.run_id);
+            app.run_started_at = Some(std::time::Instant::now());
             app.notice = None;
         }
         Effect::Cancel => {
@@ -1287,8 +1292,11 @@ fn info(title: &str, lines: Vec<String>) -> Modal {
 
 #[cfg(test)]
 mod tests {
-    use super::{SseDecoder, next_mode, parse_command, pointer_top};
-    use crate::tui::app::{MenuAction, ScrollDrag, ScrollTarget, ThemeKind};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::{Effect, SseDecoder, handle_key, next_mode, parse_command, pointer_top};
+    use crate::api::Session;
+    use crate::tui::app::{App, MenuAction, ScrollDrag, ScrollTarget, ThemeKind};
 
     #[test]
     fn sse_decoder_handles_fragmented_frames() {
@@ -1348,5 +1356,36 @@ mod tests {
         assert_eq!(pointer_top(&drag, 4), 0);
         assert_eq!(pointer_top(&drag, 9), 50);
         assert_eq!(pointer_top(&drag, 14), 100);
+    }
+
+    #[test]
+    fn escape_interrupts_an_active_run() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-1".to_owned());
+        assert!(matches!(
+            handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            Some(Effect::Cancel)
+        ));
+    }
+
+    fn session() -> Session {
+        Session {
+            id: "session-1".to_owned(),
+            created_at: "2026-08-24T00:00:00Z".to_owned(),
+            status: "open".to_owned(),
+            title: None,
+            working_directory: "/tmp/project".to_owned(),
+            agent_id: "default".to_owned(),
+            provider: "fake".to_owned(),
+            model: "fixture".to_owned(),
+            reasoning_effort: "medium".to_owned(),
+            context_window_tokens: 32_768,
+            context_window_source: "provider".to_owned(),
+            parent_session_id: None,
+            fork_event_id: None,
+            lineage_kind: "root".to_owned(),
+            delegation_depth: 0,
+            interaction_mode: "auto".to_owned(),
+        }
     }
 }

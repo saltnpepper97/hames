@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
@@ -465,6 +466,7 @@ pub struct App {
     pub transcript: Vec<TranscriptItem>,
     pub composer: Composer,
     pub active_run: Option<String>,
+    pub run_started_at: Option<Instant>,
     pub trusted: bool,
     pub modal: Option<Modal>,
     pub sheet: Option<Sheet>,
@@ -491,6 +493,7 @@ impl App {
             transcript: Vec::new(),
             composer: Composer::default(),
             active_run: None,
+            run_started_at: None,
             trusted,
             modal: (!trusted).then_some(Modal::Trust),
             sheet: None,
@@ -752,7 +755,10 @@ impl App {
                     paste_spans: paste_spans(&event.payload),
                 });
             }
-            "run.started" => self.active_run = Some(run_id),
+            "run.started" => {
+                self.active_run = Some(run_id);
+                self.run_started_at.get_or_insert_with(Instant::now);
+            }
             "model.requested" if live || self.active_run.as_deref() == Some(run_id.as_str()) => {
                 self.ensure_thought(&run_id, true);
             }
@@ -849,10 +855,15 @@ impl App {
                             .unwrap_or_default(),
                     ));
                 }
+                if event.event_type == "run.failed" {
+                    self.active_run = None;
+                    self.run_started_at = None;
+                }
             }
             "run.completed" | "run.cancelled" => {
                 if self.active_run.as_deref() == Some(run_id.as_str()) {
                     self.active_run = None;
+                    self.run_started_at = None;
                 }
                 self.finish_run(&run_id, event.event_type == "run.cancelled");
             }

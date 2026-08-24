@@ -26,6 +26,11 @@ composer grows to eight visible content rows and then scrolls independently. It
 uses a visible prompt caret, side padding, a right-aligned model/effort/mode label,
 and mode-colored borders without imposing a filled background.
 
+The status row keeps `[connected]` on the right. Its left side shows shortcuts
+while idle and becomes an animated diamond-comet activity bar during a run, with
+the current activity, properly formatted elapsed time, and a truthful
+`Esc interrupt` control.
+
 The header's right edge presents a durable, human-readable session title and the
 current activity (`Ready`, `Thinking`, `Exploring`, `Writing`, and related states).
 The model may maintain the title through `session_title_set`, which emits a typed
