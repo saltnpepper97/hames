@@ -12,7 +12,15 @@ from pathlib import Path
 
 from hames.providers.base import JsonValue
 from hames.rules import PolicyRule
-from hames.tools import ShellArguments, ToolArguments, ToolContext, WorkspaceArguments
+from hames.tools import (
+    MemoryForgetArguments,
+    ScarControlArguments,
+    ShellArguments,
+    SkillControlArguments,
+    ToolArguments,
+    ToolContext,
+    WorkspaceArguments,
+)
 
 
 class PolicyDecisionKind(StrEnum):
@@ -94,6 +102,27 @@ class PolicyGate:
                 PolicyDecisionKind.DENY,
                 "the active agent is not allowed to use this tool",
                 "agent_scope",
+            )
+        if isinstance(arguments, MemoryForgetArguments):
+            return PolicyDecision(
+                PolicyDecisionKind.REQUIRE_CONFIRMATION,
+                "forgetting retracts a durable memory",
+                "personal_state",
+            )
+        if isinstance(arguments, ScarControlArguments) and arguments.action == "dismiss":
+            return PolicyDecision(
+                PolicyDecisionKind.REQUIRE_CONFIRMATION,
+                "dismissing disables a behavioral scar",
+                "personal_state",
+            )
+        if isinstance(arguments, SkillControlArguments) and arguments.action in {
+            "archive",
+            "rollback",
+        }:
+            return PolicyDecision(
+                PolicyDecisionKind.REQUIRE_CONFIRMATION,
+                f"{arguments.action} changes the active Skill lifecycle",
+                "personal_state",
             )
         rule_denial: PolicyDecision | None = None
         rule_confirmation: PolicyDecision | None = None

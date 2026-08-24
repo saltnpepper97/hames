@@ -10,6 +10,8 @@ pub enum ActivityCategory {
     Run,
     Delegate,
     Skills,
+    Memory,
+    Scars,
     Plugin,
 }
 
@@ -21,6 +23,8 @@ impl ActivityCategory {
             Self::Run => Badge::Run,
             Self::Delegate => Badge::Delegate,
             Self::Skills => Badge::Skills,
+            Self::Memory => Badge::Memory,
+            Self::Scars => Badge::Scars,
             Self::Plugin => Badge::Plugin,
         }
     }
@@ -80,6 +84,15 @@ enum ToolKind {
     SkillLoad,
     SkillAuthor,
     SkillRun,
+    MemorySearch,
+    MemoryAdd,
+    MemoryEdit,
+    MemoryForget,
+    ScarList,
+    ScarRecord,
+    ScarControl,
+    SkillCatalog,
+    SkillControl,
     Plugin,
     Unknown,
 }
@@ -96,6 +109,15 @@ impl ToolKind {
             "skill_load" => Self::SkillLoad,
             "skill_author" => Self::SkillAuthor,
             "skill_run" => Self::SkillRun,
+            "memory_search" => Self::MemorySearch,
+            "memory_add" => Self::MemoryAdd,
+            "memory_edit" => Self::MemoryEdit,
+            "memory_forget" => Self::MemoryForget,
+            "scar_list" => Self::ScarList,
+            "scar_record" => Self::ScarRecord,
+            "scar_control" => Self::ScarControl,
+            "skill_catalog" => Self::SkillCatalog,
+            "skill_control" => Self::SkillControl,
             value if value.contains('.') => Self::Plugin,
             _ => Self::Unknown,
         }
@@ -107,7 +129,13 @@ impl ToolKind {
             Self::Write | Self::Edit => ActivityCategory::Change,
             Self::Command | Self::SkillRun => ActivityCategory::Run,
             Self::Delegate => ActivityCategory::Delegate,
-            Self::SkillLoad | Self::SkillAuthor => ActivityCategory::Skills,
+            Self::SkillLoad | Self::SkillAuthor | Self::SkillCatalog | Self::SkillControl => {
+                ActivityCategory::Skills
+            }
+            Self::MemorySearch | Self::MemoryAdd | Self::MemoryEdit | Self::MemoryForget => {
+                ActivityCategory::Memory
+            }
+            Self::ScarList | Self::ScarRecord | Self::ScarControl => ActivityCategory::Scars,
             Self::Plugin => ActivityCategory::Plugin,
             Self::Unknown => ActivityCategory::Run,
         }
@@ -142,6 +170,33 @@ impl ToolKind {
             (Self::SkillRun, ActivityPhase::Preparing) => "Preparing script",
             (Self::SkillRun, ActivityPhase::Running) => "Running",
             (Self::SkillRun, ActivityPhase::Completed) => "Ran",
+            (Self::MemorySearch, ActivityPhase::Preparing) => "Preparing memory search",
+            (Self::MemorySearch, ActivityPhase::Running) => "Searching memories",
+            (Self::MemorySearch, ActivityPhase::Completed) => "Searched memories",
+            (Self::MemoryAdd, ActivityPhase::Preparing) => "Preparing memory",
+            (Self::MemoryAdd, ActivityPhase::Running) => "Remembering",
+            (Self::MemoryAdd, ActivityPhase::Completed) => "Remembered",
+            (Self::MemoryEdit, ActivityPhase::Preparing) => "Preparing memory update",
+            (Self::MemoryEdit, ActivityPhase::Running) => "Updating memory",
+            (Self::MemoryEdit, ActivityPhase::Completed) => "Updated memory",
+            (Self::MemoryForget, ActivityPhase::Preparing) => "Preparing forget",
+            (Self::MemoryForget, ActivityPhase::Running) => "Forgetting",
+            (Self::MemoryForget, ActivityPhase::Completed) => "Forgot",
+            (Self::ScarList, ActivityPhase::Preparing) => "Preparing scar review",
+            (Self::ScarList, ActivityPhase::Running) => "Reviewing scars",
+            (Self::ScarList, ActivityPhase::Completed) => "Reviewed scars",
+            (Self::ScarRecord, ActivityPhase::Preparing) => "Preparing scar",
+            (Self::ScarRecord, ActivityPhase::Running) => "Recording scar",
+            (Self::ScarRecord, ActivityPhase::Completed) => "Recorded scar",
+            (Self::ScarControl, ActivityPhase::Preparing) => "Preparing scar update",
+            (Self::ScarControl, ActivityPhase::Running) => "Updating scar",
+            (Self::ScarControl, ActivityPhase::Completed) => "Updated scar",
+            (Self::SkillCatalog, ActivityPhase::Preparing) => "Preparing skill search",
+            (Self::SkillCatalog, ActivityPhase::Running) => "Searching skills",
+            (Self::SkillCatalog, ActivityPhase::Completed) => "Searched skills",
+            (Self::SkillControl, ActivityPhase::Preparing) => "Preparing skill update",
+            (Self::SkillControl, ActivityPhase::Running) => "Updating skill",
+            (Self::SkillControl, ActivityPhase::Completed) => "Updated skill",
             (Self::Plugin, ActivityPhase::Preparing) => "Preparing plugin",
             (Self::Plugin, ActivityPhase::Running) => "Using plugin",
             (Self::Plugin, ActivityPhase::Completed) => "Used plugin",
@@ -210,6 +265,17 @@ impl ToolActivity {
                 self.arguments.get("id").and_then(Value::as_str)
             }
             ToolKind::SkillAuthor => self.arguments.get("goal").and_then(Value::as_str),
+            ToolKind::MemorySearch | ToolKind::SkillCatalog => {
+                self.arguments.get("query").and_then(Value::as_str)
+            }
+            ToolKind::MemoryAdd => self.arguments.get("summary").and_then(Value::as_str),
+            ToolKind::MemoryEdit | ToolKind::MemoryForget => {
+                self.arguments.get("memory_id").and_then(Value::as_str)
+            }
+            ToolKind::ScarList => self.arguments.get("status").and_then(Value::as_str),
+            ToolKind::ScarRecord => self.arguments.get("title").and_then(Value::as_str),
+            ToolKind::ScarControl => self.arguments.get("scar_id").and_then(Value::as_str),
+            ToolKind::SkillControl => self.arguments.get("id").and_then(Value::as_str),
             ToolKind::Plugin => Some(self.name.as_str()),
             ToolKind::Unknown => (!self.name.is_empty()).then_some(self.name.as_str()),
         };
@@ -644,6 +710,42 @@ mod tests {
         assert!(lines[1].contains("one"));
         assert!(lines[2].contains("two"));
         assert!(lines[4].contains("three"));
+    }
+
+    #[test]
+    fn self_management_tools_keep_their_own_continuity_groups() {
+        let mut board = ActivityBoard::default();
+        board.next_turn();
+        for (index, name, arguments) in [
+            (
+                0,
+                "memory_add",
+                json!({"summary": "The user prefers concise responses."}),
+            ),
+            (
+                1,
+                "scar_record",
+                json!({"title": "Do not invent project context"}),
+            ),
+            (2, "skill_control", json!({"id": "inspect-carefully"})),
+        ] {
+            board.transient_delta(&json!({
+                "index": index,
+                "name": name,
+                "arguments_delta": arguments.to_string()
+            }));
+        }
+        let lines = board.render_lines(100, false);
+        assert!(lines.iter().any(|line| line.contains("Memory")));
+        assert!(lines.iter().any(|line| line.contains("Preparing memory")));
+        assert!(lines.iter().any(|line| line.contains("Scars")));
+        assert!(lines.iter().any(|line| line.contains("Preparing scar")));
+        assert!(lines.iter().any(|line| line.contains("Skills")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Preparing skill update"))
+        );
     }
 
     #[test]

@@ -514,6 +514,82 @@ async def test_runtime_executes_tool_and_continues_model_loop(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_runtime_manages_memory_from_the_chat_tool_loop(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    fake = FakeProvider(
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="memory-1",
+                        name="memory_add",
+                        arguments_delta=(
+                            '{"layer":"relationship","visibility":"global",'
+                            '"subject":"user:local","predicate":"prefers_response_style",'
+                            '"value":"concise","summary":"The user prefers concise responses."}'
+                        ),
+                    ),
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="I will remember that."),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
+    )
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Remember that I prefer concise responses."},
+            )
+            events = await _wait_for_event(client, headers, session_id, "run.completed")
+            completed = next(
+                event
+                for event in events
+                if event["type"] == "tool.completed"
+                and isinstance(event["payload"], dict)
+                and event["payload"].get("name") == "memory_add"
+            )
+            completed_payload = completed["payload"]
+            assert isinstance(completed_payload, dict)
+            assert str(completed_payload["summary"]).startswith("remembered")
+            session = state.ledger.get_session(session_id)
+            memories = state.runs.memory.list_visible(
+                session, layer="relationship", query="concise responses"
+            )
+            assert len(memories) == 1
+            assert memories[0].predicate == "prefers_response_style"
+            assert memories[0].status == "active"
+            assert "memory_search" in {tool.name for tool in fake.requests[0].tools}
+            assert "scar_record" in {tool.name for tool in fake.requests[0].tools}
+            assert "skill_control" in {tool.name for tool in fake.requests[0].tools}
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
 async def test_runtime_delegates_with_an_explicit_task_card(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     fake = FakeProvider(
@@ -614,6 +690,9 @@ async def test_runtime_delegates_with_an_explicit_task_card(tmp_path: Path) -> N
                 "read_file",
                 "list_dir",
                 "skill_load",
+                "memory_search",
+                "scar_list",
+                "skill_catalog",
             ]
             assert fake.requests[2].messages[-1].tool_name == "spawn_agent"
             assert run_id
@@ -681,6 +760,9 @@ async def test_agent_selection_changes_only_future_turns(tmp_path: Path) -> None
                 "read_file",
                 "list_dir",
                 "skill_load",
+                "memory_search",
+                "scar_list",
+                "skill_catalog",
             ]
     finally:
         await state.runs.close()

@@ -121,6 +121,84 @@ class SkillRunArguments(ToolArguments):
     args: list[str] = Field(default_factory=list, max_length=64)
 
 
+class MemorySearchArguments(ToolArguments):
+    query: str = Field(default="", max_length=1000)
+    status: Literal["proposed", "active", "rejected", "superseded", "retracted", "all"] = "active"
+    layer: Literal["relationship", "semantic", "episodic"] | None = None
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+class MemoryAddArguments(ToolArguments):
+    layer: Literal["relationship", "semantic", "episodic"]
+    visibility: Literal["global", "agent_private", "workspace", "session_team"] = "workspace"
+    subject: str = Field(min_length=1, max_length=300)
+    predicate: str = Field(min_length=1, max_length=120)
+    value: JsonValue
+    summary: str = Field(min_length=1, max_length=2000)
+    confidence: float = Field(default=0.95, ge=0.6, le=1)
+    importance: float = Field(default=0.9, ge=0.65, le=1)
+
+
+class MemoryEditArguments(ToolArguments):
+    memory_id: str = Field(min_length=1)
+    layer: Literal["relationship", "semantic", "episodic"] | None = None
+    visibility: Literal["global", "agent_private", "workspace", "session_team"] | None = None
+    subject: str | None = Field(default=None, min_length=1, max_length=300)
+    predicate: str | None = Field(default=None, min_length=1, max_length=120)
+    value: JsonValue | None = None
+    summary: str | None = Field(default=None, min_length=1, max_length=2000)
+    confidence: float | None = Field(default=None, ge=0.6, le=1)
+    importance: float | None = Field(default=None, ge=0.65, le=1)
+
+    @model_validator(mode="after")
+    def has_change(self) -> MemoryEditArguments:
+        changed = self.model_fields_set - {"memory_id"}
+        if not changed:
+            raise ValueError("memory_edit requires at least one replacement field")
+        return self
+
+
+class MemoryForgetArguments(ToolArguments):
+    memory_id: str = Field(min_length=1)
+    reason: str = Field(default="explicit user request", min_length=1, max_length=1000)
+
+
+class ScarListArguments(ToolArguments):
+    status: (
+        Literal[
+            "candidate", "open", "repair_proposed", "guarded", "healed", "regressed", "dismissed"
+        ]
+        | None
+    ) = None
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+class ScarRecordArguments(ToolArguments):
+    title: str = Field(min_length=1, max_length=300)
+    severity: Literal["low", "medium", "high"] = "medium"
+    failure_signature: str = Field(min_length=1, max_length=1000)
+    description: str = Field(min_length=1, max_length=4000)
+    expected_behavior: str = Field(min_length=1, max_length=4000)
+    scope: Literal["global", "workspace", "agent"] = "workspace"
+
+
+class ScarControlArguments(ToolArguments):
+    scar_id: str = Field(min_length=1)
+    action: Literal["open", "dismiss"]
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class SkillCatalogArguments(ToolArguments):
+    query: str = Field(default="", max_length=1000)
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+class SkillControlArguments(ToolArguments):
+    id: str = Field(min_length=1, description="Visible Skill slug")
+    action: Literal["pin", "unpin", "archive", "restore", "rollback"]
+    reason: str = Field(min_length=1, max_length=1000)
+
+
 class ToolResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -445,6 +523,76 @@ class SkillRunTool(ToolBase):
     arguments_type: ClassVar[type[ToolArguments]] = SkillRunArguments
 
 
+class MemorySearchTool(ToolBase):
+    name = "memory_search"
+    description = (
+        "Search memories visible to this session, including their IDs and lifecycle state."
+    )
+    arguments_type: ClassVar[type[ToolArguments]] = MemorySearchArguments
+
+
+class MemoryAddTool(ToolBase):
+    name = "memory_add"
+    description = (
+        "Add an explicit, durable memory requested by the user. Never store credentials or secrets."
+    )
+    side_effect_class = "memory_write"
+    arguments_type: ClassVar[type[ToolArguments]] = MemoryAddArguments
+
+
+class MemoryEditTool(ToolBase):
+    name = "memory_edit"
+    description = (
+        "Correct a visible active memory by creating a new immutable record that supersedes it."
+    )
+    side_effect_class = "memory_write"
+    arguments_type: ClassVar[type[ToolArguments]] = MemoryEditArguments
+
+
+class MemoryForgetTool(ToolBase):
+    name = "memory_forget"
+    description = "Retract a visible active memory while preserving its auditable history."
+    side_effect_class = "memory_delete"
+    arguments_type: ClassVar[type[ToolArguments]] = MemoryForgetArguments
+
+
+class ScarListTool(ToolBase):
+    name = "scar_list"
+    description = "List visible behavioral scars and their lifecycle state."
+    arguments_type: ClassVar[type[ToolArguments]] = ScarListArguments
+
+
+class ScarRecordTool(ToolBase):
+    name = "scar_record"
+    description = (
+        "Record and open a durable behavioral scar from an explicit user correction or failure."
+    )
+    side_effect_class = "scar_write"
+    arguments_type: ClassVar[type[ToolArguments]] = ScarRecordArguments
+
+
+class ScarControlTool(ToolBase):
+    name = "scar_control"
+    description = "Open a candidate scar or dismiss a visible scar with an explicit reason."
+    side_effect_class = "scar_write"
+    arguments_type: ClassVar[type[ToolArguments]] = ScarControlArguments
+
+
+class SkillCatalogTool(ToolBase):
+    name = "skill_catalog"
+    description = (
+        "Search active Skills visible to this session and inspect their lifecycle metadata."
+    )
+    arguments_type: ClassVar[type[ToolArguments]] = SkillCatalogArguments
+
+
+class SkillControlTool(ToolBase):
+    name = "skill_control"
+    description = "Pin, unpin, archive, restore, or roll back a visible Skill."
+    side_effect_class = "skill_control"
+    arguments_type: ClassVar[type[ToolArguments]] = SkillControlArguments
+
+
 class ToolRegistry:
     def __init__(self) -> None:
         values: list[ToolBase] = [
@@ -457,6 +605,15 @@ class ToolRegistry:
             SkillLoadTool(),
             SkillAuthorTool(),
             SkillRunTool(),
+            MemorySearchTool(),
+            MemoryAddTool(),
+            MemoryEditTool(),
+            MemoryForgetTool(),
+            ScarListTool(),
+            ScarRecordTool(),
+            ScarControlTool(),
+            SkillCatalogTool(),
+            SkillControlTool(),
         ]
         self._tools = {tool.name: tool for tool in values}
 

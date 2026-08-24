@@ -32,7 +32,13 @@ from hames.control import Approval, ControlStore
 from hames.evolution import ScarStore
 from hames.evolution_runtime import MODEL_BEHAVIOR_REPAIR_LAYERS
 from hames.ledger import Event, Ledger, Session, new_id
-from hames.memory import MemoryStore, RetrievedMemory, retrieval_query_hash
+from hames.memory import (
+    MemoryCandidate,
+    MemoryStatus,
+    MemoryStore,
+    RetrievedMemory,
+    retrieval_query_hash,
+)
 from hames.paths import HamesPaths
 from hames.plugin_runtime import PluginToolArguments
 from hames.plugins import is_plugin_tool
@@ -42,8 +48,17 @@ from hames.providers.base import JSON_OBJECT, JsonValue
 from hames.rules import ContextRuleStore, PolicyRuleStore
 from hames.skills import SkillRegistry, SkillSummary, SkillVersion
 from hames.tools import (
+    MemoryAddArguments,
+    MemoryEditArguments,
+    MemoryForgetArguments,
+    MemorySearchArguments,
+    ScarControlArguments,
+    ScarListArguments,
+    ScarRecordArguments,
     ShellArguments,
     SkillAuthorArguments,
+    SkillCatalogArguments,
+    SkillControlArguments,
     SkillLoadArguments,
     SkillRunArguments,
     SpawnAgentArguments,
@@ -51,6 +66,20 @@ from hames.tools import (
     ToolContext,
     ToolRegistry,
     ToolResult,
+)
+
+SELF_MANAGEMENT_TOOLS = frozenset(
+    {
+        "memory_search",
+        "memory_add",
+        "memory_edit",
+        "memory_forget",
+        "scar_list",
+        "scar_record",
+        "scar_control",
+        "skill_catalog",
+        "skill_control",
+    }
 )
 
 if TYPE_CHECKING:
@@ -1054,6 +1083,21 @@ class RunManager:
             )
             await self._persist_tool_result(session, run_id, invocation, result, started.id)
             return
+        if invocation.name in SELF_MANAGEMENT_TOOLS:
+            started = await self._append(
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                event_type="tool.started",
+                payload={"tool_call_id": invocation.tool_call_id, "name": invocation.name},
+                causation_id=policy_decided.id,
+                correlation_id=run_id,
+            )
+            result = await self._handle_self_management_tool(
+                run_id, session, arguments, invocation.name, started.id
+            )
+            await self._persist_tool_result(session, run_id, invocation, result, started.id)
+            return
         if is_plugin_tool(invocation.name):
             if self.plugin_manager is None:
                 await self._persist_tool_result(
@@ -1100,6 +1144,264 @@ class RunManager:
         )
         result = await clock.measure(tool.execute(context, arguments))
         await self._persist_tool_result(session, run_id, invocation, result, started.id)
+
+    async def _handle_self_management_tool(
+        self,
+        run_id: str,
+        session: Session,
+        arguments: ToolArguments,
+        tool_name: str,
+        causation_id: str,
+    ) -> ToolResult:
+        try:
+            if isinstance(arguments, MemorySearchArguments):
+                status: MemoryStatus | None = (
+                    None if arguments.status == "all" else arguments.status
+                )
+                records = await asyncio.to_thread(
+                    self.memory.list_visible,
+                    session,
+                    status=status,
+                    layer=arguments.layer,
+                    query=arguments.query,
+                    limit=arguments.limit,
+                )
+                values = [record.model_dump(mode="json") for record in records]
+                return ToolResult(
+                    status="completed",
+                    summary=f"found {len(values)} memories",
+                    content=json.dumps(values, separators=(",", ":"), ensure_ascii=False),
+                    structured_data=JSON_OBJECT.validate_python(
+                        {"count": len(values), "memories": values}
+                    ),
+                )
+            if isinstance(arguments, MemoryAddArguments):
+                candidate = MemoryCandidate(
+                    **arguments.model_dump(mode="python"),
+                    provenance_event_ids=[causation_id],
+                    evidence_basis="explicit_user",
+                )
+                mutation = await asyncio.to_thread(
+                    self.memory.create_candidate,
+                    session=session,
+                    candidate=candidate,
+                    run_id=run_id,
+                    origin_kind="explicit",
+                    activate=True,
+                    causation_id=causation_id,
+                )
+                await self._publish_store_events(mutation.events)
+                return ToolResult(
+                    status="completed",
+                    summary=f"remembered {mutation.record.summary}",
+                    structured_data={"memory": mutation.record.model_dump(mode="json")},
+                )
+            if isinstance(arguments, MemoryEditArguments):
+                previous = await asyncio.to_thread(
+                    self.memory.get_visible, session, arguments.memory_id
+                )
+                if previous.status != "active":
+                    raise ValueError("only an active memory can be edited")
+                changes = arguments.model_dump(exclude_unset=True, mode="python")
+                changes.pop("memory_id", None)
+                candidate = MemoryCandidate(
+                    layer=changes.get("layer", previous.layer),
+                    visibility=changes.get("visibility", previous.visibility),
+                    subject=changes.get("subject", previous.subject),
+                    predicate=changes.get("predicate", previous.predicate),
+                    value=changes.get("value", previous.value),
+                    summary=changes.get("summary", previous.summary),
+                    confidence=changes.get("confidence", previous.confidence),
+                    importance=changes.get("importance", previous.importance),
+                    anchors=previous.anchors,
+                    provenance_event_ids=[*previous.provenance_event_ids, causation_id],
+                    supersedes_id=previous.id,
+                    evidence_basis="explicit_user",
+                    valid_from=previous.valid_from,
+                    valid_until=previous.valid_until,
+                )
+                mutation = await asyncio.to_thread(
+                    self.memory.create_candidate,
+                    session=session,
+                    candidate=candidate,
+                    run_id=run_id,
+                    origin_kind="explicit",
+                    activate=True,
+                    causation_id=causation_id,
+                )
+                await self._publish_store_events(mutation.events)
+                return ToolResult(
+                    status="completed",
+                    summary=f"updated memory {previous.id}",
+                    structured_data={
+                        "memory": mutation.record.model_dump(mode="json"),
+                        "superseded_memory_id": previous.id,
+                    },
+                )
+            if isinstance(arguments, MemoryForgetArguments):
+                mutation = await asyncio.to_thread(
+                    self.memory.transition,
+                    session=session,
+                    memory_id=arguments.memory_id,
+                    action="retract",
+                    reason=arguments.reason,
+                )
+                await self._publish_store_events(mutation.events)
+                return ToolResult(
+                    status="completed",
+                    summary=f"forgot memory {mutation.record.id}",
+                    structured_data={"memory": mutation.record.model_dump(mode="json")},
+                )
+            if isinstance(arguments, ScarListArguments):
+                scars = await asyncio.to_thread(
+                    self.scar_store.list_scars,
+                    session,
+                    status=arguments.status,
+                    limit=arguments.limit,
+                )
+                values = [scar.model_dump(mode="json") for scar in scars]
+                return ToolResult(
+                    status="completed",
+                    summary=f"found {len(values)} scars",
+                    content=json.dumps(values, separators=(",", ":"), ensure_ascii=False),
+                    structured_data=JSON_OBJECT.validate_python(
+                        {"count": len(values), "scars": values}
+                    ),
+                )
+            if isinstance(arguments, ScarRecordArguments):
+                values = arguments.model_dump(mode="python")
+                mutation = await asyncio.to_thread(
+                    self.scar_store.record_candidate,
+                    session=session,
+                    **values,
+                    evidence_event_ids=[causation_id],
+                    run_id=run_id,
+                    causation_id=causation_id,
+                )
+                opened = await asyncio.to_thread(
+                    self.scar_store.open,
+                    session=session,
+                    scar_id=mutation.scar.id,
+                    reason="explicit user correction",
+                )
+                await self._publish_store_events((*mutation.events, *opened.events))
+                return ToolResult(
+                    status="completed",
+                    summary=f"recorded scar {opened.scar.title}",
+                    structured_data={"scar": opened.scar.model_dump(mode="json")},
+                )
+            if isinstance(arguments, ScarControlArguments):
+                operation = (
+                    self.scar_store.open if arguments.action == "open" else self.scar_store.dismiss
+                )
+                mutation = await asyncio.to_thread(
+                    operation,
+                    session=session,
+                    scar_id=arguments.scar_id,
+                    reason=arguments.reason,
+                )
+                await self._publish_store_events(mutation.events)
+                return ToolResult(
+                    status="completed",
+                    summary=f"{arguments.action}ed scar {mutation.scar.id}",
+                    structured_data={"scar": mutation.scar.model_dump(mode="json")},
+                )
+            if isinstance(arguments, SkillCatalogArguments):
+                skills = await asyncio.to_thread(
+                    self.skills.visible,
+                    session,
+                    query=arguments.query,
+                    limit=arguments.limit,
+                )
+                values = [skill.model_dump(mode="json") for skill in skills]
+                return ToolResult(
+                    status="completed",
+                    summary=f"found {len(values)} Skills",
+                    content=json.dumps(values, separators=(",", ":"), ensure_ascii=False),
+                    structured_data=JSON_OBJECT.validate_python(
+                        {"count": len(values), "skills": values}
+                    ),
+                )
+            if isinstance(arguments, SkillControlArguments):
+                return await self._control_skill(session, arguments, causation_id)
+        except (KeyError, ValueError) as exc:
+            return ToolResult(status="rejected", summary=f"{tool_name} rejected: {exc}")
+        return ToolResult(status="failed", summary=f"invalid {tool_name} arguments")
+
+    async def _control_skill(
+        self, session: Session, arguments: SkillControlArguments, causation_id: str
+    ) -> ToolResult:
+        current = await asyncio.to_thread(self.skills.latest_visible, session, arguments.id)
+        requested = await self._append(
+            session_id=session.id,
+            agent_id=session.agent_id,
+            event_type="skill.control.requested",
+            payload={
+                "skill_id": current.skill_id,
+                "version_id": current.id,
+                "action": arguments.action,
+                "reason": arguments.reason,
+            },
+            causation_id=causation_id,
+            correlation_id=current.skill_id,
+        )
+        if arguments.action == "rollback":
+            active = await asyncio.to_thread(self.skills.get_visible, session, arguments.id)
+            result, events = await asyncio.to_thread(
+                self.skills.quarantine_and_rollback,
+                session,
+                active.id,
+                reason=arguments.reason,
+                causation_id=requested.id,
+            )
+            await self._publish_store_events(events)
+        elif arguments.action in {"pin", "unpin"}:
+            result = await asyncio.to_thread(
+                self.skills.set_pinned,
+                session,
+                arguments.id,
+                pinned=arguments.action == "pin",
+            )
+        else:
+            result = await asyncio.to_thread(
+                self.skills.set_archived,
+                session,
+                arguments.id,
+                archived=arguments.action == "archive",
+            )
+        if arguments.action != "rollback":
+            await self._append(
+                session_id=session.id,
+                agent_id=session.agent_id,
+                event_type={
+                    "pin": "skill.pinned",
+                    "unpin": "skill.unpinned",
+                    "archive": "skill.archived",
+                    "restore": "skill.restored",
+                }[arguments.action],
+                payload={
+                    "skill_id": current.skill_id,
+                    "version_id": result.id,
+                    "action": arguments.action,
+                    "reason": arguments.reason,
+                },
+                causation_id=requested.id,
+                correlation_id=current.skill_id,
+            )
+        return ToolResult(
+            status="completed",
+            summary=f"{arguments.action} completed for Skill {result.slug}",
+            structured_data={"skill": result.model_dump(mode="json")},
+        )
+
+    async def _publish_store_events(self, events: tuple[Event, ...]) -> None:
+        for event in events:
+            await self.broker.publish(
+                event.session_id,
+                {"durable": True, "event": event.model_dump(mode="json")},
+            )
+            if self.plugin_manager is not None:
+                await self.plugin_manager.deliver_event(event)
 
     async def _handle_skill_tool(
         self,

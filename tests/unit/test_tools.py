@@ -13,11 +13,16 @@ from hames.providers.base import JsonValue
 from hames.tools import (
     EditFileArguments,
     EditFileTool,
+    MemoryEditArguments,
+    MemoryForgetArguments,
     ReadFileArguments,
     ReadFileTool,
+    ScarControlArguments,
     ShellArguments,
     ShellTool,
+    SkillControlArguments,
     ToolContext,
+    ToolRegistry,
     WriteFileArguments,
     WriteFileTool,
 )
@@ -165,6 +170,56 @@ def test_policy_classifies_safe_dangerous_and_protected_actions(tmp_path: Path) 
     assert (
         gate.decide("shell", ShellArguments(command="cat ~/.zshrc"), context).decision
         is PolicyDecisionKind.REQUIRE_CONFIRMATION
+    )
+
+
+def test_self_management_tools_are_typed_and_destructive_controls_confirm(
+    tmp_path: Path,
+) -> None:
+    registry = ToolRegistry()
+    assert {
+        "memory_search",
+        "memory_add",
+        "memory_edit",
+        "memory_forget",
+        "scar_list",
+        "scar_record",
+        "scar_control",
+        "skill_catalog",
+        "skill_control",
+    } <= registry.names()
+    with pytest.raises(ValueError, match="replacement field"):
+        registry.validate("memory_edit", {"memory_id": "memory-1"})
+
+    context = tool_context(tmp_path)
+    gate = PolicyGate(tmp_path / "hames-home")
+    assert (
+        gate.decide("memory_forget", MemoryForgetArguments(memory_id="memory-1"), context).decision
+        is PolicyDecisionKind.REQUIRE_CONFIRMATION
+    )
+    assert (
+        gate.decide(
+            "scar_control",
+            ScarControlArguments(scar_id="scar-1", action="dismiss", reason="obsolete"),
+            context,
+        ).decision
+        is PolicyDecisionKind.REQUIRE_CONFIRMATION
+    )
+    assert (
+        gate.decide(
+            "skill_control",
+            SkillControlArguments(id="tests", action="rollback", reason="regressed"),
+            context,
+        ).decision
+        is PolicyDecisionKind.REQUIRE_CONFIRMATION
+    )
+    assert (
+        gate.decide(
+            "memory_edit",
+            MemoryEditArguments(memory_id="memory-1", summary="Corrected preference"),
+            context,
+        ).decision
+        is PolicyDecisionKind.ALLOW
     )
 
 
