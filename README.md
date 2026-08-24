@@ -114,7 +114,8 @@ opens the command palette, Page Up/Page Down and the mouse wheel scroll the
 transcript, and Enter or Space expands a selected Thought. Large pastes become
 compact capsules without losing their exact durable content. Recent sessions for
 the current directory are offered when the TUI opens. Scrollbar tracks and solid
-thumbs support clicking and dragging. `/themes` switches between the default
+thumbs support anchored dragging, so grabbing a thumb never teleports the view.
+`/themes` switches between the default
 custom Hames palette and terminal-native colors. The choice is a global client
 preference in `~/.hames/ui.toml`, loaded before the first frame and shared by all
 sessions.
@@ -140,7 +141,8 @@ and starts fresh. Bare `/resume` aliases the `/sessions` picker while
 and `/gateway` shows service health and active work. Every above-composer picker
 shares the palette's open top-and-bottom rules, with its name inset into the top
 rule. Centered dialogs use quiet, square corners rather than rounded popup frames.
-Their outlines use the same neutral gray rules instead of a green accent.
+Their outlines use the lighter neutral gray shared with composer input instead
+of a green accent.
 While a picker is open, the bottom-left status bar switches to its navigation
 and selection shortcuts. In `/sessions`, Ctrl+D arms removal with a red row and
 an explicit warning; pressing Ctrl+D again retires that conversation from the
@@ -155,7 +157,9 @@ in its original resumable session.
 
 `/memory` is an active-memory browser: arrow keys wrap through selectable records,
 the focused record expands its full summary and value, and Page Up/Page Down
-scroll long details. Deleted memories never appear there.
+scroll long details. Ctrl+D uses the same two-press, red-row confirmation as
+session removal, then permanently deletes the memory without closing the browser.
+Deleted memories never appear there.
 
 The top-right header shows the durable session title beside the current activity
 instead of repeating model controls. The model can set or revise that title with

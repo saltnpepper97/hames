@@ -41,6 +41,8 @@ Large pastes are shown as compact capsules while their exact bytes and ranges
 remain durable in the user-message event. The transcript and composer both
 render proportional scrollbars with solid thumbs when content exceeds their
 viewport. Their tracks support mouse clicks and dragging.
+Dragging is anchored to the position at mouse-down, so grabbing either thumb
+does not jump the transcript or composer before the pointer moves.
 
 ## Controls and modes
 
@@ -83,13 +85,14 @@ viewport. Their tracks support mouse clicks and dragging.
 - Only `model.requested` events belonging to the active foreground chat run may
   create a pending Thought; background memory and workflow model jobs remain out
   of the conversation transcript.
-- Centered modals use square, neutral-gray borders; semantic accents stay within
+- Centered modals use square borders in the lighter input gray; semantic accents stay within
   their content. Selection inside a modal does not dismiss it. Trust and approval
   decisions use focused modals with inset actions. Approvals preserve the gateway's
   allow-for-session, allow-once, and deny semantics.
 - `/memory` is a selectable active-record browser. The focused memory expands its
-  full summary and value with independent detail scrolling; permanently deleted
-  memories disappear from the browser.
+  full summary and value with independent detail scrolling. Ctrl+D arms a red-row
+  confirmation and Ctrl+D again permanently deletes the record while leaving the
+  browser open; deleted memories disappear immediately.
 - Status, usage, events, inspection, context, memory, Skills, Scars, plugins,
   export, correction, and explicit memory capture are reachable from the palette
   or slash commands.

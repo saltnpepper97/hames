@@ -396,6 +396,7 @@ pub struct MemoryBrowser {
     pub records: Vec<MemoryRecord>,
     pub selected: usize,
     pub detail_scroll: usize,
+    pub pending_delete: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -519,6 +520,8 @@ pub struct ScrollDrag {
     pub y: u16,
     pub height: u16,
     pub max_top: usize,
+    pub anchor_y: u16,
+    pub anchor_top: usize,
 }
 
 #[derive(Clone, Debug)]

@@ -273,6 +273,7 @@ enum Effect {
     Copy(String),
     Menu(MenuAction),
     DeleteSession(String),
+    DeleteMemory(String),
 }
 
 fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
@@ -464,6 +465,21 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             }
         }
         Modal::Memory(browser) => match key.code {
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if browser.records.is_empty() {
+                    return None;
+                }
+                let selected = browser
+                    .selected
+                    .min(browser.records.len().saturating_sub(1));
+                if browser.pending_delete == Some(selected) {
+                    browser.pending_delete = None;
+                    Some(Effect::DeleteMemory(browser.records[selected].id.clone()))
+                } else {
+                    browser.pending_delete = Some(selected);
+                    None
+                }
+            }
             KeyCode::Up => {
                 browser.selected = if browser.records.is_empty() || browser.selected > 0 {
                     browser.selected.saturating_sub(1)
@@ -471,6 +487,7 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                     browser.records.len() - 1
                 };
                 browser.detail_scroll = 0;
+                browser.pending_delete = None;
                 None
             }
             KeyCode::Down => {
@@ -482,6 +499,7 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                     browser.selected + 1
                 };
                 browser.detail_scroll = 0;
+                browser.pending_delete = None;
                 None
             }
             KeyCode::PageUp => {
@@ -562,13 +580,21 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                 }) => {
                     app.clear_transcript_selection();
                     let region = region.expect("scrollbar region");
+                    let max_top = content_len.saturating_sub(viewport_len);
+                    let anchor_top = match target {
+                        ScrollTarget::Transcript => max_top.saturating_sub(app.scroll.min(max_top)),
+                        ScrollTarget::Composer => {
+                            app.composer_scroll.unwrap_or(max_top).min(max_top)
+                        }
+                    };
                     let drag = ScrollDrag {
                         target,
                         y: region.y,
                         height: region.height,
-                        max_top: content_len.saturating_sub(viewport_len),
+                        max_top,
+                        anchor_y: mouse.row,
+                        anchor_top,
                     };
-                    scroll_to_pointer(app, &drag, mouse.row);
                     app.scroll_drag = Some(drag);
                     None
                 }
@@ -595,6 +621,9 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                     if let Some(Modal::Memory(browser)) = &mut app.modal
                         && index < browser.records.len()
                     {
+                        if browser.selected != index {
+                            browser.pending_delete = None;
+                        }
                         browser.selected = index;
                         browser.detail_scroll = 0;
                     }
@@ -729,11 +758,14 @@ fn scroll_to_pointer(app: &mut App, drag: &ScrollDrag, row: u16) {
 
 fn pointer_top(drag: &ScrollDrag, row: u16) -> usize {
     let track = usize::from(drag.height.saturating_sub(1).max(1));
-    let offset = usize::from(
-        row.saturating_sub(drag.y)
-            .min(drag.height.saturating_sub(1)),
-    );
-    drag.max_top.saturating_mul(offset) / track
+    let row = row.clamp(drag.y, drag.y.saturating_add(drag.height.saturating_sub(1)));
+    let distance = usize::from(row.abs_diff(drag.anchor_y));
+    let delta = drag.max_top.saturating_mul(distance) / track;
+    if row >= drag.anchor_y {
+        drag.anchor_top.saturating_add(delta).min(drag.max_top)
+    } else {
+        drag.anchor_top.saturating_sub(delta)
+    }
 }
 
 fn send_or_command(app: &mut App) -> Option<Effect> {
@@ -904,6 +936,18 @@ async fn apply_effect(
                 sheet.pending_delete = None;
             }
             app.notice = Some("Session removed from resumable history".to_owned());
+        }
+        Effect::DeleteMemory(memory_id) => {
+            client.delete_memory(&app.session.id, &memory_id).await?;
+            if let Some(Modal::Memory(browser)) = &mut app.modal {
+                browser.records.retain(|memory| memory.id != memory_id);
+                browser.selected = browser
+                    .selected
+                    .min(browser.records.len().saturating_sub(1));
+                browser.detail_scroll = 0;
+                browser.pending_delete = None;
+            }
+            app.notice = Some(format!("Memory {} deleted", short_id(&memory_id)));
         }
     }
     Ok(None)
@@ -1209,6 +1253,7 @@ async fn apply_menu_action(
                 records: memories,
                 selected: 0,
                 detail_scroll: 0,
+                pending_delete: None,
             }));
         }
         MenuAction::Skills => {
@@ -1574,10 +1619,10 @@ mod tests {
         Effect, SseDecoder, handle_key, handle_mouse, model_efforts, next_mode, parse_command,
         pointer_top,
     };
-    use crate::api::{ProviderModel, Session};
+    use crate::api::{MemoryRecord, ProviderModel, Session};
     use crate::tui::app::{
-        App, MenuAction, MenuOption, Modal, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind,
-        TranscriptViewport,
+        App, HitAction, HitRegion, MemoryBrowser, MenuAction, MenuOption, Modal, ScrollDrag,
+        ScrollTarget, Sheet, SheetKind, ThemeKind, TranscriptViewport,
     };
 
     #[test]
@@ -1713,10 +1758,88 @@ mod tests {
             y: 4,
             height: 11,
             max_top: 100,
+            anchor_y: 9,
+            anchor_top: 50,
         };
         assert_eq!(pointer_top(&drag, 4), 0);
         assert_eq!(pointer_top(&drag, 9), 50);
         assert_eq!(pointer_top(&drag, 14), 100);
+    }
+
+    #[test]
+    fn grabbing_a_scrollbar_does_not_change_its_position() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.scroll = 35;
+        app.hits.push(HitRegion {
+            x: 90,
+            y: 4,
+            width: 2,
+            height: 11,
+            action: HitAction::Scrollbar {
+                target: ScrollTarget::Transcript,
+                content_len: 120,
+                viewport_len: 20,
+            },
+        });
+
+        assert!(
+            handle_mouse(
+                &mut app,
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: 90,
+                    row: 9,
+                    modifiers: KeyModifiers::NONE,
+                },
+            )
+            .is_none()
+        );
+        assert_eq!(app.scroll, 35);
+
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left),
+                column: 90,
+                row: 10,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(app.scroll, 25);
+    }
+
+    #[test]
+    fn memory_deletion_requires_confirmation_and_navigation_disarms_it() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.modal = Some(Modal::Memory(MemoryBrowser {
+            records: vec![
+                memory_record("memory-first"),
+                memory_record("memory-second"),
+            ],
+            selected: 0,
+            detail_scroll: 0,
+            pending_delete: None,
+        }));
+        let ctrl_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+
+        assert!(handle_key(&mut app, ctrl_d).is_none());
+        let Modal::Memory(browser) = app.modal.as_ref().unwrap() else {
+            panic!("memory browser should remain open");
+        };
+        assert_eq!(browser.pending_delete, Some(0));
+
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)).is_none());
+        let Modal::Memory(browser) = app.modal.as_ref().unwrap() else {
+            panic!("memory browser should remain open");
+        };
+        assert_eq!(browser.selected, 1);
+        assert_eq!(browser.pending_delete, None);
+
+        assert!(handle_key(&mut app, ctrl_d).is_none());
+        assert!(matches!(
+            handle_key(&mut app, ctrl_d),
+            Some(Effect::DeleteMemory(memory_id)) if memory_id == "memory-second"
+        ));
     }
 
     #[test]
@@ -1876,6 +1999,34 @@ mod tests {
             lineage_kind: "root".to_owned(),
             delegation_depth: 0,
             interaction_mode: "auto".to_owned(),
+        }
+    }
+
+    fn memory_record(id: &str) -> MemoryRecord {
+        MemoryRecord {
+            id: id.to_owned(),
+            layer: "relationship".to_owned(),
+            status: "active".to_owned(),
+            visibility: "global".to_owned(),
+            subject: "user:local".to_owned(),
+            predicate: "prefers_ui".to_owned(),
+            value: serde_json::json!("Subdued and polished"),
+            summary: "Keep the interface calm".to_owned(),
+            confidence: 0.95,
+            importance: 0.9,
+            owner_agent_id: None,
+            workspace_path: None,
+            lineage_root_session_id: None,
+            source_session_id: "session-1".to_owned(),
+            source_run_id: Some("run-1".to_owned()),
+            origin_kind: "explicit".to_owned(),
+            valid_from: None,
+            valid_until: None,
+            superseded_by_id: None,
+            created_at: "2026-08-24T00:00:00Z".to_owned(),
+            updated_at: "2026-08-24T00:00:00Z".to_owned(),
+            anchors: Vec::new(),
+            provenance_event_ids: Vec::new(),
         }
     }
 }

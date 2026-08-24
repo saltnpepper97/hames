@@ -1120,7 +1120,7 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                     .title(format!(" {title} "))
                     .borders(Borders::ALL)
                     .border_type(BorderType::Plain)
-                    .border_style(Style::default().fg(RULE))
+                    .border_style(Style::default().fg(INPUT))
                     .style(Style::default().bg(modal_background)),
             ),
         popup,
@@ -1201,27 +1201,38 @@ fn memory_browser_body(browser: &MemoryBrowser) -> Vec<Line<'static>> {
     for index in start..end {
         let memory = &browser.records[index];
         let selected = index == browser.selected;
-        let row_style = if selected {
+        let pending_delete = browser.pending_delete == Some(index);
+        let row_style = if pending_delete {
+            Style::default().bg(DELETE_BG)
+        } else if selected {
             Style::default().bg(PANEL_BRIGHT)
         } else {
             Style::default()
         };
-        let label = fit(
-            &format!(
-                "{}  {} · {} · {}",
-                if selected { "•" } else { " " },
-                memory.summary,
-                memory.layer,
-                memory.visibility
-            ),
-            84,
-        );
+        let label = if pending_delete {
+            fit("  Press Ctrl+D again to delete this memory", 84)
+        } else {
+            fit(
+                &format!(
+                    "{}  {} · {} · {}",
+                    if selected { "•" } else { " " },
+                    memory.summary,
+                    memory.layer,
+                    memory.visibility
+                ),
+                84,
+            )
+        };
         let used = UnicodeWidthStr::width(label.as_str());
         lines.push(Line::from(vec![
             Span::styled(
                 label,
                 Style::default()
-                    .fg(if selected { INPUT } else { MUTED })
+                    .fg(if pending_delete || selected {
+                        INPUT
+                    } else {
+                        MUTED
+                    })
                     .add_modifier(if selected {
                         Modifier::BOLD
                     } else {
@@ -1278,14 +1289,27 @@ fn memory_browser_body(browser: &MemoryBrowser) -> Vec<Line<'static>> {
         }
     }
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("↑↓", Style::default().fg(INPUT).bold()),
-        Span::styled(" memories · ", Style::default().fg(MUTED)),
-        Span::styled("PgUp/PgDn", Style::default().fg(INPUT).bold()),
-        Span::styled(" full text · ", Style::default().fg(MUTED)),
-        Span::styled("Esc", Style::default().fg(INPUT).bold()),
-        Span::styled(" close", Style::default().fg(MUTED)),
-    ]));
+    lines.push(if browser.pending_delete.is_some() {
+        Line::from(vec![
+            Span::styled("Ctrl+D", Style::default().fg(INPUT).bold()),
+            Span::styled(" confirm delete · ", Style::default().fg(MUTED)),
+            Span::styled("↑↓", Style::default().fg(INPUT).bold()),
+            Span::styled(" cancel · ", Style::default().fg(MUTED)),
+            Span::styled("Esc", Style::default().fg(INPUT).bold()),
+            Span::styled(" close", Style::default().fg(MUTED)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("↑↓", Style::default().fg(INPUT).bold()),
+            Span::styled(" memories · ", Style::default().fg(MUTED)),
+            Span::styled("PgUp/PgDn", Style::default().fg(INPUT).bold()),
+            Span::styled(" full text · ", Style::default().fg(MUTED)),
+            Span::styled("Ctrl+D", Style::default().fg(INPUT).bold()),
+            Span::styled(" delete · ", Style::default().fg(MUTED)),
+            Span::styled("Esc", Style::default().fg(INPUT).bold()),
+            Span::styled(" close", Style::default().fg(MUTED)),
+        ])
+    });
     lines
 }
 
@@ -1579,7 +1603,7 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        DELETE_BG, GOLD, INPUT, MINT, MUTED, PANEL, PANEL_BRIGHT, RULE, SKY, draw, format_elapsed,
+        DELETE_BG, GOLD, INPUT, MINT, MUTED, PANEL, PANEL_BRIGHT, SKY, draw, format_elapsed,
         line_text, memory_browser_body, mode_color, mode_outline, pasted_display,
         scrollbar_position, sheen_spans, sheet_text_color, thought_label, transcript_lines,
     };
@@ -1940,7 +1964,7 @@ mod tests {
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer.cell((11, 9)).unwrap().symbol(), "┌");
         assert_eq!(buffer.cell((88, 9)).unwrap().symbol(), "┐");
-        assert_eq!(buffer.cell((11, 9)).unwrap().fg, RULE);
+        assert_eq!(buffer.cell((11, 9)).unwrap().fg, INPUT);
         assert_ne!(buffer.cell((11, 9)).unwrap().fg, MINT);
     }
 
@@ -2000,6 +2024,7 @@ mod tests {
             records: vec![memory_record()],
             selected: 0,
             detail_scroll: 0,
+            pending_delete: None,
         };
         let rendered = memory_browser_body(&browser)
             .iter()
@@ -2020,6 +2045,21 @@ mod tests {
             terminal.backend().buffer().cell((5, 5)).unwrap().bg,
             Color::Reset
         );
+    }
+
+    #[test]
+    fn memory_browser_shows_a_single_contiguous_delete_confirmation() {
+        let browser = MemoryBrowser {
+            records: vec![memory_record()],
+            selected: 0,
+            detail_scroll: 0,
+            pending_delete: Some(0),
+        };
+        let lines = memory_browser_body(&browser);
+        let rendered = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(rendered.contains("Press Ctrl+D again to delete this memory"));
+        assert!(rendered.contains("Ctrl+D confirm delete · ↑↓ cancel · Esc close"));
+        assert_eq!(lines[2].spans[0].style.bg, Some(DELETE_BG));
     }
 
     #[test]
