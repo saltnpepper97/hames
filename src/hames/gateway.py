@@ -18,7 +18,14 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from hames import PROTOCOL_VERSION, __version__
-from hames.agent import AgentCapsule, AgentRegistry, AgentSummary
+from hames.agent import (
+    AgentCapsule,
+    AgentRegistry,
+    AgentSummary,
+    apply_agent_skill_policy,
+    load_agent,
+    skill_permitted,
+)
 from hames.broker import EventBroker
 from hames.config import HamesConfig, ProviderProfileConfig, load_config
 from hames.control import ControlStore
@@ -202,6 +209,9 @@ class AgentDetail(AgentPublic):
     instructions: str
     tools_allow: list[str]
     tools_deny: list[str]
+    skills_allow: list[str]
+    skills_deny: list[str]
+    skills_pin: list[str]
     delegation_allowed: bool
     delegation_targets: list[str]
     deprecated_fields: list[str]
@@ -848,9 +858,18 @@ def create_app(state: GatewayState) -> FastAPI:
     ) -> list[SkillSummary]:
         try:
             session = await asyncio.to_thread(state.ledger.get_session, session_id)
-            return await asyncio.to_thread(
+            scoped = await asyncio.to_thread(
+                state.runs.skills.visible, session, query="", limit=limit
+            )
+            ranked = await asyncio.to_thread(
                 state.runs.skills.visible, session, query=query, limit=limit
             )
+            by_slug = {item.slug: item for item in scoped}
+            by_slug.update({item.slug: item for item in ranked})
+            capsule = await asyncio.to_thread(
+                load_agent, state.paths.agents / session.agent_id / "AGENT.md"
+            )
+            return apply_agent_skill_policy(capsule, list(by_slug.values()), limit=limit)
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
 
@@ -862,6 +881,11 @@ def create_app(state: GatewayState) -> FastAPI:
     async def get_skill(session_id: str, slug: str) -> SkillVersion:
         try:
             session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            capsule = await asyncio.to_thread(
+                load_agent, state.paths.agents / session.agent_id / "AGENT.md"
+            )
+            if not skill_permitted(capsule, slug):
+                raise KeyError(slug)
             return await asyncio.to_thread(state.runs.skills.get_visible, session, slug)
         except KeyError as exc:
             raise ApiError(404, "skill_not_found", f"unknown visible Skill: {slug}") from exc
@@ -1459,6 +1483,9 @@ def _agent_detail(capsule: AgentCapsule) -> AgentDetail:
         instructions=capsule.instructions,
         tools_allow=capsule.metadata.tools.allow,
         tools_deny=capsule.metadata.tools.deny,
+        skills_allow=capsule.metadata.skills.allow,
+        skills_deny=capsule.metadata.skills.deny,
+        skills_pin=capsule.metadata.skills.pin,
         delegation_allowed=capsule.metadata.delegation.allow,
         delegation_targets=capsule.metadata.delegation.allowed_agents,
         deprecated_fields=capsule.deprecated_fields,

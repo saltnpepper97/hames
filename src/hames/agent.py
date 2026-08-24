@@ -9,7 +9,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, Protocol, cast
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -32,6 +32,33 @@ class AgentTools(BaseModel):
     def unique(self) -> AgentTools:
         if len(self.allow) != len(set(self.allow)) or len(self.deny) != len(set(self.deny)):
             raise ValueError("agent tool allow and deny lists must not contain duplicates")
+        return self
+
+
+class AgentSkills(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    allow: list[str] = Field(default_factory=list)
+    deny: list[str] = Field(default_factory=list)
+    pin: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def unique_and_reducible(self) -> AgentSkills:
+        for label, values in (
+            ("allow", self.allow),
+            ("deny", self.deny),
+            ("pin", self.pin),
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError(f"agent skill {label} list must not contain duplicates")
+        deny = set(self.deny)
+        allow = set(self.allow)
+        if deny & allow:
+            raise ValueError("agent skill allow and deny lists must be disjoint")
+        if deny & set(self.pin):
+            raise ValueError("agent skill pin list cannot include denied skills")
+        if allow and any(slug not in allow for slug in self.pin):
+            raise ValueError("agent skill pin list must be a subset of allow when allow is set")
         return self
 
 
@@ -65,6 +92,7 @@ class AgentMetadata(BaseModel):
     id: str
     name: str = Field(min_length=1, max_length=80)
     tools: AgentTools = Field(default_factory=AgentTools)
+    skills: AgentSkills = Field(default_factory=AgentSkills)
     authority: Literal["standard", "read_only"] = "standard"
     delegation: DelegationPolicy = Field(default_factory=DelegationPolicy)
     provider: str | None = None
@@ -161,6 +189,7 @@ class AgentRegistry:
         source_authority = None
         body = ""
         tools = AgentTools()
+        skills = AgentSkills()
         delegation = DelegationPolicy()
         if source is not None:
             metadata_raw, body = _split_agent_markdown(source)
@@ -171,12 +200,14 @@ class AgentRegistry:
             if "authority" in metadata_raw and metadata_raw["authority"] is not None:
                 source_authority = str(metadata_raw["authority"])
             tools = AgentTools.model_validate(metadata_raw.get("tools") or {})
+            skills = AgentSkills.model_validate(metadata_raw.get("skills") or {})
             delegation = DelegationPolicy.model_validate(metadata_raw.get("delegation") or {})
             extra = set(metadata_raw) - {
                 "id",
                 "name",
                 "authority",
                 "tools",
+                "skills",
                 "delegation",
                 "provider",
                 "model",
@@ -204,6 +235,8 @@ class AgentRegistry:
         }
         if tools.allow or tools.deny:
             payload["tools"] = tools.model_dump(mode="json", exclude_defaults=True)
+        if skills.allow or skills.deny or skills.pin:
+            payload["skills"] = skills.model_dump(mode="json", exclude_defaults=True)
         if delegation.allow or delegation.allowed_agents:
             payload["delegation"] = delegation.model_dump(mode="json", exclude_defaults=True)
         raw = f"---\n{yaml.safe_dump(payload, sort_keys=False)}---\n{instructions}\n"
@@ -329,3 +362,38 @@ def permitted_tools(capsule: AgentCapsule, available: set[str]) -> frozenset[str
         permitted.intersection_update(capsule.metadata.tools.allow)
     permitted.difference_update(capsule.metadata.tools.deny)
     return frozenset(permitted)
+
+
+class _SkillEntry(Protocol):
+    slug: str
+    score: float
+
+
+def skill_permitted(capsule: AgentCapsule, slug: str) -> bool:
+    policy = capsule.metadata.skills
+    if slug in policy.deny:
+        return False
+    return not policy.allow or slug in policy.allow
+
+
+def apply_agent_skill_policy[SkillEntry: _SkillEntry](
+    capsule: AgentCapsule, items: list[SkillEntry], *, limit: int
+) -> list[SkillEntry]:
+    """Filter and pin catalog entries. Pin is catalog order, not a load grant."""
+
+    allowed = [item for item in items if skill_permitted(capsule, item.slug)]
+    by_slug = {item.slug: item for item in allowed}
+    selected: list[SkillEntry] = []
+    seen: set[str] = set()
+    for slug in capsule.metadata.skills.pin:
+        item = by_slug.get(slug)
+        if item is None or slug in seen:
+            continue
+        selected.append(item)
+        seen.add(slug)
+        if len(selected) >= limit:
+            return selected
+    remaining = [item for item in allowed if item.slug not in seen]
+    remaining.sort(key=lambda item: (-item.score, item.slug))
+    selected.extend(remaining[: max(0, limit - len(selected))])
+    return selected

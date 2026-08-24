@@ -11,7 +11,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from hames.agent import AgentCapsule, AgentRegistry, load_agent, permitted_tools
+from hames.agent import (
+    AgentCapsule,
+    AgentRegistry,
+    apply_agent_skill_policy,
+    load_agent,
+    permitted_tools,
+    skill_permitted,
+)
 from hames.broker import EventBroker
 from hames.config import HamesConfig
 from hames.context import (
@@ -803,11 +810,18 @@ class RunManager:
     ) -> tuple[list[SkillSummary], Event | None]:
         if not self.config.skills.enabled:
             return [], None
-        selected = await asyncio.to_thread(
-            self.skills.visible,
-            session,
-            query=query,
-            limit=self.config.skills.max_catalog_entries,
+        pool_limit = max(self.config.skills.max_catalog_entries * 4, 64)
+        scoped = await asyncio.to_thread(self.skills.visible, session, query="", limit=pool_limit)
+        ranked = await asyncio.to_thread(
+            self.skills.visible, session, query=query, limit=pool_limit
+        )
+        by_slug = {item.slug: item for item in scoped}
+        by_slug.update({item.slug: item for item in ranked})
+        capsule = await asyncio.to_thread(
+            load_agent, self.paths.agents / session.agent_id / "AGENT.md"
+        )
+        selected = apply_agent_skill_policy(
+            capsule, list(by_slug.values()), limit=self.config.skills.max_catalog_entries
         )
         event = await self._append(
             session_id=session.id,
@@ -1027,6 +1041,11 @@ class RunManager:
         if isinstance(arguments, SkillLoadArguments):
             try:
                 skill = await asyncio.to_thread(self.skills.get_visible, session, arguments.id)
+                capsule = await asyncio.to_thread(
+                    load_agent, self.paths.agents / session.agent_id / "AGENT.md"
+                )
+                if not skill_permitted(capsule, skill.slug):
+                    raise KeyError(arguments.id)
             except (KeyError, ValueError) as exc:
                 return ToolResult(status="rejected", summary=f"Skill cannot be loaded: {exc}")
             self._loaded_skills.setdefault(run_id, {})[skill.slug] = skill

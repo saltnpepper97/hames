@@ -99,6 +99,12 @@ pub struct AgentDetail {
     pub instructions: String,
     pub tools_allow: Vec<String>,
     pub tools_deny: Vec<String>,
+    #[serde(default)]
+    pub skills_allow: Vec<String>,
+    #[serde(default)]
+    pub skills_deny: Vec<String>,
+    #[serde(default)]
+    pub skills_pin: Vec<String>,
     pub delegation_allowed: bool,
     pub delegation_targets: Vec<String>,
     pub deprecated_fields: Vec<String>,
