@@ -113,8 +113,13 @@ custom Hames palette and terminal-native colors.
 
 The bottom row keeps a right-aligned `[connected]` badge. While idle it shows the
 shortcut hints on the left; during work those hints become a compact animated
-waveform with elapsed time and `Esc interrupt`. Interrupted reasoning settles as
-a completed `Thought` marked `interrupted` in the transcript.
+gray rule with a restrained white sheen, elapsed time, and `Esc interrupt`.
+Interrupted reasoning settles as a completed `Thought` marked `interrupted` in
+the transcript.
+
+Transcript text supports native mouse-drag selection inside the TUI. Releasing
+the mouse automatically copies the highlighted text through the terminal
+clipboard protocol and briefly confirms the copy above the composer.
 
 The top-right header shows the durable session title beside the current activity
 instead of repeating model controls. The model can set or revise that title with

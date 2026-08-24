@@ -2,7 +2,7 @@ mod app;
 mod view;
 
 use std::env;
-use std::io::{self, Stdout};
+use std::io::{self, Stdout, Write};
 use std::path::Path;
 use std::time::Duration;
 
@@ -11,6 +11,8 @@ use app::{
     App, HitAction, MenuAction, MenuOption, Modal, ScrollDrag, ScrollTarget, Sheet, SheetKind,
     ThemeKind,
 };
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
     EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
@@ -185,6 +187,7 @@ enum Effect {
     ResolveApproval(usize),
     Send(String, Vec<PasteSpan>),
     Cancel,
+    Copy(String),
     Menu(MenuAction),
 }
 
@@ -206,6 +209,7 @@ fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+    app.clear_transcript_selection();
     if app.modal.is_some() {
         return handle_modal_key(app, key);
     }
@@ -367,6 +371,7 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
 fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
+            app.clear_transcript_selection();
             if mouse_over_composer(app, mouse.column, mouse.row) {
                 scroll_composer(app, -3);
             } else {
@@ -375,6 +380,7 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
             None
         }
         MouseEventKind::ScrollDown => {
+            app.clear_transcript_selection();
             if mouse_over_composer(app, mouse.column, mouse.row) {
                 scroll_composer(app, 3);
             } else {
@@ -395,6 +401,7 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                     content_len,
                     viewport_len,
                 }) => {
+                    app.clear_transcript_selection();
                     let region = region.expect("scrollbar region");
                     let drag = ScrollDrag {
                         target,
@@ -407,11 +414,14 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                     None
                 }
                 Some(HitAction::ToggleThought(index)) => {
-                    app.focused_thought = Some(index);
-                    app.toggle_thought(index);
+                    if let Some(point) = app.transcript_viewport.point(mouse.column, mouse.row) {
+                        app.begin_transcript_selection(point);
+                        app.pending_thought_toggle = Some(index);
+                    }
                     None
                 }
                 Some(HitAction::SelectSheet(index)) => {
+                    app.clear_transcript_selection();
                     let action = app
                         .sheet
                         .as_ref()
@@ -420,28 +430,65 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                     app.sheet = None;
                     action.map(Effect::Menu)
                 }
-                Some(HitAction::Approval(index)) => Some(Effect::ResolveApproval(index)),
-                Some(HitAction::TrustWorkspace) => Some(Effect::Trust),
-                Some(HitAction::Quit) => Some(Effect::Quit),
+                Some(HitAction::Approval(index)) => {
+                    app.clear_transcript_selection();
+                    Some(Effect::ResolveApproval(index))
+                }
+                Some(HitAction::TrustWorkspace) => {
+                    app.clear_transcript_selection();
+                    Some(Effect::Trust)
+                }
+                Some(HitAction::Quit) => {
+                    app.clear_transcript_selection();
+                    Some(Effect::Quit)
+                }
                 Some(HitAction::CloseModal) => {
+                    app.clear_transcript_selection();
                     app.modal = None;
                     None
                 }
                 Some(HitAction::ShowSession) => {
+                    app.clear_transcript_selection();
                     app.modal = Some(Modal::Session);
                     None
                 }
-                Some(HitAction::FocusComposer) | None => None,
+                Some(HitAction::FocusComposer) => {
+                    app.clear_transcript_selection();
+                    None
+                }
+                None => {
+                    if let Some(point) = app.transcript_viewport.point(mouse.column, mouse.row) {
+                        app.begin_transcript_selection(point);
+                    } else {
+                        app.clear_transcript_selection();
+                    }
+                    None
+                }
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
             if let Some(drag) = app.scroll_drag.clone() {
                 scroll_to_pointer(app, &drag, mouse.row);
+            } else if let Some(point) = app.transcript_viewport.point(mouse.column, mouse.row) {
+                app.update_transcript_selection(point);
             }
             None
         }
         MouseEventKind::Up(MouseButton::Left) => {
             app.scroll_drag = None;
+            if app.selecting_transcript {
+                if let Some(point) = app.transcript_viewport.point(mouse.column, mouse.row) {
+                    app.update_transcript_selection(point);
+                }
+                let pending_thought = app.pending_thought_toggle.take();
+                if let Some(text) = app.finish_transcript_selection() {
+                    return Some(Effect::Copy(text));
+                }
+                if let Some(index) = pending_thought {
+                    app.focused_thought = Some(index);
+                    app.toggle_thought(index);
+                }
+            }
             None
         }
         _ => None,
@@ -638,9 +685,21 @@ async fn apply_effect(
                 client.cancel(&run_id).await?;
             }
         }
+        Effect::Copy(text) => {
+            copy_to_clipboard(&text)?;
+            app.show_copy_notice(text.chars().count());
+        }
         Effect::Menu(action) => return apply_menu_action(client, paths, app, action).await,
     }
     Ok(None)
+}
+
+fn copy_to_clipboard(text: &str) -> Result<()> {
+    let encoded = BASE64_STANDARD.encode(text.as_bytes());
+    let mut stdout = io::stdout();
+    write!(stdout, "\x1b]52;c;{encoded}\x07")?;
+    stdout.flush()?;
+    Ok(())
 }
 
 async fn apply_menu_action(
@@ -1298,13 +1357,18 @@ fn info(title: &str, lines: Vec<String>) -> Modal {
 
 #[cfg(test)]
 mod tests {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
 
     use super::{
-        Effect, SseDecoder, handle_key, model_efforts, next_mode, parse_command, pointer_top,
+        Effect, SseDecoder, handle_key, handle_mouse, model_efforts, next_mode, parse_command,
+        pointer_top,
     };
     use crate::api::{ProviderModel, Session};
-    use crate::tui::app::{App, MenuAction, ScrollDrag, ScrollTarget, ThemeKind};
+    use crate::tui::app::{
+        App, MenuAction, ScrollDrag, ScrollTarget, ThemeKind, TranscriptViewport,
+    };
 
     #[test]
     fn sse_decoder_handles_fragmented_frames() {
@@ -1373,6 +1437,54 @@ mod tests {
         assert!(matches!(
             handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
             Some(Effect::Cancel)
+        ));
+    }
+
+    #[test]
+    fn mouse_drag_selects_and_copies_transcript_text() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript_viewport = TranscriptViewport {
+            x: 2,
+            y: 3,
+            width: 30,
+            height: 1,
+            lines: vec!["Hames transcript".to_owned()],
+        };
+        assert!(
+            handle_mouse(
+                &mut app,
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: 2,
+                    row: 3,
+                    modifiers: KeyModifiers::NONE,
+                },
+            )
+            .is_none()
+        );
+        assert!(
+            handle_mouse(
+                &mut app,
+                MouseEvent {
+                    kind: MouseEventKind::Drag(MouseButton::Left),
+                    column: 6,
+                    row: 3,
+                    modifiers: KeyModifiers::NONE,
+                },
+            )
+            .is_none()
+        );
+        assert!(matches!(
+            handle_mouse(
+                &mut app,
+                MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    column: 6,
+                    row: 3,
+                    modifiers: KeyModifiers::NONE,
+                },
+            ),
+            Some(Effect::Copy(text)) if text == "Hames"
         ));
     }
 

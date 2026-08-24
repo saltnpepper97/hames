@@ -7,11 +7,12 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
     ScrollbarState,
 };
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::{
     ActivityCategory, ActivityPhase, App, ComposerUnit, HitAction, HitRegion, Modal, ScrollTarget,
-    ThemeKind, TranscriptItem,
+    ThemeKind, TranscriptItem, TranscriptViewport,
 };
 
 const MINT: Color = Color::Rgb(116, 226, 192);
@@ -55,7 +56,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let header_height = 2;
     let composer_width = area.width.saturating_sub(5).max(1);
     let composer_height = composer_rows(app, composer_width).clamp(1, 8) + 2;
-    let notice_height = u16::from(app.notice.is_some());
+    let notice = app
+        .copy_notice()
+        .map(str::to_owned)
+        .or_else(|| app.notice.clone());
+    let notice_height = u16::from(notice.is_some());
     let sheet_height = app
         .sheet
         .as_ref()
@@ -85,11 +90,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     if sheet_height > 0 {
         render_sheet(frame, app, footer[0]);
     }
-    if let Some(notice) = &app.notice {
+    if let Some(notice) = notice {
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled("  ◆ ", Style::default().fg(GOLD)),
-                Span::styled(notice.clone(), Style::default().fg(MUTED)),
+                Span::styled(notice, Style::default().fg(MUTED)),
             ])),
             footer[1],
         );
@@ -187,9 +192,25 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let bottom_start = lines.len().saturating_sub(height);
     let start = bottom_start.saturating_sub(app.scroll.min(bottom_start));
     let end = (start + height).min(lines.len());
+    app.transcript_viewport = TranscriptViewport {
+        x: area.x,
+        y: area.y,
+        width: area.width.saturating_sub(1),
+        height: area.height,
+        lines: lines[start..end]
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect(),
+    };
     let visible: Vec<Line<'_>> = lines[start..end]
         .iter()
-        .map(|item| item.line.clone())
+        .enumerate()
+        .map(|(row, item)| {
+            app.transcript_selection_range(row).map_or_else(
+                || item.line.clone(),
+                |range| highlight_line(&item.line, range),
+            )
+        })
         .collect();
     frame.render_widget(Paragraph::new(visible), area);
     for (offset, item) in lines[start..end].iter().enumerate() {
@@ -653,17 +674,17 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn activity_bar(app: &App) -> Line<'static> {
-    const BARS: [&str; 6] = ["▁", "▂", "▄", "▆", "█", "▆"];
-    let phase = usize::try_from(app.tick / 2).unwrap_or(0) % BARS.len();
+    const TRACK: [&str; 6] = ["━"; 6];
+    let shine = usize::try_from(app.tick / 8).unwrap_or(0) % TRACK.len();
     let mut spans = vec![Span::raw("  ")];
-    for index in 0..BARS.len() {
-        let level = (index + phase) % BARS.len();
-        let color = match level {
-            3..=4 => LILAC,
-            2 | 5 => SKY,
+    for (index, segment) in TRACK.iter().enumerate() {
+        let distance = index.abs_diff(shine);
+        let color = match distance {
+            0 => Color::White,
+            1 => INPUT,
             _ => MUTED,
         };
-        spans.push(Span::styled(BARS[level], Style::default().fg(color).bold()));
+        spans.push(Span::styled(*segment, Style::default().fg(color)));
     }
     spans.push(Span::styled(
         format!("  {}", current_activity(app)),
@@ -678,6 +699,32 @@ fn activity_bar(app: &App) -> Line<'static> {
         Style::default().fg(MUTED),
     ));
     Line::from(spans)
+}
+
+fn line_text(line: &Line<'_>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
+}
+
+fn highlight_line(line: &Line<'_>, (start, end): (usize, usize)) -> Line<'static> {
+    let mut column = 0;
+    let mut spans = Vec::new();
+    for span in &line.spans {
+        for grapheme in span.content.graphemes(true) {
+            let next = column + UnicodeWidthStr::width(grapheme);
+            let selected = next > start && column < end;
+            let style = if selected {
+                span.style.fg(Color::White).bg(PANEL_BRIGHT)
+            } else {
+                span.style
+            };
+            spans.push(Span::styled(grapheme.to_owned(), style));
+            column = next;
+        }
+    }
+    Line::from(spans).style(line.style)
 }
 
 fn format_elapsed(seconds: u64) -> String {
@@ -1200,11 +1247,11 @@ mod tests {
     use ratatui::style::Color;
 
     use super::{
-        GOLD, INPUT, MUTED, SKY, draw, format_elapsed, mode_color, mode_outline, pasted_display,
-        sheet_text_color, thought_label,
+        GOLD, INPUT, MUTED, PANEL_BRIGHT, SKY, draw, format_elapsed, mode_color, mode_outline,
+        pasted_display, sheet_text_color, thought_label,
     };
     use crate::api::{PasteSpan, Session};
-    use crate::tui::app::App;
+    use crate::tui::app::{App, TranscriptPoint};
 
     #[test]
     fn thought_duration_uses_significance_threshold_and_readable_units() {
@@ -1290,10 +1337,37 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(rendered.contains("▁▂▄▆█▆"));
+        assert!(rendered.contains("━━━━━━"));
         assert!(rendered.contains("Working · 12s · Esc interrupt"));
         assert!(rendered.contains("[connected]"));
         assert!(!rendered.contains("Shift+Tab mode"));
+        let footer_y = terminal.size().unwrap().height - 1;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((2, footer_y)).unwrap().fg, Color::White);
+        assert_eq!(buffer.cell((3, footer_y)).unwrap().fg, INPUT);
+        assert_eq!(buffer.cell((4, footer_y)).unwrap().fg, MUTED);
+    }
+
+    #[test]
+    fn transcript_selection_highlights_and_copy_notice_sits_above_composer() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let transcript_y = app.transcript_viewport.y;
+        app.begin_transcript_selection(TranscriptPoint { row: 0, column: 2 });
+        app.update_transcript_selection(TranscriptPoint { row: 0, column: 6 });
+        app.show_copy_notice(5);
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((2, transcript_y)).unwrap().bg, PANEL_BRIGHT);
+        let rendered = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Copied to clipboard · 5 characters"));
     }
 
     #[test]

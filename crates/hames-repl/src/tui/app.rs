@@ -1,9 +1,10 @@
 use std::collections::HashSet;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
 use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::api::{Event, PasteSpan, Session};
 
@@ -453,6 +454,60 @@ pub struct HitRegion {
     pub action: HitAction,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TranscriptPoint {
+    pub row: usize,
+    pub column: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TranscriptViewport {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+    pub lines: Vec<String>,
+}
+
+impl TranscriptViewport {
+    pub fn point(&self, x: u16, y: u16) -> Option<TranscriptPoint> {
+        if self.lines.is_empty()
+            || x < self.x
+            || x >= self.x.saturating_add(self.width)
+            || y < self.y
+            || y >= self.y.saturating_add(self.height)
+        {
+            return None;
+        }
+        Some(TranscriptPoint {
+            row: usize::from(y - self.y).min(self.lines.len().saturating_sub(1)),
+            column: usize::from(x - self.x),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TranscriptSelection {
+    pub anchor: TranscriptPoint,
+    pub head: TranscriptPoint,
+}
+
+impl TranscriptSelection {
+    pub fn bounds(self) -> (TranscriptPoint, TranscriptPoint) {
+        if (self.anchor.row, self.anchor.column) <= (self.head.row, self.head.column) {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CopyNotice {
+    pub text: String,
+    pub expires_at: Instant,
+}
+
 impl HitRegion {
     pub fn contains(&self, x: u16, y: u16) -> bool {
         x >= self.x
@@ -475,6 +530,11 @@ pub struct App {
     pub scroll: usize,
     pub composer_scroll: Option<usize>,
     pub scroll_drag: Option<ScrollDrag>,
+    pub transcript_viewport: TranscriptViewport,
+    pub transcript_selection: Option<TranscriptSelection>,
+    pub selecting_transcript: bool,
+    pub pending_thought_toggle: Option<usize>,
+    pub copy_notice: Option<CopyNotice>,
     pub last_sequence: u64,
     pub seen_events: HashSet<String>,
     pub context_tokens: u64,
@@ -502,6 +562,11 @@ impl App {
             scroll: 0,
             composer_scroll: None,
             scroll_drag: None,
+            transcript_viewport: TranscriptViewport::default(),
+            transcript_selection: None,
+            selecting_transcript: false,
+            pending_thought_toggle: None,
+            copy_notice: None,
             last_sequence: 0,
             seen_events: HashSet::new(),
             context_tokens: 0,
@@ -520,6 +585,7 @@ impl App {
 
     pub fn animating(&self) -> bool {
         self.active_run.is_some()
+            || self.copy_notice().is_some()
             || self.transcript.iter().any(|item| match item {
                 TranscriptItem::Thought { live, .. } | TranscriptItem::Assistant { live, .. } => {
                     *live
@@ -529,6 +595,80 @@ impl App {
                 }
                 _ => false,
             })
+    }
+
+    pub fn copy_notice(&self) -> Option<&str> {
+        self.copy_notice
+            .as_ref()
+            .filter(|notice| notice.expires_at > Instant::now())
+            .map(|notice| notice.text.as_str())
+    }
+
+    pub fn show_copy_notice(&mut self, character_count: usize) {
+        self.copy_notice = Some(CopyNotice {
+            text: format!("Copied to clipboard · {character_count} characters"),
+            expires_at: Instant::now() + Duration::from_secs(2),
+        });
+    }
+
+    pub fn begin_transcript_selection(&mut self, point: TranscriptPoint) {
+        self.transcript_selection = Some(TranscriptSelection {
+            anchor: point,
+            head: point,
+        });
+        self.selecting_transcript = true;
+    }
+
+    pub fn update_transcript_selection(&mut self, point: TranscriptPoint) {
+        if let Some(selection) = &mut self.transcript_selection
+            && self.selecting_transcript
+        {
+            selection.head = point;
+            if selection.head != selection.anchor {
+                self.pending_thought_toggle = None;
+            }
+        }
+    }
+
+    pub fn finish_transcript_selection(&mut self) -> Option<String> {
+        self.selecting_transcript = false;
+        let selection = self.transcript_selection?;
+        if selection.anchor == selection.head {
+            self.transcript_selection = None;
+            return None;
+        }
+        selected_transcript_text(&self.transcript_viewport.lines, selection)
+    }
+
+    pub fn clear_transcript_selection(&mut self) {
+        self.transcript_selection = None;
+        self.selecting_transcript = false;
+        self.pending_thought_toggle = None;
+    }
+
+    pub fn transcript_selection_range(&self, row: usize) -> Option<(usize, usize)> {
+        let selection = self.transcript_selection?;
+        if selection.anchor == selection.head {
+            return None;
+        }
+        let (start, end) = selection.bounds();
+        if row < start.row || row > end.row {
+            return None;
+        }
+        let line_width = self
+            .transcript_viewport
+            .lines
+            .get(row)
+            .map(|line| UnicodeWidthStr::width(line.as_str()))
+            .unwrap_or_default();
+        let from = if row == start.row { start.column } else { 0 }.min(line_width);
+        let to = if row == end.row {
+            end.column.saturating_add(1)
+        } else {
+            line_width
+        }
+        .min(line_width);
+        (from < to).then_some((from, to))
     }
 
     pub fn command_options(&self) -> Vec<MenuOption> {
@@ -760,7 +900,7 @@ impl App {
                 self.active_run = Some(run_id);
                 self.run_started_at.get_or_insert_with(Instant::now);
             }
-            "model.requested" if live || self.active_run.as_deref() == Some(run_id.as_str()) => {
+            "model.requested" if self.active_run.as_deref() == Some(run_id.as_str()) => {
                 self.ensure_thought(&run_id, true);
             }
             "assistant.reasoning" => {
@@ -1091,6 +1231,41 @@ impl App {
     }
 }
 
+fn selected_transcript_text(lines: &[String], selection: TranscriptSelection) -> Option<String> {
+    let (start, end) = selection.bounds();
+    if start.row >= lines.len() {
+        return None;
+    }
+    let end_row = end.row.min(lines.len().saturating_sub(1));
+    let mut selected = Vec::new();
+    for (row, line) in lines.iter().enumerate().take(end_row + 1).skip(start.row) {
+        let width = UnicodeWidthStr::width(line.as_str());
+        let from = if row == start.row { start.column } else { 0 }.min(width);
+        let to = if row == end_row {
+            end.column.saturating_add(1)
+        } else {
+            width
+        }
+        .min(width);
+        selected.push(display_slice(line, from, to));
+    }
+    let text = selected.join("\n");
+    (!text.is_empty()).then_some(text)
+}
+
+fn display_slice(value: &str, start: usize, end: usize) -> String {
+    let mut column = 0;
+    let mut selected = String::new();
+    for grapheme in value.graphemes(true) {
+        let next = column + UnicodeWidthStr::width(grapheme);
+        if next > start && column < end {
+            selected.push_str(grapheme);
+        }
+        column = next;
+    }
+    selected
+}
+
 fn option(label: &str, detail: &str, action: MenuAction) -> MenuOption {
     MenuOption {
         label: label.to_owned(),
@@ -1173,7 +1348,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use serde_json::json;
 
-    use super::{App, Composer, ComposerUnit, TranscriptItem};
+    use super::{App, Composer, ComposerUnit, TranscriptItem, TranscriptPoint, TranscriptViewport};
     use crate::api::{Event, Session};
 
     #[test]
@@ -1288,6 +1463,45 @@ mod tests {
                 ..
             } if *duration_seconds == 12.0
         )));
+    }
+
+    #[test]
+    fn background_model_requests_do_not_create_phantom_thoughts() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_durable(event(1, "run.started", "chat-run", json!({})), true);
+        app.ingest_transient("chat-run", "response.text_delta", &json!({"text": "Hello"}));
+        app.ingest_durable(event(2, "run.completed", "chat-run", json!({})), true);
+        app.ingest_durable(
+            event(3, "model.requested", "background-memory-job", json!({})),
+            true,
+        );
+
+        assert!(!app.animating());
+        assert!(!app.transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Thought { run_id, .. } if run_id == "background-memory-job"
+        )));
+    }
+
+    #[test]
+    fn transcript_selection_extracts_visible_text_across_lines() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript_viewport = TranscriptViewport {
+            x: 10,
+            y: 5,
+            width: 40,
+            height: 2,
+            lines: vec!["Hello world".to_owned(), "Second line".to_owned()],
+        };
+        app.begin_transcript_selection(TranscriptPoint { row: 0, column: 6 });
+        app.update_transcript_selection(TranscriptPoint { row: 1, column: 5 });
+
+        assert_eq!(
+            app.finish_transcript_selection().as_deref(),
+            Some("world\nSecond")
+        );
+        assert_eq!(app.transcript_selection_range(0), Some((6, 11)));
+        assert_eq!(app.transcript_selection_range(1), Some((0, 6)));
     }
 
     #[test]

@@ -58,6 +58,12 @@ viewport. Their tracks support mouse clicks and dragging.
   atomically at the end.
 - `/themes` switches between the custom Hames RGB palette and terminal-native
   ANSI colors. The selection survives session changes within the running client.
+- Transcript mouse selection is rendered by the TUI and copied on release with
+  OSC 52, preserving mouse-driven scrollbars and Thought toggles. A short copy
+  confirmation occupies the notice row above the composer.
+- Only `model.requested` events belonging to the active foreground chat run may
+  create a pending Thought; background memory and workflow model jobs remain out
+  of the conversation transcript.
 - Trust and approval decisions use focused modals. Approvals preserve the
   gateway's allow-for-session, allow-once, and deny semantics.
 - Status, usage, events, inspection, context, memory, Skills, Scars, plugins,
