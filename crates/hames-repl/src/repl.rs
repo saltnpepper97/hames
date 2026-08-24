@@ -108,20 +108,20 @@ pub async fn run() -> Result<()> {
             {
                 Ok(CommandOutcome::Continue) => continue,
                 Ok(CommandOutcome::Exit) => break,
-                Err(error) => eprintln!("{}{error:#}", style::error_label()),
+                Err(error) => eprintln!("{} {error:#}", style::badge(style::Badge::Error, false)),
             }
             continue;
         }
         let remember = std::mem::take(&mut remember_next);
         if remember {
             println!(
-                "{}{}",
-                style::diamond(),
-                style::dim(" remember> this turn will be captured explicitly")
+                "{} {}",
+                style::badge(style::Badge::Hames, false),
+                style::dim("this turn will be captured explicitly")
             );
         }
         if let Err(error) = stream_message(&client, &mut editor, &session, &input, remember).await {
-            eprintln!("{}{error:#}", style::error_label());
+            eprintln!("{} {error:#}", style::badge(style::Badge::Error, false));
         }
     }
     fs::create_dir_all(&paths.root).ok();
@@ -173,9 +173,14 @@ async fn gateway_accepts_local_token(paths: &LocalPaths, url: &str) -> Result<bo
 
 fn read_input(editor: &mut DefaultEditor) -> Result<Option<String>> {
     let mut result = String::new();
-    let mut prompt = style::prompt();
+    let mut continuation = false;
     loop {
-        match editor.readline(prompt) {
+        let prompt = if continuation {
+            style::continue_prompt().to_owned()
+        } else {
+            style::prompt()
+        };
+        match editor.readline(&prompt) {
             Ok(mut line) => {
                 let continued = line.ends_with('\\');
                 if continued {
@@ -186,7 +191,7 @@ fn read_input(editor: &mut DefaultEditor) -> Result<Option<String>> {
                     return Ok(Some(result));
                 }
                 result.push('\n');
-                prompt = style::continue_prompt();
+                continuation = true;
             }
             Err(ReadlineError::Interrupted) => return Ok(Some(String::new())),
             Err(ReadlineError::Eof) => return Ok(None),
@@ -1291,7 +1296,11 @@ async fn stream_message(
             _ = tokio::signal::ctrl_c(), if !cancelled => {
                 cancelled = true;
                 client.cancel(&run_id).await?;
-                eprintln!("\n{}", style::warn("◆ cancelling"));
+                eprintln!(
+                    "\n{} {}",
+                    style::badge(style::Badge::Hames, false),
+                    style::dim("cancelling")
+                );
             }
         }
     }
@@ -1314,9 +1323,10 @@ async fn handle_approval(
         .unwrap_or("policy confirmation");
     let arguments = serde_json::to_string_pretty(&event.payload["arguments"])?;
     println!();
-    println!("{}{name}: {reason}", style::tool_label());
-    println!("{}", style::dim(&arguments));
-    println!("{}", style::dim(&format!("request hash: {request_hash}")));
+    println!("{}", style::badge(style::Badge::Approval, true));
+    println!("  {name}: {reason}");
+    println!("  {}", style::dim(&arguments));
+    println!("  {}", style::dim(&format!("request hash: {request_hash}")));
     let answer = editor.readline("Approve this exact action once? [y/N] ")?;
     let decision = if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
         "approved"
@@ -1326,7 +1336,12 @@ async fn handle_approval(
     let resolved = client
         .resolve_approval(approval_id, request_hash, decision)
         .await?;
-    println!("approval> {}", resolved.status);
+    let settled = if resolved.status == "approved" {
+        style::badge(style::Badge::Hames, false)
+    } else {
+        style::badge(style::Badge::Error, false)
+    };
+    println!("{settled} {}", resolved.status);
     Ok(())
 }
 
@@ -1446,15 +1461,17 @@ fn process_envelope(
 struct RenderedOutput {
     reasoning: String,
     answer: String,
-    reasoning_started: bool,
-    answer_started: bool,
+    current: Option<style::Badge>,
+    live: bool,
+    distance: u16,
     open_line: bool,
+    body_started: bool,
     compacted: bool,
 }
 
 impl RenderedOutput {
     fn begin_turn(&mut self) -> Result<()> {
-        self.close_line()?;
+        self.settle()?;
         println!();
         *self = Self::default();
         Ok(())
@@ -1463,14 +1480,76 @@ impl RenderedOutput {
     fn close_line(&mut self) -> Result<()> {
         if self.open_line {
             println!();
+            self.distance = self.distance.saturating_add(1);
             self.open_line = false;
         }
         Ok(())
     }
 
-    fn finish_turn(&mut self) -> Result<()> {
+    fn settle(&mut self) -> Result<()> {
         self.close_line()?;
+        if let (Some(kind), true) = (self.current, self.live) {
+            if style::color_enabled() && self.distance > 0 {
+                let mut out = io::stdout();
+                write!(
+                    out,
+                    "\x1b[s\x1b[{}A\r\x1b[2K{}\x1b[u",
+                    self.distance,
+                    style::badge(kind, false)
+                )?;
+                out.flush()?;
+            }
+        }
+        self.live = false;
+        self.current = None;
+        self.distance = 0;
+        self.body_started = false;
+        Ok(())
+    }
+
+    fn finish_turn(&mut self) -> Result<()> {
+        self.settle()?;
         println!();
+        Ok(())
+    }
+
+    fn open_badge(&mut self, kind: style::Badge) -> Result<()> {
+        if self.current == Some(kind) && self.live {
+            return Ok(());
+        }
+        let spacer = matches!(kind, style::Badge::Hames) && self.current.is_some();
+        self.settle()?;
+        if spacer {
+            println!();
+        }
+        println!("{}", style::badge(kind, true));
+        self.current = Some(kind);
+        self.live = true;
+        self.distance = 1;
+        self.body_started = false;
+        self.open_line = false;
+        Ok(())
+    }
+
+    fn write_body(&mut self, text: &str, dim: bool) -> Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        let padded = indent_body(text, !self.body_started);
+        let rendered = if dim { style::dim(&padded) } else { padded };
+        print!("{rendered}");
+        self.body_started = true;
+        let newlines = text.chars().filter(|ch| *ch == '\n').count();
+        self.distance = self
+            .distance
+            .saturating_add(u16::try_from(newlines).unwrap_or(u16::MAX));
+        self.open_line = !text.ends_with('\n');
+        if self.live {
+            if let Some(kind) = self.current {
+                style::pulse_badge(kind, self.distance)?;
+            }
+        }
+        io::stdout().flush()?;
         Ok(())
     }
 
@@ -1479,71 +1558,44 @@ impl RenderedOutput {
             return Ok(());
         }
         self.compacted = true;
-        self.close_line()?;
-        println!(
-            "{}{}",
-            style::compacting_label(),
-            style::sheen("folding context")
-        );
+        self.open_badge(style::Badge::Compacting)?;
+        self.write_body("folding context", true)?;
+        self.settle()?;
         Ok(())
     }
 
     fn push_reasoning(&mut self, text: &str) -> Result<()> {
-        if text.is_empty() {
-            return Ok(());
-        }
-        if !self.reasoning_started {
-            self.close_line()?;
-            print!("{}", style::thinking_label());
-            self.reasoning_started = true;
-            self.open_line = true;
-        }
-        print!("{}", style::sheen(text));
-        if text.ends_with('\n') {
-            self.open_line = false;
-        }
+        self.open_badge(style::Badge::Thinking)?;
+        self.write_body(text, true)?;
         self.reasoning.push_str(text);
-        io::stdout().flush()?;
         Ok(())
     }
 
     fn push_answer(&mut self, text: &str) -> Result<()> {
-        if text.is_empty() {
-            return Ok(());
-        }
-        if !self.answer_started {
-            self.close_line()?;
-            if self.reasoning_started {
-                println!();
-            }
-            print!("{}", style::assistant_label());
-            self.answer_started = true;
-            self.open_line = true;
-        }
-        print!("{text}");
-        if text.ends_with('\n') {
-            self.open_line = false;
-        }
+        self.open_badge(style::Badge::Hames)?;
+        self.write_body(text, false)?;
         self.answer.push_str(text);
-        io::stdout().flush()?;
         Ok(())
     }
 
     fn tool_line(&mut self, body: &str) -> Result<()> {
+        self.open_badge(style::Badge::Tool)?;
         self.close_line()?;
-        println!("{}{body}", style::tool_label());
+        self.write_body(body, false)?;
+        self.close_line()?;
         Ok(())
     }
 
     fn error_line(&mut self, body: &str) -> Result<()> {
-        self.close_line()?;
-        eprintln!("{}{body}", style::error_label());
+        self.settle()?;
+        eprintln!("{}", style::badge(style::Badge::Error, false));
+        eprintln!("  {body}");
         Ok(())
     }
 
     fn note_line(&mut self, body: &str) -> Result<()> {
-        self.close_line()?;
-        println!("{}{}", style::diamond(), style::dim(&format!(" {body}")));
+        self.settle()?;
+        println!("{} {}", style::diamond(), style::dim(body));
         Ok(())
     }
 
@@ -1562,6 +1614,21 @@ impl RenderedOutput {
             .to_owned();
         self.push_answer(&suffix)
     }
+}
+
+fn indent_body(text: &str, first: bool) -> String {
+    let mut out = String::new();
+    if first {
+        out.push_str("  ");
+    }
+    let chars: Vec<char> = text.chars().collect();
+    for (index, ch) in chars.iter().enumerate() {
+        out.push(*ch);
+        if *ch == '\n' && index + 1 < chars.len() {
+            out.push_str("  ");
+        }
+    }
+    out
 }
 
 fn context_was_compacted(event: &Event) -> bool {
