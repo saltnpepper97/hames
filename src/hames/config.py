@@ -35,6 +35,10 @@ class ContextConfig(StrictModel):
     agent_identity_limit_tokens: int = Field(default=4_096, ge=512)
     tool_schema_limit_tokens: int = Field(default=8_192, ge=1_024)
     retrieved_context_limit_tokens: int = Field(default=2_048, ge=0)
+    compaction_auto_threshold_ratio: float = Field(default=0.80, ge=0.50, le=0.95)
+    compaction_preserve_recent_turns: int = Field(default=4, ge=1, le=16)
+    compaction_summary_max_tokens: int = Field(default=2_048, ge=256, le=8_192)
+    compaction_max_passes: int = Field(default=3, ge=1, le=8)
 
     @model_validator(mode="after")
     def reserve_fits_fallback(self) -> ContextConfig:

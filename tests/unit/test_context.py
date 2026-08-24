@@ -104,6 +104,62 @@ def test_context_is_deterministic_and_omits_completed_reasoning(
     assert omitted[f"reasoning.{reasoning.id}"].reason == "completed-run-reasoning"
 
 
+def test_completed_compaction_replaces_only_the_prefix_in_model_context(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger, session_value, capsule = _fixture(hames_paths, tmp_path)
+    session = ledger.get_session(session_value.id)
+    old = ledger.append(
+        session_id=session.id,
+        event_type="user.message",
+        payload={"content": "old requirement"},
+    )
+    recent = ledger.append(
+        session_id=session.id,
+        event_type="user.message",
+        payload={"content": "recent requirement"},
+    )
+    compacted = ledger.append(
+        session_id=session.id,
+        event_type="context.compaction.completed",
+        payload={
+            "compaction_id": "compact-1",
+            "trigger": "manual",
+            "summary": "The earlier user required the old behavior.",
+            "cutoff_event_id": old.id,
+            "cutoff_sequence": old.sequence,
+            "source_event_ids": [old.id],
+            "provider": "fake",
+            "model": "fixture",
+            "reasoning_effort": "",
+            "turns_compacted": 1,
+            "before_tokens": 12,
+            "after_tokens": 9,
+            "passes": 1,
+            "partial": False,
+        },
+    )
+
+    compiled = compile_context(
+        session,
+        ledger.replay(session.id),
+        capsule,
+        _tools(),
+        "safe reads",
+        ContextConfig(),
+        run_id="new-run",
+    )
+
+    assert [message.content for message in compiled.messages] == ["recent requirement"]
+    assert "The earlier user required the old behavior." in compiled.system
+    source = next(
+        item for item in compiled.manifest.selected_sources if item.source_type == "compaction"
+    )
+    assert source.event_ids == [compacted.id]
+    assert old.id not in compiled.manifest.contributing_event_ids
+    assert recent.id in compiled.manifest.contributing_event_ids
+
+
 def test_context_replays_reasoning_inside_active_tool_loop(
     hames_paths: HamesPaths, tmp_path: Path
 ) -> None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -152,6 +152,35 @@ class ContextCompiledPayload(EventPayload):
     agent_capsule_hash: str
     agent_capsule_path: str
     agent_origin: str = "global"
+
+
+class ContextCompactionStartedPayload(EventPayload):
+    compaction_id: str
+    trigger: Literal["automatic", "manual"]
+    preserve_recent_turns: int
+
+
+class ContextCompactionCompletedPayload(EventPayload):
+    compaction_id: str
+    trigger: Literal["automatic", "manual"]
+    summary: str
+    cutoff_event_id: str
+    cutoff_sequence: int
+    source_event_ids: list[str]
+    provider: str
+    model: str
+    reasoning_effort: str
+    turns_compacted: int
+    before_tokens: int
+    after_tokens: int
+    passes: int
+    partial: bool = False
+
+
+class ContextCompactionTerminalPayload(EventPayload):
+    compaction_id: str
+    trigger: Literal["automatic", "manual"]
+    message: str = ""
 
 
 class ModelRequestedPayload(EventPayload):
@@ -653,6 +682,10 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "assistant.message": AssistantOutputPayload,
     "assistant.reasoning": AssistantReasoningPayload,
     "context.compiled": ContextCompiledPayload,
+    "context.compaction.started": ContextCompactionStartedPayload,
+    "context.compaction.completed": ContextCompactionCompletedPayload,
+    "context.compaction.failed": ContextCompactionTerminalPayload,
+    "context.compaction.cancelled": ContextCompactionTerminalPayload,
     "model.requested": ModelRequestedPayload,
     "model.response.started": ModelStartedPayload,
     "model.usage": ModelUsagePayload,
