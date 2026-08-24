@@ -386,6 +386,7 @@ pub enum TranscriptItem {
 pub enum DreamPhase {
     Queued,
     Running,
+    Paused,
     Completed,
     Failed,
 }
@@ -1462,6 +1463,11 @@ impl App {
                     .unwrap_or(self.context_window);
             }
             "model.response.failed" | "run.failed" => {
+                if event.event_type == "model.response.failed"
+                    && self.active_run.as_deref() != Some(run_id.as_str())
+                {
+                    return;
+                }
                 let message = string(&event.payload, "message");
                 self.transcript.push(TranscriptItem::Status {
                     text: if message.is_empty() {
@@ -1508,6 +1514,7 @@ impl App {
             }
             "memory.job.queued"
             | "memory.job.started"
+            | "memory.job.paused"
             | "memory.job.completed"
             | "memory.job.failed" => {
                 let kind = string(&event.payload, "kind");
@@ -1528,6 +1535,7 @@ impl App {
             }
             "skill.job.queued"
             | "skill.job.started"
+            | "skill.job.paused"
             | "skill.job.completed"
             | "skill.job.failed" => {
                 let label = "Skill refinement";
@@ -1987,6 +1995,8 @@ fn string(payload: &Value, key: &str) -> String {
 fn dream_phase(event_type: &str) -> DreamPhase {
     if event_type.ends_with(".completed") {
         DreamPhase::Completed
+    } else if event_type.ends_with(".paused") {
+        DreamPhase::Paused
     } else if event_type.ends_with(".failed") {
         DreamPhase::Failed
     } else if event_type.ends_with(".started") {
@@ -2019,6 +2029,7 @@ fn dream_detail(label: &str, phase: DreamPhase, payload: &Value) -> String {
             "Skill refinement" => "Skill refinement complete".to_owned(),
             _ => format!("{label} complete"),
         },
+        DreamPhase::Paused => format!("{label} paused for foreground work"),
         DreamPhase::Failed => unreachable!(),
     }
 }
@@ -2285,6 +2296,56 @@ mod tests {
         assert!(!app.transcript.iter().any(|item| matches!(
             item,
             TranscriptItem::Thought { run_id, .. } if run_id == "background-memory-job"
+        )));
+    }
+
+    #[test]
+    fn maintenance_preemption_is_a_neutral_paused_dream_not_a_global_error() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_durable(
+            event(
+                1,
+                "model.response.preempted",
+                "background-memory-job",
+                json!({
+                    "code": "maintenance_preempted",
+                    "message": "background model work yielded to a foreground request",
+                    "retryable": true,
+                    "details": {}
+                }),
+            ),
+            true,
+        );
+        app.ingest_durable(
+            event(
+                2,
+                "memory.job.paused",
+                "source-run",
+                json!({
+                    "job_id": "background-memory-job",
+                    "kind": "extraction",
+                    "status": "pending",
+                    "attempts": 0,
+                    "error_code": "maintenance_preempted",
+                    "error_message": "background model work yielded to a foreground request"
+                }),
+            ),
+            true,
+        );
+
+        assert!(app.modal.is_none());
+        assert!(
+            !app.transcript
+                .iter()
+                .any(|item| matches!(item, TranscriptItem::Status { error: true, .. }))
+        );
+        assert!(app.transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Dream {
+                phase: DreamPhase::Paused,
+                detail,
+                ..
+            } if detail == "Memory consolidation paused for foreground work"
         )));
     }
 

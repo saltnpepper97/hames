@@ -593,6 +593,40 @@ class MemoryStore:
             connection.commit()
         return self.get_job(job_id), event
 
+    def pause_job(self, job_id: str, *, reason: str) -> tuple[MemoryJob, Event]:
+        job = self.get_job(job_id)
+        if job.status != "running":
+            raise ValueError("memory job is not running")
+        session = self.ledger.get_session(job.session_id)
+        attempts = max(0, job.attempts - 1)
+        now = utc_now()
+        with self.ledger.transaction_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "UPDATE memory_jobs SET status = 'pending', attempts = ?, error_code = NULL, "
+                "error_message = NULL, updated_at = ? WHERE id = ?",
+                (attempts, now, job_id),
+            )
+            event = self.ledger.append_in_transaction(
+                connection,
+                session_id=job.session_id,
+                run_id=job.run_id,
+                agent_id=session.agent_id,
+                event_type="memory.job.paused",
+                payload={
+                    "job_id": job.id,
+                    "kind": job.kind,
+                    "status": "pending",
+                    "attempts": attempts,
+                    "error_code": "maintenance_preempted",
+                    "error_message": reason,
+                },
+                causation_id=job.source_event_id,
+                correlation_id=job.id,
+            )
+            connection.commit()
+        return self.get_job(job_id), event
+
     def get_job(self, job_id: str) -> MemoryJob:
         with self.database.connect() as connection:
             row = connection.execute("SELECT * FROM memory_jobs WHERE id = ?", (job_id,)).fetchone()

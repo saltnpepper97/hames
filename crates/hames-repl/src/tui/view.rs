@@ -578,6 +578,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 let (glyph, color) = match phase {
                     DreamPhase::Queued => ("·", MUTED),
                     DreamPhase::Running => ("○", INPUT),
+                    DreamPhase::Paused => ("·", MUTED),
                     DreamPhase::Completed => ("✓", MUTED),
                     DreamPhase::Failed => ("!", CORAL),
                 };

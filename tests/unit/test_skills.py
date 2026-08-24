@@ -46,6 +46,43 @@ def test_skill_schema_is_migration_eight_and_upgrades_m6(tmp_path: Path) -> None
     assert {"skills", "skill_versions", "skill_jobs", "skill_usage"} <= tables
 
 
+def test_preempted_skill_job_returns_to_pending_without_spending_an_attempt(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    session = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    source = ledger.append(
+        session_id=session.id,
+        agent_id=session.agent_id,
+        event_type="user.message",
+        payload={"content": "make this reusable"},
+    )
+    registry = _registry(hames_paths, ledger)
+    job, _ = registry.queue_job(
+        session=session,
+        kind="author",
+        source_event_id=source.id,
+        run_id="run-skill",
+        goal="Create a reusable workflow",
+        scope="workspace",
+    )
+    running, _ = registry.start_job(job.id)
+    assert running.attempts == 1
+
+    paused, event = registry.pause_job(job.id, reason="foreground request")
+
+    assert paused.status == "pending"
+    assert paused.attempts == 0
+    assert paused.error_code is None
+    assert event.type == "skill.job.paused"
+    assert event.payload["error_code"] == "maintenance_preempted"
+
+
 def test_skill_parse_version_activation_and_scope(hames_paths: HamesPaths, tmp_path: Path) -> None:
     ledger = Ledger.open(hames_paths.database)
     first = ledger.create_session(

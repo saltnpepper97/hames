@@ -48,6 +48,41 @@ def test_memory_schema_has_fts5_and_is_migration_seven(tmp_path: Path) -> None:
     assert {"memory_records", "memory_anchors", "memory_provenance", "memory_fts"} <= tables
 
 
+def test_preempted_memory_job_returns_to_pending_without_spending_an_attempt(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    session = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    source = ledger.append(
+        session_id=session.id,
+        agent_id=session.agent_id,
+        event_type="user.message",
+        payload={"content": "remember this"},
+    )
+    store = MemoryStore(ledger)
+    job, _ = store.queue_job(
+        session=session,
+        kind="extraction",
+        source_event_id=source.id,
+        run_id="run-memory",
+    )
+    running, _ = store.start_job(job.id)
+    assert running.attempts == 1
+
+    paused, event = store.pause_job(job.id, reason="foreground request")
+
+    assert paused.status == "pending"
+    assert paused.attempts == 0
+    assert paused.error_code is None
+    assert event.type == "memory.job.paused"
+    assert event.payload["error_code"] == "maintenance_preempted"
+
+
 def test_migration_seven_upgrades_an_m5_database(tmp_path: Path) -> None:
     path = tmp_path / "m5.db"
     Database(path, migrations=MIGRATIONS[:6]).migrate()

@@ -174,6 +174,13 @@ class MemoryManager:
             _, completed = await asyncio.to_thread(self.store.finish_job, job.id)
             await self._publish(completed)
         except (ProviderError, ValueError, KeyError) as exc:
+            if isinstance(exc, ProviderError) and exc.code == "maintenance_preempted":
+                _, paused = await asyncio.to_thread(
+                    self.store.pause_job, job.id, reason=str(exc)
+                )
+                await self._publish(paused)
+                self._queue.put_nowait(job.id)
+                return
             code = exc.code if isinstance(exc, ProviderError) else "memory_extraction_failed"
             retry = job.attempts <= self.config.memory.max_extraction_retries
             updated, failed = await asyncio.to_thread(
@@ -270,7 +277,11 @@ class MemoryManager:
             await self._append(
                 session_id=session.id,
                 agent_id=session.agent_id,
-                event_type="model.response.failed",
+                event_type=(
+                    "model.response.preempted"
+                    if isinstance(exc, ProviderError) and exc.code == "maintenance_preempted"
+                    else "model.response.failed"
+                ),
                 payload={
                     "code": exc.code
                     if isinstance(exc, ProviderError)
