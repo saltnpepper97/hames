@@ -1,10 +1,10 @@
 //! Terminal chrome for the Hames REPL. Honors NO_COLOR and a non-TTY stdout.
 //!
 //! The green hex is the AI mark. The user prompt is unmarked. Live headings
-//! get a traveling shine; body text never does.
+//! use a restrained highlight; body text never does.
 
-use std::io::{self, IsTerminal, Write};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::io::{self, IsTerminal};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const MARK: &str = "⬢";
 
@@ -39,7 +39,6 @@ const GREEN: Rgb = Rgb {
 
 static COLOR: AtomicBool = AtomicBool::new(false);
 static INTERACTIVE: AtomicBool = AtomicBool::new(false);
-static SHEEN_TICK: AtomicU32 = AtomicU32::new(0);
 
 pub fn init() {
     let term = std::env::var("TERM").ok();
@@ -67,10 +66,6 @@ pub fn color_enabled() -> bool {
 
 pub fn interactive() -> bool {
     INTERACTIVE.load(Ordering::Relaxed)
-}
-
-pub fn advance_animation() {
-    SHEEN_TICK.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn paint(ansi: &str, text: &str) -> String {
@@ -110,29 +105,6 @@ fn lerp(a: Rgb, b: Rgb, t: f32) -> Rgb {
         g: (f32::from(a.g) + (f32::from(b.g) - f32::from(a.g)) * t).round() as u8,
         b: (f32::from(a.b) + (f32::from(b.b) - f32::from(a.b)) * t).round() as u8,
     }
-}
-
-/// Specular glint that travels across `text`. Body callers must not use this.
-fn shine_text(text: &str, base: Rgb, glint: Rgb, tick: u32) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let width = chars.len() as f32;
-    if width == 0.0 {
-        return String::new();
-    }
-    let span = width + 6.0;
-    let pos = (tick as f32 * 0.28) % span - 2.5;
-    let mut out = String::new();
-    for (index, ch) in chars.iter().enumerate() {
-        let distance = (index as f32 - pos).abs();
-        let weight = (1.0 - distance / 2.4).max(0.0).powf(1.6);
-        let color = lerp(base, glint, weight);
-        out.push_str(&format!(
-            "\x1b[1;38;2;{};{};{}m{ch}",
-            color.r, color.g, color.b
-        ));
-    }
-    out.push_str("\x1b[0m");
-    out
 }
 
 const WHITE: Rgb = Rgb {
@@ -249,9 +221,7 @@ pub fn mark() -> String {
 fn mark_with_liveness(live: bool) -> String {
     if color_enabled() {
         let color = if live {
-            let tick = SHEEN_TICK.load(Ordering::Relaxed) as f32;
-            let wave = (tick * 0.13).sin() * 0.5 + 0.5;
-            lerp(GREEN, WHITE, wave * 0.32)
+            lerp(GREEN, WHITE, 0.18)
         } else {
             GREEN
         };
@@ -266,12 +236,7 @@ pub fn badge(kind: Badge, live: bool) -> String {
     let painted = if !color_enabled() {
         name.to_owned()
     } else if live {
-        shine_text(
-            name,
-            kind.dim_rgb(),
-            WHITE,
-            SHEEN_TICK.load(Ordering::Relaxed),
-        )
+        rgb_bold(lerp(kind.dim_rgb(), WHITE, 0.24), name)
     } else {
         rgb(kind.dim_rgb(), name)
     };
@@ -279,21 +244,6 @@ pub fn badge(kind: Badge, live: bool) -> String {
         return painted;
     }
     format!("{} {painted}", mark_with_liveness(live))
-}
-
-/// Advance the shine and repaint the live heading `distance` lines above the cursor.
-pub fn sweep_badge(kind: Badge, distance: u16) -> io::Result<()> {
-    if !color_enabled() || distance == 0 {
-        return Ok(());
-    }
-    advance_animation();
-    let mut out = io::stdout();
-    write!(
-        out,
-        "\x1b[s\x1b[{distance}A\r\x1b[2K{}\x1b[u",
-        badge(kind, true)
-    )?;
-    out.flush()
 }
 
 pub fn banner_lines(

@@ -2,7 +2,6 @@ use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
-use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
@@ -122,6 +121,7 @@ pub async fn run() -> Result<()> {
             continue;
         }
         let remember = std::mem::take(&mut remember_next);
+        println!();
         if remember {
             println!(
                 "{} {}",
@@ -1495,14 +1495,9 @@ async fn stream_message(
     let mut output = RenderedOutput::default();
     let mut cancelled = false;
     let mut reconnects = 0_u8;
-    let mut sheen = tokio::time::interval(Duration::from_millis(80));
-    sheen.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
-            _ = sheen.tick() => {
-                output.tick_sheen()?;
-            }
             chunk = stream.next() => {
                 let bytes = match chunk {
                     Some(Ok(bytes)) => bytes,
@@ -1718,7 +1713,6 @@ struct RenderedOutput {
     answer: String,
     current: Option<style::Badge>,
     live: bool,
-    distance: u16,
     body_col: usize,
     open_line: bool,
     body_started: bool,
@@ -1756,24 +1750,9 @@ impl RenderedOutput {
         Ok(())
     }
 
-    fn tick_sheen(&mut self) -> Result<()> {
-        if self.activity_visible && self.activity.has_live_rows() && style::interactive() {
-            style::advance_animation();
-            return self.repaint_activity();
-        }
-        if !self.live {
-            return Ok(());
-        }
-        if let Some(kind) = self.current {
-            style::sweep_badge(kind, self.distance)?;
-        }
-        Ok(())
-    }
-
     fn close_line(&mut self) -> Result<()> {
         if self.open_line {
             println!();
-            self.distance = self.distance.saturating_add(1);
             self.body_col = 0;
             self.open_line = false;
         }
@@ -1782,21 +1761,8 @@ impl RenderedOutput {
 
     fn settle(&mut self) -> Result<()> {
         self.close_line()?;
-        if let (Some(kind), true) = (self.current, self.live) {
-            if style::color_enabled() && self.distance > 0 {
-                let mut out = io::stdout();
-                write!(
-                    out,
-                    "\x1b[s\x1b[{}A\r\x1b[2K{}\x1b[u",
-                    self.distance,
-                    style::badge(kind, false)
-                )?;
-                out.flush()?;
-            }
-        }
         self.live = false;
         self.current = None;
-        self.distance = 0;
         self.body_col = 0;
         self.body_started = false;
         Ok(())
@@ -1827,7 +1793,6 @@ impl RenderedOutput {
         println!("{}", style::badge(kind, true));
         self.current = Some(kind);
         self.live = true;
-        self.distance = 1;
         self.body_col = 0;
         self.body_started = false;
         self.open_line = false;
@@ -1855,7 +1820,6 @@ impl RenderedOutput {
     fn account_visible(&mut self, visible: &str) {
         for ch in visible.chars() {
             if ch == '\n' {
-                self.distance = self.distance.saturating_add(1);
                 self.body_col = 0;
             } else {
                 self.body_col += UnicodeWidthChar::width(ch).unwrap_or(0);
