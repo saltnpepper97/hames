@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from hames.agent import AgentCapsule
 from hames.config import ContextConfig
+from hames.goals import project_goals
 from hames.ledger import Event, Session
 from hames.memory import RetrievedMemory, canonical_memory_context
 from hames.providers import ProviderMessage, ToolCall, ToolDefinition
@@ -182,6 +183,22 @@ def compile_context(
         ("run.workspace", f"Current project workspace: {session.working_directory}"),
         ("policy.summary", f"Policy summary: {policy_summary}"),
     ]
+    goals = project_goals(events)
+    active_goal = next(
+        (goal for goal in reversed(goals) if goal.status in {"running", "yielded"}), None
+    )
+    goal_part: tuple[str, str] | None = None
+    if active_goal is not None:
+        goal_part = (
+            f"goal.{active_goal.id}",
+            "Active autonomous goal:\n"
+            f"Objective: {active_goal.objective}\n"
+            f"Completed steps: {active_goal.step_count}\n"
+            f"Latest progress: {active_goal.latest_summary or '(none yet)'}\n"
+            "Continue making concrete progress. Before ending this bounded step, call "
+            "goal_report with progress, achieved, or blocked plus specific evidence. "
+            "Do not claim achievement in ordinary text without an achieved report.",
+        )
     task_card = next(
         (event for event in reversed(events) if event.type == "delegation.task_card"), None
     )
@@ -205,6 +222,8 @@ def compile_context(
     )
     compaction_tokens = _estimate_text(compaction_summary) if compaction_summary else 0
     stable_tokens = sum(_estimate_text(content) for _, content in stable_parts)
+    if goal_part is not None:
+        stable_tokens += _estimate_text(goal_part[1])
     if delegation_part is not None:
         stable_tokens += _estimate_text(delegation_part[1])
     agent_tokens = _estimate_text(agent_part[1])
@@ -246,6 +265,15 @@ def compile_context(
     omitted: list[SourceDecision] = []
     for priority, (source_id, content) in enumerate(stable_parts, start=100):
         selected.append(_source(source_id, "instruction", content, priority))
+    if goal_part is not None and active_goal is not None:
+        goal_source = _source(goal_part[0], "goal", goal_part[1], 180)
+        goal_source.event_ids = [
+            event.id
+            for event in events
+            if event.type.startswith("goal.")
+            and str(event.payload.get("goal_id", "")) == active_goal.id
+        ]
+        selected.append(goal_source)
     if delegation_part is not None and task_card is not None:
         delegation_source = _source(delegation_part[0], "delegation", delegation_part[1], 175)
         delegation_source.event_ids = [task_card.id]
@@ -410,6 +438,8 @@ def compile_context(
         selected.append(_turn_source(turn, selected=True))
     messages = [message for turn in selected_turns for message in turn.messages]
     system_parts = [content for _, content in stable_parts]
+    if goal_part is not None:
+        system_parts.append(goal_part[1])
     if delegation_part is not None:
         system_parts.append(delegation_part[1])
     if memory_content:
@@ -560,10 +590,17 @@ def _conversation_turns(
     audit_reasoning: list[SourceDecision] = []
 
     for event in events:
-        if event.type == "user.message":
+        if event.type in {"user.message", "goal.step.started"}:
             current = _Turn(source_id=f"conversation.turn.{event.id}")
             current.messages.append(
-                ProviderMessage(role="user", content=str(event.payload["content"]))
+                ProviderMessage(
+                    role="user",
+                    content=(
+                        str(event.payload["content"])
+                        if event.type == "user.message"
+                        else "Continue the active autonomous goal with the next bounded step."
+                    ),
+                )
             )
             current.event_ids.append(event.id)
             turns.append(current)

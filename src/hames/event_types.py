@@ -183,6 +183,19 @@ class ContextCompactionTerminalPayload(EventPayload):
     message: str = ""
 
 
+class GoalEventPayload(EventPayload):
+    goal_id: str
+    objective: str = ""
+    status: str = ""
+    step: int = 0
+    run_id: str = ""
+    summary: str = ""
+    evidence: list[str] = Field(default_factory=list)
+    reason: str = ""
+    signature: str = ""
+    repeated_no_progress: int = 0
+
+
 class ModelRequestedPayload(EventPayload):
     provider: str
     model: str
@@ -686,6 +699,15 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "context.compaction.completed": ContextCompactionCompletedPayload,
     "context.compaction.failed": ContextCompactionTerminalPayload,
     "context.compaction.cancelled": ContextCompactionTerminalPayload,
+    "goal.created": GoalEventPayload,
+    "goal.step.started": GoalEventPayload,
+    "goal.progressed": GoalEventPayload,
+    "goal.yielded": GoalEventPayload,
+    "goal.resumed": GoalEventPayload,
+    "goal.paused": GoalEventPayload,
+    "goal.achieved": GoalEventPayload,
+    "goal.blocked": GoalEventPayload,
+    "goal.cancelled": GoalEventPayload,
     "model.requested": ModelRequestedPayload,
     "model.response.started": ModelStartedPayload,
     "model.usage": ModelUsagePayload,

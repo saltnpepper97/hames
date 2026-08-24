@@ -160,6 +160,46 @@ def test_completed_compaction_replaces_only_the_prefix_in_model_context(
     assert recent.id in compiled.manifest.contributing_event_ids
 
 
+def test_active_goal_is_attributed_and_supplies_a_distinct_step_prompt(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger, session_value, capsule = _fixture(hames_paths, tmp_path)
+    session = ledger.get_session(session_value.id)
+    created = ledger.append(
+        session_id=session.id,
+        event_type="goal.created",
+        payload={"goal_id": "goal-1", "objective": "Finish the release", "status": "running"},
+    )
+    step = ledger.append(
+        session_id=session.id,
+        run_id="goal-run",
+        event_type="goal.step.started",
+        payload={
+            "goal_id": "goal-1",
+            "objective": "Finish the release",
+            "status": "running",
+            "step": 1,
+            "run_id": "goal-run",
+        },
+    )
+
+    compiled = compile_context(
+        session,
+        ledger.replay(session.id),
+        capsule,
+        _tools(),
+        "safe reads",
+        ContextConfig(),
+        run_id="goal-run",
+    )
+
+    assert "Objective: Finish the release" in compiled.system
+    assert compiled.messages[-1].content.startswith("Continue the active autonomous goal")
+    source = next(item for item in compiled.manifest.selected_sources if item.source_type == "goal")
+    assert created.id in source.event_ids
+    assert step.id in source.event_ids
+
+
 def test_context_replays_reasoning_inside_active_tool_loop(
     hames_paths: HamesPaths, tmp_path: Path
 ) -> None:

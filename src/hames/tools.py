@@ -207,6 +207,12 @@ class SessionTitleArguments(ToolArguments):
     )
 
 
+class GoalReportArguments(ToolArguments):
+    status: Literal["progress", "achieved", "blocked"]
+    summary: str = Field(min_length=1, max_length=4000)
+    evidence: list[str] = Field(min_length=1, max_length=16)
+
+
 class ToolResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -634,6 +640,16 @@ class SessionTitleTool(ToolBase):
     arguments_type: ClassVar[type[ToolArguments]] = SessionTitleArguments
 
 
+class GoalReportTool(ToolBase):
+    name = "goal_report"
+    description = (
+        "Report evidence-backed progress or explicitly finish the current autonomous goal as "
+        "achieved or blocked. Ordinary final text does not finish a goal."
+    )
+    side_effect_class = "goal_management"
+    arguments_type: ClassVar[type[ToolArguments]] = GoalReportArguments
+
+
 class ToolRegistry:
     def __init__(self) -> None:
         values: list[ToolBase] = [
@@ -656,6 +672,7 @@ class ToolRegistry:
             SkillCatalogTool(),
             SkillControlTool(),
             SessionTitleTool(),
+            GoalReportTool(),
         ]
         self._tools = {tool.name: tool for tool in values}
 
