@@ -1325,7 +1325,7 @@ fn iso_epoch_seconds(value: &str) -> Option<i64> {
     let parse = |range: std::ops::Range<usize>| {
         value.get(range).and_then(|value| value.parse::<i64>().ok())
     };
-    let Some((year, month, day, hour, minute, second)) = parse(0..4)
+    let (year, month, day, hour, minute, second) = parse(0..4)
         .zip(parse(5..7))
         .zip(parse(8..10))
         .zip(parse(11..13))
@@ -1333,10 +1333,7 @@ fn iso_epoch_seconds(value: &str) -> Option<i64> {
         .zip(parse(17..19))
         .map(|(((((year, month), day), hour), minute), second)| {
             (year, month, day, hour, minute, second)
-        })
-    else {
-        return None;
-    };
+        })?;
     let adjusted_year = year - i64::from(month <= 2);
     let era = adjusted_year.div_euclid(400);
     let year_of_era = adjusted_year - era * 400;

@@ -206,7 +206,9 @@ pub struct Goal {
     pub latest_summary: String,
     pub latest_evidence: Vec<String>,
     pub repeated_no_progress: usize,
+    #[serde(default)]
     pub active_seconds: f64,
+    #[serde(default)]
     pub active_since: Option<String>,
     pub created_at: String,
     pub updated_at: String,
