@@ -52,6 +52,11 @@ viewport. Their tracks support mouse clicks and dragging.
   code-writing operations.
 - Ctrl+K opens the command palette. Runtime model, reasoning effort, agent, and
   mode controls appear as native sheets above the composer.
+- Slash commands and Ctrl+K share a borderless command tray: horizontal rules
+  define its top and bottom while the selectable rows remain visually open. A
+  gray band marks the active row and green marks only the query-matching text.
+  Rows use their literal slash names; `/new` creates a session, `/status` opens
+  session continuity, and `/gateway` owns gateway health.
 - `/model` shows reachable configured providers only. Reasoning-capable model
   choice leads to a capability-specific second sheet: `on`/`off` for boolean
   reasoning or the advertised named effort scale. Both selections apply

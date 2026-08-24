@@ -577,7 +577,7 @@ fn send_or_command(app: &mut App) -> Option<Effect> {
 fn parse_command(value: &str) -> Option<MenuAction> {
     let mut parts = value.split_whitespace();
     match parts.next()? {
-        "/new" | "/clear" => Some(MenuAction::NewSession),
+        "/new" => Some(MenuAction::NewSession),
         "/sessions" => Some(MenuAction::OpenSessions),
         "/fork" => Some(MenuAction::ForkSession),
         "/model" | "/provider" => Some(MenuAction::OpenModels),
@@ -596,7 +596,7 @@ fn parse_command(value: &str) -> Option<MenuAction> {
             Some(_) => None,
             None => Some(MenuAction::OpenThemes),
         },
-        "/session" => Some(MenuAction::ShowSession),
+        "/session" | "/status" => Some(MenuAction::ShowSession),
         "/title" => {
             let title = parts.collect::<Vec<_>>().join(" ");
             (!title.is_empty()).then_some(MenuAction::SetTitle(title))
@@ -605,7 +605,7 @@ fn parse_command(value: &str) -> Option<MenuAction> {
             Some("revoke") => Some(MenuAction::RevokeTrust),
             _ => Some(MenuAction::Trust),
         },
-        "/status" => Some(MenuAction::Status),
+        "/gateway" => Some(MenuAction::Status),
         "/usage" => Some(MenuAction::Usage),
         "/events" => Some(MenuAction::Events),
         "/inspect" => Some(MenuAction::Inspect),
@@ -1385,6 +1385,15 @@ mod tests {
         assert!(matches!(
             parse_command("/new"),
             Some(MenuAction::NewSession)
+        ));
+        assert!(parse_command("/clear").is_none());
+        assert!(matches!(
+            parse_command("/status"),
+            Some(MenuAction::ShowSession)
+        ));
+        assert!(matches!(
+            parse_command("/gateway"),
+            Some(MenuAction::Status)
         ));
         assert!(
             matches!(parse_command("/mode plan"), Some(MenuAction::SetMode(mode)) if mode == "plan")

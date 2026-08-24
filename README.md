@@ -121,6 +121,12 @@ Transcript text supports native mouse-drag selection inside the TUI. Releasing
 the mouse automatically copies the highlighted text through the terminal
 clipboard protocol and briefly confirms the copy above the composer.
 
+Slash commands and the Ctrl+K command palette use an open tray with quiet rules
+above and below the choices rather than a traditional bordered box. The active
+row uses a subdued gray background; green is reserved for query-matching letters.
+The tray shows literal commands: `/new` starts a session, `/status` opens session
+continuity, and `/gateway` shows service health and active work.
+
 The top-right header shows the durable session title beside the current activity
 instead of repeating model controls. The model can set or revise that title with
 the safe `session_title_set` tool; `/title <name>` provides the equivalent direct

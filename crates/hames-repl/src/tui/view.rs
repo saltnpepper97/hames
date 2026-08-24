@@ -233,7 +233,7 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             .track_style(Style::default().fg(Color::Rgb(49, 56, 69)))
             .thumb_style(Style::default().fg(INPUT));
         let mut state = ScrollbarState::new(lines.len())
-            .position(start)
+            .position(scrollbar_position(start, lines.len(), height))
             .viewport_content_length(height);
         frame.render_stateful_widget(scrollbar, area, &mut state);
         app.hits.push(HitRegion {
@@ -440,6 +440,13 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .selected
         .saturating_add(1)
         .saturating_sub(inner_height);
+    let command_tray = sheet.kind == crate::tui::app::SheetKind::Commands;
+    let command_query = app
+        .composer
+        .text()
+        .strip_prefix('/')
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let mut lines = Vec::new();
     for (offset, option) in sheet
         .options
@@ -449,30 +456,69 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .take(inner_height)
     {
         let selected = offset == sheet.selected;
-        let style = if selected {
-            Style::default().fg(Color::Black).bg(MINT).bold()
+        if command_tray {
+            let row_style = if selected {
+                Style::default().bg(PANEL_BRIGHT)
+            } else {
+                Style::default()
+            };
+            let mut spans = vec![Span::styled(
+                if selected { "  •" } else { "   " },
+                Style::default()
+                    .fg(if selected { INPUT } else { MUTED })
+                    .patch(row_style),
+            )];
+            spans.extend(command_label_spans(
+                &option.label,
+                &command_query,
+                selected,
+                row_style,
+            ));
+            spans.push(Span::styled(
+                format!(" {}", option.detail),
+                Style::default().fg(MUTED).patch(row_style),
+            ));
+            let used = 25 + UnicodeWidthStr::width(option.detail.as_str());
+            spans.push(Span::styled(
+                " ".repeat(usize::from(area.width).saturating_sub(used)),
+                row_style,
+            ));
+            lines.push(Line::from(spans));
         } else {
-            Style::default().fg(sheet_text_color(app.theme))
-        };
-        let detail_style = if selected {
-            Style::default().fg(Color::Rgb(38, 55, 54)).bg(MINT)
-        } else {
-            Style::default().fg(MUTED)
-        };
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!(" {} {:<20}", if selected { "›" } else { " " }, option.label),
-                style,
-            ),
-            Span::styled(format!(" {}", option.detail), detail_style),
-        ]));
+            let style = if selected {
+                Style::default().fg(Color::Black).bg(MINT).bold()
+            } else {
+                Style::default().fg(sheet_text_color(app.theme))
+            };
+            let detail_style = if selected {
+                Style::default().fg(Color::Rgb(38, 55, 54)).bg(MINT)
+            } else {
+                Style::default().fg(MUTED)
+            };
+            lines.push(Line::from(vec![
+                Span::raw("   "),
+                Span::styled(format!(" {:<20}", option.label), style),
+                Span::styled(format!(" {}", option.detail), detail_style),
+            ]));
+        }
         app.hits.push(HitRegion {
-            x: area.x + 1,
+            x: area.x + u16::from(!command_tray),
             y: area.y + 1 + u16::try_from(offset - start).unwrap_or(0),
-            width: area.width.saturating_sub(2),
+            width: area.width.saturating_sub(if command_tray { 0 } else { 2 }),
             height: 1,
             action: HitAction::SelectSheet(offset),
         });
+    }
+    if command_tray {
+        frame.render_widget(
+            Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::TOP | Borders::BOTTOM)
+                    .border_style(Style::default().fg(Color::Rgb(49, 56, 69))),
+            ),
+            area,
+        );
+        return;
     }
     frame.render_widget(
         Paragraph::new(lines).block(
@@ -485,6 +531,36 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         ),
         area,
     );
+}
+
+fn command_label_spans(
+    label: &str,
+    query: &str,
+    selected: bool,
+    row_style: Style,
+) -> Vec<Span<'static>> {
+    let field = format!(" {label:<20}");
+    let base = Style::default()
+        .fg(INPUT)
+        .add_modifier(if selected {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        })
+        .patch(row_style);
+    if query.is_empty() {
+        return vec![Span::styled(field, base)];
+    }
+    let lower = field.to_ascii_lowercase();
+    let Some(start) = lower.find(query) else {
+        return vec![Span::styled(field, base)];
+    };
+    let end = start + query.len();
+    vec![
+        Span::styled(field[..start].to_owned(), base),
+        Span::styled(field[start..end].to_owned(), base.fg(MINT).bold()),
+        Span::styled(field[end..].to_owned(), base),
+    ]
 }
 
 fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -554,7 +630,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             .track_style(Style::default().fg(Color::Rgb(49, 56, 69)))
             .thumb_style(Style::default().fg(INPUT));
         let mut state = ScrollbarState::new(lines.len())
-            .position(start)
+            .position(scrollbar_position(start, lines.len(), available))
             .viewport_content_length(available);
         frame.render_stateful_widget(scrollbar, inner, &mut state);
         app.hits.push(HitRegion {
@@ -635,6 +711,16 @@ fn composer_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize)
         cursor.0,
         cursor.1,
     )
+}
+
+fn scrollbar_position(top: usize, content_len: usize, viewport_len: usize) -> usize {
+    let max_top = content_len.saturating_sub(viewport_len);
+    if max_top == 0 {
+        return 0;
+    }
+    top.min(max_top)
+        .saturating_mul(content_len.saturating_sub(1))
+        / max_top
 }
 
 fn render_status_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -831,7 +917,7 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 help_line("/model /agent /mode", "runtime controls"),
                 Line::from(""),
                 Line::from(Span::styled(
-                    "The palette opens status, usage, events, run/context, memory, Skills, Scars, and plugins.",
+                    "The palette opens session status, gateway health, usage, events, run/context, memory, Skills, Scars, and plugins.",
                     Style::default().fg(MUTED),
                 )),
             ],
@@ -1232,8 +1318,8 @@ mod tests {
     use ratatui::style::Color;
 
     use super::{
-        GOLD, INPUT, MUTED, PANEL_BRIGHT, SKY, draw, format_elapsed, mode_color, mode_outline,
-        pasted_display, sheet_text_color, thought_label,
+        GOLD, INPUT, MINT, MUTED, PANEL_BRIGHT, SKY, draw, format_elapsed, mode_color,
+        mode_outline, pasted_display, scrollbar_position, sheet_text_color, thought_label,
     };
     use crate::api::{PasteSpan, Session};
     use crate::tui::app::{App, TranscriptItem, TranscriptPoint};
@@ -1326,6 +1412,13 @@ mod tests {
     }
 
     #[test]
+    fn scrollbar_position_reaches_both_ends_of_the_track() {
+        assert_eq!(scrollbar_position(0, 10, 8), 0);
+        assert_eq!(scrollbar_position(1, 10, 8), 4);
+        assert_eq!(scrollbar_position(2, 10, 8), 9);
+    }
+
+    #[test]
     fn transcript_replaces_paste_bytes_with_durable_capsule() {
         let content = "before é\nafter";
         let start = "before ".len();
@@ -1414,6 +1507,48 @@ mod tests {
     }
 
     #[test]
+    fn slash_commands_use_an_open_rule_tray() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.composer.insert_text("/");
+        app.update_slash_sheet();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let tray_top = 17;
+        let tray_bottom = 25;
+        assert_eq!(buffer.cell((0, tray_top)).unwrap().symbol(), "─");
+        assert_eq!(buffer.cell((99, tray_top)).unwrap().symbol(), "─");
+        assert_eq!(buffer.cell((0, tray_bottom)).unwrap().symbol(), "─");
+        assert_eq!(buffer.cell((99, tray_bottom)).unwrap().symbol(), "─");
+        assert_eq!(buffer.cell((2, tray_top + 1)).unwrap().symbol(), "•");
+        assert_eq!(buffer.cell((2, tray_top + 1)).unwrap().fg, INPUT);
+        assert_eq!(buffer.cell((50, tray_top + 1)).unwrap().bg, PANEL_BRIGHT);
+        let rendered = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("/new"));
+        let options = &app.sheet.as_ref().unwrap().options;
+        assert!(options.iter().any(|option| option.label == "/status"));
+        assert!(options.iter().any(|option| option.label == "/gateway"));
+
+        app.composer.clear();
+        app.composer.insert_text("/mo");
+        app.update_slash_sheet();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let narrowed_top = 22;
+        assert_eq!(buffer.cell((5, narrowed_top + 1)).unwrap().symbol(), "m");
+        assert_eq!(buffer.cell((6, narrowed_top + 1)).unwrap().symbol(), "o");
+        assert_eq!(buffer.cell((5, narrowed_top + 1)).unwrap().fg, MINT);
+        assert_eq!(buffer.cell((6, narrowed_top + 1)).unwrap().fg, MINT);
+        assert_eq!(buffer.cell((7, narrowed_top + 1)).unwrap().fg, INPUT);
+    }
+
+    #[test]
     fn test_backend_renders_minimum_size_warning() {
         let backend = TestBackend::new(55, 9);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1445,15 +1580,28 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains('█'));
-        assert!(app.hits.iter().any(|region| {
-            matches!(
-                region.action,
-                crate::tui::app::HitAction::Scrollbar {
-                    target: crate::tui::app::ScrollTarget::Composer,
-                    ..
-                }
-            ) && region.height == 8
-        }));
+        let scrollbar = app
+            .hits
+            .iter()
+            .find(|region| {
+                matches!(
+                    region.action,
+                    crate::tui::app::HitAction::Scrollbar {
+                        target: crate::tui::app::ScrollTarget::Composer,
+                        ..
+                    }
+                ) && region.height == 8
+            })
+            .unwrap();
+        assert_eq!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((scrollbar.x, scrollbar.y + scrollbar.height - 1))
+                .unwrap()
+                .symbol(),
+            "█"
+        );
     }
 
     #[test]
