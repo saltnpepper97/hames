@@ -136,6 +136,8 @@ While a picker is open, the bottom-left status bar switches to its navigation
 and selection shortcuts. In `/sessions`, Ctrl+D arms removal with a red row and
 an explicit warning; pressing Ctrl+D again retires that conversation from the
 resumable list. Moving to another row or closing the picker cancels the warning.
+The refreshed picker stays open after removal, including when Hames replaces the
+currently active session, so another conversation can be resumed or removed.
 
 The top-right header shows the durable session title beside the current activity
 instead of repeating model controls. The model can set or revise that title with

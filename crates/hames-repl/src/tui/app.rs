@@ -546,6 +546,7 @@ pub struct App {
     pub should_quit: bool,
     pub focused_thought: Option<usize>,
     pub theme: ThemeKind,
+    pub reopen_sessions_after_switch: bool,
 }
 
 impl App {
@@ -578,6 +579,7 @@ impl App {
             should_quit: false,
             focused_thought: None,
             theme: ThemeKind::Hames,
+            reopen_sessions_after_switch: false,
         };
         for event in events {
             app.ingest_durable(event, false);

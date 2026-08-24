@@ -122,8 +122,12 @@ pub async fn run() -> Result<()> {
             Ok(Some(session)) => {
                 stream_task.abort();
                 let theme = app.theme;
+                let reopen_sessions = app.reopen_sessions_after_switch;
                 app = load_app(&client, session).await?;
                 app.theme = theme;
+                if reopen_sessions {
+                    open_sessions_sheet(&client, &mut app).await?;
+                }
                 stream_task = spawn_event_stream(
                     client.clone(),
                     app.session.id.clone(),
@@ -191,6 +195,36 @@ async fn replace_session(
         return Err(error);
     }
     Ok(created)
+}
+
+async fn open_sessions_sheet(client: &GatewayClient, app: &mut App) -> Result<()> {
+    app.notice = Some("Loading sessions…".to_owned());
+    let sessions = client.sessions().await?;
+    app.notice = None;
+    app.sheet = Some(Sheet {
+        kind: SheetKind::Sessions,
+        title: "Open sessions".to_owned(),
+        options: sessions
+            .into_iter()
+            .filter(|session| session.status == "open")
+            .take(40)
+            .map(|session| MenuOption {
+                label: session
+                    .title
+                    .unwrap_or_else(|| format!("Session {}", short_id(&session.id))),
+                detail: format!(
+                    "{} · {} · {}",
+                    compact_home(&session.working_directory),
+                    session.model,
+                    session.interaction_mode
+                ),
+                action: MenuAction::Resume(session.id),
+            })
+            .collect(),
+        selected: 0,
+        pending_delete: None,
+    });
+    Ok(())
 }
 
 async fn load_app(client: &GatewayClient, session: Session) -> Result<App> {
@@ -743,7 +777,9 @@ async fn apply_effect(
             if session_id == app.session.id {
                 app.notice = Some("Removing this session and starting fresh…".to_owned());
                 let previous = app.session.clone();
-                return Ok(Some(replace_session(client, paths, &previous).await?));
+                let replacement = replace_session(client, paths, &previous).await?;
+                app.reopen_sessions_after_switch = true;
+                return Ok(Some(replacement));
             }
             app.notice = Some("Removing session from history…".to_owned());
             client.close_session(&session_id).await?;
@@ -789,32 +825,7 @@ async fn apply_menu_action(
             return Ok(Some(replace_session(client, paths, &previous).await?));
         }
         MenuAction::OpenSessions => {
-            app.notice = Some("Loading sessions…".to_owned());
-            let sessions = client.sessions().await?;
-            app.notice = None;
-            app.sheet = Some(Sheet {
-                kind: SheetKind::Sessions,
-                title: "Open sessions".to_owned(),
-                options: sessions
-                    .into_iter()
-                    .filter(|session| session.status == "open")
-                    .take(40)
-                    .map(|session| MenuOption {
-                        label: session
-                            .title
-                            .unwrap_or_else(|| format!("Session {}", short_id(&session.id))),
-                        detail: format!(
-                            "{} · {} · {}",
-                            compact_home(&session.working_directory),
-                            session.model,
-                            session.interaction_mode
-                        ),
-                        action: MenuAction::Resume(session.id),
-                    })
-                    .collect(),
-                selected: 0,
-                pending_delete: None,
-            });
+            open_sessions_sheet(client, app).await?;
         }
         MenuAction::ForkSession => {
             app.notice = Some("Forking session…".to_owned());

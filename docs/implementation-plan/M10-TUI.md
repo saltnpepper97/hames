@@ -60,7 +60,8 @@ viewport. Their tracks support mouse clicks and dragging.
   The bottom-left shortcut strip becomes sheet-specific while any tray is open.
   `/sessions` uses a reversible two-press Ctrl+D removal gesture: the first
   press marks only the selected row red, navigation or Esc disarms it, and the
-  second press retires the session from resumable history.
+  second press retires the session from resumable history. The picker refreshes
+  and remains open after every removal, including an active-session replacement.
   Rows use their literal slash names. `/new` preserves the current conversation
   and starts another; `/clear` retires it before starting fresh. Bare `/resume`
   aliases the `/sessions` picker and `/resume <id>` remains the direct path.
