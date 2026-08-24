@@ -1139,9 +1139,7 @@ async def test_manual_compaction_uses_active_provider_and_records_a_durable_cuto
                     payload={"content": f"turn {index}"},
                 )
 
-            accepted = await client.post(
-                f"/v1/sessions/{session_id}/compact", headers=headers
-            )
+            accepted = await client.post(f"/v1/sessions/{session_id}/compact", headers=headers)
             assert accepted.status_code == 202
             run_id = str(response_object(accepted)["run_id"])
             events = await _wait_for_event(

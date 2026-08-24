@@ -1174,16 +1174,12 @@ class RunManager:
             plugin_sources=plugin_sources,
             plugin_budget_tokens=self.config.plugins.context_budget_tokens,
         )
-        should_compact = (
-            context.manifest.estimated_input_tokens
-            >= int(
-                context.manifest.input_budget_tokens
-                * self.config.context.compaction_auto_threshold_ratio
-            )
-            or any(
-                source.source_type == "conversation" and source.reason == "budget"
-                for source in context.manifest.omitted_sources
-            )
+        should_compact = context.manifest.estimated_input_tokens >= int(
+            context.manifest.input_budget_tokens
+            * self.config.context.compaction_auto_threshold_ratio
+        ) or any(
+            source.source_type == "conversation" and source.reason == "budget"
+            for source in context.manifest.omitted_sources
         )
         if should_compact and run_id not in self._auto_compacted_runs:
             self._auto_compacted_runs.add(run_id)
