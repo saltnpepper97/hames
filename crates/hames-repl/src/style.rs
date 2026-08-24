@@ -6,7 +6,7 @@
 use std::io::{self, IsTerminal};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub const MARK: &str = "⬢";
+pub const MARK: &str = "◈";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Badge {
@@ -331,12 +331,12 @@ mod tests {
 
     #[test]
     fn badges_are_plain_when_color_is_off() {
-        assert_eq!(badge(Badge::Thinking, true), "⬢ Thinking");
-        assert_eq!(badge(Badge::Hames, false), "⬢ Hames");
+        assert_eq!(badge(Badge::Thinking, true), "◈ Thinking");
+        assert_eq!(badge(Badge::Hames, false), "◈ Hames");
         assert_eq!(badge(Badge::You, false), "You");
         assert_eq!(paint("31", "boom"), "boom");
         assert_eq!(key_value("Model", "fixture"), "  Model            fixture");
-        assert_eq!(MARK, "⬢");
+        assert_eq!(MARK, "◈");
     }
 
     #[test]
