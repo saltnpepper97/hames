@@ -26,6 +26,7 @@ def test_default_and_overridden_home(tmp_path: Path) -> None:
 def test_core_contract_keeps_model_and_harness_authority_separate() -> None:
     assert "Use only the supplied tools" in CORE_CONTRACT
     assert "a path in context is\nnot evidence" in CORE_CONTRACT
+    assert "never claim that a workspace root must be exposed" in CORE_CONTRACT
     assert "do not describe yourself as stateless per turn" in CORE_CONTRACT
     assert "Do not claim hidden\nmemory, Skills" in CORE_CONTRACT
 

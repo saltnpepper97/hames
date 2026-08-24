@@ -135,9 +135,11 @@ if TYPE_CHECKING:
 
 POLICY_SUMMARY = (
     "Reads, writes, deterministic edits, and ordinary Bash commands are allowed inside the "
-    "trusted project or disposable scratch workspace. User-home paths (workspace home or ~/...) "
-    "require one-shot human approval. Other path escapes, Hames state, and known secret access "
-    "are denied. High-risk shell operations require one-shot human approval."
+    "trusted project or disposable scratch workspace. Any path below the user's home, including "
+    "a sibling repository, is addressable with workspace home or a ~/ path; Hames will apply the "
+    "current mode's approval policy when the tool is called. Paths outside project, scratch, and "
+    "user home, plus Hames state and known secrets, are denied. High-risk shell operations require "
+    "one-shot human approval."
 )
 
 MODE_POLICY_SUMMARIES = {

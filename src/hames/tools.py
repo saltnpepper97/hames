@@ -513,7 +513,10 @@ class EditFileTool(ToolBase):
 
 class ShellTool(ToolBase):
     name = "shell"
-    description = "Run a Bash command in the project or disposable scratch workspace."
+    description = (
+        "Run a Bash command in the project, confirmed user home, or disposable scratch "
+        "workspace. Use workspace home when the requested path is elsewhere below the user's home."
+    )
     side_effect_class = "shell"
     arguments_type: ClassVar[type[ToolArguments]] = ShellArguments
 

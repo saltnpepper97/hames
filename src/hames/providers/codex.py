@@ -366,8 +366,12 @@ def _codex_instructions(system: str) -> str:
     return (
         "You are the model provider inside Hames. Hames owns the conversation, permissions, "
         "tools, and every side effect. Never use Codex native shell, file, web, or delegation "
-        "tools. Use only the dynamic tools supplied by Hames. Treat the serialized transcript "
-        "in the user input as authoritative conversation history.\n\n" + system
+        "tools. Use only the dynamic tools supplied by Hames. Codex sandbox metadata limits "
+        "native Codex tools, not Hames dynamic tools. If the user requests a path outside the "
+        "current repository but below their home, call the Hames tool with workspace home and "
+        "let Hames request any needed approval; do not ask the user to expose another workspace "
+        "root. Treat the serialized transcript in the user input as authoritative conversation "
+        "history.\n\n" + system
     )
 
 
