@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from hames.broker import EventBroker
 from hames.config import HamesConfig
+from hames.context import PluginContextItem
 from hames.ledger import Event, Ledger, Session
 from hames.paths import HamesPaths
 from hames.plugin_broker import Append, CapabilityBroker
@@ -27,7 +28,7 @@ from hames.plugins import (
 )
 from hames.policy import PolicyGate
 from hames.providers import ToolDefinition
-from hames.providers.base import JsonValue
+from hames.providers.base import JSON_OBJECT, JsonValue
 from hames.tools import ToolArguments, ToolContext, ToolResult
 
 PLUGIN_TOOL_NAME = re.compile(rf"^{TOOL_SUFFIX}$")
@@ -69,6 +70,8 @@ class RunningPlugin:
     version: PluginVersionRecord
     worker: PluginWorker
     tools: list[PluginToolSpec]
+    context_sources: list[str] = field(default_factory=list[str])
+    event_filters: list[str] = field(default_factory=list[str])
     warning: str = ""
     broker: CapabilityBroker | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -312,6 +315,63 @@ class PluginManager:
             structured_data=result.structured,
         )
 
+    async def collect_context(
+        self,
+        query: str,
+        *,
+        session: Session,
+        context: ToolContext,
+        allowed_tools: frozenset[str],
+        run_id: str | None,
+        append: Append,
+    ) -> list[PluginContextItem]:
+        items: list[PluginContextItem] = []
+        limit = self.config.plugins.max_output_bytes
+        for plugin_id, handle in list(self._handles.items()):
+            if not handle.context_sources:
+                continue
+            broker = CapabilityBroker(
+                plugin_id=plugin_id,
+                permissions=frozenset(handle.version.permissions),
+                policy=self.policy,
+                session=session,
+                context=context,
+                allowed_tools=allowed_tools,
+                append=append,
+                run_id=run_id,
+            )
+            async with handle.lock:
+                handle.broker = broker
+                try:
+                    collected = await handle.worker.collect_context(query)
+                except PluginProtocolError:
+                    continue
+                finally:
+                    handle.broker = None
+            for raw in collected.sources:
+                source_id = str(raw.get("id") or plugin_id)
+                text = str(raw.get("text") or "")
+                encoded = text.encode("utf-8")
+                if len(encoded) > limit:
+                    text = encoded[:limit].decode("utf-8", errors="ignore")
+                items.append(PluginContextItem(plugin_id=plugin_id, source_id=source_id, text=text))
+        return items
+
+    async def deliver_event(self, event: Event) -> None:
+        if event.type.startswith("plugin."):
+            return
+        dumped = JSON_OBJECT.validate_python(event.model_dump(mode="json"))
+        for handle in list(self._handles.values()):
+            if not _event_matches(event.type, handle.event_filters):
+                continue
+            if handle.lock.locked():
+                continue
+            async with handle.lock:
+                try:
+                    await handle.worker.deliver_event(dumped)
+                except PluginProtocolError:
+                    continue
+
     async def _start_worker(self, version: PluginVersionRecord, session: Session) -> None:
         allow_unsandboxed = self.config.plugins.allow_unsandboxed_user_plugins
         warning = ""
@@ -352,6 +412,8 @@ class PluginManager:
                     raise PluginProtocolError(f"invalid plugin tool name: {spec.name}")
                 tools.append(spec)
             handle.tools = tools
+            handle.context_sources = list(init.context_sources)
+            handle.event_filters = list(init.event_filters)
         except Exception as exc:
             await worker.shutdown()
             await self._append(
@@ -439,3 +501,7 @@ def _split_tool(name: str) -> tuple[str, str]:
         raise ValueError(f"invalid plugin tool id: {name}")
     plugin_id, tool_name = name.split(".")
     return plugin_id, tool_name
+
+
+def _event_matches(event_type: str, filters: list[str]) -> bool:
+    return "*" in filters or event_type in filters

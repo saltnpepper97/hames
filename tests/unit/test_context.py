@@ -7,7 +7,12 @@ import pytest
 
 from hames.agent import AgentCapsule, load_agent
 from hames.config import ContextConfig
-from hames.context import ContextBudgetError, canonical_request_snapshot, compile_context
+from hames.context import (
+    ContextBudgetError,
+    PluginContextItem,
+    canonical_request_snapshot,
+    compile_context,
+)
 from hames.ledger import Ledger, Session
 from hames.memory import MemoryCandidate, MemoryStore, canonical_memory_context
 from hames.paths import HamesPaths
@@ -428,3 +433,30 @@ def test_non_matching_context_rules_do_not_apply(hames_paths: HamesPaths, tmp_pa
         context_rules=[rule],
     )
     assert compiled.manifest.selected_sources
+
+
+def test_plugin_context_is_attributed_and_hashed(hames_paths: HamesPaths, tmp_path: Path) -> None:
+    ledger, session_value, capsule = _fixture(hames_paths, tmp_path)
+    session = ledger.get_session(session_value.id)
+    ledger.append(session_id=session.id, event_type="user.message", payload={"content": "stats"})
+    text = "file count 3"
+    compiled = compile_context(
+        session,
+        ledger.replay(session.id),
+        capsule,
+        _tools(),
+        "safe reads",
+        ContextConfig(),
+        run_id="run-1",
+        plugin_sources=[PluginContextItem("project-stats", "files", text)],
+    )
+    source = next(
+        item
+        for item in compiled.manifest.selected_sources
+        if item.source_id == "plugin.project-stats.files"
+    )
+    assert source.source_type == "plugin"
+    assert source.origin == "plugin"
+    assert source.content_hash == hashlib.sha256(text.encode()).hexdigest()
+    assert "Plugin project-stats (files)" in compiled.system
+    assert "file count 3" in compiled.system

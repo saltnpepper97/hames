@@ -80,6 +80,7 @@ class PluginsConfig(StrictModel):
     allow_unsandboxed_user_plugins: bool = False
     worker_timeout_seconds: float = Field(default=30.0, gt=0, le=600)
     max_output_bytes: int = Field(default=1_048_576, ge=4096)
+    context_budget_tokens: int = Field(default=1024, ge=0)
 
 
 class EvolutionConfig(StrictModel):

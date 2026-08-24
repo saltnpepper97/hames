@@ -148,3 +148,54 @@ async def test_remove_stops_the_worker(hames_paths: HamesPaths, tmp_path: Path) 
         assert removed.tools == []
     finally:
         await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_collect_context_and_filtered_event_deliver(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    manager = _manager(hames_paths)
+    context = _context(tmp_path)
+    try:
+        await manager.install(_package(tmp_path))
+        await manager.enable("project-stats")
+        session = manager.control_session()
+
+        async def append(**kwargs: Any) -> Event:
+            return manager.ledger.append(**kwargs)
+
+        sources = await manager.collect_context(
+            "files",
+            session=session,
+            context=context,
+            allowed_tools=frozenset({"read_file", "list_dir"}),
+            run_id="run-1",
+            append=append,
+        )
+        assert sources[0].plugin_id == "project-stats"
+        assert sources[0].source_id == "project-stats"
+        assert "file count" in sources[0].text
+        before = len(manager.ledger.list_events(session.id))
+        matching = manager.ledger.append(
+            session_id=session.id,
+            event_type="tool.completed",
+            payload={
+                "tool_call_id": "t1",
+                "name": "list_dir",
+                "status": "completed",
+                "summary": "listed",
+                "content": "",
+            },
+        )
+        await manager.deliver_event(matching)
+        skipped = manager.ledger.append(
+            session_id=session.id,
+            event_type="user.message",
+            payload={"content": "hi"},
+        )
+        await manager.deliver_event(skipped)
+        after = manager.ledger.list_events(session.id)
+        assert len(after) == before + 2
+        assert [event.type for event in after[-2:]] == ["tool.completed", "user.message"]
+    finally:
+        await manager.close()

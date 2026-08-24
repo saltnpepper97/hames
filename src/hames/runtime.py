@@ -24,6 +24,7 @@ from hames.config import HamesConfig
 from hames.context import (
     ContextBudgetError,
     ContextRuleViolation,
+    PluginContextItem,
     canonical_request_snapshot,
     compile_context,
 )
@@ -564,6 +565,26 @@ class RunManager:
         definitions = self.tools.definitions(allowed_tools)
         if self.plugin_manager is not None:
             definitions = [*definitions, *self.plugin_manager.definitions(allowed_tools)]
+        plugin_sources: list[PluginContextItem] = []
+        if self.plugin_manager is not None:
+            query = ""
+            for event in reversed(history):
+                if event.type == "user.message":
+                    query = str(event.payload.get("content", ""))
+                    break
+            plugin_sources = await self.plugin_manager.collect_context(
+                query,
+                session=session,
+                context=ToolContext(
+                    project_root=Path(session.working_directory),
+                    scratch_root=self._scratch_base / run_id / "plugin-context",
+                    blobs=self.ledger.blob_store,
+                    config=self.config.tools,
+                ),
+                allowed_tools=allowed_tools,
+                run_id=run_id,
+                append=self._append,
+            )
         active_context_rules = await asyncio.to_thread(
             self.context_rules.active_matching,
             working_directory=session.working_directory,
@@ -586,6 +607,8 @@ class RunManager:
             context_rules=active_context_rules,
             active_scars=guard_scars,
             scar_budget_tokens=self.config.evolution.scar_context_budget_tokens,
+            plugin_sources=plugin_sources,
+            plugin_budget_tokens=self.config.plugins.context_budget_tokens,
         )
         snapshot = canonical_request_snapshot(
             model=session.model,
@@ -1607,6 +1630,8 @@ class RunManager:
         await self.broker.publish(
             event.session_id, {"durable": True, "event": event.model_dump(mode="json")}
         )
+        if self.plugin_manager is not None:
+            await self.plugin_manager.deliver_event(event)
         return event
 
     async def _publish_transient(self, session_id: str, run_id: str, event: StreamEvent) -> None:
