@@ -115,9 +115,15 @@ async def test_rust_repl_through_gateway_and_ledger(tmp_path: Path) -> None:
         output = stdout.decode()
         assert process.returncode == 0, stderr.decode()
         assert "Thinking" in output
+        assert "Thought" in output
         assert "check" in output
         assert "Hames" in output
         assert "hello from fake" in output
+        assert output.count("Thinking") == 1
+        assert output.count("Thought") == 1
+        assert output.index("Thinking") < output.index("check") < output.index("Thought")
+        assert output.index("Thought") < output.index("hello from fake")
+        assert "\x1b[" not in output
         assert "Execution mode: plan" in output
         assert "Mode" in output
         assert "Forked session" in output

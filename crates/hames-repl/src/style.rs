@@ -1,16 +1,18 @@
 //! Terminal chrome for the Hames REPL. Honors NO_COLOR and a non-TTY stdout.
 //!
-//! The green hex is the AI mark. The user prompt is unmarked. Live headings
-//! use a restrained highlight; body text never does.
+//! The green double diamond is the AI mark. The user prompt is unmarked. AI
+//! waiting headings get a traveling shine; body text never does.
 
 use std::io::{self, IsTerminal};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 pub const MARK: &str = "◈";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Badge {
     Thinking,
+    Thought,
     Compacting,
     Explore,
     Change,
@@ -109,6 +111,29 @@ fn lerp(a: Rgb, b: Rgb, t: f32) -> Rgb {
     }
 }
 
+/// Specular glint that travels across `text`. Body callers must not use this.
+fn shine_text(text: &str, base: Rgb, glint: Rgb, tick: u32) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let width = chars.len() as f32;
+    if width == 0.0 {
+        return String::new();
+    }
+    let span = width + 6.0;
+    let pos = (tick as f32 * 0.28) % span - 2.5;
+    let mut out = String::new();
+    for (index, ch) in chars.iter().enumerate() {
+        let distance = (index as f32 - pos).abs();
+        let weight = (1.0 - distance / 2.4).max(0.0).powf(1.6);
+        let color = lerp(base, glint, weight);
+        out.push_str(&format!(
+            "\x1b[1;38;2;{};{};{}m{ch}",
+            color.r, color.g, color.b
+        ));
+    }
+    out.push_str("\x1b[0m");
+    out
+}
+
 const WHITE: Rgb = Rgb {
     r: 255,
     g: 255,
@@ -133,7 +158,7 @@ pub fn columns() -> usize {
         x: 0,
         y: 0,
     };
-    // Linux TIOCGWINSZ on stdout; wrap-aware heading shine needs the column count.
+    // Linux TIOCGWINSZ on stdout; wrap-aware heading repaint needs the column count.
     let ok = unsafe { ioctl(1, TIOCGWINSZ, &mut size) == 0 };
     if ok && size.col > 8 {
         usize::from(size.col)
@@ -146,6 +171,7 @@ impl Badge {
     fn name(self) -> &'static str {
         match self {
             Self::Thinking => "Thinking",
+            Self::Thought => "Thought",
             Self::Compacting => "Compacting",
             Self::Explore => "Explore",
             Self::Change => "Change",
@@ -164,7 +190,7 @@ impl Badge {
 
     fn dim_rgb(self) -> Rgb {
         match self {
-            Self::Thinking | Self::Compacting => Rgb {
+            Self::Thinking | Self::Thought | Self::Compacting => Rgb {
                 r: 120,
                 g: 124,
                 b: 132,
@@ -226,16 +252,21 @@ impl Badge {
             },
         }
     }
+
+    fn shines(self) -> bool {
+        matches!(self, Self::Thinking | Self::Compacting)
+    }
 }
 
 pub fn mark() -> String {
-    mark_with_liveness(false)
+    mark_with_liveness(false, 0)
 }
 
-fn mark_with_liveness(live: bool) -> String {
+fn mark_with_liveness(live: bool, tick: u32) -> String {
     if color_enabled() {
         let color = if live {
-            lerp(GREEN, WHITE, 0.18)
+            let wave = (tick as f32 * 0.13).sin() * 0.5 + 0.5;
+            lerp(GREEN, WHITE, 0.18 + wave * 0.14)
         } else {
             GREEN
         };
@@ -246,9 +277,18 @@ fn mark_with_liveness(live: bool) -> String {
 }
 
 pub fn badge(kind: Badge, live: bool) -> String {
-    let name = kind.name();
+    badge_at_tick(kind, live, 0)
+}
+
+pub fn badge_at_tick(kind: Badge, live: bool, tick: u32) -> String {
+    badge_label_at_tick(kind, kind.name(), live, tick)
+}
+
+fn badge_label_at_tick(kind: Badge, name: &str, live: bool, tick: u32) -> String {
     let painted = if !color_enabled() {
         name.to_owned()
+    } else if live && kind.shines() {
+        shine_text(name, kind.dim_rgb(), WHITE, tick)
     } else if live {
         rgb_bold(lerp(kind.dim_rgb(), WHITE, 0.24), name)
     } else {
@@ -257,7 +297,32 @@ pub fn badge(kind: Badge, live: bool) -> String {
     if kind == Badge::You {
         return painted;
     }
-    format!("{} {painted}", mark_with_liveness(live))
+    format!("{} {painted}", mark_with_liveness(live, tick))
+}
+
+pub fn thought_badge(elapsed: Duration) -> String {
+    let label = match significant_duration(elapsed) {
+        Some(duration) => format!("Thought ({duration})"),
+        None => "Thought".to_owned(),
+    };
+    badge_label_at_tick(Badge::Thought, &label, false, 0)
+}
+
+fn significant_duration(elapsed: Duration) -> Option<String> {
+    let seconds = elapsed.as_secs();
+    if seconds < 10 {
+        return None;
+    }
+    if seconds < 60 {
+        return Some(format!("{seconds}s"));
+    }
+    let minutes = seconds / 60;
+    let remainder = seconds % 60;
+    if remainder == 0 {
+        Some(format!("{minutes}m"))
+    } else {
+        Some(format!("{minutes}m {remainder}s"))
+    }
 }
 
 pub fn banner_lines(
@@ -327,7 +392,11 @@ pub fn warning(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Badge, MARK, badge, key_value, paint, terminal_capabilities};
+    use std::time::Duration;
+
+    use super::{
+        Badge, MARK, Rgb, badge, key_value, paint, shine_text, terminal_capabilities, thought_badge,
+    };
 
     #[test]
     fn badges_are_plain_when_color_is_off() {
@@ -337,6 +406,38 @@ mod tests {
         assert_eq!(paint("31", "boom"), "boom");
         assert_eq!(key_value("Model", "fixture"), "  Model            fixture");
         assert_eq!(MARK, "◈");
+    }
+
+    #[test]
+    fn thought_duration_appears_only_when_significant() {
+        assert_eq!(thought_badge(Duration::from_secs(9)), "◈ Thought");
+        assert_eq!(thought_badge(Duration::from_secs(10)), "◈ Thought (10s)");
+        assert_eq!(thought_badge(Duration::from_secs(59)), "◈ Thought (59s)");
+        assert_eq!(thought_badge(Duration::from_secs(60)), "◈ Thought (1m)");
+        assert_eq!(thought_badge(Duration::from_secs(68)), "◈ Thought (1m 8s)");
+        assert_eq!(
+            thought_badge(Duration::from_secs(3_723)),
+            "◈ Thought (62m 3s)"
+        );
+    }
+
+    #[test]
+    fn sheen_moves_across_waiting_text() {
+        let base = Rgb {
+            r: 120,
+            g: 124,
+            b: 132,
+        };
+        let white = Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        let first = shine_text("Thinking", base, white, 0);
+        let later = shine_text("Thinking", base, white, 10);
+        assert_ne!(first, later);
+        assert!(first.contains("\x1b[1;38;2;"));
+        assert!(first.ends_with("\x1b[0m"));
     }
 
     #[test]

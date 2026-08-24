@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
@@ -1526,9 +1527,14 @@ async fn stream_message(
     let mut output = RenderedOutput::default();
     let mut cancelled = false;
     let mut reconnects = 0_u8;
+    let mut sheen = tokio::time::interval(Duration::from_millis(80));
+    sheen.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
+            _ = sheen.tick() => {
+                output.tick_sheen()?;
+            }
             chunk = stream.next() => {
                 let bytes = match chunk {
                     Some(Ok(bytes)) => bytes,
@@ -1753,6 +1759,9 @@ struct RenderedOutput {
     answer: String,
     current: Option<style::Badge>,
     live: bool,
+    distance: u16,
+    sheen_tick: u32,
+    thinking_started: Option<Instant>,
     body_col: usize,
     open_line: bool,
     body_started: bool,
@@ -1781,6 +1790,9 @@ impl RenderedOutput {
         self.body_col = 0;
         self.open_line = false;
         self.body_started = false;
+        self.distance = 0;
+        self.sheen_tick = 0;
+        self.thinking_started = None;
         self.activity.next_turn();
         self.activity_lines = 0;
         self.activity_visible = false;
@@ -1793,6 +1805,7 @@ impl RenderedOutput {
     fn close_line(&mut self) -> Result<()> {
         if self.open_line {
             println!();
+            self.distance = self.distance.saturating_add(1);
             self.body_col = 0;
             self.open_line = false;
         }
@@ -1801,10 +1814,53 @@ impl RenderedOutput {
 
     fn settle(&mut self) -> Result<()> {
         self.close_line()?;
+        if let (Some(kind), true) = (self.current, self.live) {
+            match kind {
+                style::Badge::Thinking => {
+                    if let Some(started) = self.thinking_started {
+                        let heading = style::thought_badge(started.elapsed());
+                        if style::interactive() {
+                            self.repaint_heading(&heading)?;
+                        } else {
+                            println!("{heading}");
+                        }
+                    }
+                }
+                style::Badge::Compacting if style::interactive() => {
+                    self.repaint_heading(&style::badge(kind, false))?;
+                }
+                _ => {}
+            }
+        }
         self.live = false;
         self.current = None;
+        self.distance = 0;
+        self.sheen_tick = 0;
+        self.thinking_started = None;
         self.body_col = 0;
         self.body_started = false;
+        Ok(())
+    }
+
+    fn tick_sheen(&mut self) -> Result<()> {
+        if !self.live || !style::interactive() || !style::color_enabled() {
+            return Ok(());
+        }
+        let Some(kind @ (style::Badge::Thinking | style::Badge::Compacting)) = self.current else {
+            return Ok(());
+        };
+        self.sheen_tick = self.sheen_tick.wrapping_add(1);
+        self.repaint_heading(&style::badge_at_tick(kind, true, self.sheen_tick))
+    }
+
+    fn repaint_heading(&self, heading: &str) -> Result<()> {
+        if self.distance == 0 {
+            return Ok(());
+        }
+        let sequence = heading_repaint_sequence(self.distance, self.body_col, heading);
+        let mut out = io::stdout();
+        write!(out, "{sequence}")?;
+        out.flush()?;
         Ok(())
     }
 
@@ -1833,6 +1889,9 @@ impl RenderedOutput {
         println!("{}", style::badge(kind, true));
         self.current = Some(kind);
         self.live = true;
+        self.distance = 1;
+        self.sheen_tick = 0;
+        self.thinking_started = None;
         self.body_col = 0;
         self.body_started = false;
         self.open_line = false;
@@ -1860,6 +1919,7 @@ impl RenderedOutput {
     fn account_visible(&mut self, visible: &str) {
         for ch in visible.chars() {
             if ch == '\n' {
+                self.distance = self.distance.saturating_add(1);
                 self.body_col = 0;
             } else {
                 self.body_col += UnicodeWidthChar::width(ch).unwrap_or(0);
@@ -1885,7 +1945,12 @@ impl RenderedOutput {
         if matches!(self.current, Some(style::Badge::Hames)) {
             return Ok(());
         }
+        let starting = self.current != Some(style::Badge::Thinking) || !self.live;
+        let started = Instant::now();
         self.open_badge(style::Badge::Thinking)?;
+        if starting {
+            self.thinking_started = Some(started);
+        }
         self.write_body(text, true)?;
         self.reasoning.push_str(text);
         Ok(())
@@ -2062,6 +2127,14 @@ impl RenderedOutput {
     }
 }
 
+fn heading_repaint_sequence(distance: u16, body_col: usize, heading: &str) -> String {
+    let mut sequence = format!("\x1b[{distance}A\r\x1b[2K{heading}\x1b[{distance}B\r");
+    if body_col > 0 {
+        sequence.push_str(&format!("\x1b[{body_col}C"));
+    }
+    sequence
+}
+
 fn wrap_body(text: &str, start_col: usize, cols: usize) -> String {
     let width = cols.saturating_sub(1).max(24);
     let mut out = String::new();
@@ -2193,7 +2266,7 @@ fn print_help_rows(rows: &[(&str, &str)]) {
 mod tests {
     use unicode_width::UnicodeWidthStr;
 
-    use super::{SseDecoder, wrap_body};
+    use super::{SseDecoder, heading_repaint_sequence, wrap_body};
 
     #[test]
     fn sse_decoder_handles_split_frames() {
@@ -2211,5 +2284,13 @@ mod tests {
                 .all(|line| UnicodeWidthStr::width(line) <= 24)
         );
         assert!(wrapped.starts_with("  "));
+    }
+
+    #[test]
+    fn heading_repaint_restores_the_stream_cursor_without_save_codes() {
+        let sequence = heading_repaint_sequence(3, 17, "◈ Thought (12s)");
+        assert_eq!(sequence, "\x1b[3A\r\x1b[2K◈ Thought (12s)\x1b[3B\r\x1b[17C");
+        assert!(!sequence.contains("\x1b[s"));
+        assert!(!sequence.contains("\x1b[u"));
     }
 }
