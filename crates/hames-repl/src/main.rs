@@ -1,6 +1,7 @@
 mod api;
 mod local;
 mod repl;
+mod style;
 
 use std::env;
 use std::fs;

@@ -14,8 +14,10 @@ use crate::api::{
     SkillJob, SkillSummary, SkillVersion,
 };
 use crate::local::{LocalPaths, start_backend, write_private_export};
+use crate::style;
 
 pub async fn run() -> Result<()> {
+    style::init();
     let paths = LocalPaths::resolve()?;
     ensure_gateway(&paths).await?;
     let client = GatewayClient::from_paths(&paths)?;
@@ -62,17 +64,23 @@ pub async fn run() -> Result<()> {
         )
         .await?;
     println!(
-        "Hames {} · gateway {} · {} / {} · {}",
-        env!("CARGO_PKG_VERSION"),
-        health.version,
-        provider,
-        model,
-        cwd.display()
+        "{}",
+        style::banner_line(
+            env!("CARGO_PKG_VERSION"),
+            &health.version,
+            &provider,
+            &model,
+            &cwd.display().to_string(),
+        )
     );
     if !health.database_ready {
         bail!("gateway database is not ready");
     }
-    println!("Type /help for commands. The Python gateway remains running after exit.");
+    println!(
+        "{}",
+        style::dim("Type /help for commands. The Python gateway remains running after exit.")
+    );
+    println!();
     ensure_trust(&client, &mut editor, &session).await?;
     let mut remember_next = false;
 
@@ -100,16 +108,20 @@ pub async fn run() -> Result<()> {
             {
                 Ok(CommandOutcome::Continue) => continue,
                 Ok(CommandOutcome::Exit) => break,
-                Err(error) => eprintln!("error: {error:#}"),
+                Err(error) => eprintln!("{}{error:#}", style::error_label()),
             }
             continue;
         }
         let remember = std::mem::take(&mut remember_next);
         if remember {
-            println!("remember> this turn will be captured explicitly");
+            println!(
+                "{}{}",
+                style::diamond(),
+                style::dim(" remember> this turn will be captured explicitly")
+            );
         }
         if let Err(error) = stream_message(&client, &mut editor, &session, &input, remember).await {
-            eprintln!("error: {error:#}");
+            eprintln!("{}{error:#}", style::error_label());
         }
     }
     fs::create_dir_all(&paths.root).ok();
@@ -161,7 +173,7 @@ async fn gateway_accepts_local_token(paths: &LocalPaths, url: &str) -> Result<bo
 
 fn read_input(editor: &mut DefaultEditor) -> Result<Option<String>> {
     let mut result = String::new();
-    let mut prompt = "you> ";
+    let mut prompt = style::prompt();
     loop {
         match editor.readline(prompt) {
             Ok(mut line) => {
@@ -174,7 +186,7 @@ fn read_input(editor: &mut DefaultEditor) -> Result<Option<String>> {
                     return Ok(Some(result));
                 }
                 result.push('\n');
-                prompt = "...> ";
+                prompt = style::continue_prompt();
             }
             Err(ReadlineError::Interrupted) => return Ok(Some(String::new())),
             Err(ReadlineError::Eof) => return Ok(None),
@@ -1271,7 +1283,7 @@ async fn stream_message(
                         }
                     }
                     if process_envelope(&envelope, &run_id, &mut output)? {
-                        println!();
+                        output.finish_turn()?;
                         return Ok(());
                     }
                 }
@@ -1279,7 +1291,7 @@ async fn stream_message(
             _ = tokio::signal::ctrl_c(), if !cancelled => {
                 cancelled = true;
                 client.cancel(&run_id).await?;
-                eprintln!("\n[cancelling]");
+                eprintln!("\n{}", style::warn("◆ cancelling"));
             }
         }
     }
@@ -1301,9 +1313,10 @@ async fn handle_approval(
         .as_str()
         .unwrap_or("policy confirmation");
     let arguments = serde_json::to_string_pretty(&event.payload["arguments"])?;
-    println!("\napproval> {name}: {reason}");
-    println!("{arguments}");
-    println!("request hash: {request_hash}");
+    println!();
+    println!("{}{name}: {reason}", style::tool_label());
+    println!("{}", style::dim(&arguments));
+    println!("{}", style::dim(&format!("request hash: {request_hash}")));
     let answer = editor.readline("Approve this exact action once? [y/N] ")?;
     let decision = if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
         "approved"
@@ -1330,6 +1343,7 @@ fn process_envelope(
             return Ok(false);
         }
         match event.event_type.as_str() {
+            "context.compiled" => output.note_compacting(event)?,
             "model.requested" => output.begin_turn()?,
             "assistant.reasoning" => {
                 if let Some(content) = event
@@ -1353,16 +1367,16 @@ fn process_envelope(
             }
             "tool.requested" => {
                 let name = event.payload["name"].as_str().unwrap_or("unknown");
-                eprintln!("\ntool> requested {name}");
+                output.tool_line(&format!("requested {name}"))?;
             }
             "tool.started" => {
                 let name = event.payload["name"].as_str().unwrap_or("unknown");
-                eprintln!("tool> running {name}");
+                output.tool_line(&format!("running {name}"))?;
             }
             "tool.completed" | "tool.failed" | "tool.rejected" => {
                 let name = event.payload["name"].as_str().unwrap_or("unknown");
                 let summary = event.payload["summary"].as_str().unwrap_or("");
-                eprintln!("tool> {name}: {summary}");
+                output.tool_line(&format!("{name}: {summary}"))?;
             }
             "model.response.failed" => {
                 let code = event
@@ -1375,14 +1389,14 @@ fn process_envelope(
                     .get("message")
                     .and_then(|value| value.as_str())
                     .unwrap_or("the model run failed");
-                eprintln!("\nerror: {code}: {message}");
+                output.error_line(&format!("{code}: {message}"))?;
             }
             "run.failed" => {
                 let code = event.payload["code"].as_str().unwrap_or("run_failed");
                 let message = event.payload["message"]
                     .as_str()
                     .unwrap_or("the agent run failed");
-                eprintln!("\nerror: {code}: {message}");
+                output.error_line(&format!("{code}: {message}"))?;
                 return Ok(true);
             }
             "run.completed" | "run.cancelled" => {
@@ -1395,13 +1409,13 @@ fn process_envelope(
                     .get("status")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                eprintln!("evolution> scar {status}: {title}");
+                output.note_line(&format!("scar {status}: {title}"))?;
             }
             "scar.guard.succeeded" => {
                 let count = event.payload["successful_guard_count"]
                     .as_u64()
                     .unwrap_or(0);
-                eprintln!("evolution> guard pass recorded ({count} clean)");
+                output.note_line(&format!("guard pass recorded ({count} clean)"))?;
             }
             _ => {}
         }
@@ -1434,39 +1448,102 @@ struct RenderedOutput {
     answer: String,
     reasoning_started: bool,
     answer_started: bool,
+    open_line: bool,
+    compacted: bool,
 }
 
 impl RenderedOutput {
     fn begin_turn(&mut self) -> Result<()> {
-        if self.reasoning_started || self.answer_started {
-            println!();
-        }
+        self.close_line()?;
+        println!();
         *self = Self::default();
         Ok(())
     }
 
-    fn push_reasoning(&mut self, text: &str) -> Result<()> {
-        if !self.reasoning_started {
-            print!("thinking> ");
-            self.reasoning_started = true;
+    fn close_line(&mut self) -> Result<()> {
+        if self.open_line {
+            println!();
+            self.open_line = false;
         }
-        print!("{text}");
+        Ok(())
+    }
+
+    fn finish_turn(&mut self) -> Result<()> {
+        self.close_line()?;
+        println!();
+        Ok(())
+    }
+
+    fn note_compacting(&mut self, event: &Event) -> Result<()> {
+        if self.compacted || !context_was_compacted(event) {
+            return Ok(());
+        }
+        self.compacted = true;
+        self.close_line()?;
+        println!(
+            "{}{}",
+            style::compacting_label(),
+            style::sheen("folding context")
+        );
+        Ok(())
+    }
+
+    fn push_reasoning(&mut self, text: &str) -> Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        if !self.reasoning_started {
+            self.close_line()?;
+            print!("{}", style::thinking_label());
+            self.reasoning_started = true;
+            self.open_line = true;
+        }
+        print!("{}", style::sheen(text));
+        if text.ends_with('\n') {
+            self.open_line = false;
+        }
         self.reasoning.push_str(text);
         io::stdout().flush()?;
         Ok(())
     }
 
     fn push_answer(&mut self, text: &str) -> Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
         if !self.answer_started {
+            self.close_line()?;
             if self.reasoning_started {
                 println!();
             }
-            print!("assistant> ");
+            print!("{}", style::assistant_label());
             self.answer_started = true;
+            self.open_line = true;
         }
         print!("{text}");
+        if text.ends_with('\n') {
+            self.open_line = false;
+        }
         self.answer.push_str(text);
         io::stdout().flush()?;
+        Ok(())
+    }
+
+    fn tool_line(&mut self, body: &str) -> Result<()> {
+        self.close_line()?;
+        println!("{}{body}", style::tool_label());
+        Ok(())
+    }
+
+    fn error_line(&mut self, body: &str) -> Result<()> {
+        self.close_line()?;
+        eprintln!("{}{body}", style::error_label());
+        Ok(())
+    }
+
+    fn note_line(&mut self, body: &str) -> Result<()> {
+        self.close_line()?;
+        println!("{}{}", style::diamond(), style::dim(&format!(" {body}")));
         Ok(())
     }
 
@@ -1485,6 +1562,22 @@ impl RenderedOutput {
             .to_owned();
         self.push_answer(&suffix)
     }
+}
+
+fn context_was_compacted(event: &Event) -> bool {
+    event
+        .payload
+        .get("omitted_sources")
+        .and_then(|value| value.as_array())
+        .is_some_and(|sources| {
+            sources.iter().any(|source| {
+                source.get("reason").and_then(|value| value.as_str()) == Some("compacted")
+                    || source
+                        .get("truncation")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|value| value != "none" && !value.is_empty())
+            })
+        })
 }
 
 #[derive(Default)]
