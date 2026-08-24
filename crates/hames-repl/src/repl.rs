@@ -236,7 +236,7 @@ async fn handle_command(
                 .create_session(cwd, &session.agent_id, provider, model, reasoning)
                 .await?;
             ensure_trust(client, editor, session).await?;
-            println!("new session {}", session.id);
+            println!("{}", style::success(&format!("New session {}", session.id)));
         }
         "/clear" => {
             *remember_next = false;
@@ -246,10 +246,18 @@ async fn handle_command(
             ensure_trust(client, editor, session).await?;
             print!("\x1b[2J\x1b[H");
             io::stdout().flush()?;
-            println!("fresh session {}", session.id);
+            println!(
+                "{}",
+                style::success(&format!("Fresh session {}", session.id))
+            );
         }
         "/sessions" => {
-            for item in client.sessions().await? {
+            let sessions = client.sessions().await?;
+            println!("{}", style::section("Sessions"));
+            if sessions.is_empty() {
+                println!("  {}", style::dim("No sessions"));
+            }
+            for item in sessions {
                 println!(
                     "{}  {:<8}  {}  {} / {}  {}  {}{}",
                     item.id,
@@ -267,7 +275,13 @@ async fn handle_command(
             }
         }
         "/session" => print_session(session),
-        "/project" => println!("{}", session.working_directory),
+        "/project" => {
+            println!("{}", style::section("Project"));
+            println!(
+                "{}",
+                style::key_value("Working directory", &session.working_directory)
+            );
+        }
         "/events" => {
             let count = parts
                 .get(1)
@@ -277,6 +291,10 @@ async fn handle_command(
                 .unwrap_or(20);
             let history = client.history(&session.id).await?;
             let start = history.len().saturating_sub(count);
+            println!("{}", style::section("Events"));
+            if history[start..].is_empty() {
+                println!("  {}", style::dim("No events"));
+            }
             for event in &history[start..] {
                 let short_id = event.id.get(..8).unwrap_or(&event.id);
                 let summary = event
@@ -306,17 +324,24 @@ async fn handle_command(
             *reasoning = session.reasoning_effort.clone();
             ensure_trust(client, editor, session).await?;
             println!(
-                "forked session {} from {}",
-                session.id,
-                session.fork_event_id.as_deref().unwrap_or("unknown event")
+                "{}",
+                style::success(&format!(
+                    "Forked session {} from {}",
+                    session.id,
+                    session.fork_event_id.as_deref().unwrap_or("unknown event")
+                ))
             );
         }
         "/agent" => {
             if let Some(agent_id) = parts.get(1) {
                 *session = client.update_session_agent(&session.id, agent_id).await?;
-                println!("next turn will use agent {}", session.agent_id);
+                println!(
+                    "{}",
+                    style::success(&format!("Next turn will use agent {}", session.agent_id))
+                );
             } else {
-                println!("active agent: {}", session.agent_id);
+                println!("{}", style::section("Agents"));
+                println!("{}", style::key_value("Active", &session.agent_id));
                 for agent in client.agents().await? {
                     let active = if agent.id == session.agent_id {
                         "*"
@@ -338,7 +363,10 @@ async fn handle_command(
             *model = session.model.clone();
             *reasoning = session.reasoning_effort.clone();
             ensure_trust(client, editor, session).await?;
-            println!("resumed session {}", session.id);
+            println!(
+                "{}",
+                style::success(&format!("Resumed session {}", session.id))
+            );
         }
         "/provider" => {
             let profiles = client.providers().await?;
@@ -359,18 +387,27 @@ async fn handle_command(
             *provider = selected_provider.to_owned();
             *model = selected_model;
             *reasoning = selected_reasoning;
-            println!("provider: {provider} / {model}");
+            println!(
+                "{}",
+                style::success(&format!("Provider: {provider} / {model}"))
+            );
         }
-        "/model" => println!(
-            "provider: {}\nmodel: {}\nreasoning: {}",
-            provider,
-            model,
-            if reasoning.is_empty() {
-                "provider default"
-            } else {
-                reasoning
-            }
-        ),
+        "/model" => {
+            println!("{}", style::section("Model"));
+            println!("{}", style::key_value("Provider", provider));
+            println!("{}", style::key_value("Model", model));
+            println!(
+                "{}",
+                style::key_value(
+                    "Reasoning",
+                    if reasoning.is_empty() {
+                        "provider default"
+                    } else {
+                        reasoning
+                    }
+                )
+            );
+        }
         "/reasoning" => {
             let probe = client.probe_provider(provider).await?;
             let selected = probe
@@ -379,18 +416,28 @@ async fn handle_command(
                 .find(|item| item.id == *model)
                 .with_context(|| format!("provider {provider} does not report model {model}"))?;
             let Some(requested) = parts.get(1) else {
+                println!("{}", style::section("Reasoning"));
                 println!(
-                    "reasoning: {}\nsupported: default/off{}",
-                    if reasoning.is_empty() {
-                        "provider default"
-                    } else {
-                        reasoning
-                    },
-                    if selected.reasoning_efforts.is_empty() {
-                        String::new()
-                    } else {
-                        format!("/{}", selected.reasoning_efforts.join("/"))
-                    }
+                    "{}",
+                    style::key_value(
+                        "Current",
+                        if reasoning.is_empty() {
+                            "provider default"
+                        } else {
+                            reasoning
+                        }
+                    )
+                );
+                println!(
+                    "{}",
+                    style::key_value(
+                        "Supported",
+                        if selected.reasoning_efforts.is_empty() {
+                            "default/off".to_owned()
+                        } else {
+                            format!("default/off/{}", selected.reasoning_efforts.join("/"))
+                        }
+                    )
                 );
                 return Ok(CommandOutcome::Continue);
             };
@@ -415,12 +462,15 @@ async fn handle_command(
                 .await?;
             *reasoning = effort.to_owned();
             println!(
-                "reasoning effort: {}",
-                if reasoning.is_empty() {
-                    "provider default"
-                } else {
-                    reasoning
-                }
+                "{}",
+                style::success(&format!(
+                    "Reasoning effort: {}",
+                    if reasoning.is_empty() {
+                        "provider default"
+                    } else {
+                        reasoning
+                    }
+                ))
             );
         }
         "/status" => print_statuses(client).await?,
@@ -458,10 +508,16 @@ async fn handle_command(
             let content = input.strip_prefix("/remember").unwrap_or("").trim();
             if content.is_empty() {
                 *remember_next = true;
-                println!("remember> armed for the next message");
+                println!(
+                    "{}",
+                    style::success("Memory capture armed for the next message")
+                );
             } else {
                 let job = client.capture_memory(&session.id, content).await?;
-                println!("remember> queued extraction job {}", job.id);
+                println!(
+                    "{}",
+                    style::success(&format!("Queued memory extraction job {}", job.id))
+                );
             }
         }
         "/memory" => handle_memory_command(client, session, &parts).await?,
@@ -475,10 +531,13 @@ async fn handle_command(
             }
             let scar = client.submit_correction(&session.id, content).await?;
             println!(
-                "correct> scar {} recorded as {} ({})",
-                &scar.id[..8.min(scar.id.len())],
-                scar.status,
-                scar.title
+                "{}",
+                style::success(&format!(
+                    "Scar {} recorded as {} ({})",
+                    &scar.id[..8.min(scar.id.len())],
+                    scar.status,
+                    scar.title
+                ))
             );
         }
         "/export" => {
@@ -491,14 +550,23 @@ async fn handle_command(
             }
             let transcript = client.transcript(&session.id, format).await?;
             write_private_export(Path::new(path), &transcript, false)?;
-            println!("exported {format} audit transcript to {path}");
+            println!(
+                "{}",
+                style::success(&format!("Exported {format} audit transcript to {path}"))
+            );
         }
-        "/cancel" => println!("no active run; press Ctrl-C while a run is active to cancel it"),
+        "/cancel" => println!(
+            "{}",
+            style::empty("No active run; press Ctrl-C while a run is active to cancel it")
+        ),
         "/trust" => match parts.get(1).copied() {
             None | Some("status") => print_trust(client, session).await?,
             Some("revoke") => {
                 let status = client.revoke_trust(&session.id).await?;
-                println!("trust revoked for {}", status.path);
+                println!(
+                    "{}",
+                    style::success(&format!("Trust revoked for {}", status.path))
+                );
             }
             Some(_) => bail!("usage: /trust [status|revoke]"),
         },
@@ -535,7 +603,8 @@ fn select_model(
     if probe.models.is_empty() {
         bail!("provider {} reports no models", probe.id);
     }
-    println!("Select a model for {}:", probe.id);
+    println!("{}", style::section("Select model"));
+    println!("{}", style::key_value("Provider", &probe.id));
     for (index, item) in probe.models.iter().enumerate() {
         println!("  {}. {} ({})", index + 1, item.id, model_summary(item));
     }
@@ -563,10 +632,13 @@ fn find_profile<'a>(
 
 async fn print_statuses(client: &GatewayClient) -> Result<()> {
     let health = client.health().await?;
+    println!("{}", style::section("Status"));
+    println!("{}", style::key_value("Gateway", &health.status));
     println!(
-        "gateway: {} · default: {} · active runs: {}",
-        health.status, health.default_provider, health.active_runs
+        "{}",
+        style::key_value("Default provider", &health.default_provider)
     );
+    println!("{}", style::key_value("Active runs", health.active_runs));
     let profiles = client.providers().await?;
     let probes = futures_util::future::join_all(
         profiles
@@ -584,36 +656,55 @@ async fn print_statuses(client: &GatewayClient) -> Result<()> {
                 profile.adapter
             );
         }
+        println!();
+        println!("{}", style::section(&provider.id));
+        println!("{}", style::key_value("Adapter", &profile.adapter));
+        println!("{}", style::key_value("Endpoint", &profile.endpoint));
         if provider.reachable {
-            println!(
-                "{} [{}] {}: available",
-                provider.id, profile.adapter, profile.endpoint
-            );
+            println!("{}", style::key_value("State", "available"));
             if !profile.supported_reasoning_efforts.is_empty() {
                 println!(
-                    "  declared thinking levels: {}",
-                    profile.supported_reasoning_efforts.join("/")
+                    "{}",
+                    style::key_value(
+                        "Thinking levels",
+                        profile.supported_reasoning_efforts.join("/")
+                    )
                 );
             }
             for model in &provider.models {
-                println!("  {} — {}", model.id, model_summary(model));
+                println!(
+                    "  {}  {}",
+                    style::paint("1", &model.id),
+                    style::dim(&model_summary(model))
+                );
             }
         } else {
+            println!("{}", style::key_value("State", "unavailable"));
             println!(
-                "{} [{}]: unavailable ({}: {}; retryable: {})",
-                provider.id,
-                profile.adapter,
-                provider
-                    .error
-                    .as_ref()
-                    .map(|error| error.code.as_str())
-                    .unwrap_or("unknown_error"),
-                provider
-                    .error
-                    .as_ref()
-                    .map(|error| error.message.as_str())
-                    .unwrap_or("unknown error"),
-                provider.error.as_ref().is_some_and(|error| error.retryable)
+                "{}",
+                style::key_value(
+                    "Error",
+                    format!(
+                        "{}: {}",
+                        provider
+                            .error
+                            .as_ref()
+                            .map(|error| error.code.as_str())
+                            .unwrap_or("unknown_error"),
+                        provider
+                            .error
+                            .as_ref()
+                            .map(|error| error.message.as_str())
+                            .unwrap_or("unknown error")
+                    )
+                )
+            );
+            println!(
+                "{}",
+                style::key_value(
+                    "Retryable",
+                    provider.error.as_ref().is_some_and(|error| error.retryable)
+                )
             );
         }
     }
@@ -643,23 +734,50 @@ fn model_summary(model: &ProviderModel) -> String {
 }
 
 fn print_session(session: &Session) {
+    println!("{}", style::section("Session"));
+    println!("{}", style::key_value("ID", &session.id));
+    println!("{}", style::key_value("Status", &session.status));
     println!(
-        "session: {}\nstatus: {}\nworking directory: {}\nagent: {}\nprovider: {}\nmodel: {}\nreasoning: {}\ncontext window: {} ({})\nparent: {}\nfork event: {}",
-        session.id,
-        session.status,
-        session.working_directory,
-        session.agent_id,
-        session.provider,
-        session.model,
-        if session.reasoning_effort.is_empty() {
-            "provider default"
-        } else {
-            &session.reasoning_effort
-        },
-        session.context_window_tokens,
-        session.context_window_source,
-        session.parent_session_id.as_deref().unwrap_or("none"),
-        session.fork_event_id.as_deref().unwrap_or("none"),
+        "{}",
+        style::key_value("Directory", &session.working_directory)
+    );
+    println!("{}", style::key_value("Agent", &session.agent_id));
+    println!("{}", style::key_value("Provider", &session.provider));
+    println!("{}", style::key_value("Model", &session.model));
+    println!(
+        "{}",
+        style::key_value(
+            "Reasoning",
+            if session.reasoning_effort.is_empty() {
+                "provider default"
+            } else {
+                &session.reasoning_effort
+            }
+        )
+    );
+    println!(
+        "{}",
+        style::key_value(
+            "Context window",
+            format!(
+                "{} ({})",
+                session.context_window_tokens, session.context_window_source
+            )
+        )
+    );
+    println!(
+        "{}",
+        style::key_value(
+            "Parent",
+            session.parent_session_id.as_deref().unwrap_or("none")
+        )
+    );
+    println!(
+        "{}",
+        style::key_value(
+            "Fork event",
+            session.fork_event_id.as_deref().unwrap_or("none")
+        )
     );
 }
 
@@ -672,68 +790,90 @@ async fn ensure_trust(
     if status.trusted {
         return Ok(());
     }
-    println!("Hames needs permission to work in this exact folder:");
-    println!("  {}", status.path);
-    let answer = editor.readline("Trust and remember this folder? [y/N] ")?;
+    println!("{}", style::badge(style::Badge::Approval, false));
+    println!("{}", style::key_value("Directory", &status.path));
+    println!(
+        "  {}",
+        style::dim("Hames needs permission to work in this exact folder.")
+    );
+    let answer = editor.readline("Trust and remember this folder? [y/N] › ")?;
     if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
         bail!("working directory was not trusted");
     }
     let granted = client.trust_session(&session.id).await?;
-    println!("trusted {}", granted.path);
+    println!("{}", style::success(&format!("Trusted {}", granted.path)));
     Ok(())
 }
 
 async fn print_trust(client: &GatewayClient, session: &Session) -> Result<()> {
     let status = client.trust_status(&session.id).await?;
+    println!("{}", style::section("Trust"));
+    println!("{}", style::key_value("Directory", &status.path));
     println!(
-        "{}: {}{}{}",
-        status.path,
-        if status.trusted {
-            "trusted"
-        } else {
-            "not trusted"
-        },
-        status
-            .grant_id
-            .as_ref()
-            .map(|id| format!(" · {id}"))
-            .unwrap_or_default(),
-        status
-            .created_at
-            .as_ref()
-            .map(|created| format!(" · {created}"))
-            .unwrap_or_default(),
+        "{}",
+        style::key_value(
+            "State",
+            if status.trusted {
+                "trusted"
+            } else {
+                "not trusted"
+            }
+        )
+    );
+    println!(
+        "{}",
+        style::key_value("Grant", status.grant_id.as_deref().unwrap_or("none"))
+    );
+    println!(
+        "{}",
+        style::key_value("Created", status.created_at.as_deref().unwrap_or("none"))
     );
     Ok(())
 }
 
 async fn print_usage(client: &GatewayClient, session: &Session) -> Result<()> {
     let usage = client.usage(&session.id).await?;
+    println!("{}", style::section("Usage"));
     println!(
-        "estimated input: {} · reported input: {} · output: {} · cached: {} · reasoning: {} · requests: {} · cost: {:.6}",
-        usage.estimated_input_tokens,
-        usage.input_tokens,
-        usage.output_tokens,
-        usage.cached_input_tokens,
-        usage.reasoning_tokens,
-        usage.model_requests,
-        usage.provider_reported_cost,
+        "{}",
+        style::key_value("Estimated input", usage.estimated_input_tokens)
+    );
+    println!("{}", style::key_value("Reported input", usage.input_tokens));
+    println!("{}", style::key_value("Output", usage.output_tokens));
+    println!("{}", style::key_value("Cached", usage.cached_input_tokens));
+    println!("{}", style::key_value("Reasoning", usage.reasoning_tokens));
+    println!("{}", style::key_value("Requests", usage.model_requests));
+    println!(
+        "{}",
+        style::key_value("Cost", format!("{:.6}", usage.provider_reported_cost))
     );
     Ok(())
 }
 
 fn print_inspection(inspection: &RunInspection) {
+    println!("{}", style::section("Run inspection"));
+    println!("{}", style::key_value("Run", &inspection.run_id));
+    println!("{}", style::key_value("Status", &inspection.status));
     println!(
-        "run: {} · {} · requests: {} · tools: {}",
-        inspection.run_id, inspection.status, inspection.model_requests, inspection.tool_calls,
+        "{}",
+        style::key_value("Model requests", inspection.model_requests)
     );
+    println!("{}", style::key_value("Tool calls", inspection.tool_calls));
     println!(
-        "usage: estimated input {} · reported input {} · output {} · reasoning {}",
-        inspection.usage.estimated_input_tokens,
-        inspection.usage.input_tokens,
-        inspection.usage.output_tokens,
-        inspection.usage.reasoning_tokens,
+        "{}",
+        style::key_value(
+            "Usage",
+            format!(
+                "{} estimated · {} input · {} output · {} reasoning",
+                inspection.usage.estimated_input_tokens,
+                inspection.usage.input_tokens,
+                inspection.usage.output_tokens,
+                inspection.usage.reasoning_tokens
+            )
+        )
     );
+    println!();
+    println!("{}", style::section("Timeline"));
     for item in &inspection.timeline {
         let short_id = item.event_id.get(..8).unwrap_or(&item.event_id);
         println!(
@@ -749,26 +889,61 @@ fn print_inspection(inspection: &RunInspection) {
 
 fn print_context(context: &ContextInspection) {
     let manifest = &context.manifest;
+    println!("{}", style::section("Context"));
+    println!("{}", style::key_value("Event", &context.event_id));
+    println!("{}", style::key_value("Run", &context.run_id));
     println!(
-        "context: {} · run {} · compiler {} ({})",
-        context.event_id, context.run_id, manifest.compiler_version, manifest.estimator_version
+        "{}",
+        style::key_value(
+            "Compiler",
+            format!(
+                "{} ({})",
+                manifest.compiler_version, manifest.estimator_version
+            )
+        )
     );
     println!(
-        "{} / {} · reasoning {} · window {} ({}) · input budget {} · estimated {} · output reserve {}",
-        manifest.provider,
-        manifest.model,
-        if manifest.reasoning_effort.is_empty() {
-            "provider default"
-        } else {
-            &manifest.reasoning_effort
-        },
-        manifest.context_window_tokens,
-        manifest.context_window_source,
-        manifest.input_budget_tokens,
-        manifest.estimated_input_tokens,
-        manifest.output_reserve_tokens,
+        "{}",
+        style::key_value(
+            "Model",
+            format!("{} / {}", manifest.provider, manifest.model)
+        )
     );
-    println!("selected sources:");
+    println!(
+        "{}",
+        style::key_value(
+            "Reasoning",
+            if manifest.reasoning_effort.is_empty() {
+                "provider default"
+            } else {
+                &manifest.reasoning_effort
+            }
+        )
+    );
+    println!(
+        "{}",
+        style::key_value(
+            "Window",
+            format!(
+                "{} ({})",
+                manifest.context_window_tokens, manifest.context_window_source
+            )
+        )
+    );
+    println!(
+        "{}",
+        style::key_value("Input budget", manifest.input_budget_tokens)
+    );
+    println!(
+        "{}",
+        style::key_value("Estimated input", manifest.estimated_input_tokens)
+    );
+    println!(
+        "{}",
+        style::key_value("Output reserve", manifest.output_reserve_tokens)
+    );
+    println!();
+    println!("{}", style::section("Selected sources"));
     for source in &manifest.selected_sources {
         if !source.skill_version_id.is_empty() {
             println!(
@@ -797,7 +972,8 @@ fn print_context(context: &ContextInspection) {
         }
     }
     if !manifest.omitted_sources.is_empty() {
-        println!("omitted or compacted sources:");
+        println!();
+        println!("{}", style::section("Omitted or compacted"));
         for source in &manifest.omitted_sources {
             println!(
                 "  {:>6} tokens  {:<14} {} · {} · {}",
@@ -809,7 +985,11 @@ fn print_context(context: &ContextInspection) {
             );
         }
     }
-    println!("request hash: {}", manifest.request_hash);
+    println!();
+    println!(
+        "{}",
+        style::key_value("Request hash", &manifest.request_hash)
+    );
 }
 
 async fn handle_memory_command(
@@ -844,12 +1024,18 @@ async fn handle_memory_command(
                 .get(2)
                 .with_context(|| format!("usage: /memory {action} <memory-id>"))?;
             let record = client.transition_memory(&session.id, id, action).await?;
-            println!("memory> {} is {}", record.id, record.status);
+            println!(
+                "{}",
+                style::success(&format!("Memory {} is {}", record.id, record.status))
+            );
         }
         Some("forget" | "retract") => {
             let id = parts.get(2).context("usage: /memory forget <memory-id>")?;
             let record = client.transition_memory(&session.id, id, "retract").await?;
-            println!("memory> {} is {}", record.id, record.status);
+            println!(
+                "{}",
+                style::success(&format!("Memory {} is {}", record.id, record.status))
+            );
         }
         Some("promote") => {
             let id = parts
@@ -866,8 +1052,11 @@ async fn handle_memory_command(
             }
             let record = client.promote_memory(&session.id, id, visibility).await?;
             println!(
-                "memory> promoted {} to {} as {}",
-                id, record.visibility, record.id
+                "{}",
+                style::success(&format!(
+                    "Promoted {} to {} as {}",
+                    id, record.visibility, record.id
+                ))
             );
         }
         Some("status") => {
@@ -878,7 +1067,10 @@ async fn handle_memory_command(
                 .get(2)
                 .context("usage: /memory retry <memory-job-id>")?;
             let job = client.retry_memory_job(&session.id, id).await?;
-            println!("memory> retry queued for {}", job.id);
+            println!(
+                "{}",
+                style::success(&format!("Memory retry queued for {}", job.id))
+            );
         }
         Some(_) => bail!(
             "usage: /memory [list|all|search|show|proposals|accept|reject|forget|promote|status|retry]"
@@ -891,8 +1083,9 @@ async fn handle_plugins_command(client: &GatewayClient, parts: &[&str]) -> Resul
     match parts.get(1).copied() {
         None | Some("list") => {
             let plugins = client.plugins().await?;
+            println!("{}", style::section("Plugins"));
             if plugins.is_empty() {
-                println!("plugins> none installed");
+                println!("  {}", style::dim("None installed"));
                 return Ok(());
             }
             for plugin in plugins {
@@ -909,6 +1102,7 @@ async fn handle_plugins_command(client: &GatewayClient, parts: &[&str]) -> Resul
         Some("show") => {
             let id = parts.get(2).context("usage: /plugins show <id>")?;
             let plugin = client.plugin(id).await?;
+            println!("{}", style::section("Plugin"));
             println!(
                 "{}  {}  v{}",
                 plugin.id,
@@ -922,19 +1116,23 @@ async fn handle_plugins_command(client: &GatewayClient, parts: &[&str]) -> Resul
                 plugin.version
             );
             if !plugin.permissions.is_empty() {
-                println!("permissions: {}", plugin.permissions.join(", "));
+                println!(
+                    "{}",
+                    style::key_value("Permissions", plugin.permissions.join(", "))
+                );
             }
             if !plugin.tools.is_empty() {
-                println!("tools: {}", plugin.tools.join(", "));
+                println!("{}", style::key_value("Tools", plugin.tools.join(", ")));
             }
             if !plugin.warning.is_empty() {
-                println!("warning: {}", plugin.warning);
+                println!("{}", style::warning(&plugin.warning));
             }
         }
         Some("proposals") => {
             let proposals = client.plugin_proposals().await?;
+            println!("{}", style::section("Plugin proposals"));
             if proposals.is_empty() {
-                println!("plugins> no proposals");
+                println!("  {}", style::dim("No proposals"));
                 return Ok(());
             }
             for proposal in proposals {
@@ -950,12 +1148,16 @@ async fn handle_plugins_command(client: &GatewayClient, parts: &[&str]) -> Resul
         Some("proposal") => {
             let id = parts.get(2).context("usage: /plugins proposal <id>")?;
             let proposal = client.plugin_proposal(id).await?;
+            println!("{}", style::section("Plugin proposal"));
             println!(
                 "{}  {}  {}\n{}",
                 proposal.id, proposal.status, proposal.plugin_id, proposal.package_path
             );
             if !proposal.permissions.is_empty() {
-                println!("permissions: {}", proposal.permissions.join(", "));
+                println!(
+                    "{}",
+                    style::key_value("Permissions", proposal.permissions.join(", "))
+                );
             }
         }
         Some(_) => bail!("usage: /plugins [list|show <id>|proposals|proposal <id>]"),
@@ -991,8 +1193,9 @@ async fn handle_evolution_command(
 }
 
 fn print_scars(scars: &[Scar]) {
+    println!("{}", style::section("Evolution"));
     if scars.is_empty() {
-        println!("evolution> no scars recorded");
+        println!("  {}", style::dim("No scars recorded"));
         return;
     }
     for scar in scars {
@@ -1010,26 +1213,37 @@ fn print_scars(scars: &[Scar]) {
 }
 
 fn print_scar_detail(scar: &Scar) {
-    println!("evolution> scar {}", scar.id);
-    println!("  title:       {}", scar.title);
+    println!("{}", style::section("Scar"));
+    println!("{}", style::key_value("ID", &scar.id));
+    println!("{}", style::key_value("Title", &scar.title));
     println!(
-        "  status:      {} (severity {})",
-        scar.status, scar.severity
+        "{}",
+        style::key_value(
+            "Status",
+            format!("{} (severity {})", scar.status, scar.severity)
+        )
     );
-    println!("  detection:   {}", scar.detection);
-    println!("  signature:   {}", scar.failure_signature);
-    println!("  description: {}", scar.description);
-    println!("  expected:    {}", scar.expected_behavior);
+    println!("{}", style::key_value("Detection", &scar.detection));
+    println!("{}", style::key_value("Signature", &scar.failure_signature));
+    println!("{}", style::key_value("Description", &scar.description));
+    println!("{}", style::key_value("Expected", &scar.expected_behavior));
     println!(
-        "  guards:      {} clean, {} regressions",
-        scar.successful_guard_count, scar.regression_count
+        "{}",
+        style::key_value(
+            "Guards",
+            format!(
+                "{} clean, {} regressions",
+                scar.successful_guard_count, scar.regression_count
+            )
+        )
     );
-    println!("  updated:     {}", scar.updated_at);
+    println!("{}", style::key_value("Updated", &scar.updated_at));
 }
 
 fn print_memories(records: &[MemoryRecord]) {
+    println!("{}", style::section("Memories"));
     if records.is_empty() {
-        println!("memory> no matching records");
+        println!("  {}", style::dim("No matching records"));
         return;
     }
     for record in records {
@@ -1041,28 +1255,34 @@ fn print_memories(records: &[MemoryRecord]) {
 }
 
 fn print_memory_detail(record: &MemoryRecord) {
+    println!("{}", style::section("Memory"));
+    println!("{}", style::key_value("ID", &record.id));
+    println!("{}", style::key_value("Layer", &record.layer));
+    println!("{}", style::key_value("Status", &record.status));
+    println!("{}", style::key_value("Visibility", &record.visibility));
+    println!("{}", style::key_value("Origin", &record.origin_kind));
+    println!("{}", style::key_value("Subject", &record.subject));
+    println!("{}", style::key_value("Predicate", &record.predicate));
+    println!("{}", style::key_value("Value", &record.value));
     println!(
-        "memory: {}\nlayer: {}\nstatus: {}\nvisibility: {}\norigin: {}\nsubject: {}\npredicate: {}\nvalue: {}\nconfidence: {:.2}\nimportance: {:.2}\nsummary: {}",
-        record.id,
-        record.layer,
-        record.status,
-        record.visibility,
-        record.origin_kind,
-        record.subject,
-        record.predicate,
-        record.value,
-        record.confidence,
-        record.importance,
-        record.summary,
+        "{}",
+        style::key_value("Confidence", format!("{:.2}", record.confidence))
     );
+    println!(
+        "{}",
+        style::key_value("Importance", format!("{:.2}", record.importance))
+    );
+    println!("{}", style::key_value("Summary", &record.summary));
     if !record.anchors.is_empty() {
-        println!("anchors:");
+        println!();
+        println!("{}", style::section("Anchors"));
         for anchor in &record.anchors {
             println!("  {}: {}", anchor.kind, anchor.value);
         }
     }
     if !record.provenance_event_ids.is_empty() {
-        println!("provenance:");
+        println!();
+        println!("{}", style::section("Provenance"));
         for event_id in &record.provenance_event_ids {
             println!("  {event_id}");
         }
@@ -1070,8 +1290,9 @@ fn print_memory_detail(record: &MemoryRecord) {
 }
 
 fn print_memory_jobs(jobs: &[MemoryJob]) {
+    println!("{}", style::section("Memory jobs"));
     if jobs.is_empty() {
-        println!("memory> no extraction jobs");
+        println!("  {}", style::dim("No extraction jobs"));
         return;
     }
     for job in jobs {
@@ -1120,7 +1341,10 @@ async fn handle_skills_command(
             let job = client
                 .author_skill(&session.id, &goal, "workspace", None)
                 .await?;
-            println!("skills> autonomous authoring job {} queued", job.id);
+            println!(
+                "{}",
+                style::success(&format!("Autonomous authoring job {} queued", job.id))
+            );
         }
         Some("correct") => {
             let slug = parts
@@ -1134,12 +1358,18 @@ async fn handle_skills_command(
             let job = client
                 .author_skill(&session.id, &goal, &current.scope, Some(&current.skill_id))
                 .await?;
-            println!("skills> autonomous correction job {} queued", job.id);
+            println!(
+                "{}",
+                style::success(&format!("Autonomous correction job {} queued", job.id))
+            );
         }
         Some("retry") => {
             let id = parts.get(2).context("usage: /skills retry <job-id>")?;
             let job = client.retry_skill_job(&session.id, id).await?;
-            println!("skills> retry queued for {}", job.id);
+            println!(
+                "{}",
+                style::success(&format!("Skill retry queued for {}", job.id))
+            );
         }
         Some(action @ ("pin" | "unpin" | "archive" | "restore" | "rollback")) => {
             let slug = parts
@@ -1147,11 +1377,14 @@ async fn handle_skills_command(
                 .with_context(|| format!("usage: /skills {action} <id>"))?;
             let skill = client.control_skill(&session.id, slug, action).await?;
             println!(
-                "skills> {} v{} is {}{}",
-                skill.slug,
-                skill.version,
-                skill.status,
-                if skill.pinned { " (pinned)" } else { "" }
+                "{}",
+                style::success(&format!(
+                    "{} v{} is {}{}",
+                    skill.slug,
+                    skill.version,
+                    skill.status,
+                    if skill.pinned { " (pinned)" } else { "" }
+                ))
             );
         }
         Some(_) => bail!(
@@ -1162,8 +1395,9 @@ async fn handle_skills_command(
 }
 
 fn print_skills(skills: &[SkillSummary]) {
+    println!("{}", style::section("Skills"));
     if skills.is_empty() {
-        println!("skills> no matching active Skills");
+        println!("  {}", style::dim("No matching active Skills"));
         return;
     }
     for skill in skills {
@@ -1179,21 +1413,22 @@ fn print_skills(skills: &[SkillSummary]) {
 }
 
 fn print_skill_detail(skill: &SkillVersion) {
+    println!("{}", style::section("Skill"));
     println!(
-        "Skill: {} v{}\nstatus: {}\nscope: {}\nhash: {}\ncreated by: {}\npackage: {}\ntools: {}\ntriggers: {}\n\n{}",
-        skill.slug,
-        skill.version,
-        skill.status,
-        skill.scope,
-        skill.content_hash,
-        skill.created_by,
-        skill.package_path,
-        skill.metadata.tools.join(", "),
-        skill.metadata.triggers.join(", "),
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n\n{}",
+        style::key_value("Name", format!("{} v{}", skill.slug, skill.version)),
+        style::key_value("Status", &skill.status),
+        style::key_value("Scope", &skill.scope),
+        style::key_value("Hash", &skill.content_hash),
+        style::key_value("Created by", &skill.created_by),
+        style::key_value("Package", &skill.package_path),
+        style::key_value("Tools", skill.metadata.tools.join(", ")),
+        style::key_value("Triggers", skill.metadata.triggers.join(", ")),
         skill.instructions,
     );
     if !skill.metadata.scripts.is_empty() {
-        println!("scripts:");
+        println!();
+        println!("{}", style::section("Scripts"));
         for script in &skill.metadata.scripts {
             println!(
                 "  {} ({}) · {}",
@@ -1204,8 +1439,9 @@ fn print_skill_detail(skill: &SkillVersion) {
 }
 
 fn print_skill_history(history: &[SkillVersion]) {
+    println!("{}", style::section("Skill history"));
     if history.is_empty() {
-        println!("skills> no versions");
+        println!("  {}", style::dim("No versions"));
         return;
     }
     for skill in history {
@@ -1221,8 +1457,9 @@ fn print_skill_history(history: &[SkillVersion]) {
 }
 
 fn print_skill_jobs(jobs: &[SkillJob]) {
+    println!("{}", style::section("Skill jobs"));
     if jobs.is_empty() {
-        println!("skills> no authoring jobs");
+        println!("  {}", style::dim("No authoring jobs"));
         return;
     }
     for job in jobs {
@@ -1336,11 +1573,12 @@ async fn handle_approval(
         .unwrap_or("policy confirmation");
     let arguments = serde_json::to_string_pretty(&event.payload["arguments"])?;
     println!();
-    println!("{}", style::badge(style::Badge::Approval, true));
-    println!("  {name}: {reason}");
-    println!("  {}", style::dim(&arguments));
-    println!("  {}", style::dim(&format!("request hash: {request_hash}")));
-    let answer = editor.readline("Approve this exact action once? [y/N] ")?;
+    println!("{}", style::badge(style::Badge::Approval, false));
+    println!("{}", style::key_value("Action", name));
+    println!("{}", style::key_value("Reason", reason));
+    println!("{}", style::key_value("Arguments", &arguments));
+    println!("{}", style::key_value("Request hash", request_hash));
+    let answer = editor.readline("Approve this exact action once? [y/N] › ")?;
     let decision = if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
         "approved"
     } else {
@@ -1350,11 +1588,15 @@ async fn handle_approval(
         .resolve_approval(approval_id, request_hash, decision)
         .await?;
     let settled = if resolved.status == "approved" {
-        style::badge(style::Badge::Hames, false)
+        style::success(&resolved.status)
     } else {
-        style::badge(style::Badge::Error, false)
+        format!(
+            "{} {}",
+            style::badge(style::Badge::Error, false),
+            resolved.status
+        )
     };
-    println!("{settled} {}", resolved.status);
+    println!("{settled}");
     Ok(())
 }
 
@@ -1888,34 +2130,78 @@ impl SseDecoder {
 }
 
 fn print_help() {
+    println!("{}", style::section("Conversation"));
+    print_help_rows(&[
+        ("/new · /clear", "Start a fresh session"),
+        ("/session · /sessions", "Inspect or list sessions"),
+        ("/resume <id> · /fork [event]", "Resume or branch history"),
+        ("/agent [id]", "Inspect or change the active agent"),
+        ("/events [count]", "Show recent durable events"),
+    ]);
+    println!();
+    println!("{}", style::section("Runtime"));
+    print_help_rows(&[
+        ("/project · /trust", "Inspect project and trust"),
+        ("/provider [provider] [model]", "Change provider or model"),
+        ("/model · /reasoning [level]", "Inspect model settings"),
+        ("/status · /usage", "Inspect services and token usage"),
+        (
+            "/inspect [run] · /context [event]",
+            "Audit a run or context",
+        ),
+        ("/cancel", "Use Ctrl-C during an active run"),
+    ]);
+    println!();
+    println!("{}", style::section("Knowledge"));
+    print_help_rows(&[
+        ("/remember [fact]", "Capture durable memory"),
+        ("/memory …", "Inspect and control memories"),
+        ("/skills …", "Inspect and control Skills"),
+        ("/plugins …", "Inspect plugins and proposals"),
+        ("/evolution … · /correct …", "Inspect or record corrections"),
+    ]);
+    println!();
+    println!("{}", style::section("Transcript"));
+    print_help_rows(&[
+        (
+            "/export <path> [markdown|jsonl]",
+            "Export an audit transcript",
+        ),
+        ("/help · /quit", "Show help or exit"),
+    ]);
     println!(
-        "/help\n/new\n/clear\n/session\n/sessions\n/resume <id>\n/events [count]\n\
-         /fork [event-id-or-sequence]\n/agent [agent-id]\n\
-         (create agents with: hames agent create --name Researcher)\n\
-         /project\n/trust [status|revoke]\n\
-         /provider [provider] [model]\n/model\n/reasoning [default|off|on|level]\n\
-         /remember [durable fact]\n/memory [list|all|search <query>|show <id>]\n\
-         /memory proposals|accept <id>|reject <id>|forget <id>\n\
-         /memory promote <id> <visibility>|status|retry <job-id>\n\
-         /skills [list|search <query>|show <id>|history <id>|jobs]\n\
-         /skills author <goal>|correct <id> <change>|retry <job-id>\n\
-         /skills pin|unpin|archive|restore|rollback <id>\n\
-         /plugins [list|show <id>|proposals|proposal <id>]\n\
-         /correct <short explanation>\n\
-         /evolution [list|open|guarded|healed|regressed|show <scar-id>]\n\
-         /usage\n/inspect [run-id]\n/context [context-event-id]\n\
-         /export <path> [markdown|jsonl]\n/status\n/cancel (Ctrl-C during a run)\n/quit"
+        "\n  {}",
+        style::dim("Create agents with: hames agent create --name Researcher")
     );
+}
+
+fn print_help_rows(rows: &[(&str, &str)]) {
+    for (command, description) in rows {
+        println!("  {:<40} {}", command, style::dim(description));
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::SseDecoder;
+    use unicode_width::UnicodeWidthStr;
+
+    use super::{SseDecoder, wrap_body};
 
     #[test]
     fn sse_decoder_handles_split_frames() {
         let mut decoder = SseDecoder::default();
         assert!(decoder.push(b"event: one\ndata: {\"a\":").is_empty());
         assert_eq!(decoder.push(b"1}\n\n"), vec!["{\"a\":1}"]);
+    }
+
+    #[test]
+    fn body_wrapping_uses_terminal_display_width() {
+        let wrapped = wrap_body("wide 界 text", 0, 10);
+        assert!(
+            wrapped
+                .lines()
+                .all(|line| UnicodeWidthStr::width(line) <= 24)
+        );
+        assert!(wrapped.starts_with("  "));
     }
 }

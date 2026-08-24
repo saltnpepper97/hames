@@ -288,7 +288,7 @@ pub fn sweep_badge(kind: Badge, distance: u16) -> io::Result<()> {
 
 pub fn banner_lines(
     version: &str,
-    gateway_version: &str,
+    _gateway_version: &str,
     provider: &str,
     model: &str,
     reasoning: &str,
@@ -296,15 +296,21 @@ pub fn banner_lines(
     session_id: &str,
 ) -> String {
     let short_session = session_id.get(..8).unwrap_or(session_id);
+    let display_cwd = std::env::var("HOME")
+        .ok()
+        .and_then(|home| cwd.strip_prefix(&home).map(|suffix| format!("~{suffix}")))
+        .unwrap_or_else(|| cwd.to_owned());
     format!(
         "{} {}  {}\n  {}",
         mark(),
         paint("1", "Hames"),
+        paint("2", &format!("v{version}")),
         paint(
             "2",
-            &format!("{version} · core {gateway_version} · {provider} / {model} · {reasoning}")
-        ),
-        paint("2", &format!("{cwd} · session {short_session}"))
+            &format!(
+                "{provider} / {model} · {reasoning} · {display_cwd} · session {short_session}"
+            )
+        )
     )
 }
 
@@ -324,9 +330,30 @@ pub fn dim(text: &str) -> String {
     paint("2", text)
 }
 
+pub fn section(title: &str) -> String {
+    format!("{} {}", mark(), paint("1", title))
+}
+
+pub fn key_value(label: &str, value: impl std::fmt::Display) -> String {
+    let label = format!("{label:<16}");
+    format!("  {} {value}", dim(&label))
+}
+
+pub fn success(text: &str) -> String {
+    format!("{} {}", mark(), paint("32", text))
+}
+
+pub fn empty(text: &str) -> String {
+    format!("{} {}", mark(), dim(text))
+}
+
+pub fn warning(text: &str) -> String {
+    format!("{} {}", mark(), paint("33", text))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Badge, MARK, badge, paint};
+    use super::{Badge, MARK, badge, key_value, paint};
 
     #[test]
     fn badges_are_plain_when_color_is_off() {
@@ -334,6 +361,7 @@ mod tests {
         assert_eq!(badge(Badge::Hames, false), "⬢ Hames");
         assert_eq!(badge(Badge::You, false), "You");
         assert_eq!(paint("31", "boom"), "boom");
+        assert_eq!(key_value("Model", "fixture"), "  Model            fixture");
         assert_eq!(MARK, "⬢");
     }
 }

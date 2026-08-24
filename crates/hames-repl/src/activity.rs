@@ -591,4 +591,70 @@ mod tests {
         assert!(settled.contains("Read"));
         assert!(settled.contains("20 lines"));
     }
+
+    #[test]
+    fn partial_name_and_arguments_only_reveal_truthful_target() {
+        let mut board = ActivityBoard::default();
+        board.next_turn();
+        board.transient_delta(&json!({
+            "index": 0,
+            "name": "edit_",
+            "arguments_delta": "{\"path\":\"src/"
+        }));
+        let partial = board.row_line(0, 80).unwrap();
+        assert!(partial.contains("Preparing action"));
+        assert!(!partial.contains("src/"));
+
+        board.transient_delta(&json!({
+            "index": 0,
+            "name": "file",
+            "arguments_delta": "lib.rs\"}"
+        }));
+        let complete = board.row_line(0, 80).unwrap();
+        assert!(complete.contains("Preparing edit"));
+        assert!(complete.contains("src/lib.rs"));
+    }
+
+    #[test]
+    fn categories_group_adjacent_calls_without_reordering() {
+        let mut board = ActivityBoard::default();
+        board.next_turn();
+        for (index, name, path) in [
+            (0, "read_file", "one"),
+            (1, "list_dir", "two"),
+            (2, "edit_file", "three"),
+        ] {
+            board.transient_delta(&json!({
+                "index": index,
+                "name": name,
+                "arguments_delta": json!({"path": path}).to_string()
+            }));
+        }
+        let lines = board.render_lines(80, false);
+        assert_eq!(
+            lines.iter().filter(|line| line.contains("Explore")).count(),
+            1
+        );
+        assert_eq!(
+            lines.iter().filter(|line| line.contains("Change")).count(),
+            1
+        );
+        assert!(lines[1].contains("one"));
+        assert!(lines[2].contains("two"));
+        assert!(lines[4].contains("three"));
+    }
+
+    #[test]
+    fn narrow_activity_rows_are_single_line_and_bounded() {
+        let mut board = ActivityBoard::default();
+        board.next_turn();
+        board.transient_delta(&json!({
+            "index": 0,
+            "name": "shell",
+            "arguments_delta": "{\"command\":\"cargo test --locked --all-targets --a-very-long-flag\"}"
+        }));
+        let line = board.row_line(0, 32).unwrap();
+        assert!(!line.contains('\n'));
+        assert!(line.ends_with('…'));
+    }
 }
