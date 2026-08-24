@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 
 #[derive(Clone)]
 pub struct GatewayClient {
@@ -184,8 +184,28 @@ pub struct IntegrityResult {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct RunAccepted {
-    pub run_id: String,
+pub struct MessageAccepted {
+    pub disposition: String,
+    pub run_id: Option<String>,
+    pub queued: Option<QueuedMessage>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct QueuedMessage {
+    pub id: String,
+    pub session_id: String,
+    pub content: String,
+    pub remember: bool,
+    pub paste_spans: Vec<PasteSpan>,
+    pub created_at: String,
+    pub position: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct QueueState {
+    pub session_id: String,
+    pub paused: bool,
+    pub items: Vec<QueuedMessage>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -497,7 +517,7 @@ pub struct LiveEnvelope {
     pub payload: Option<Value>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PasteSpan {
     pub start_byte: usize,
     pub end_byte: usize,
@@ -966,7 +986,7 @@ impl GatewayClient {
         session_id: &str,
         content: &str,
         remember: bool,
-    ) -> Result<RunAccepted> {
+    ) -> Result<MessageAccepted> {
         self.send_message_with_pastes(session_id, content, remember, &[])
             .await
     }
@@ -977,7 +997,7 @@ impl GatewayClient {
         content: &str,
         remember: bool,
         paste_spans: &[PasteSpan],
-    ) -> Result<RunAccepted> {
+    ) -> Result<MessageAccepted> {
         decode(
             self.post(&format!("/v1/sessions/{session_id}/messages"))
                 .json(&serde_json::json!({
@@ -985,6 +1005,76 @@ impl GatewayClient {
                     "remember": remember,
                     "paste_spans": paste_spans,
                 }))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn queue_state(&self, session_id: &str) -> Result<QueueState> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/queue"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn take_latest_queued(&self, session_id: &str) -> Result<QueuedMessage> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/queue/take-latest"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn take_queued(&self, session_id: &str, queue_id: &str) -> Result<QueuedMessage> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/queue/{queue_id}/take"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn delete_queued(&self, session_id: &str, queue_id: &str) -> Result<QueueState> {
+        decode(
+            self.http
+                .delete(format!(
+                    "{}/v1/sessions/{session_id}/queue/{queue_id}",
+                    self.base_url
+                ))
+                .bearer_auth(&self.token)
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn clear_queue(&self, session_id: &str) -> Result<QueueState> {
+        decode(
+            self.http
+                .delete(format!("{}/v1/sessions/{session_id}/queue", self.base_url))
+                .bearer_auth(&self.token)
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn pause_queue(&self, session_id: &str) -> Result<QueueState> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/queue/pause"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn resume_queue(&self, session_id: &str) -> Result<QueueState> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/queue/resume"))
                 .send()
                 .await?,
         )

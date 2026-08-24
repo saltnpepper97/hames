@@ -73,6 +73,20 @@ class MessagePayload(EventPayload):
     paste_spans: list[PasteSpanPayload] = Field(default_factory=_empty_paste_spans, max_length=64)
 
 
+class QueuedMessagePayload(MessagePayload):
+    queue_id: str
+    position: int = Field(ge=1, le=2)
+
+
+class QueueRemovedPayload(EventPayload):
+    queue_id: str
+    reason: str
+
+
+class QueueStatePayload(EventPayload):
+    paused: bool
+
+
 class CorrectionPayload(EventPayload):
     content: str
     target_event_id: str | None = None
@@ -630,6 +644,11 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "session.mode.changed": SessionModeChangedPayload,
     "session.title.changed": SessionTitleChangedPayload,
     "user.message": MessagePayload,
+    "queue.enqueued": QueuedMessagePayload,
+    "queue.removed": QueueRemovedPayload,
+    "queue.promoted": QueueRemovedPayload,
+    "queue.paused": QueueStatePayload,
+    "queue.resumed": QueueStatePayload,
     "user.correction": CorrectionPayload,
     "assistant.message": AssistantOutputPayload,
     "assistant.reasoning": AssistantReasoningPayload,

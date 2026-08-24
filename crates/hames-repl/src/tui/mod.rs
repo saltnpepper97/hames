@@ -74,6 +74,8 @@ pub async fn run() -> Result<()> {
         app.last_sequence,
         stream_tx.clone(),
     );
+    let queue_state = client.resume_queue(&app.session.id).await?;
+    app.set_queue(queue_state);
     let mut terminal = TerminalGuard::enter()?;
     let mut input = EventStream::new();
     let mut dirty = true;
@@ -137,6 +139,8 @@ pub async fn run() -> Result<()> {
                     app.last_sequence,
                     stream_tx.clone(),
                 );
+                let queue_state = client.resume_queue(&app.session.id).await?;
+                app.set_queue(queue_state);
             }
             Ok(None) => {}
             Err(error) => {
@@ -148,6 +152,7 @@ pub async fn run() -> Result<()> {
             break;
         }
     }
+    let queue_pause = client.pause_queue(&app.session.id).await;
     let exit_cancellation = if let Some(run_id) = app.active_run.clone() {
         match client.cancel(&run_id).await {
             Ok(()) => {
@@ -165,6 +170,9 @@ pub async fn run() -> Result<()> {
     let discard_empty = app.conversation_is_empty() && app.active_run.is_none();
     drop(terminal);
     println!();
+    if let Err(error) = queue_pause {
+        println!("Warning: queued work could not be paused: {error:#}");
+    }
     if let Some(result) = exit_cancellation {
         match result {
             Ok(_) => println!("Active turn cancelled"),
@@ -271,6 +279,30 @@ async fn open_sessions_sheet(client: &GatewayClient, app: &mut App) -> Result<()
     Ok(())
 }
 
+fn open_queue_sheet(app: &mut App) {
+    let total = app.queued_messages.len();
+    app.sheet = Some(Sheet {
+        kind: SheetKind::Queue,
+        title: "Queued turns".to_owned(),
+        options: app
+            .queued_messages
+            .iter()
+            .enumerate()
+            .map(|(index, item)| MenuOption {
+                label: item
+                    .content
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                detail: format!("pending {}/{}", index + 1, total),
+                action: MenuAction::EditQueued(item.id.clone()),
+            })
+            .collect(),
+        selected: 0,
+        pending_delete: None,
+    });
+}
+
 async fn refresh_agents_sheet(client: &GatewayClient, app: &mut App) -> Result<()> {
     let selected_id = app.sheet.as_ref().and_then(|sheet| {
         sheet
@@ -313,12 +345,14 @@ async fn refresh_agents_sheet(client: &GatewayClient, app: &mut App) -> Result<(
 
 async fn load_app(client: &GatewayClient, session: Session) -> Result<App> {
     let agent_id = session.agent_id.clone();
-    let (events, trust) = tokio::try_join!(
+    let (events, trust, queue) = tokio::try_join!(
         client.history(&session.id),
-        client.trust_status(&session.id)
+        client.trust_status(&session.id),
+        client.queue_state(&session.id)
     )?;
     let agent = client.agent(&agent_id).await.ok();
     let mut app = App::new(session, events, trust.trusted);
+    app.set_queue(queue);
     if let Some(agent) = agent {
         app.agent_name = agent.agent.name;
     }
@@ -331,10 +365,13 @@ enum Effect {
     Trust,
     ResolveApproval(usize),
     Send(String, Vec<PasteSpan>),
+    TakeQueued(String),
+    TakeLatestQueued,
     Cancel,
     Copy(String),
     Menu(MenuAction),
     DeleteSession(String),
+    DeleteQueued(String),
     DeleteMemory(String),
     DeleteScar(String),
     UpdateScar(ScarUpdate),
@@ -400,8 +437,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         let Some(sheet) = &mut app.sheet else {
             return None;
         };
-        if !matches!(sheet.kind, SheetKind::Sessions | SheetKind::Agents)
-            || sheet.options.is_empty()
+        if !matches!(
+            sheet.kind,
+            SheetKind::Sessions | SheetKind::Agents | SheetKind::Queue
+        ) || sheet.options.is_empty()
         {
             return None;
         }
@@ -414,6 +453,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             return match &sheet.options[selected].action {
                 MenuAction::Resume(session_id) => Some(Effect::DeleteSession(session_id.clone())),
                 MenuAction::SetAgent(agent_id) => Some(Effect::DeleteAgent(agent_id.clone())),
+                MenuAction::EditQueued(queue_id) => Some(Effect::DeleteQueued(queue_id.clone())),
                 _ => None,
             };
         }
@@ -494,11 +534,15 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             action.map(Effect::Menu)
         }
         KeyCode::Up if app.composer.is_empty() => {
-            app.focus_thought(-1);
-            None
+            if !app.queued_messages.is_empty() {
+                Some(Effect::TakeLatestQueued)
+            } else {
+                app.history_previous();
+                None
+            }
         }
-        KeyCode::Down if app.composer.is_empty() && app.focused_thought.is_some() => {
-            app.focus_thought(1);
+        KeyCode::Down if app.history_index.is_some() => {
+            app.history_next();
             None
         }
         KeyCode::Enter | KeyCode::Char(' ')
@@ -995,6 +1039,10 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                     app.clear_transcript_selection();
                     Some(Effect::ResolveApproval(index))
                 }
+                Some(HitAction::QueuedMessage(queue_id)) => {
+                    app.clear_transcript_selection();
+                    Some(Effect::TakeQueued(queue_id))
+                }
                 Some(HitAction::TrustWorkspace) => {
                     app.clear_transcript_selection();
                     Some(Effect::Trust)
@@ -1149,14 +1197,17 @@ fn send_or_command(app: &mut App) -> Option<Effect> {
         );
         return None;
     }
-    if app.active_run.is_some() {
-        app.notice = Some("Hames is already working; cancel or wait before sending".to_owned());
+    if app.active_run.is_some() && app.queued_messages.len() >= 2 {
+        app.notice = Some("Queue full · edit or remove a queued message first".to_owned());
         return None;
     }
-    app.composer.clear();
     app.sheet = None;
     app.scroll = 0;
-    app.notice = Some("Sending…".to_owned());
+    app.notice = Some(if app.active_run.is_some() {
+        "Queuing next turn…".to_owned()
+    } else {
+        "Sending…".to_owned()
+    });
     Some(Effect::Send(content, pastes))
 }
 
@@ -1166,6 +1217,11 @@ fn parse_command(value: &str) -> Option<MenuAction> {
         "/new" => Some(MenuAction::NewSession),
         "/clear" => Some(MenuAction::ClearSession),
         "/sessions" => Some(MenuAction::OpenSessions),
+        "/queue" => match parts.next() {
+            Some("clear") => Some(MenuAction::ClearQueue),
+            Some(_) => None,
+            None => Some(MenuAction::OpenQueue),
+        },
         "/fork" => Some(MenuAction::ForkSession),
         "/model" | "/provider" => Some(MenuAction::OpenModels),
         "/effort" | "/reasoning" => parts
@@ -1266,9 +1322,31 @@ async fn apply_effect(
             let accepted = client
                 .send_message_with_pastes(&app.session.id, &content, false, &pastes)
                 .await?;
-            app.active_run = Some(accepted.run_id);
-            app.run_started_at = Some(std::time::Instant::now());
+            app.composer.clear();
+            app.history_index = None;
+            app.history_draft = None;
+            if accepted.disposition == "started" {
+                app.active_run = accepted.run_id;
+                app.run_started_at = Some(std::time::Instant::now());
+            } else if let Some(item) = accepted.queued
+                && !app
+                    .queued_messages
+                    .iter()
+                    .any(|queued| queued.id == item.id)
+            {
+                app.queued_messages.push(item);
+            }
             app.notice = None;
+        }
+        Effect::TakeQueued(queue_id) => {
+            let item = client.take_queued(&app.session.id, &queue_id).await?;
+            app.queued_messages.retain(|queued| queued.id != queue_id);
+            app.load_queued_message(item);
+        }
+        Effect::TakeLatestQueued => {
+            let item = client.take_latest_queued(&app.session.id).await?;
+            app.queued_messages.retain(|queued| queued.id != item.id);
+            app.load_queued_message(item);
         }
         Effect::Cancel => {
             if let Some(run_id) = app.active_run.clone() {
@@ -1300,6 +1378,12 @@ async fn apply_effect(
                 sheet.pending_delete = None;
             }
             app.notice = Some("Session removed from resumable history".to_owned());
+        }
+        Effect::DeleteQueued(queue_id) => {
+            let state = client.delete_queued(&app.session.id, &queue_id).await?;
+            app.set_queue(state);
+            open_queue_sheet(app);
+            app.notice = Some("Queued turn removed".to_owned());
         }
         Effect::DeleteMemory(memory_id) => {
             client.delete_memory(&app.session.id, &memory_id).await?;
@@ -1408,6 +1492,19 @@ async fn apply_menu_action(
         }
         MenuAction::OpenSessions => {
             open_sessions_sheet(client, app).await?;
+        }
+        MenuAction::OpenQueue => open_queue_sheet(app),
+        MenuAction::ClearQueue => {
+            let state = client.clear_queue(&app.session.id).await?;
+            app.set_queue(state);
+            app.sheet = None;
+            app.notice = Some("Queue cleared".to_owned());
+        }
+        MenuAction::EditQueued(queue_id) => {
+            let item = client.take_queued(&app.session.id, &queue_id).await?;
+            app.queued_messages.retain(|queued| queued.id != queue_id);
+            app.load_queued_message(item);
+            app.sheet = None;
         }
         MenuAction::ForkSession => {
             app.notice = Some("Forking session…".to_owned());
@@ -2146,7 +2243,7 @@ mod tests {
         Effect, SseDecoder, agent_source, handle_key, handle_mouse, model_efforts, next_mode,
         parse_command, pointer_top, terminal_tab_title,
     };
-    use crate::api::{MemoryRecord, ProviderModel, Scar, Session};
+    use crate::api::{MemoryRecord, ProviderModel, QueuedMessage, Scar, Session};
     use crate::tui::app::{
         AgentEditor, App, HitAction, HitRegion, MemoryBrowser, MenuAction, MenuOption, Modal,
         ScarBrowser, ScarEditField, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind,
@@ -2185,6 +2282,14 @@ mod tests {
             parse_command("/gateway"),
             Some(MenuAction::Status)
         ));
+        assert!(matches!(
+            parse_command("/queue"),
+            Some(MenuAction::OpenQueue)
+        ));
+        assert!(matches!(
+            parse_command("/queue clear"),
+            Some(MenuAction::ClearQueue)
+        ));
         assert!(
             matches!(parse_command("/mode plan"), Some(MenuAction::SetMode(mode)) if mode == "plan")
         );
@@ -2207,6 +2312,45 @@ mod tests {
             parse_command("/title Refine the TUI"),
             Some(MenuAction::SetTitle(title)) if title == "Refine the TUI"
         ));
+    }
+
+    #[test]
+    fn active_enter_queues_without_clearing_and_up_edits_the_newest_pending_turn() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-active".to_owned());
+        app.composer.insert_text("follow this up");
+        assert!(matches!(
+            handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Effect::Send(content, _)) if content == "follow this up"
+        ));
+        assert_eq!(app.composer.text(), "follow this up");
+
+        app.composer.clear();
+        app.queued_messages.push(queued("queue-1", "first"));
+        assert!(matches!(
+            handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+            Some(Effect::TakeLatestQueued)
+        ));
+    }
+
+    #[test]
+    fn full_queue_preserves_the_unsent_composer_and_history_follows_the_queue() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-active".to_owned());
+        app.queued_messages = vec![queued("queue-1", "first"), queued("queue-2", "second")];
+        app.composer.insert_text("third");
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).is_none());
+        assert_eq!(app.composer.text(), "third");
+        assert!(app.notice.as_deref().unwrap().contains("Queue full"));
+
+        app.queued_messages.clear();
+        app.composer.clear();
+        app.message_history = vec!["older".to_owned(), "newer".to_owned()];
+        handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.composer.text(), "newer");
+        app.composer.clear();
+        handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.composer.text(), "older");
     }
 
     #[test]
@@ -2753,6 +2897,18 @@ mod tests {
             lineage_kind: "root".to_owned(),
             delegation_depth: 0,
             interaction_mode: "auto".to_owned(),
+        }
+    }
+
+    fn queued(id: &str, content: &str) -> QueuedMessage {
+        QueuedMessage {
+            id: id.to_owned(),
+            session_id: "session-1".to_owned(),
+            content: content.to_owned(),
+            remember: false,
+            paste_spans: Vec::new(),
+            created_at: "2026-08-24T00:00:00Z".to_owned(),
+            position: 1,
         }
     }
 

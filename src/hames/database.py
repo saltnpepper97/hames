@@ -656,6 +656,29 @@ MIGRATIONS = (
         DROP TRIGGER scar_repairs_no_delete;
         """,
     ),
+    Migration(
+        15,
+        "durable session message queue",
+        """
+        CREATE TABLE session_queue (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(id),
+            ordinal INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            remember INTEGER NOT NULL DEFAULT 0 CHECK (remember IN (0, 1)),
+            paste_spans_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            UNIQUE(session_id, ordinal)
+        );
+        CREATE INDEX session_queue_order_idx ON session_queue(session_id, ordinal);
+
+        CREATE TABLE session_queue_state (
+            session_id TEXT PRIMARY KEY REFERENCES sessions(id),
+            paused INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
+            updated_at TEXT NOT NULL
+        );
+        """,
+    ),
 )
 
 

@@ -1572,7 +1572,9 @@ async fn stream_message(
     let mut after = events.iter().map(|event| event.sequence).max().unwrap_or(0);
     let response = client.event_stream(&session.id, after).await?;
     let accepted = client.send_message(&session.id, content, remember).await?;
-    let run_id = accepted.run_id;
+    let run_id = accepted
+        .run_id
+        .context("interactive REPL message was queued unexpectedly")?;
     let mut stream = Box::pin(response.bytes_stream());
     let mut decoder = SseDecoder::default();
     let mut output = RenderedOutput::default();

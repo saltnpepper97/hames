@@ -7,7 +7,7 @@ use tachyonfx::Effect;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::api::{Event, MemoryRecord, PasteSpan, Scar, Session};
+use crate::api::{Event, MemoryRecord, PasteSpan, QueueState, QueuedMessage, Scar, Session};
 
 pub const LARGE_PASTE_LINES: usize = 4;
 pub const LARGE_PASTE_BYTES: usize = 400;
@@ -32,6 +32,24 @@ impl Composer {
     pub fn clear(&mut self) {
         self.units.clear();
         self.cursor = 0;
+    }
+
+    pub fn load_message(&mut self, content: &str, paste_spans: &[PasteSpan]) {
+        self.clear();
+        let mut offset = 0;
+        for span in paste_spans {
+            if span.start_byte < offset
+                || span.end_byte > content.len()
+                || !content.is_char_boundary(span.start_byte)
+                || !content.is_char_boundary(span.end_byte)
+            {
+                continue;
+            }
+            self.insert_text(&content[offset..span.start_byte]);
+            self.insert_paste(content[span.start_byte..span.end_byte].to_owned());
+            offset = span.end_byte;
+        }
+        self.insert_text(&content[offset..]);
     }
 
     pub fn text(&self) -> String {
@@ -669,6 +687,9 @@ pub enum MenuAction {
     NewSession,
     ClearSession,
     OpenSessions,
+    OpenQueue,
+    ClearQueue,
+    EditQueued(String),
     ForkSession,
     OpenModels,
     OpenEfforts,
@@ -725,6 +746,7 @@ pub struct MenuOption {
 pub enum SheetKind {
     Commands,
     Sessions,
+    Queue,
     Models,
     Efforts,
     Agents,
@@ -795,6 +817,7 @@ pub enum HitAction {
     SelectMemory(usize),
     SelectScar(usize),
     Approval(usize),
+    QueuedMessage(String),
     TrustWorkspace,
     Quit,
     ShowSession,
@@ -883,6 +906,11 @@ pub struct App {
     pub agent_name: String,
     pub transcript: Vec<TranscriptItem>,
     pub composer: Composer,
+    pub queued_messages: Vec<QueuedMessage>,
+    pub queue_paused: bool,
+    pub message_history: Vec<String>,
+    pub history_index: Option<usize>,
+    pub history_draft: Option<String>,
     pub active_run: Option<String>,
     pub run_started_at: Option<Instant>,
     pub trusted: bool,
@@ -940,6 +968,11 @@ impl App {
             agent_name,
             transcript: Vec::new(),
             composer: Composer::default(),
+            queued_messages: Vec::new(),
+            queue_paused: false,
+            message_history: Vec::new(),
+            history_index: None,
+            history_draft: None,
             active_run: None,
             run_started_at: None,
             trusted,
@@ -989,6 +1022,52 @@ impl App {
                 }
                 _ => false,
             })
+    }
+
+    pub fn set_queue(&mut self, state: QueueState) {
+        self.queue_paused = state.paused;
+        self.queued_messages = state.items;
+    }
+
+    pub fn load_queued_message(&mut self, item: QueuedMessage) {
+        self.composer.load_message(&item.content, &item.paste_spans);
+        self.history_index = None;
+        self.history_draft = None;
+        self.notice = Some("Queued message ready to edit".to_owned());
+    }
+
+    pub fn history_previous(&mut self) -> bool {
+        if self.message_history.is_empty() {
+            return false;
+        }
+        if self.history_index.is_none() {
+            self.history_draft = Some(self.composer.text());
+        }
+        let next = self
+            .history_index
+            .map_or(self.message_history.len() - 1, |index| {
+                index.saturating_sub(1)
+            });
+        self.history_index = Some(next);
+        self.composer
+            .load_message(&self.message_history[next].clone(), &[]);
+        true
+    }
+
+    pub fn history_next(&mut self) -> bool {
+        let Some(index) = self.history_index else {
+            return false;
+        };
+        if index + 1 < self.message_history.len() {
+            self.history_index = Some(index + 1);
+            self.composer
+                .load_message(&self.message_history[index + 1].clone(), &[]);
+        } else {
+            self.history_index = None;
+            let draft = self.history_draft.take().unwrap_or_default();
+            self.composer.load_message(&draft, &[]);
+        }
+        true
     }
 
     pub fn take_effect_delta(&mut self) -> Duration {
@@ -1112,6 +1191,7 @@ impl App {
                 MenuAction::ClearSession,
             ),
             option("/sessions", "resume recent work", MenuAction::OpenSessions),
+            option("/queue", "inspect pending turns", MenuAction::OpenQueue),
             option("/fork", "branch this session", MenuAction::ForkSession),
             option(
                 "/model",
@@ -1366,8 +1446,10 @@ impl App {
             }
             "user.message" => {
                 self.collapse_completed_thoughts();
+                let user_content = string(&event.payload, "content");
+                self.message_history.push(user_content.clone());
                 self.transcript.push(TranscriptItem::User {
-                    content: string(&event.payload, "content"),
+                    content: user_content,
                 });
                 if live {
                     self.scroll = 0;
@@ -1376,6 +1458,44 @@ impl App {
             "run.started" => {
                 self.active_run = Some(run_id);
                 self.run_started_at.get_or_insert_with(Instant::now);
+            }
+            "queue.enqueued" => {
+                let queue_id = string(&event.payload, "queue_id");
+                if !self.queued_messages.iter().any(|item| item.id == queue_id) {
+                    let paste_spans = event
+                        .payload
+                        .get("paste_spans")
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok())
+                        .unwrap_or_default();
+                    self.queued_messages.push(QueuedMessage {
+                        id: queue_id,
+                        session_id: self.session.id.clone(),
+                        content: string(&event.payload, "content"),
+                        remember: event
+                            .payload
+                            .get("remember")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                        paste_spans,
+                        created_at: event.created_at.clone(),
+                        position: self.queued_messages.len() + 1,
+                    });
+                }
+            }
+            "queue.removed" | "queue.promoted" => {
+                let queue_id = string(&event.payload, "queue_id");
+                self.queued_messages.retain(|item| item.id != queue_id);
+                for (index, item) in self.queued_messages.iter_mut().enumerate() {
+                    item.position = index + 1;
+                }
+            }
+            "queue.paused" | "queue.resumed" => {
+                self.queue_paused = event
+                    .payload
+                    .get("paused")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(event.event_type == "queue.paused");
             }
             "model.requested" if self.active_run.as_deref() == Some(run_id.as_str()) => {
                 self.ensure_thought(&run_id, true);
@@ -1596,37 +1716,6 @@ impl App {
             return;
         };
         *collapsed = !*collapsed;
-    }
-
-    pub fn focus_thought(&mut self, direction: i8) -> bool {
-        let thoughts: Vec<usize> = self
-            .transcript
-            .iter()
-            .enumerate()
-            .filter_map(|(index, item)| match item {
-                TranscriptItem::Thought {
-                    content,
-                    interrupted: true,
-                    live: false,
-                    ..
-                } if content.is_empty() => None,
-                TranscriptItem::Thought { .. } => Some(index),
-                _ => None,
-            })
-            .collect();
-        if thoughts.is_empty() {
-            return false;
-        }
-        let position = self
-            .focused_thought
-            .and_then(|current| thoughts.iter().position(|index| *index == current));
-        let next = if direction < 0 {
-            position.unwrap_or(thoughts.len()).saturating_sub(1)
-        } else {
-            (position.unwrap_or(0) + usize::from(position.is_some())).min(thoughts.len() - 1)
-        };
-        self.focused_thought = Some(thoughts[next]);
-        true
     }
 
     fn ensure_thought(&mut self, run_id: &str, live: bool) -> usize {
@@ -2088,7 +2177,7 @@ mod tests {
         App, Composer, ComposerUnit, DreamPhase, TranscriptItem, TranscriptPoint,
         TranscriptViewport,
     };
-    use crate::api::{Event, Session};
+    use crate::api::{Event, PasteSpan, Session};
 
     #[test]
     fn large_pastes_are_atomic_and_preserve_exact_message_bytes() {
@@ -2120,6 +2209,23 @@ mod tests {
         assert_eq!(composer.units.len(), 2);
         composer.backspace();
         assert_eq!(composer.text(), "é");
+    }
+
+    #[test]
+    fn queued_message_rehydrates_paste_capsules_exactly() {
+        let mut composer = Composer::default();
+        let content = "before one\ntwo\nthree\nfour after";
+        composer.load_message(
+            content,
+            &[PasteSpan {
+                start_byte: 7,
+                end_byte: 25,
+                line_count: 4,
+                byte_count: 18,
+            }],
+        );
+        assert_eq!(composer.message().0, content);
+        assert!(matches!(composer.units[7], ComposerUnit::Paste(_)));
     }
 
     #[test]

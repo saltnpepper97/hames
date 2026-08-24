@@ -89,6 +89,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .map(str::to_owned)
         .or_else(|| app.notice.clone());
     let notice_height = u16::from(notice.is_some());
+    let queue_height = u16::try_from(app.queued_messages.len()).unwrap_or(2).min(2);
     let sheet_height = app
         .sheet
         .as_ref()
@@ -107,7 +108,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         0
     };
     let tray_height = sheet_height.max(approval_height);
-    let bottom = composer_height + notice_height + tray_height + 1;
+    let bottom = composer_height + notice_height + queue_height + tray_height + 1;
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -124,6 +125,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .constraints([
             Constraint::Length(tray_height),
             Constraint::Length(notice_height),
+            Constraint::Length(queue_height),
             Constraint::Length(composer_height),
             Constraint::Length(1),
         ])
@@ -142,8 +144,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             footer[1],
         );
     }
-    render_composer(frame, app, footer[2]);
-    render_status_bar(frame, app, footer[3], fx_delta);
+    render_queue(frame, app, footer[2]);
+    render_composer(frame, app, footer[3]);
+    render_status_bar(frame, app, footer[4], fx_delta);
     render_modal(frame, app, area);
     apply_theme(frame, area, app.theme);
 }
@@ -193,6 +196,42 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         height: 1,
         action: HitAction::ShowSession,
     });
+}
+
+fn render_queue(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    let width = usize::from(area.width.saturating_sub(5));
+    let total = app.queued_messages.len();
+    let lines = app
+        .queued_messages
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let content = item
+                .content
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let prefix = format!("  Queued {}/{}  ", index + 1, total);
+            let body_width = width.saturating_sub(prefix.width());
+            Line::from(vec![
+                Span::styled(prefix, Style::default().fg(INPUT)),
+                Span::styled(fit(&content, body_width), Style::default().fg(MUTED)),
+            ])
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(lines), area);
+    for (index, item) in app.queued_messages.iter().enumerate() {
+        app.hits.push(HitRegion {
+            x: area.x,
+            y: area.y.saturating_add(u16::try_from(index).unwrap_or(0)),
+            width: area.width,
+            height: 1,
+            action: HitAction::QueuedMessage(item.id.clone()),
+        });
+    }
 }
 
 pub(super) fn current_activity(app: &App) -> &'static str {
@@ -1047,8 +1086,10 @@ fn sheet_shortcuts(app: &App) -> Line<'static> {
     let Some(sheet) = &app.sheet else {
         return Line::default();
     };
-    if matches!(sheet.kind, SheetKind::Sessions | SheetKind::Agents)
-        && sheet.pending_delete.is_some()
+    if matches!(
+        sheet.kind,
+        SheetKind::Sessions | SheetKind::Agents | SheetKind::Queue
+    ) && sheet.pending_delete.is_some()
     {
         return Line::from(vec![
             Span::styled("  ↑↓", Style::default().fg(INPUT).bold()),
@@ -1060,6 +1101,7 @@ fn sheet_shortcuts(app: &App) -> Line<'static> {
     let action = match sheet.kind {
         SheetKind::Commands => "open",
         SheetKind::Sessions => "resume",
+        SheetKind::Queue => "edit",
         _ => "select",
     };
     let mut spans = vec![
@@ -1072,6 +1114,11 @@ fn sheet_shortcuts(app: &App) -> Line<'static> {
         spans.extend([
             Span::styled("Ctrl+D", Style::default().fg(INPUT).bold()),
             Span::styled(" remove · ", Style::default().fg(MUTED)),
+        ]);
+    } else if sheet.kind == SheetKind::Queue {
+        spans.extend([
+            Span::styled("Ctrl+D", Style::default().fg(INPUT).bold()),
+            Span::styled(" delete · ", Style::default().fg(MUTED)),
         ]);
     } else if sheet.kind == SheetKind::Agents {
         spans.extend([
@@ -1109,8 +1156,13 @@ fn activity_bar(app: &App) -> Line<'static> {
         .run_started_at
         .map(|started| format_elapsed(started.elapsed().as_secs()))
         .unwrap_or_else(|| "0s".to_owned());
+    let queue_hint = if app.queued_messages.len() >= 2 {
+        "Queue full 2/2"
+    } else {
+        "Enter queue · ↑ edit newest"
+    };
     spans.push(Span::styled(
-        format!(" · {elapsed} · Esc interrupt"),
+        format!(" · {elapsed} · {queue_hint} · Esc interrupt"),
         Style::default().fg(MUTED),
     ));
     Line::from(spans)
@@ -3008,7 +3060,7 @@ mod tests {
         memory_browser_body, mode_color, mode_outline, scar_browser_body, scar_editor_body,
         scrollbar_position, sheet_text_color, thought_label, transcript_lines, traveling_sheen,
     };
-    use crate::api::{MemoryRecord, Scar, Session};
+    use crate::api::{MemoryRecord, QueuedMessage, Scar, Session};
     use crate::tui::app::{
         ActivityPhase, ActivityRow, AgentEditor, AgentEditorPage, App, ApprovalModal, DreamPhase,
         HitAction, MemoryBrowser, MenuAction, MenuOption, Modal, ScarBrowser, ScarEditor, Sheet,
@@ -3534,13 +3586,45 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("──────"));
-        assert!(rendered.contains("Working · 12s · Esc interrupt"));
+        assert!(rendered.contains("Working · 12s · Enter queue · ↑ edit newest · Esc interrupt"));
         assert!(rendered.contains("[connected]"));
         assert!(!rendered.contains("Shift+Tab mode"));
         let footer_y = terminal.size().unwrap().height - 1;
         let buffer = terminal.backend().buffer();
         assert!((2..8).all(|x| buffer.cell((x, footer_y)).unwrap().fg == MUTED));
         assert_eq!(buffer.cell((4, footer_y)).unwrap().fg, MUTED);
+    }
+
+    #[test]
+    fn pending_turns_render_above_the_composer_and_remain_clickable() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-1".to_owned());
+        app.queued_messages = vec![
+            queued_message("queue-1", "first queued request", 1),
+            queued_message("queue-2", "second queued request", 2),
+        ];
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Queued 1/2  first queued request"));
+        assert!(rendered.contains("Queued 2/2  second queued request"));
+        assert!(rendered.contains("Queue full 2/2"));
+        assert!(app.hits.iter().any(|region| matches!(
+            &region.action,
+            HitAction::QueuedMessage(id) if id == "queue-1"
+        )));
+        assert!(app.hits.iter().any(|region| matches!(
+            &region.action,
+            HitAction::QueuedMessage(id) if id == "queue-2"
+        )));
     }
 
     #[test]
@@ -4089,6 +4173,18 @@ mod tests {
             lineage_kind: "root".to_owned(),
             delegation_depth: 0,
             interaction_mode: "auto".to_owned(),
+        }
+    }
+
+    fn queued_message(id: &str, content: &str, position: usize) -> QueuedMessage {
+        QueuedMessage {
+            id: id.to_owned(),
+            session_id: "session-123456789".to_owned(),
+            content: content.to_owned(),
+            remember: false,
+            paste_spans: Vec::new(),
+            created_at: "2026-08-24T00:00:00Z".to_owned(),
+            position,
         }
     }
 }

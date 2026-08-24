@@ -57,6 +57,7 @@ from hames.memory import (
     contains_secret,
 )
 from hames.memory_runtime import MemoryManager
+from hames.message_queue import QueuedMessage, QueueFullError, QueueState
 from hames.paths import HamesPaths
 from hames.plugin_protocol import PluginProtocolError
 from hames.plugin_runtime import (
@@ -149,8 +150,10 @@ class UpdateSessionTitleRequest(ApiModel):
     title: str = Field(min_length=1, max_length=80)
 
 
-class RunAccepted(ApiModel):
-    run_id: str
+class MessageAccepted(ApiModel):
+    disposition: Literal["started", "queued"]
+    run_id: str | None = None
+    queued: QueuedMessage | None = None
 
 
 class TrustStatus(ApiModel):
@@ -444,6 +447,7 @@ def create_app(state: GatewayState) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
         await state.plugins.start_enabled()
+        await state.runs.recover_queues()
         yield
         await state.runs.close()
 
@@ -800,6 +804,7 @@ def create_app(state: GatewayState) -> FastAPI:
                 "cannot clear a session during an active run",
             )
         try:
+            await state.runs.clear_queue(session_id)
             return await asyncio.to_thread(state.ledger.close_session, session_id)
         except KeyError as exc:
             try:
@@ -1658,25 +1663,103 @@ def create_app(state: GatewayState) -> FastAPI:
     @app.post(
         "/v1/sessions/{session_id}/messages",
         dependencies=auth,
-        response_model=RunAccepted,
+        response_model=MessageAccepted,
         status_code=202,
     )
-    async def send_message(session_id: str, request: MessageRequest) -> RunAccepted:
+    async def send_message(session_id: str, request: MessageRequest) -> MessageAccepted:
         try:
-            return RunAccepted(
-                run_id=await state.runs.start(
-                    session_id,
-                    request.content,
-                    remember=request.remember,
-                    paste_spans=[span.model_dump(mode="json") for span in request.paste_spans],
-                )
+            result = await state.runs.submit(
+                session_id,
+                request.content,
+                remember=request.remember,
+                paste_spans=[span.model_dump(mode="json") for span in request.paste_spans],
             )
+            return MessageAccepted(
+                disposition=cast(Literal["started", "queued"], result.disposition),
+                run_id=result.run_id,
+                queued=result.queued,
+            )
+        except QueueFullError as exc:
+            raise ApiError(409, "session_queue_full", str(exc)) from exc
         except KeyError as exc:
             raise ApiError(404, "session_or_provider_not_found", str(exc)) from exc
         except ValueError as exc:
             raise ApiError(409, "session_not_open", str(exc)) from exc
         except PermissionError as exc:
             raise ApiError(409, "working_directory_untrusted", str(exc)) from exc
+
+    @app.get(
+        "/v1/sessions/{session_id}/queue", dependencies=auth, response_model=QueueState
+    )
+    async def queue_state(session_id: str) -> QueueState:
+        try:
+            return await state.runs.queue_state(session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/queue/take-latest",
+        dependencies=auth,
+        response_model=QueuedMessage,
+    )
+    async def take_latest_queued(session_id: str) -> QueuedMessage:
+        try:
+            return await state.runs.take_latest_queued(session_id)
+        except KeyError as exc:
+            raise ApiError(404, "queue_empty", "the session queue is empty") from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/queue/{queue_id}/take",
+        dependencies=auth,
+        response_model=QueuedMessage,
+    )
+    async def take_queued(session_id: str, queue_id: str) -> QueuedMessage:
+        try:
+            return await state.runs.take_queued(session_id, queue_id)
+        except KeyError as exc:
+            raise ApiError(
+                404, "queued_message_not_found", f"unknown queue item: {queue_id}"
+            ) from exc
+
+    @app.delete(
+        "/v1/sessions/{session_id}/queue/{queue_id}",
+        dependencies=auth,
+        response_model=QueueState,
+    )
+    async def delete_queued(session_id: str, queue_id: str) -> QueueState:
+        try:
+            return await state.runs.delete_queued(session_id, queue_id)
+        except KeyError as exc:
+            raise ApiError(
+                404, "queued_message_not_found", f"unknown queue item: {queue_id}"
+            ) from exc
+
+    @app.delete(
+        "/v1/sessions/{session_id}/queue", dependencies=auth, response_model=QueueState
+    )
+    async def clear_queue(session_id: str) -> QueueState:
+        try:
+            return await state.runs.clear_queue(session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/queue/pause", dependencies=auth, response_model=QueueState
+    )
+    async def pause_queue(session_id: str) -> QueueState:
+        try:
+            return await state.runs.pause_queue(session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/queue/resume", dependencies=auth, response_model=QueueState
+    )
+    async def resume_queue(session_id: str) -> QueueState:
+        try:
+            return await state.runs.resume_queue(session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
 
     @app.post("/v1/runs/{run_id}/cancel", dependencies=auth)
     async def cancel_run(run_id: str) -> dict[str, bool]:

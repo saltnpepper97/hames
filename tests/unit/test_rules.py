@@ -32,7 +32,7 @@ def test_rules_schema_is_migration_ten(tmp_path: Path) -> None:
     path = tmp_path / "m9.db"
     Database(path, migrations=MIGRATIONS[:9]).migrate()
     Database(path).migrate()
-    assert len(MIGRATIONS) == 14
+    assert len(MIGRATIONS) == 15
     with Database(path).connect() as connection:
         assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 14
         tables = {

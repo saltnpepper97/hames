@@ -79,6 +79,171 @@ class BlockingPostRunObserver:
         await self.release.wait()
 
 
+class QueueProvider:
+    profile_id = "fake"
+    adapter = "fake"
+    base_url = ""
+
+    def __init__(self) -> None:
+        self.requests: list[ModelRequest] = []
+        self.first_started = asyncio.Event()
+        self.release_first = asyncio.Event()
+
+    async def list_models(self) -> list[ProviderModel]:
+        return [
+            ProviderModel(
+                id="fixture",
+                provider="fake",
+                status="available",
+                input_modalities=["text"],
+                output_modalities=["text"],
+            )
+        ]
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+        self.requests.append(request)
+        yield StreamEvent(kind=StreamEventKind.STARTED)
+        if len(self.requests) == 1:
+            self.first_started.set()
+            await self.release_first.wait()
+        yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="done")
+        yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_gateway_queues_two_messages_and_promotes_them_fifo(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    provider = QueueProvider()
+    state = GatewayState.create(paths, providers={"fake": provider})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+
+            started = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "one"},
+            )
+            assert response_object(started)["disposition"] == "started"
+            await asyncio.wait_for(provider.first_started.wait(), timeout=1)
+
+            for content, position in [("two", 1), ("three", 2)]:
+                queued = await client.post(
+                    f"/v1/sessions/{session_id}/messages",
+                    headers=headers,
+                    json={"content": content},
+                )
+                body = response_object(queued)
+                assert body["disposition"] == "queued"
+                assert body["queued"]["position"] == position  # type: ignore[index]
+
+            full = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "four"},
+            )
+            assert full.status_code == 409
+            assert response_object(full)["error"]["code"] == "session_queue_full"  # type: ignore[index]
+
+            provider.release_first.set()
+            events = await _wait_for_event(
+                client, headers, session_id, "run.completed", occurrences=3
+            )
+            users = [
+                event["payload"]["content"]  # type: ignore[index]
+                for event in events
+                if event["type"] == "user.message"
+            ]
+            assert users == ["one", "two", "three"]
+            queue = await client.get(f"/v1/sessions/{session_id}/queue", headers=headers)
+            assert response_object(queue)["items"] == []
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_paused_queue_survives_cancellation_until_explicit_resume(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    provider = QueueProvider()
+    state = GatewayState.create(paths, providers={"fake": provider})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+
+            started = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "active"},
+            )
+            run_id = str(response_object(started)["run_id"])
+            await asyncio.wait_for(provider.first_started.wait(), timeout=1)
+            queued = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "keep me"},
+            )
+            queue_id = str(response_object(queued)["queued"]["id"])  # type: ignore[index]
+
+            paused = await client.post(
+                f"/v1/sessions/{session_id}/queue/pause", headers=headers
+            )
+            assert response_object(paused)["paused"] is True
+            assert (
+                await client.post(f"/v1/runs/{run_id}/cancel", headers=headers)
+            ).status_code == 200
+            await _wait_for_event(client, headers, session_id, "run.cancelled")
+            await asyncio.sleep(0.02)
+
+            still_queued = response_object(
+                await client.get(f"/v1/sessions/{session_id}/queue", headers=headers)
+            )
+            assert still_queued["paused"] is True
+            assert still_queued["items"][0]["id"] == queue_id  # type: ignore[index]
+            assert len(provider.requests) == 1
+
+            resumed = await client.post(
+                f"/v1/sessions/{session_id}/queue/resume", headers=headers
+            )
+            assert response_object(resumed)["paused"] is False
+            events = await _wait_for_event(client, headers, session_id, "run.completed")
+            users = [
+                event["payload"]["content"]  # type: ignore[index]
+                for event in events
+                if event["type"] == "user.message"
+            ]
+            assert users == ["active", "keep me"]
+            assert len(provider.requests) == 2
+    finally:
+        await state.runs.close()
+
+
 @pytest.mark.asyncio
 async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
@@ -99,7 +264,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 16
+            assert health_body["protocol_version"] == 17
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 

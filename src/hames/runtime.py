@@ -40,6 +40,7 @@ from hames.memory import (
     RetrievedMemory,
     retrieval_query_hash,
 )
+from hames.message_queue import MessageQueueStore, QueuedMessage, QueueState
 from hames.paths import HamesPaths
 from hames.plugin_runtime import PluginToolArguments
 from hames.plugins import is_plugin_tool
@@ -217,6 +218,13 @@ class ModelTurn:
     capsule: AgentCapsule
 
 
+@dataclass(frozen=True, slots=True)
+class SubmissionResult:
+    disposition: str
+    run_id: str | None = None
+    queued: QueuedMessage | None = None
+
+
 class RunManager:
     def __init__(
         self,
@@ -244,6 +252,7 @@ class RunManager:
         )
         self.agents = AgentRegistry(paths.agents)
         self.memory = MemoryStore(ledger)
+        self.message_queue = MessageQueueStore(ledger)
         self.policy = PolicyGate(paths.root)
         self.context_rules = ContextRuleStore(ledger)
         self.policy_rules = PolicyRuleStore(ledger)
@@ -261,6 +270,8 @@ class RunManager:
         self.plugin_manager: PluginManager | None = None
         self._skill_catalogs: dict[str, list[SkillSummary]] = {}
         self._loaded_skills: dict[str, dict[str, SkillVersion]] = {}
+        self._submission_locks: dict[str, asyncio.Lock] = {}
+        self._closing = False
         self._prune_scratch()
 
     def attach_memory_manager(self, manager: MemoryManager) -> None:
@@ -336,6 +347,138 @@ class RunManager:
             agent_id=session.agent_id,
         )
         return self._launch(session_id, user_event)
+
+    async def submit(
+        self,
+        session_id: str,
+        content: str,
+        *,
+        remember: bool = False,
+        paste_spans: list[dict[str, int]] | None = None,
+    ) -> SubmissionResult:
+        async with self._submission_lock(session_id):
+            if self.is_session_active(session_id):
+                mutation = await asyncio.to_thread(
+                    self.message_queue.enqueue,
+                    session_id,
+                    content,
+                    remember=remember,
+                    paste_spans=paste_spans or [],
+                )
+                await self._publish_durable(mutation.event)
+                return SubmissionResult(disposition="queued", queued=mutation.item)
+            queue = await self.queue_state(session_id)
+            if queue.items:
+                if not queue.paused:
+                    await self._promote_next_locked(session_id)
+                mutation = await asyncio.to_thread(
+                    self.message_queue.enqueue,
+                    session_id,
+                    content,
+                    remember=remember,
+                    paste_spans=paste_spans or [],
+                )
+                await self._publish_durable(mutation.event)
+                return SubmissionResult(disposition="queued", queued=mutation.item)
+            run_id = await self.start(
+                session_id, content, remember=remember, paste_spans=paste_spans
+            )
+            return SubmissionResult(disposition="started", run_id=run_id)
+
+    def _submission_lock(self, session_id: str) -> asyncio.Lock:
+        return self._submission_locks.setdefault(session_id, asyncio.Lock())
+
+    async def queue_state(self, session_id: str) -> QueueState:
+        return await asyncio.to_thread(self.message_queue.state, session_id)
+
+    async def take_queued(self, session_id: str, queue_id: str) -> QueuedMessage:
+        mutation = await asyncio.to_thread(
+            self.message_queue.take, session_id, queue_id, reason="editing"
+        )
+        await self._publish_durable(mutation.event)
+        assert mutation.item is not None
+        return mutation.item
+
+    async def take_latest_queued(self, session_id: str) -> QueuedMessage:
+        mutation = await asyncio.to_thread(
+            self.message_queue.take_latest, session_id, reason="editing"
+        )
+        await self._publish_durable(mutation.event)
+        assert mutation.item is not None
+        return mutation.item
+
+    async def delete_queued(self, session_id: str, queue_id: str) -> QueueState:
+        mutation = await asyncio.to_thread(
+            self.message_queue.take, session_id, queue_id, reason="deleted"
+        )
+        await self._publish_durable(mutation.event)
+        return mutation.state
+
+    async def clear_queue(self, session_id: str) -> QueueState:
+        mutations = await asyncio.to_thread(self.message_queue.clear, session_id)
+        for mutation in mutations:
+            await self._publish_durable(mutation.event)
+        return await self.queue_state(session_id)
+
+    async def pause_queue(self, session_id: str) -> QueueState:
+        mutation = await asyncio.to_thread(self.message_queue.set_paused, session_id, True)
+        await self._publish_durable(mutation.event)
+        return mutation.state
+
+    async def resume_queue(self, session_id: str) -> QueueState:
+        mutation = await asyncio.to_thread(self.message_queue.set_paused, session_id, False)
+        await self._publish_durable(mutation.event)
+        await self._promote_next(session_id)
+        return await self.queue_state(session_id)
+
+    async def recover_queues(self) -> None:
+        session_ids = await asyncio.to_thread(self.message_queue.recoverable_sessions)
+        for session_id in session_ids:
+            await self._promote_next(session_id)
+
+    async def _promote_next(self, session_id: str) -> str | None:
+        async with self._submission_lock(session_id):
+            return await self._promote_next_locked(session_id)
+
+    async def _promote_next_locked(self, session_id: str) -> str | None:
+        if self._closing or self.is_session_active(session_id):
+            return None
+        state = await self.queue_state(session_id)
+        if state.paused or not state.items:
+            return None
+        session = await asyncio.to_thread(self.ledger.get_session, session_id)
+        trust = await asyncio.to_thread(
+            self.controls.get_trust, Path(session.working_directory)
+        )
+        if session.status != "open" or session.provider not in self.providers or trust is None:
+            mutation = await asyncio.to_thread(
+                self.message_queue.set_paused, session_id, True
+            )
+            await self._publish_durable(mutation.event)
+            return None
+        mutation = await asyncio.to_thread(
+            self.message_queue.take_oldest, session_id, reason="promoted"
+        )
+        await self._publish_durable(mutation.event)
+        item = mutation.item
+        assert item is not None
+        user_event = await self._append(
+            session_id=session_id,
+            event_type="user.message",
+            payload={
+                "content": item.content,
+                "remember": item.remember,
+                "paste_spans": item.paste_spans,
+            },
+            agent_id=session.agent_id,
+            correlation_id=item.id,
+        )
+        return self._launch(session_id, user_event)
+
+    async def _publish_durable(self, event: Event) -> None:
+        await self.broker.publish(
+            event.session_id, {"durable": True, "event": event.model_dump(mode="json")}
+        )
 
     def _launch(self, session_id: str, user_event: Event) -> str:
         run_id = new_id()
@@ -435,6 +578,7 @@ class RunManager:
         return resolved
 
     async def close(self) -> None:
+        self._closing = True
         tasks = tuple(self._tasks.values())
         for task in tasks:
             task.cancel()
@@ -511,6 +655,7 @@ class RunManager:
             await self._append_failure(session_id, run_id, error.id, "runtime_error", str(exc), {})
         finally:
             self._mark_post_terminal(run_id, session_id)
+            await self._promote_next(session_id)
             if self.config.memory.enabled:
                 await self._project_episode(session_id, run_id)
             if self.memory_manager is not None and session is not None:
