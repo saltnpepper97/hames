@@ -318,7 +318,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 18
+            assert health_body["protocol_version"] == 19
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -1096,6 +1096,149 @@ async def test_runtime_executes_tool_and_continues_model_loop(tmp_path: Path) ->
                 "tool",
             ]
             assert fake.requests[1].messages[-1].tool_name == "read_file"
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_goal_runs_multiple_bounded_steps_until_evidence_backed_achievement(
+    tmp_path: Path,
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    fake = FakeProvider(
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="goal-progress",
+                        name="goal_report",
+                        arguments_delta=json.dumps(
+                            {
+                                "status": "progress",
+                                "summary": "Implemented the first half",
+                                "evidence": ["first-half tests pass"],
+                            }
+                        ),
+                    ),
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="Continuing next step."),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="goal-achieved",
+                        name="goal_report",
+                        arguments_delta=json.dumps(
+                            {
+                                "status": "achieved",
+                                "summary": "Feature is complete",
+                                "evidence": ["full test suite passes"],
+                            }
+                        ),
+                    ),
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="Goal achieved."),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
+    )
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+
+            started = await client.post(
+                f"/v1/sessions/{session_id}/goals",
+                headers=headers,
+                json={"objective": "Complete the whole feature"},
+            )
+            assert started.status_code == 202
+            assert response_object(started)["status"] == "running"
+            events = await _wait_for_event(client, headers, session_id, "goal.achieved")
+
+            history = await client.get(f"/v1/sessions/{session_id}/goals", headers=headers)
+            assert history.status_code == 200
+            goal = history.json()[0]
+            assert goal["status"] == "achieved"
+            assert goal["step_count"] == 2
+            assert goal["latest_evidence"] == ["full test suite passes"]
+            assert (
+                await client.get(f"/v1/sessions/{session_id}/goals/current", headers=headers)
+            ).json() is None
+            assert sum(event["type"] == "goal.step.started" for event in events) == 2
+            assert len(fake.requests) == 4
+            assert "Active autonomous goal" in fake.requests[0].system
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_goal_stall_guard_blocks_three_equivalent_unreported_steps(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    repeated = [
+        StreamEvent(kind=StreamEventKind.STARTED),
+        StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="I could not make progress."),
+        StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+    ]
+    fake = FakeProvider([], turns=[repeated, repeated, repeated])
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.post(
+                f"/v1/sessions/{session_id}/goals",
+                headers=headers,
+                json={"objective": "Solve the stubborn problem"},
+            )
+
+            events = await _wait_for_event(client, headers, session_id, "goal.blocked")
+            current = response_object(
+                await client.get(f"/v1/sessions/{session_id}/goals/current", headers=headers)
+            )
+            assert current["status"] == "blocked"
+            assert current["repeated_no_progress"] == 3
+            assert sum(event["type"] == "goal.step.started" for event in events) == 3
+            assert len(fake.requests) == 3
     finally:
         await state.runs.close()
 

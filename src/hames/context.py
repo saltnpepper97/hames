@@ -184,9 +184,7 @@ def compile_context(
         ("policy.summary", f"Policy summary: {policy_summary}"),
     ]
     goals = project_goals(events)
-    active_goal = next(
-        (goal for goal in reversed(goals) if goal.status in {"running", "yielded"}), None
-    )
+    active_goal = next((goal for goal in reversed(goals) if goal.status == "running"), None)
     goal_part: tuple[str, str] | None = None
     if active_goal is not None:
         goal_part = (

@@ -25,6 +25,7 @@ class Goal(BaseModel):
     current_run_id: str | None = None
     latest_summary: str = ""
     latest_evidence: list[str] = Field(default_factory=list)
+    latest_signature: str = ""
     repeated_no_progress: int = 0
     created_at: str
     updated_at: str
@@ -66,6 +67,7 @@ def project_goals(events: list[Event]) -> list[Goal]:
                 latest_summary=str(event.payload.get("summary", "")),
                 latest_evidence=list(event.payload.get("evidence", [])),
                 repeated_no_progress=int(event.payload.get("repeated_no_progress", 0)),
+                latest_signature=str(event.payload.get("signature", "")),
             )
         elif event.type == "goal.yielded":
             updates.update(status="yielded", current_run_id=None)

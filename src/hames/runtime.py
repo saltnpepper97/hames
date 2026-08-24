@@ -34,6 +34,7 @@ from hames.context import (
 from hames.control import Approval, ControlStore
 from hames.evolution import ScarStore
 from hames.evolution_runtime import MODEL_BEHAVIOR_REPAIR_LAYERS
+from hames.goals import Goal, GoalStore
 from hames.ledger import Event, Ledger, Session, new_id
 from hames.memory import (
     MemoryCandidate,
@@ -59,6 +60,7 @@ from hames.providers.base import JSON_OBJECT, JsonValue
 from hames.rules import ContextRuleStore, PolicyRuleStore
 from hames.skills import SkillRegistry, SkillSummary, SkillVersion
 from hames.tools import (
+    GoalReportArguments,
     MemoryAddArguments,
     MemoryEditArguments,
     MemoryForgetArguments,
@@ -92,6 +94,7 @@ SELF_MANAGEMENT_TOOLS = frozenset(
         "skill_catalog",
         "skill_control",
         "session_title_set",
+        "goal_report",
     }
 )
 
@@ -262,6 +265,7 @@ class RunManager:
         self.agents = AgentRegistry(paths.agents)
         self.memory = MemoryStore(ledger)
         self.message_queue = MessageQueueStore(ledger)
+        self.goals = GoalStore(ledger)
         self.policy = PolicyGate(paths.root)
         self.context_rules = ContextRuleStore(ledger)
         self.policy_rules = PolicyRuleStore(ledger)
@@ -374,6 +378,29 @@ class RunManager:
                 self._mark_post_terminal(stale_run, session_id)
             if self.is_session_active(session_id):
                 active_run = self._session_runs[session_id]
+                goal = await asyncio.to_thread(self.goals.current, session_id)
+                if goal is not None and goal.current_run_id == active_run:
+                    mutation = await asyncio.to_thread(
+                        self.message_queue.enqueue,
+                        session_id,
+                        content,
+                        remember=remember,
+                        paste_spans=paste_spans or [],
+                        priority=True,
+                    )
+                    await self._publish_durable(mutation.event)
+                    _, yielded_event = await asyncio.to_thread(
+                        self.goals.transition,
+                        await asyncio.to_thread(self.ledger.get_session, session_id),
+                        goal.id,
+                        "goal.yielded",
+                        run_id=active_run,
+                        summary="Yielded to a foreground request",
+                        reason="foreground_request",
+                    )
+                    await self._publish_durable(yielded_event)
+                    await self.cancel(active_run)
+                    return SubmissionResult(disposition="queued", queued=mutation.item)
                 mutation = await asyncio.to_thread(
                     self.message_queue.enqueue,
                     session_id,
@@ -421,6 +448,148 @@ class RunManager:
 
     async def queue_state(self, session_id: str) -> QueueState:
         return await asyncio.to_thread(self.message_queue.state, session_id)
+
+    async def start_goal(self, session_id: str, objective: str) -> Goal:
+        async with self._submission_lock(session_id):
+            if self.is_session_active(session_id):
+                raise ValueError("cannot start a goal while the session has active work")
+            if (await self.queue_state(session_id)).items:
+                raise ValueError("cannot start a goal while the session has queued turns")
+            session = await asyncio.to_thread(self.ledger.get_session, session_id)
+            await self._validate_goal_session(session)
+            goal, event = await asyncio.to_thread(self.goals.create, session, objective)
+            await self._publish_durable(event)
+            return await self._start_goal_step_locked(session, goal, causation_id=event.id)
+
+    async def current_goal(self, session_id: str) -> Goal | None:
+        return await asyncio.to_thread(self.goals.current, session_id)
+
+    async def goal_history(self, session_id: str) -> list[Goal]:
+        return await asyncio.to_thread(self.goals.list, session_id)
+
+    async def pause_goal(self, session_id: str) -> Goal:
+        async with self._submission_lock(session_id):
+            session = await asyncio.to_thread(self.ledger.get_session, session_id)
+            goal = await asyncio.to_thread(self.goals.current, session_id)
+            if goal is None or goal.status not in {"running", "yielded"}:
+                raise ValueError("session has no running goal")
+            paused, event = await asyncio.to_thread(
+                self.goals.transition,
+                session,
+                goal.id,
+                "goal.paused",
+                run_id=goal.current_run_id,
+                summary="Paused by user",
+                reason="user_pause",
+            )
+            await self._publish_durable(event)
+            if goal.current_run_id is not None:
+                await self.cancel(goal.current_run_id)
+            return paused
+
+    async def resume_goal(self, session_id: str) -> Goal:
+        async with self._submission_lock(session_id):
+            if self.is_session_active(session_id):
+                raise ValueError("cannot resume a goal while the session has active work")
+            if (await self.queue_state(session_id)).items:
+                raise ValueError("cannot resume a goal while the session has queued turns")
+            session = await asyncio.to_thread(self.ledger.get_session, session_id)
+            await self._validate_goal_session(session)
+            goal = await asyncio.to_thread(self.goals.current, session_id)
+            if goal is None or goal.status not in {"paused", "blocked", "yielded"}:
+                raise ValueError("session has no paused or blocked goal")
+            resumed, event = await asyncio.to_thread(
+                self.goals.transition,
+                session,
+                goal.id,
+                "goal.resumed",
+                summary=goal.latest_summary,
+                reason="user_resume",
+            )
+            await self._publish_durable(event)
+            return await self._start_goal_step_locked(session, resumed, causation_id=event.id)
+
+    async def cancel_goal(self, session_id: str) -> Goal:
+        async with self._submission_lock(session_id):
+            session = await asyncio.to_thread(self.ledger.get_session, session_id)
+            goal = await asyncio.to_thread(self.goals.current, session_id)
+            if goal is None:
+                raise ValueError("session has no current goal")
+            cancelled, event = await asyncio.to_thread(
+                self.goals.transition,
+                session,
+                goal.id,
+                "goal.cancelled",
+                run_id=goal.current_run_id,
+                summary="Cancelled by user",
+                reason="user_cancel",
+            )
+            await self._publish_durable(event)
+            if goal.current_run_id is not None:
+                await self.cancel(goal.current_run_id)
+            return cancelled
+
+    async def recover_goals(self) -> None:
+        for session in await asyncio.to_thread(self.ledger.list_sessions):
+            if session.status != "open":
+                continue
+            goal = await asyncio.to_thread(self.goals.current, session.id)
+            if goal is None or goal.status not in {"running", "yielded"}:
+                continue
+            async with self._submission_lock(session.id):
+                if self.is_session_active(session.id) or (await self.queue_state(session.id)).items:
+                    continue
+                try:
+                    await self._validate_goal_session(session)
+                except (KeyError, PermissionError, ValueError):
+                    continue
+                if goal.status == "running":
+                    goal, interrupted = await asyncio.to_thread(
+                        self.goals.transition,
+                        session,
+                        goal.id,
+                        "goal.yielded",
+                        summary="Previous goal step ended when the gateway stopped",
+                        reason="gateway_recovery",
+                    )
+                    await self._publish_durable(interrupted)
+                goal, resumed = await asyncio.to_thread(
+                    self.goals.transition,
+                    session,
+                    goal.id,
+                    "goal.resumed",
+                    summary=goal.latest_summary,
+                    reason="gateway_recovery",
+                )
+                await self._publish_durable(resumed)
+                await self._start_goal_step_locked(session, goal, causation_id=resumed.id)
+
+    async def _validate_goal_session(self, session: Session) -> None:
+        if session.status != "open":
+            raise ValueError("session is not open")
+        if session.provider not in self.providers:
+            raise KeyError(f"unknown provider: {session.provider}")
+        trust = await asyncio.to_thread(self.controls.get_trust, Path(session.working_directory))
+        if trust is None:
+            raise PermissionError("working directory is not trusted")
+
+    async def _start_goal_step_locked(
+        self, session: Session, goal: Goal, *, causation_id: str
+    ) -> Goal:
+        run_id = new_id()
+        updated, step = await asyncio.to_thread(
+            self.goals.transition,
+            session,
+            goal.id,
+            "goal.step.started",
+            run_id=run_id,
+            step=goal.step_count + 1,
+            summary=goal.latest_summary,
+            causation_id=causation_id,
+        )
+        await self._publish_durable(step)
+        self._launch(session.id, step, run_id=run_id)
+        return updated
 
     async def compact(self, session_id: str) -> str:
         async with self._submission_lock(session_id):
@@ -540,8 +709,8 @@ class RunManager:
             event.session_id, {"durable": True, "event": event.model_dump(mode="json")}
         )
 
-    def _launch(self, session_id: str, user_event: Event) -> str:
-        run_id = new_id()
+    def _launch(self, session_id: str, user_event: Event, *, run_id: str | None = None) -> str:
+        run_id = run_id or new_id()
         task = asyncio.create_task(
             self._run(run_id, session_id, user_event), name=f"hames-run-{run_id}"
         )
@@ -549,6 +718,82 @@ class RunManager:
         self._session_runs[session_id] = run_id
         task.add_done_callback(lambda _: self._finish(run_id, session_id))
         return run_id
+
+    async def _advance_goal_after_run(self, session_id: str, run_id: str) -> None:
+        if self._closing:
+            session = await asyncio.to_thread(self.ledger.get_session, session_id)
+            goal = await asyncio.to_thread(self.goals.current, session_id)
+            if goal is not None and goal.status == "running" and goal.current_run_id == run_id:
+                _, event = await asyncio.to_thread(
+                    self.goals.transition,
+                    session,
+                    goal.id,
+                    "goal.yielded",
+                    run_id=run_id,
+                    summary="Goal step interrupted while the gateway stopped",
+                    reason="gateway_shutdown",
+                )
+                await self._publish_durable(event)
+            return
+        async with self._submission_lock(session_id):
+            session = await asyncio.to_thread(self.ledger.get_session, session_id)
+            goal = await asyncio.to_thread(self.goals.current, session_id)
+            if goal is None:
+                return
+            if goal.status == "running" and goal.current_run_id == run_id:
+                run_events = await asyncio.to_thread(self.ledger.list_run_events, run_id)
+                reported = any(
+                    event.type == "goal.progressed"
+                    and str(event.payload.get("goal_id", "")) == goal.id
+                    for event in run_events
+                )
+                if not reported:
+                    summary, evidence, signature = _unreported_goal_step(run_events)
+                    repeated = (
+                        goal.repeated_no_progress + 1 if signature == goal.latest_signature else 1
+                    )
+                    goal, event = await asyncio.to_thread(
+                        self.goals.transition,
+                        session,
+                        goal.id,
+                        "goal.progressed",
+                        run_id=run_id,
+                        summary=summary,
+                        evidence=evidence,
+                        signature=signature,
+                        repeated_no_progress=repeated,
+                    )
+                    await self._publish_durable(event)
+                    if repeated >= 3:
+                        goal, blocked = await asyncio.to_thread(
+                            self.goals.transition,
+                            session,
+                            goal.id,
+                            "goal.blocked",
+                            run_id=run_id,
+                            summary="Goal made no distinct progress across three steps",
+                            evidence=evidence,
+                            reason="stall_guard",
+                        )
+                        await self._publish_durable(blocked)
+                        return
+            if goal.status == "yielded":
+                if self.is_session_active(session_id) or (await self.queue_state(session_id)).items:
+                    return
+                goal, resumed = await asyncio.to_thread(
+                    self.goals.transition,
+                    session,
+                    goal.id,
+                    "goal.resumed",
+                    summary=goal.latest_summary,
+                    reason="foreground_settled",
+                )
+                await self._publish_durable(resumed)
+            if goal.status != "running":
+                return
+            if self.is_session_active(session_id) or (await self.queue_state(session_id)).items:
+                return
+            await self._start_goal_step_locked(session, goal, causation_id=run_id)
 
     def _finish(self, run_id: str, session_id: str) -> None:
         self._tasks.pop(run_id, None)
@@ -717,6 +962,7 @@ class RunManager:
         finally:
             self._mark_post_terminal(run_id, session_id)
             await self._promote_next(session_id)
+            await self._advance_goal_after_run(session_id, run_id)
             if self.config.memory.enabled:
                 await self._project_episode(session_id, run_id)
             if self.memory_manager is not None and session is not None:
@@ -1795,6 +2041,61 @@ class RunManager:
         causation_id: str,
     ) -> ToolResult:
         try:
+            if isinstance(arguments, GoalReportArguments):
+                goal = await asyncio.to_thread(self.goals.current, session.id)
+                if goal is None or goal.status != "running" or goal.current_run_id != run_id:
+                    raise ValueError("goal_report requires the active goal step")
+                signature = hashlib.sha256(
+                    json.dumps(
+                        {
+                            "summary": arguments.summary.strip().lower(),
+                            "evidence": sorted(item.strip().lower() for item in arguments.evidence),
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ).encode()
+                ).hexdigest()
+                repeated = (
+                    goal.repeated_no_progress + 1
+                    if arguments.status == "progress" and signature == goal.latest_signature
+                    else 1
+                )
+                event_type = {
+                    "progress": "goal.progressed",
+                    "achieved": "goal.achieved",
+                    "blocked": "goal.blocked",
+                }[arguments.status]
+                goal, event = await asyncio.to_thread(
+                    self.goals.transition,
+                    session,
+                    goal.id,
+                    event_type,
+                    run_id=run_id,
+                    summary=arguments.summary,
+                    evidence=arguments.evidence,
+                    signature=signature,
+                    repeated_no_progress=repeated,
+                    causation_id=causation_id,
+                )
+                await self._publish_store_events((event,))
+                if arguments.status == "progress" and repeated >= 3:
+                    goal, blocked = await asyncio.to_thread(
+                        self.goals.transition,
+                        session,
+                        goal.id,
+                        "goal.blocked",
+                        run_id=run_id,
+                        summary="Goal repeated the same progress report three times",
+                        evidence=arguments.evidence,
+                        reason="stall_guard",
+                        causation_id=event.id,
+                    )
+                    await self._publish_store_events((blocked,))
+                return ToolResult(
+                    status="completed",
+                    summary=f"goal reported {goal.status}",
+                    structured_data={"goal": goal.model_dump(mode="json")},
+                )
             if isinstance(arguments, MemorySearchArguments):
                 status: MemoryStatus | None = (
                     None if arguments.status == "all" else arguments.status
@@ -2647,6 +2948,46 @@ class RunManager:
         run_root = workspace.parents[1]
         if run_root.parent == self._scratch_base and run_root.is_dir():
             shutil.rmtree(run_root, ignore_errors=True)
+
+
+def _unreported_goal_step(events: list[Event]) -> tuple[str, list[str], str]:
+    terminal_tools = [
+        event
+        for event in events
+        if event.type in {"tool.completed", "tool.failed", "tool.rejected"}
+    ]
+    assistant = next(
+        (
+            str(event.payload.get("content", "")).strip()
+            for event in reversed(events)
+            if event.type == "assistant.message" and str(event.payload.get("content", "")).strip()
+        ),
+        "",
+    )
+    evidence = [
+        f"{event.payload.get('name', 'tool')}: {event.payload.get('summary', event.type)}"
+        for event in terminal_tools[-8:]
+    ]
+    if assistant:
+        evidence.append(assistant[:1000])
+    if not evidence:
+        evidence = ["The step ended without a goal report or durable tool evidence"]
+    summary = assistant[:1000] or "Step ended without an explicit goal_report"
+    signature_payload = {
+        "assistant": " ".join(assistant.lower().split()),
+        "tools": [
+            {
+                "type": event.type,
+                "name": event.payload.get("name", ""),
+                "summary": event.payload.get("summary", ""),
+            }
+            for event in terminal_tools
+        ],
+    }
+    signature = hashlib.sha256(
+        json.dumps(signature_payload, separators=(",", ":"), sort_keys=True).encode()
+    ).hexdigest()
+    return summary, evidence, signature
 
 
 def _tool_failure(message: str) -> ToolResult:

@@ -32,6 +32,7 @@ from hames.control import ControlStore
 from hames.database import Database
 from hames.evolution import Scar, ScarStatus, ScarStore
 from hames.evolution_runtime import EvolutionManager
+from hames.goals import Goal
 from hames.inspection import (
     AgentUsageProjection,
     ContextInspection,
@@ -160,6 +161,10 @@ class MessageAccepted(ApiModel):
 class CompactionAccepted(ApiModel):
     run_id: str
     trigger: Literal["manual"] = "manual"
+
+
+class GoalCreateRequest(ApiModel):
+    objective: str = Field(min_length=1, max_length=8000)
 
 
 class TrustStatus(ApiModel):
@@ -454,6 +459,7 @@ def create_app(state: GatewayState) -> FastAPI:
     async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
         await state.plugins.start_enabled()
         await state.runs.recover_queues()
+        await state.runs.recover_goals()
         yield
         await state.runs.close()
 
@@ -1706,6 +1712,82 @@ def create_app(state: GatewayState) -> FastAPI:
             raise ApiError(409, "session_not_compactable", str(exc)) from exc
         except PermissionError as exc:
             raise ApiError(409, "working_directory_untrusted", str(exc)) from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/goals",
+        dependencies=auth,
+        response_model=Goal,
+        status_code=202,
+    )
+    async def create_goal(session_id: str, request: GoalCreateRequest) -> Goal:
+        try:
+            return await state.runs.start_goal(session_id, request.objective)
+        except KeyError as exc:
+            raise ApiError(404, "session_or_provider_not_found", str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(409, "goal_conflict", str(exc)) from exc
+        except PermissionError as exc:
+            raise ApiError(409, "working_directory_untrusted", str(exc)) from exc
+
+    @app.get(
+        "/v1/sessions/{session_id}/goals/current",
+        dependencies=auth,
+        response_model=Goal | None,
+    )
+    async def current_goal(session_id: str) -> Goal | None:
+        try:
+            return await state.runs.current_goal(session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", str(exc)) from exc
+
+    @app.get(
+        "/v1/sessions/{session_id}/goals",
+        dependencies=auth,
+        response_model=list[Goal],
+    )
+    async def goal_history(session_id: str) -> list[Goal]:
+        try:
+            return await state.runs.goal_history(session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", str(exc)) from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/goals/current/pause",
+        dependencies=auth,
+        response_model=Goal,
+    )
+    async def pause_goal(session_id: str) -> Goal:
+        try:
+            return await state.runs.pause_goal(session_id)
+        except (KeyError, ValueError) as exc:
+            raise ApiError(409, "goal_not_pausable", str(exc)) from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/goals/current/resume",
+        dependencies=auth,
+        response_model=Goal,
+        status_code=202,
+    )
+    async def resume_goal(session_id: str) -> Goal:
+        try:
+            return await state.runs.resume_goal(session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_or_provider_not_found", str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(409, "goal_not_resumable", str(exc)) from exc
+        except PermissionError as exc:
+            raise ApiError(409, "working_directory_untrusted", str(exc)) from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/goals/current/cancel",
+        dependencies=auth,
+        response_model=Goal,
+    )
+    async def cancel_goal(session_id: str) -> Goal:
+        try:
+            return await state.runs.cancel_goal(session_id)
+        except (KeyError, ValueError) as exc:
+            raise ApiError(409, "goal_not_cancellable", str(exc)) from exc
 
     @app.get("/v1/sessions/{session_id}/queue", dependencies=auth, response_model=QueueState)
     async def queue_state(session_id: str) -> QueueState:
