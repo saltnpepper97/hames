@@ -55,7 +55,9 @@ def main() -> None:
                         "tools": [
                             {
                                 "name": "summary",
-                                "description": "Count files in the project root via the capability broker.",
+                                "description": (
+                                    "Count files in the project root via the capability broker."
+                                ),
                                 "input_schema": {"type": "object"},
                             }
                         ],
