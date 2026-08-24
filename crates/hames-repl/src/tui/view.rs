@@ -94,7 +94,15 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let sheet_height = app
         .sheet
         .as_ref()
-        .map(|sheet| (sheet.options.len() as u16 + 2).clamp(3, 9))
+        .map(|sheet| {
+            let note_row = u16::from(
+                sheet.kind == SheetKind::PlanReview
+                    && app.inline_editor.as_ref().is_some_and(|editor| {
+                        editor.kind == crate::tui::app::InlineEditorKind::PlanExecutionNote
+                    }),
+            );
+            (sheet.options.len() as u16 + note_row + 2).clamp(3, 9)
+        })
         .unwrap_or(0);
     let plan_note_in_sheet = app
         .sheet
@@ -972,36 +980,7 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             });
             continue;
         }
-        if plan_review
-            && offset == 2
-            && let Some(editor) = app.inline_editor.as_ref().filter(|editor| {
-                editor.kind == crate::tui::app::InlineEditorKind::PlanExecutionNote
-            })
-        {
-            let label = " 3  Continue with note  ❯ ";
-            let available = usize::from(area.width)
-                .saturating_sub(UnicodeWidthStr::width(label) + 4)
-                .max(1);
-            let input = single_line_editor(&editor.input, available);
-            spans.extend([
-                Span::styled(label, Style::default().fg(INPUT).bold().patch(row_style)),
-                Span::styled(input, Style::default().fg(INPUT_LIGHT).patch(row_style)),
-            ]);
-            lines.push(Line::from(spans));
-            app.hits.push(HitRegion {
-                x: area.x,
-                y: area.y + 1 + u16::try_from(offset - start).unwrap_or(0),
-                width: area.width,
-                height: 1,
-                action: HitAction::SelectSheet(offset),
-            });
-            continue;
-        }
-        let label_field = if plan_review {
-            format!(" {}  {:<20}", offset + 1, option.label)
-        } else {
-            format!(" {:<20}", option.label)
-        };
+        let label_field = format!(" {:<20}", option.label);
         if command_tray {
             spans.extend(command_label_spans(
                 &option.label,
@@ -1041,6 +1020,22 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             height: 1,
             action: HitAction::SelectSheet(offset),
         });
+        if plan_review
+            && offset == 2
+            && let Some(editor) = app.inline_editor.as_ref().filter(|editor| {
+                editor.kind == crate::tui::app::InlineEditorKind::PlanExecutionNote
+            })
+        {
+            let label = "    ❯ ";
+            let available = usize::from(area.width)
+                .saturating_sub(UnicodeWidthStr::width(label) + 2)
+                .max(1);
+            let input = single_line_editor(&editor.input, available);
+            lines.push(Line::from(vec![
+                Span::styled(label, Style::default().fg(INPUT_LIGHT)),
+                Span::styled(input, Style::default().fg(INPUT_LIGHT)),
+            ]));
+        }
     }
     let rule = Style::default().fg(RULE);
     let title = (!command_tray).then(|| {
@@ -4360,7 +4355,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_review_uses_radios_and_keeps_execution_note_in_the_choice_row() {
+    fn plan_review_uses_unnumbered_radios_and_places_note_below_its_choice() {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(session(), Vec::new(), true);
@@ -4384,9 +4379,12 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(rendered.contains("○ 1  Proceed with plan"));
-        assert!(rendered.contains("○ 2  Clear context and proceed"));
-        assert!(rendered.contains("◉ 3  Continue with note  ❯"));
+        assert!(rendered.contains("○ Proceed with plan"));
+        assert!(rendered.contains("○ Clear context and proceed"));
+        assert!(rendered.contains("◉ Continue with note"));
+        assert!(rendered.contains("❯ Keep the public API"));
+        assert!(!rendered.contains("○ 1"));
+        assert!(!rendered.contains("◉ 3"));
         assert!(rendered.contains("approve and execute · Esc choices"));
         assert!(
             single_line_editor(&app.inline_editor.as_ref().unwrap().input, 18).ends_with("long▏")
