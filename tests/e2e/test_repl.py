@@ -456,7 +456,7 @@ async def test_repl_preserves_tool_preparation_through_completion(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_repl_resolves_tilde_through_home_approval(
+async def test_repl_resolves_tilde_without_auto_mode_approval(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     build = await asyncio.create_subprocess_exec(
@@ -492,9 +492,7 @@ async def test_repl_resolves_tilde_through_home_approval(
             ],
             [
                 StreamEvent(kind=StreamEventKind.STARTED, provider_request_id="home-2"),
-                StreamEvent(
-                    kind=StreamEventKind.TEXT_DELTA, text="The approved home file was read."
-                ),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="The home file was read."),
                 StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
             ],
         ],
@@ -529,18 +527,16 @@ async def test_repl_resolves_tilde_through_home_approval(
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(
-            process.communicate(b"y\nread ~/.zshrc\ny\n/quit\n"), timeout=10
+            process.communicate(b"y\nread ~/.zshrc\n/quit\n"), timeout=10
         )
         output = stdout.decode()
         assert process.returncode == 0, stderr.decode()
         assert "Preparing read" in output
         assert "~/.zshrc" in output
-        assert "Awaiting approval" in output
-        assert "Approval" in output
-        assert "approved" in output
+        assert "Awaiting approval" not in output
         assert "Reading" in output
         assert "Read" in output
-        assert "The approved home file was read." in output
+        assert "The home file was read." in output
         assert "~/~/" not in output
         assert f"{REPOSITORY}/~" not in output
         tool_message = provider.requests[1].messages[-1]

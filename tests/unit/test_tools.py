@@ -89,7 +89,7 @@ async def test_paths_cannot_escape_and_large_results_use_blobs(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_home_paths_normalize_and_require_confirmation(
+async def test_home_paths_normalize_and_auto_allows_non_secret_access(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     user_home = tmp_path / "user-home"
@@ -108,8 +108,16 @@ async def test_home_paths_normalize_and_require_confirmation(
     context = tool_context(tmp_path)
     gate = PolicyGate(tmp_path / "hames-home")
     decision = gate.decide("read_file", relative, context)
-    assert decision.decision is PolicyDecisionKind.REQUIRE_CONFIRMATION
-    assert decision.risk == "outside_workspace"
+    assert decision.decision is PolicyDecisionKind.ALLOW
+    manual = gate.decide("read_file", relative, context, interaction_mode="manual")
+    assert manual.decision is PolicyDecisionKind.REQUIRE_CONFIRMATION
+    assert manual.risk == "outside_workspace"
+    home_write = WriteFileArguments(path="~/notes.txt", content="ordinary")
+    assert gate.decide("write_file", home_write, context).decision is PolicyDecisionKind.ALLOW
+    assert (
+        gate.decide("write_file", home_write, context, interaction_mode="manual").decision
+        is PolicyDecisionKind.REQUIRE_CONFIRMATION
+    )
 
     read = await ReadFileTool().execute(context, relative)
     assert read.status == "completed"
@@ -165,10 +173,19 @@ def test_policy_classifies_safe_dangerous_and_protected_actions(tmp_path: Path) 
     )
     assert (
         gate.decide("shell", ShellArguments(command="cat /etc/passwd"), context).decision
-        is PolicyDecisionKind.REQUIRE_CONFIRMATION
+        is PolicyDecisionKind.ALLOW
     )
     assert (
         gate.decide("shell", ShellArguments(command="cat ~/.zshrc"), context).decision
+        is PolicyDecisionKind.ALLOW
+    )
+    assert (
+        gate.decide(
+            "shell",
+            ShellArguments(command="cat ~/.zshrc"),
+            context,
+            interaction_mode="manual",
+        ).decision
         is PolicyDecisionKind.REQUIRE_CONFIRMATION
     )
 

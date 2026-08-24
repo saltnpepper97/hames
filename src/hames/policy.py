@@ -233,7 +233,7 @@ class PolicyGate:
                         "credential stores are not available to generic tools",
                         "secret",
                     )
-                if arguments.workspace == "home":
+                if arguments.workspace == "home" and interaction_mode != "auto":
                     return PolicyDecision(
                         PolicyDecisionKind.REQUIRE_CONFIRMATION,
                         "tool accesses the user home outside the trusted workspace",
@@ -247,27 +247,29 @@ class PolicyGate:
             for pattern, reason in _CONFIRM_SHELL:
                 if pattern.search(arguments.command):
                     return PolicyDecision(PolicyDecisionKind.REQUIRE_CONFIRMATION, reason, "high")
-            workspace_root = context.root_for(arguments.workspace).resolve(strict=True)
-            for raw_path in _OUTSIDE_PATH.findall(arguments.command):
-                candidate = Path(raw_path).expanduser().resolve(strict=False)
-                if candidate != workspace_root and not candidate.is_relative_to(workspace_root):
+            if interaction_mode != "auto":
+                workspace_root = context.root_for(arguments.workspace).resolve(strict=True)
+                for raw_path in _OUTSIDE_PATH.findall(arguments.command):
+                    candidate = Path(raw_path).expanduser().resolve(strict=False)
+                    if candidate == workspace_root or candidate.is_relative_to(workspace_root):
+                        continue
                     return PolicyDecision(
                         PolicyDecisionKind.REQUIRE_CONFIRMATION,
                         "command references a path outside the trusted workspace",
                         "outside_workspace",
                     )
-            if re.search(r"(?:^|[\s'\"])(?:\.\./)+", arguments.command):
-                return PolicyDecision(
-                    PolicyDecisionKind.REQUIRE_CONFIRMATION,
-                    "command contains parent-directory traversal",
-                    "outside_workspace",
-                )
-            if re.search(r"(?:^|[\s'\"])~/", arguments.command):
-                return PolicyDecision(
-                    PolicyDecisionKind.REQUIRE_CONFIRMATION,
-                    "command references the user home outside the trusted workspace",
-                    "outside_workspace",
-                )
+                if re.search(r"(?:^|[\s'\"])(?:\.\./)+", arguments.command):
+                    return PolicyDecision(
+                        PolicyDecisionKind.REQUIRE_CONFIRMATION,
+                        "command contains parent-directory traversal",
+                        "outside_workspace",
+                    )
+                if re.search(r"(?:^|[\s'\"])~/", arguments.command):
+                    return PolicyDecision(
+                        PolicyDecisionKind.REQUIRE_CONFIRMATION,
+                        "command references the user home outside the trusted workspace",
+                        "outside_workspace",
+                    )
 
         if rule_denial is not None:
             return rule_denial

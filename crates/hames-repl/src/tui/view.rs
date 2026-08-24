@@ -20,14 +20,21 @@ use super::app::{
 };
 
 const MINT: Color = Color::Rgb(116, 226, 192);
+const MINT_LIGHT: Color = Color::Rgb(164, 239, 218);
 const SKY: Color = Color::Rgb(112, 177, 255);
+const SKY_LIGHT: Color = Color::Rgb(166, 207, 255);
 const LILAC: Color = Color::Rgb(193, 154, 255);
-const THOUGHT: Color = Color::Rgb(205, 190, 230);
+const LILAC_LIGHT: Color = Color::Rgb(220, 194, 255);
 const CORAL: Color = Color::Rgb(255, 139, 116);
+const CORAL_LIGHT: Color = Color::Rgb(255, 188, 172);
 const GOLD: Color = Color::Rgb(240, 190, 92);
+const GOLD_LIGHT: Color = Color::Rgb(249, 218, 153);
 const MUTED: Color = Color::Rgb(86, 94, 108);
+const MUTED_LIGHT: Color = Color::Rgb(126, 134, 149);
 const INPUT: Color = Color::Rgb(156, 164, 178);
+const INPUT_LIGHT: Color = Color::Rgb(190, 197, 208);
 const RULE: Color = Color::Rgb(49, 56, 69);
+const RULE_LIGHT: Color = Color::Rgb(82, 90, 105);
 const DELETE_BG: Color = Color::Rgb(78, 31, 39);
 const PANEL: Color = Color::Rgb(19, 23, 31);
 const PANEL_BRIGHT: Color = Color::Rgb(29, 35, 46);
@@ -317,15 +324,27 @@ fn traveling_sheen(idle: Duration, sweep: Duration) -> Effect {
                 let coordinate = f32::from(position.x.saturating_sub(context.area.x))
                     + f32::from(position.y.saturating_sub(context.area.y)) / 3.0;
                 let distance = (coordinate - center).abs();
-                if distance < 0.8 {
-                    cell.set_fg(Color::White);
-                } else if distance < 2.0 {
-                    cell.set_fg(INPUT);
+                if distance < 1.35 {
+                    cell.set_fg(lighter_color(cell.fg));
                 }
             }
         },
     );
     fx::repeating(fx::sequence(&[fx::sleep(idle), highlight]))
+}
+
+fn lighter_color(color: Color) -> Color {
+    match color {
+        MINT => MINT_LIGHT,
+        SKY => SKY_LIGHT,
+        LILAC => LILAC_LIGHT,
+        CORAL => CORAL_LIGHT,
+        GOLD => GOLD_LIGHT,
+        MUTED => MUTED_LIGHT,
+        INPUT => INPUT_LIGHT,
+        RULE => RULE_LIGHT,
+        value => value,
+    }
 }
 
 fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
@@ -337,7 +356,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 paste_spans,
             } => {
                 lines.push(RenderLine {
-                    line: Line::from(Span::styled("You", Style::default().fg(SKY).bold())),
+                    line: Line::from(Span::styled("You", Style::default().fg(INPUT).bold())),
                     thought: None,
                     sheen: None,
                 });
@@ -362,14 +381,14 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 let label = if *live {
                     Line::from(Span::styled(
                         "◈ Thinking",
-                        Style::default().fg(THOUGHT).bold(),
+                        Style::default().fg(INPUT).bold(),
                     ))
                 } else {
                     let mut spans = vec![
-                        Span::styled("◈ ", Style::default().fg(LILAC)),
+                        Span::styled("◈ ", Style::default().fg(MUTED)),
                         Span::styled(
                             thought_label(*duration_seconds),
-                            Style::default().fg(LILAC).bold(),
+                            Style::default().fg(INPUT).bold(),
                         ),
                     ];
                     if interactive {
@@ -418,7 +437,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 for row in rows.iter().filter(|row| !row.name.is_empty()) {
                     if category != Some(row.category()) {
                         category = Some(row.category());
-                        let color = category_color(row.category());
+                        let color = INPUT;
                         lines.push(RenderLine {
                             line: Line::from(vec![
                                 Span::styled("◆ ", Style::default().fg(color)),
@@ -1848,25 +1867,12 @@ fn fit(value: &str, width: usize) -> String {
     format!("{}…", prefix.trim_end())
 }
 
-fn category_color(category: ActivityCategory) -> Color {
-    match category {
-        ActivityCategory::Explore => SKY,
-        ActivityCategory::Change => CORAL,
-        ActivityCategory::Run => GOLD,
-        ActivityCategory::Delegate => MINT,
-        ActivityCategory::Skills => LILAC,
-        ActivityCategory::Memory => MINT,
-        ActivityCategory::Scars => CORAL,
-        ActivityCategory::Plugin => LILAC,
-    }
-}
-
 fn phase_color(phase: ActivityPhase) -> Color {
     match phase {
         ActivityPhase::Completed => MINT,
         ActivityPhase::Failed | ActivityPhase::Cancelled => CORAL,
         ActivityPhase::Rejected | ActivityPhase::Approval => GOLD,
-        _ => SKY,
+        _ => INPUT,
     }
 }
 
@@ -1908,11 +1914,17 @@ fn apply_theme(frame: &mut Frame<'_>, area: Rect, theme: ThemeKind) {
 fn terminal_color(color: Color) -> Color {
     match color {
         MINT => Color::Green,
+        MINT_LIGHT => Color::LightGreen,
         SKY => Color::Blue,
+        SKY_LIGHT => Color::LightBlue,
         LILAC => Color::Magenta,
+        LILAC_LIGHT => Color::LightMagenta,
         CORAL => Color::Red,
+        CORAL_LIGHT => Color::LightRed,
         GOLD => Color::Yellow,
+        GOLD_LIGHT => Color::LightYellow,
         MUTED => Color::DarkGray,
+        MUTED_LIGHT | INPUT_LIGHT | RULE_LIGHT => Color::Gray,
         INPUT => Color::Gray,
         PANEL => Color::Black,
         PANEL_BRIGHT => Color::DarkGray,
@@ -1967,10 +1979,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        DELETE_BG, GOLD, INPUT, MINT, MUTED, PANEL, PANEL_BRIGHT, SKY, draw, format_elapsed,
-        line_text, memory_browser_body, mode_color, mode_outline, pasted_display,
-        scar_browser_body, scar_editor_body, scrollbar_position, sheet_text_color, thought_label,
-        transcript_lines, traveling_sheen,
+        DELETE_BG, GOLD, INPUT, INPUT_LIGHT, MINT, MINT_LIGHT, MUTED, PANEL, PANEL_BRIGHT, SKY,
+        draw, format_elapsed, line_text, memory_browser_body, mode_color, mode_outline,
+        pasted_display, scar_browser_body, scar_editor_body, scrollbar_position, sheet_text_color,
+        thought_label, transcript_lines, traveling_sheen,
     };
     use crate::api::{MemoryRecord, PasteSpan, Scar, Session};
     use crate::tui::app::{
@@ -1988,11 +2000,21 @@ mod tests {
 
     #[test]
     fn tachyon_sheen_crosses_non_blank_text() {
-        let area = Rect::new(0, 0, 8, 1);
-        let mut buffer = Buffer::with_lines(["Thinking"]);
-        let mut effect = traveling_sheen(Duration::ZERO, Duration::from_millis(1_000));
-        effect.process(Duration::from_millis(500), &mut buffer, area);
-        assert!((0..8).any(|x| matches!(buffer[(x, 0)].fg, Color::White | INPUT)));
+        for (base, lighter) in [(INPUT, INPUT_LIGHT), (MINT, MINT_LIGHT)] {
+            let area = Rect::new(0, 0, 8, 1);
+            let mut buffer = Buffer::with_lines(["Thinking"]);
+            for x in 0..8 {
+                buffer[(x, 0)].set_fg(base);
+            }
+            let mut effect = traveling_sheen(Duration::ZERO, Duration::from_millis(1_000));
+            effect.process(Duration::from_millis(500), &mut buffer, area);
+            assert!((0..8).any(|x| buffer[(x, 0)].fg == lighter));
+            assert!(
+                (0..8).all(
+                    |x| matches!(buffer[(x, 0)].fg, color if color == base || color == lighter)
+                )
+            );
+        }
     }
 
     #[test]
