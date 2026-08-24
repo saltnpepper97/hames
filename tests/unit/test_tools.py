@@ -48,6 +48,9 @@ async def test_read_write_and_exact_edit_are_deterministic(tmp_path: Path) -> No
     )
     assert written.status == "completed"
     assert written.structured_data["created"] is True
+    assert "--- /dev/null" in written.content
+    assert "+++ b/src/value.txt" in written.content
+    assert "+alpha" in written.content
 
     read = await ReadFileTool().execute(
         context, ReadFileArguments(path="src/value.txt", start_line=2, end_line=2)

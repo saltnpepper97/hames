@@ -147,11 +147,29 @@ pub async fn run() -> Result<()> {
             break;
         }
     }
+    let exit_cancellation = if let Some(run_id) = app.active_run.clone() {
+        match client.cancel(&run_id).await {
+            Ok(()) => {
+                app.active_run = None;
+                app.run_started_at = None;
+                Some(Ok(run_id))
+            }
+            Err(error) => Some(Err(error)),
+        }
+    } else {
+        None
+    };
     stream_task.abort();
     let session_id = app.session.id.clone();
     let discard_empty = app.conversation_is_empty() && app.active_run.is_none();
     drop(terminal);
     println!();
+    if let Some(result) = exit_cancellation {
+        match result {
+            Ok(_) => println!("Active turn cancelled"),
+            Err(error) => println!("Warning: active turn could not be cancelled: {error:#}"),
+        }
+    }
     if discard_empty {
         client.close_session(&session_id).await?;
         println!("Empty session discarded · nothing to resume");

@@ -214,6 +214,9 @@ pub struct ActivityRow {
     pub argument_parts: String,
     pub phase: ActivityPhase,
     pub summary: String,
+    pub content: String,
+    pub structured_data: Value,
+    pub truncated: bool,
     pub duration_seconds: f64,
 }
 
@@ -227,6 +230,9 @@ impl ActivityRow {
             argument_parts: String::new(),
             phase: ActivityPhase::Preparing,
             summary: String::new(),
+            content: String::new(),
+            structured_data: Value::Null,
+            truncated: false,
             duration_seconds: 0.0,
         }
     }
@@ -356,7 +362,6 @@ impl ActivityRow {
 pub enum TranscriptItem {
     User {
         content: String,
-        paste_spans: Vec<PasteSpan>,
     },
     Thought {
         run_id: String,
@@ -370,6 +375,7 @@ pub enum TranscriptItem {
         run_id: String,
         content: String,
         live: bool,
+        durable: bool,
     },
     Activity {
         run_id: String,
@@ -1139,6 +1145,7 @@ impl App {
             }
             "response.tool_call_delta" => {
                 self.finish_live_thought(run_id);
+                self.finish_live_assistant(run_id);
                 let name = payload
                     .get("name")
                     .and_then(Value::as_str)
@@ -1181,7 +1188,6 @@ impl App {
                 self.collapse_completed_thoughts();
                 self.transcript.push(TranscriptItem::User {
                     content: string(&event.payload, "content"),
-                    paste_spans: paste_spans(&event.payload),
                 });
             }
             "run.started" => {
@@ -1215,14 +1221,21 @@ impl App {
             "assistant.message" => {
                 self.finish_live_thought(&run_id);
                 let index = self.ensure_assistant(&run_id, false);
-                if let TranscriptItem::Assistant { content, live, .. } = &mut self.transcript[index]
+                if let TranscriptItem::Assistant {
+                    content,
+                    live,
+                    durable,
+                    ..
+                } = &mut self.transcript[index]
                 {
                     *content = string(&event.payload, "content");
                     *live = false;
+                    *durable = true;
                 }
             }
             "model.tool_call" => {
                 self.finish_live_thought(&run_id);
+                self.finish_live_assistant(&run_id);
                 let index = event
                     .payload
                     .get("index")
@@ -1357,9 +1370,14 @@ impl App {
     }
 
     fn ensure_thought(&mut self, run_id: &str, live: bool) -> usize {
-        if let Some(index) = self.transcript.iter().rposition(
-            |item| matches!(item, TranscriptItem::Thought { run_id: id, .. } if id == run_id),
-        ) {
+        if let Some(index) = self.transcript.iter().rposition(|item| match item {
+            TranscriptItem::Thought {
+                run_id: id,
+                live: existing_live,
+                ..
+            } => id == run_id && (!live || *existing_live),
+            _ => false,
+        }) {
             return index;
         }
         self.collapse_completed_thoughts();
@@ -1375,38 +1393,40 @@ impl App {
     }
 
     fn ensure_assistant(&mut self, run_id: &str, live: bool) -> usize {
-        if let Some(index) = self.transcript.iter().rposition(
-            |item| matches!(item, TranscriptItem::Assistant { run_id: id, .. } if id == run_id),
-        ) {
+        if let Some(index) = self.transcript.iter().rposition(|item| match item {
+            TranscriptItem::Assistant {
+                run_id: id,
+                live: existing_live,
+                durable,
+                ..
+            } => id == run_id && if live { *existing_live } else { !*durable },
+            _ => false,
+        }) {
             return index;
         }
         self.transcript.push(TranscriptItem::Assistant {
             run_id: run_id.to_owned(),
             content: String::new(),
             live,
+            durable: false,
         });
         self.transcript.len() - 1
     }
 
     fn ensure_activity(&mut self, run_id: &str) -> usize {
-        if let Some(index) = self.transcript.iter().rposition(
-            |item| matches!(item, TranscriptItem::Activity { run_id: id, .. } if id == run_id),
-        ) {
+        if let Some(index) = self.transcript.len().checked_sub(1)
+            && matches!(
+                &self.transcript[index],
+                TranscriptItem::Activity { run_id: id, .. } if id == run_id
+            )
+        {
             return index;
         }
-        let activity = TranscriptItem::Activity {
+        self.transcript.push(TranscriptItem::Activity {
             run_id: run_id.to_owned(),
             rows: Vec::new(),
-        };
-        if let Some(index) = self.transcript.iter().position(
-            |item| matches!(item, TranscriptItem::Assistant { run_id: id, .. } if id == run_id),
-        ) {
-            self.transcript.insert(index, activity);
-            index
-        } else {
-            self.transcript.push(activity);
-            self.transcript.len() - 1
-        }
+        });
+        self.transcript.len() - 1
     }
 
     fn ensure_activity_row(
@@ -1415,6 +1435,45 @@ impl App {
         index: u64,
         call_id: Option<String>,
     ) -> &mut ActivityRow {
+        let existing =
+            self.transcript
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(activity_index, item)| {
+                    let TranscriptItem::Activity { run_id: id, rows } = item else {
+                        return None;
+                    };
+                    if id != run_id {
+                        return None;
+                    }
+                    rows.iter()
+                        .position(|row| {
+                            call_id
+                                .as_ref()
+                                .is_some_and(|id| row.tool_call_id.as_ref() == Some(id))
+                        })
+                        .or_else(|| {
+                            call_id
+                                .is_some()
+                                .then(|| {
+                                    rows.iter().position(|row| {
+                                        row.tool_call_id.is_none() && row.index == index
+                                    })
+                                })
+                                .flatten()
+                        })
+                        .map(|row_index| (activity_index, row_index))
+                });
+        if let Some((activity_index, row_index)) = existing {
+            let TranscriptItem::Activity { rows, .. } = &mut self.transcript[activity_index] else {
+                unreachable!();
+            };
+            if call_id.is_some() {
+                rows[row_index].tool_call_id = call_id;
+            }
+            return &mut rows[row_index];
+        }
         let activity_index = self.ensure_activity(run_id);
         let TranscriptItem::Activity { rows, .. } = &mut self.transcript[activity_index] else {
             unreachable!();
@@ -1472,6 +1531,16 @@ impl App {
             _ => row.phase,
         };
         row.summary = string(payload, "summary");
+        if let Some(content) = payload.get("content").and_then(Value::as_str) {
+            row.content = content.to_owned();
+        }
+        if let Some(structured_data) = payload.get("structured_data") {
+            row.structured_data = structured_data.clone();
+        }
+        row.truncated = payload
+            .get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(row.truncated);
         row.duration_seconds = payload
             .get("duration_seconds")
             .and_then(Value::as_f64)
@@ -1503,6 +1572,20 @@ impl App {
                 *live = false;
                 *collapsed = true;
                 break;
+            }
+        }
+    }
+
+    fn finish_live_assistant(&mut self, run_id: &str) {
+        for item in self.transcript.iter_mut().rev() {
+            if let TranscriptItem::Assistant {
+                run_id: id, live, ..
+            } = item
+                && id == run_id
+                && *live
+            {
+                *live = false;
+                return;
             }
         }
     }
@@ -1634,23 +1717,6 @@ fn string(payload: &Value, key: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned()
-}
-
-fn paste_spans(payload: &Value) -> Vec<PasteSpan> {
-    payload
-        .get("paste_spans")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|value| {
-            Some(PasteSpan {
-                start_byte: usize::try_from(value.get("start_byte")?.as_u64()?).ok()?,
-                end_byte: usize::try_from(value.get("end_byte")?.as_u64()?).ok()?,
-                line_count: usize::try_from(value.get("line_count")?.as_u64()?).ok()?,
-                byte_count: usize::try_from(value.get("byte_count")?.as_u64()?).ok()?,
-            })
-        })
-        .collect()
 }
 
 fn approval_from(payload: &Value) -> ApprovalModal {
@@ -1820,6 +1886,72 @@ mod tests {
     }
 
     #[test]
+    fn durable_replay_preserves_prose_tool_prose_order() {
+        let run_id = "run-segmented";
+        let events = vec![
+            event(1, "run.started", run_id, json!({})),
+            event(2, "model.requested", run_id, json!({})),
+            event(
+                3,
+                "assistant.message",
+                run_id,
+                json!({"content": "I will edit it.", "status": "interrupted"}),
+            ),
+            event(
+                4,
+                "model.tool_call",
+                run_id,
+                json!({
+                    "index": 0,
+                    "tool_call_id": "tool-1",
+                    "name": "edit_file",
+                    "arguments": {"path": "src/main.rs", "old_text": "old", "new_text": "new"}
+                }),
+            ),
+            event(
+                5,
+                "tool.completed",
+                run_id,
+                json!({
+                    "index": 0,
+                    "tool_call_id": "tool-1",
+                    "name": "edit_file",
+                    "status": "completed",
+                    "summary": "edited src/main.rs",
+                    "content": "--- a/src/main.rs\n+++ b/src/main.rs\n-old\n+new\n"
+                }),
+            ),
+            event(6, "model.requested", run_id, json!({})),
+            event(
+                7,
+                "assistant.message",
+                run_id,
+                json!({"content": "The edit is done.", "status": "completed"}),
+            ),
+            event(8, "run.completed", run_id, json!({})),
+        ];
+        let app = App::new(session(), events, true);
+        let positions = app
+            .transcript
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| match item {
+                TranscriptItem::Assistant { content, .. } => Some((index, content.as_str())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let activity = app
+            .transcript
+            .iter()
+            .position(|item| matches!(item, TranscriptItem::Activity { .. }))
+            .unwrap();
+        assert_eq!(positions.len(), 2);
+        assert_eq!(positions[0].1, "I will edit it.");
+        assert_eq!(positions[1].1, "The edit is done.");
+        assert!(positions[0].0 < activity && activity < positions[1].0);
+    }
+
+    #[test]
     fn background_model_requests_do_not_create_phantom_thoughts() {
         let mut app = App::new(session(), Vec::new(), true);
         app.ingest_durable(event(1, "run.started", "chat-run", json!({})), true);
@@ -1838,36 +1970,61 @@ mod tests {
     }
 
     #[test]
-    fn late_tool_lifecycle_stays_before_the_streaming_answer() {
+    fn assistant_tool_and_followup_keep_chronological_segments() {
         let run_id = "run-late-tool";
         let mut app = App::new(session(), Vec::new(), true);
-        app.ingest_transient(run_id, "response.text_delta", &json!({"text": "Answering"}));
+        app.ingest_transient(
+            run_id,
+            "response.text_delta",
+            &json!({"text": "I will create it."}),
+        );
+        app.ingest_transient(
+            run_id,
+            "response.tool_call_delta",
+            &json!({"index": 0, "name": "write_file", "arguments_delta": "{\"path\":\"game.py\"}"}),
+        );
         app.ingest_durable(
             event(
                 1,
+                "model.tool_call",
+                run_id,
+                json!({
+                    "index": 0,
+                    "tool_call_id": "tool-1",
+                    "name": "write_file",
+                    "arguments": {"path": "game.py", "content": "print('hi')"}
+                }),
+            ),
+            true,
+        );
+        app.ingest_transient(
+            run_id,
+            "response.text_delta",
+            &json!({"text": "It is ready."}),
+        );
+        app.ingest_durable(
+            event(
+                2,
                 "tool.completed",
                 run_id,
                 json!({
                     "index": 0,
                     "tool_call_id": "tool-1",
-                    "name": "shell",
-                    "summary": "compiled"
+                    "name": "write_file",
+                    "summary": "wrote game.py"
                 }),
             ),
             true,
         );
 
-        let activity = app
-            .transcript
-            .iter()
-            .position(|item| matches!(item, TranscriptItem::Activity { .. }))
-            .unwrap();
-        let answer = app
-            .transcript
-            .iter()
-            .position(|item| matches!(item, TranscriptItem::Assistant { .. }))
-            .unwrap();
-        assert!(activity < answer);
+        assert!(matches!(
+            &app.transcript[..],
+            [
+                TranscriptItem::Assistant { content: before, .. },
+                TranscriptItem::Activity { .. },
+                TranscriptItem::Assistant { content: after, .. }
+            ] if before == "I will create it." && after == "It is ready."
+        ));
     }
 
     #[test]
@@ -1899,7 +2056,6 @@ mod tests {
         assert!(app.conversation_is_empty());
         app.transcript.push(TranscriptItem::User {
             content: "Hello".to_owned(),
-            paste_spans: Vec::new(),
         });
         assert!(!app.conversation_is_empty());
     }

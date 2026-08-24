@@ -351,21 +351,16 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
     let mut lines = Vec::new();
     for (index, item) in app.transcript.iter().enumerate() {
         match item {
-            TranscriptItem::User {
-                content,
-                paste_spans,
-            } => {
+            TranscriptItem::User { content } => {
                 lines.push(RenderLine {
                     line: Line::from(Span::styled("You", Style::default().fg(INPUT).bold())),
                     thought: None,
                     sheen: None,
                 });
-                let display = pasted_display(content, paste_spans);
-                push_wrapped(
+                push_markdown(
                     &mut lines,
-                    &display,
+                    content,
                     width,
-                    "  ",
                     Style::default().fg(Color::White),
                 );
             }
@@ -424,11 +419,10 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     thought: None,
                     sheen: live.then_some((0, 7)),
                 });
-                push_wrapped(
+                push_markdown(
                     &mut lines,
                     content,
                     width,
-                    "  ",
                     Style::default().fg(Color::White),
                 );
             }
@@ -490,6 +484,13 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                         sheen: active
                             .then_some((4, u16::try_from(row.verb().width()).unwrap_or(0))),
                     });
+                    if row.phase == ActivityPhase::Completed
+                        && !row.content.is_empty()
+                        && (matches!(row.name.as_str(), "edit_file" | "write_file")
+                            || looks_like_unified_diff(&row.content))
+                    {
+                        push_diff(&mut lines, &row.content, width, row.truncated);
+                    }
                 }
             }
             TranscriptItem::Assistant { .. } => {}
@@ -1743,6 +1744,319 @@ fn push_memory_detail(lines: &mut Vec<Line<'static>>, label: &str, value: &str) 
     }
 }
 
+fn push_markdown(
+    lines: &mut Vec<RenderLine<'static>>,
+    value: &str,
+    width: usize,
+    base_style: Style,
+) {
+    let mut fence: Option<String> = None;
+    for raw in value.lines() {
+        let trimmed = raw.trim_start();
+        if let Some(marker) = trimmed.strip_prefix("```") {
+            if fence.is_some() {
+                lines.push(markdown_rule(width));
+                fence = None;
+            } else {
+                let language = marker.trim().to_owned();
+                let label = if language.is_empty() {
+                    "code".to_owned()
+                } else {
+                    language.clone()
+                };
+                lines.push(RenderLine {
+                    line: Line::from(vec![
+                        Span::styled("  ── ", Style::default().fg(RULE)),
+                        Span::styled(label, Style::default().fg(MUTED)),
+                    ]),
+                    thought: None,
+                    sheen: None,
+                });
+                fence = Some(language);
+            }
+            continue;
+        }
+        if let Some(language) = &fence {
+            if language.eq_ignore_ascii_case("diff") {
+                push_diff_source_line(lines, raw, width);
+            } else {
+                push_styled_wrapped(
+                    lines,
+                    vec![Span::styled(raw.to_owned(), Style::default().fg(INPUT))],
+                    width,
+                    "  │ ",
+                    Style::default().fg(RULE),
+                );
+            }
+            continue;
+        }
+        if trimmed.is_empty() {
+            lines.push(RenderLine {
+                line: Line::from(""),
+                thought: None,
+                sheen: None,
+            });
+            continue;
+        }
+        if is_markdown_rule(trimmed) {
+            lines.push(markdown_rule(width));
+            continue;
+        }
+        let heading_depth = trimmed
+            .chars()
+            .take_while(|character| *character == '#')
+            .count();
+        if (1..=6).contains(&heading_depth) && trimmed.as_bytes().get(heading_depth) == Some(&b' ')
+        {
+            let style = base_style
+                .fg(if heading_depth == 1 {
+                    Color::White
+                } else {
+                    INPUT
+                })
+                .bold();
+            push_styled_wrapped(
+                lines,
+                markdown_spans(trimmed[heading_depth + 1..].trim(), style),
+                width,
+                "  ",
+                Style::default(),
+            );
+            continue;
+        }
+        if let Some(quoted) = trimmed.strip_prefix("> ") {
+            push_styled_wrapped(
+                lines,
+                markdown_spans(quoted, Style::default().fg(MUTED)),
+                width,
+                "  │ ",
+                Style::default().fg(RULE),
+            );
+            continue;
+        }
+        if let Some(item) = ["- ", "* ", "+ "]
+            .iter()
+            .find_map(|marker| trimmed.strip_prefix(marker))
+        {
+            push_styled_wrapped(
+                lines,
+                markdown_spans(item, base_style),
+                width,
+                "  • ",
+                Style::default().fg(MUTED),
+            );
+            continue;
+        }
+        if let Some((prefix, item)) = numbered_markdown_item(trimmed) {
+            push_styled_wrapped(
+                lines,
+                markdown_spans(item, base_style),
+                width,
+                &format!("  {prefix} "),
+                Style::default().fg(MUTED),
+            );
+            continue;
+        }
+        push_styled_wrapped(
+            lines,
+            markdown_spans(trimmed, base_style),
+            width,
+            "  ",
+            Style::default(),
+        );
+    }
+    if fence.is_some() {
+        lines.push(markdown_rule(width));
+    }
+}
+
+fn markdown_spans(value: &str, base_style: Style) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut remaining = value;
+    while !remaining.is_empty() {
+        if let Some(rest) = remaining.strip_prefix('`')
+            && let Some(end) = rest.find('`')
+        {
+            spans.push(Span::styled(
+                rest[..end].to_owned(),
+                Style::default().fg(INPUT).bg(PANEL_BRIGHT),
+            ));
+            remaining = &rest[end + 1..];
+            continue;
+        }
+        if let Some(rest) = remaining.strip_prefix("**")
+            && let Some(end) = rest.find("**")
+        {
+            spans.push(Span::styled(
+                rest[..end].to_owned(),
+                base_style.add_modifier(Modifier::BOLD),
+            ));
+            remaining = &rest[end + 2..];
+            continue;
+        }
+        if let Some(rest) = remaining.strip_prefix('*')
+            && let Some(end) = rest.find('*')
+        {
+            spans.push(Span::styled(
+                rest[..end].to_owned(),
+                base_style.add_modifier(Modifier::ITALIC),
+            ));
+            remaining = &rest[end + 1..];
+            continue;
+        }
+        if let Some(rest) = remaining.strip_prefix('[')
+            && let Some(label_end) = rest.find("](")
+            && let Some(target_end) = rest[label_end + 2..].find(')')
+        {
+            spans.push(Span::styled(
+                rest[..label_end].to_owned(),
+                base_style.add_modifier(Modifier::UNDERLINED),
+            ));
+            let target_start = label_end + 2;
+            spans.push(Span::styled(
+                format!(" ({})", &rest[target_start..target_start + target_end]),
+                Style::default().fg(MUTED),
+            ));
+            remaining = &rest[target_start + target_end + 1..];
+            continue;
+        }
+        let end = remaining
+            .char_indices()
+            .skip(1)
+            .find_map(|(index, character)| matches!(character, '`' | '*' | '[').then_some(index))
+            .unwrap_or(remaining.len());
+        spans.push(Span::styled(remaining[..end].to_owned(), base_style));
+        remaining = &remaining[end..];
+    }
+    spans
+}
+
+fn push_styled_wrapped(
+    lines: &mut Vec<RenderLine<'static>>,
+    spans: Vec<Span<'static>>,
+    width: usize,
+    prefix: &str,
+    prefix_style: Style,
+) {
+    let prefix_width = UnicodeWidthStr::width(prefix);
+    let available = width.saturating_sub(prefix_width).max(1);
+    let mut rows: Vec<Vec<Span<'static>>> =
+        vec![vec![Span::styled(prefix.to_owned(), prefix_style)]];
+    let mut used = 0usize;
+    for span in spans {
+        let style = span.style;
+        for raw_token in span.content.split_inclusive(char::is_whitespace) {
+            let mut token = raw_token;
+            if used > 0 && used + UnicodeWidthStr::width(token) > available {
+                rows.push(vec![Span::raw(" ".repeat(prefix_width))]);
+                used = 0;
+                token = token.trim_start_matches(char::is_whitespace);
+            }
+            while !token.is_empty() {
+                let room = available.saturating_sub(used).max(1);
+                let (part, rest) = split_width(token, room);
+                if !part.is_empty() {
+                    used += UnicodeWidthStr::width(part);
+                    rows.last_mut()
+                        .expect("markdown row")
+                        .push(Span::styled(part.to_owned(), style));
+                }
+                if rest.is_empty() {
+                    break;
+                }
+                rows.push(vec![Span::raw(" ".repeat(prefix_width))]);
+                used = 0;
+                token = rest.trim_start_matches(char::is_whitespace);
+            }
+        }
+    }
+    lines.extend(rows.into_iter().map(|spans| RenderLine {
+        line: Line::from(spans),
+        thought: None,
+        sheen: None,
+    }));
+}
+
+fn numbered_markdown_item(value: &str) -> Option<(&str, &str)> {
+    let dot = value.find(". ")?;
+    value[..dot]
+        .chars()
+        .all(|character| character.is_ascii_digit())
+        .then_some((&value[..=dot], &value[dot + 2..]))
+}
+
+fn is_markdown_rule(value: &str) -> bool {
+    let compact = value.replace(' ', "");
+    compact.len() >= 3
+        && compact
+            .chars()
+            .all(|character| matches!(character, '-' | '_' | '*'))
+}
+
+fn markdown_rule(width: usize) -> RenderLine<'static> {
+    RenderLine {
+        line: Line::from(Span::styled(
+            format!("  {}", "─".repeat(width.saturating_sub(2).min(48))),
+            Style::default().fg(RULE),
+        )),
+        thought: None,
+        sheen: None,
+    }
+}
+
+fn looks_like_unified_diff(value: &str) -> bool {
+    value.lines().any(|line| line.starts_with("--- "))
+        && value.lines().any(|line| line.starts_with("+++ "))
+}
+
+fn push_diff(lines: &mut Vec<RenderLine<'static>>, value: &str, width: usize, truncated: bool) {
+    lines.push(RenderLine {
+        line: Line::from(vec![
+            Span::styled("  ── ", Style::default().fg(RULE)),
+            Span::styled("diff", Style::default().fg(MUTED)),
+        ]),
+        thought: None,
+        sheen: None,
+    });
+    for line in value.lines().take(160) {
+        push_diff_source_line(lines, line, width);
+    }
+    if truncated || value.lines().count() > 160 {
+        push_styled_wrapped(
+            lines,
+            vec![Span::styled(
+                "Diff truncated; full result is retained by Hames.".to_owned(),
+                Style::default().fg(GOLD),
+            )],
+            width,
+            "  │ ",
+            Style::default().fg(RULE),
+        );
+    }
+    lines.push(markdown_rule(width));
+}
+
+fn push_diff_source_line(lines: &mut Vec<RenderLine<'static>>, value: &str, width: usize) {
+    let style = if value.starts_with("+++") || value.starts_with("---") {
+        Style::default().fg(MUTED).bold()
+    } else if value.starts_with('+') {
+        Style::default().fg(MINT)
+    } else if value.starts_with('-') {
+        Style::default().fg(CORAL)
+    } else if value.starts_with("@@") {
+        Style::default().fg(INPUT).bold()
+    } else {
+        Style::default().fg(INPUT)
+    };
+    push_styled_wrapped(
+        lines,
+        vec![Span::styled(value.to_owned(), style)],
+        width,
+        "  │ ",
+        Style::default().fg(RULE),
+    );
+}
+
 fn push_wrapped(
     lines: &mut Vec<RenderLine<'static>>,
     value: &str,
@@ -1811,28 +2125,6 @@ fn thought_label(duration: f64) -> String {
     } else {
         format!("Thought ({minutes}m {remainder}s)")
     }
-}
-
-fn pasted_display(content: &str, spans: &[crate::api::PasteSpan]) -> String {
-    if spans.is_empty() {
-        return content.to_owned();
-    }
-    let mut result = String::new();
-    let mut cursor = 0;
-    for span in spans {
-        if span.start_byte < cursor || span.end_byte > content.len() {
-            continue;
-        }
-        result.push_str(&content[cursor..span.start_byte]);
-        result.push_str(&format!(
-            "[Pasted Text · {} lines · {}]",
-            span.line_count,
-            size_label(span.byte_count)
-        ));
-        cursor = span.end_byte;
-    }
-    result.push_str(&content[cursor..]);
-    result
 }
 
 fn paste_capsule(value: &str) -> String {
@@ -1979,12 +2271,12 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        DELETE_BG, GOLD, INPUT, INPUT_LIGHT, MINT, MINT_LIGHT, MUTED, PANEL, PANEL_BRIGHT, SKY,
-        draw, format_elapsed, line_text, memory_browser_body, mode_color, mode_outline,
-        pasted_display, scar_browser_body, scar_editor_body, scrollbar_position, sheet_text_color,
-        thought_label, transcript_lines, traveling_sheen,
+        CORAL, DELETE_BG, GOLD, INPUT, INPUT_LIGHT, MINT, MINT_LIGHT, MUTED, PANEL, PANEL_BRIGHT,
+        SKY, draw, format_elapsed, line_text, memory_browser_body, mode_color, mode_outline,
+        scar_browser_body, scar_editor_body, scrollbar_position, sheet_text_color, thought_label,
+        transcript_lines, traveling_sheen,
     };
-    use crate::api::{MemoryRecord, PasteSpan, Scar, Session};
+    use crate::api::{MemoryRecord, Scar, Session};
     use crate::tui::app::{
         ActivityPhase, ActivityRow, App, ApprovalModal, HitAction, MemoryBrowser, MenuAction,
         MenuOption, Modal, ScarBrowser, ScarEditor, Sheet, SheetKind, TranscriptItem,
@@ -2148,22 +2440,83 @@ mod tests {
     }
 
     #[test]
-    fn transcript_replaces_paste_bytes_with_durable_capsule() {
-        let content = "before é\nafter";
-        let start = "before ".len();
-        let end = start + "é\n".len();
-        assert_eq!(
-            pasted_display(
-                content,
-                &[PasteSpan {
-                    start_byte: start,
-                    end_byte: end,
-                    line_count: 2,
-                    byte_count: end - start
-                }]
-            ),
-            "before [Pasted Text · 2 lines · 3 B]after"
-        );
+    fn sent_paste_expands_to_full_markdown_in_the_transcript() {
+        let mut app = App::new(session(), Vec::new(), true);
+        let content = "before\n```rust\nfn main() {}\n```\nafter";
+        app.transcript.push(TranscriptItem::User {
+            content: content.to_owned(),
+        });
+        let rendered = transcript_lines(&app, 80)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("fn main() {}"));
+        assert!(rendered.contains("── rust"));
+        assert!(!rendered.contains("Pasted Text"));
+        assert!(!rendered.contains("```"));
+    }
+
+    #[test]
+    fn assistant_markdown_renders_structure_instead_of_source_markers() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::Assistant {
+            run_id: "run-markdown".to_owned(),
+            content: "# Result\n\n- **Bold** and `code`\n> quoted\n1. [Docs](https://example.test)"
+                .to_owned(),
+            live: false,
+            durable: true,
+        });
+        let rendered = transcript_lines(&app, 80)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("  Result"));
+        assert!(rendered.contains("  • Bold and code"));
+        assert!(rendered.contains("  │ quoted"));
+        assert!(rendered.contains("  1. Docs (https://example.test)"));
+        assert!(!rendered.contains("**"));
+        assert!(!rendered.contains("`code`"));
+    }
+
+    #[test]
+    fn completed_edits_render_an_authoritative_colored_diff() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::Activity {
+            run_id: "run-diff".to_owned(),
+            rows: vec![ActivityRow {
+                index: 0,
+                tool_call_id: Some("edit-1".to_owned()),
+                name: "edit_file".to_owned(),
+                arguments: json!({"path": "src/main.rs"}),
+                argument_parts: String::new(),
+                phase: ActivityPhase::Completed,
+                summary: "edited src/main.rs".to_owned(),
+                content: "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-old\n+new\n"
+                    .to_owned(),
+                structured_data: json!({"path": "src/main.rs"}),
+                truncated: false,
+                duration_seconds: 0.01,
+            }],
+        });
+        let rendered = transcript_lines(&app, 80);
+        let text = rendered
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>();
+        assert!(text.iter().any(|line| line.contains("── diff")));
+        assert!(text.iter().any(|line| line.contains("--- a/src/main.rs")));
+        let addition = rendered
+            .iter()
+            .find(|item| line_text(&item.line).contains("+new"))
+            .unwrap();
+        assert_eq!(addition.line.spans.last().unwrap().style.fg, Some(MINT));
+        let removal = rendered
+            .iter()
+            .find(|item| line_text(&item.line).contains("-old"))
+            .unwrap();
+        assert_eq!(removal.line.spans.last().unwrap().style.fg, Some(CORAL));
     }
 
     #[test]
@@ -2515,6 +2868,9 @@ mod tests {
                     argument_parts: String::new(),
                     phase: ActivityPhase::Checking,
                     summary: String::new(),
+                    content: String::new(),
+                    structured_data: json!(null),
+                    truncated: false,
                     duration_seconds: 0.0,
                 },
                 ActivityRow {
@@ -2525,6 +2881,9 @@ mod tests {
                     argument_parts: String::new(),
                     phase: ActivityPhase::Completed,
                     summary: "deleted memory 8f9b40f1-ec06-4706-841b-8fd60d60be85".to_owned(),
+                    content: String::new(),
+                    structured_data: json!(null),
+                    truncated: false,
                     duration_seconds: 0.003,
                 },
             ],
@@ -2533,6 +2892,7 @@ mod tests {
             run_id: "run-memory".to_owned(),
             content: String::new(),
             live: true,
+            durable: false,
         });
 
         let rendered = transcript_lines(&app, 90)

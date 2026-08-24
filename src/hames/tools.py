@@ -366,9 +366,25 @@ class WriteFileTool(ToolBase):
                 raise ValueError("path is not a regular file")
             content = args.content.encode()
             await asyncio.to_thread(_atomic_write, path, content)
+            diff = ""
+            try:
+                before_text = before.decode("utf-8")
+            except UnicodeDecodeError:
+                before_text = ""
+            else:
+                diff = "".join(
+                    difflib.unified_diff(
+                        before_text.splitlines(keepends=True),
+                        args.content.splitlines(keepends=True),
+                        fromfile=f"a/{args.path}" if existed else "/dev/null",
+                        tofile=f"b/{args.path}",
+                    )
+                )
+            display, truncated, references = _bounded_content(diff, context)
             return ToolResult(
                 status="completed",
                 summary=f"wrote {args.path}",
+                content=display,
                 structured_data={
                     "path": args.path,
                     "created": not existed,
@@ -376,6 +392,8 @@ class WriteFileTool(ToolBase):
                     "after_sha256": hashlib.sha256(content).hexdigest(),
                     "bytes": len(content),
                 },
+                truncated=truncated,
+                blob_references=references,
                 duration_seconds=time.monotonic() - started,
             )
         except (OSError, ValueError) as exc:
