@@ -106,23 +106,36 @@ fn shine_text(text: &str, base: Rgb, glint: Rgb, tick: u32) -> String {
     out
 }
 
-fn glint(kind: Badge) -> Rgb {
-    match kind {
-        Badge::Tool | Badge::Approval => Rgb {
-            r: 255,
-            g: 244,
-            b: 214,
-        },
-        Badge::Error => Rgb {
-            r: 255,
-            g: 210,
-            b: 210,
-        },
-        _ => Rgb {
-            r: 220,
-            g: 255,
-            b: 232,
-        },
+const WHITE: Rgb = Rgb {
+    r: 255,
+    g: 255,
+    b: 255,
+};
+
+pub fn columns() -> usize {
+    #[repr(C)]
+    struct WinSize {
+        row: u16,
+        col: u16,
+        x: u16,
+        y: u16,
+    }
+    unsafe extern "C" {
+        fn ioctl(fd: i32, op: u64, arg: *mut WinSize) -> i32;
+    }
+    const TIOCGWINSZ: u64 = 0x5413;
+    let mut size = WinSize {
+        row: 0,
+        col: 0,
+        x: 0,
+        y: 0,
+    };
+    // Linux TIOCGWINSZ on stdout; wrap-aware heading shine needs the column count.
+    let ok = unsafe { ioctl(1, TIOCGWINSZ, &mut size) == 0 };
+    if ok && size.col > 8 {
+        usize::from(size.col)
+    } else {
+        80
     }
 }
 
@@ -191,7 +204,7 @@ pub fn badge(kind: Badge, live: bool) -> String {
         shine_text(
             name,
             kind.dim_rgb(),
-            glint(kind),
+            WHITE,
             SHEEN_TICK.load(Ordering::Relaxed),
         )
     } else {

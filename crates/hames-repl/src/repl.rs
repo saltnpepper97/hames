@@ -1470,6 +1470,7 @@ struct RenderedOutput {
     current: Option<style::Badge>,
     live: bool,
     distance: u16,
+    body_col: usize,
     open_line: bool,
     body_started: bool,
     compacted: bool,
@@ -1500,6 +1501,7 @@ impl RenderedOutput {
         if self.open_line {
             println!();
             self.distance = self.distance.saturating_add(1);
+            self.body_col = 0;
             self.open_line = false;
         }
         Ok(())
@@ -1522,6 +1524,7 @@ impl RenderedOutput {
         self.live = false;
         self.current = None;
         self.distance = 0;
+        self.body_col = 0;
         self.body_started = false;
         Ok(())
     }
@@ -1545,6 +1548,7 @@ impl RenderedOutput {
         self.current = Some(kind);
         self.live = true;
         self.distance = 1;
+        self.body_col = 0;
         self.body_started = false;
         self.open_line = false;
         Ok(())
@@ -1555,16 +1559,34 @@ impl RenderedOutput {
             return Ok(());
         }
         let padded = indent_body(text, !self.body_started);
-        let rendered = if dim { style::dim(&padded) } else { padded };
+        let rendered = if dim {
+            style::dim(&padded)
+        } else {
+            padded.clone()
+        };
         print!("{rendered}");
         self.body_started = true;
-        let newlines = text.chars().filter(|ch| *ch == '\n').count();
-        self.distance = self
-            .distance
-            .saturating_add(u16::try_from(newlines).unwrap_or(u16::MAX));
+        self.account_visible(&padded);
         self.open_line = !text.ends_with('\n');
         io::stdout().flush()?;
         Ok(())
+    }
+
+    fn account_visible(&mut self, visible: &str) {
+        let cols = style::columns().max(8);
+        for ch in visible.chars() {
+            if ch == '\n' {
+                self.distance = self.distance.saturating_add(1);
+                self.body_col = 0;
+                continue;
+            }
+            if self.body_col + 1 > cols {
+                self.distance = self.distance.saturating_add(1);
+                self.body_col = 1;
+            } else {
+                self.body_col += 1;
+            }
+        }
     }
 
     fn note_compacting(&mut self, event: &Event) -> Result<()> {
