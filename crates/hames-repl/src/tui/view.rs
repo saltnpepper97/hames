@@ -15,9 +15,9 @@ use unicode_width::UnicodeWidthStr;
 
 use super::app::{
     ActivityCategory, ActivityPhase, AgentChoice, AgentEditField, AgentEditor, AgentEditorPage,
-    App, Composer, ComposerUnit, DreamPhase, HitAction, HitRegion, MemoryBrowser, Modal,
-    ScarBrowser, ScarEditField, ScarEditor, ScrollTarget, SheetKind, ThemeKind, TranscriptItem,
-    TranscriptViewport,
+    App, ApprovalModal, Composer, ComposerUnit, DreamPhase, HitAction, HitRegion, MemoryBrowser,
+    Modal, ScarBrowser, ScarEditField, ScarEditor, ScrollTarget, SheetKind, ThemeKind,
+    TranscriptItem, TranscriptViewport,
 };
 
 const MINT: Color = Color::Rgb(116, 226, 192);
@@ -94,11 +94,15 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .as_ref()
         .map(|sheet| (sheet.options.len() as u16 + 2).clamp(3, 9))
         .unwrap_or(0);
-    let approval_height = if matches!(app.modal, Some(Modal::Approval(_))) {
-        9.min(
-            area.height
-                .saturating_sub(header_height + composer_height + notice_height + 2),
+    let approval_height = if let Some(Modal::Approval(approval)) = &app.modal {
+        let required = u16::try_from(
+            approval_detail_lines(approval, usize::from(area.width.saturating_sub(1))).len() + 3,
         )
+        .unwrap_or(u16::MAX);
+        let available = area
+            .height
+            .saturating_sub(header_height + composer_height + notice_height + 2);
+        required.min(available.max(3))
     } else {
         0
     };
@@ -221,8 +225,17 @@ pub(super) fn current_activity(app: &App) -> &'static str {
 
 struct RenderLine<'a> {
     line: Line<'a>,
-    thought: Option<usize>,
+    thought: Option<TranscriptDisclosure>,
     sheen: Option<(u16, u16)>,
+}
+
+#[derive(Clone, Copy)]
+enum TranscriptDisclosure {
+    Thought(usize),
+    Activity {
+        transcript_index: usize,
+        category: ActivityCategory,
+    },
 }
 
 fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta: Duration) {
@@ -283,13 +296,23 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
         }
     }
     for (offset, item) in lines[start..end].iter().enumerate() {
-        if let Some(index) = item.thought {
+        if let Some(disclosure) = item.thought {
+            let action = match disclosure {
+                TranscriptDisclosure::Thought(index) => HitAction::ToggleThought(index),
+                TranscriptDisclosure::Activity {
+                    transcript_index,
+                    category,
+                } => HitAction::ToggleActivity {
+                    transcript_index,
+                    category,
+                },
+            };
             app.hits.push(HitRegion {
                 x: area.x,
                 y: area.y + u16::try_from(offset).unwrap_or(0),
                 width: area.width.saturating_sub(1),
                 height: 1,
-                action: HitAction::ToggleThought(index),
+                action,
             });
         }
     }
@@ -423,7 +446,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     } else {
                         label
                     },
-                    thought: interactive.then_some(index),
+                    thought: interactive.then_some(TranscriptDisclosure::Thought(index)),
                     sheen: live.then_some((0, 10)),
                 });
                 if !*collapsed && !content.is_empty() {
@@ -449,23 +472,64 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     Style::default().fg(Color::White),
                 );
             }
-            TranscriptItem::Activity { rows, .. } => {
+            TranscriptItem::Activity {
+                rows, collapsed, ..
+            } => {
                 let mut category = None;
                 for row in rows.iter().filter(|row| !row.name.is_empty()) {
                     if category != Some(row.category()) {
                         category = Some(row.category());
+                        let activity_category = row.category();
+                        let category_rows = rows
+                            .iter()
+                            .filter(|item| {
+                                !item.name.is_empty() && item.category() == activity_category
+                            })
+                            .collect::<Vec<_>>();
+                        let count = category_rows.len();
+                        let complete = category_rows.iter().all(|item| item.phase.terminal());
+                        let failed = category_rows.iter().any(|item| {
+                            matches!(
+                                item.phase,
+                                ActivityPhase::Failed
+                                    | ActivityPhase::Rejected
+                                    | ActivityPhase::Cancelled
+                            )
+                        });
+                        let is_collapsed = collapsed.contains(&activity_category);
+                        let state = if failed {
+                            "attention"
+                        } else if complete {
+                            "complete"
+                        } else {
+                            "active"
+                        };
                         let color = INPUT;
                         lines.push(RenderLine {
                             line: Line::from(vec![
                                 Span::styled("◆ ", Style::default().fg(color)),
                                 Span::styled(
-                                    row.category().label(),
+                                    activity_category.label(),
                                     Style::default().fg(color).bold(),
                                 ),
+                                Span::styled(
+                                    format!(
+                                        " · {count} {} · {state}  {}",
+                                        if count == 1 { "action" } else { "actions" },
+                                        if is_collapsed { "▸" } else { "▾" }
+                                    ),
+                                    Style::default().fg(MUTED),
+                                ),
                             ]),
-                            thought: None,
+                            thought: Some(TranscriptDisclosure::Activity {
+                                transcript_index: index,
+                                category: activity_category,
+                            }),
                             sheen: None,
                         });
+                    }
+                    if collapsed.contains(&row.category()) {
+                        continue;
                     }
                     let glyph = match row.phase {
                         ActivityPhase::Preparing => "·",
@@ -957,6 +1021,8 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
         Line::from(vec![
             Span::styled("  ←→", Style::default().fg(INPUT).bold()),
             Span::styled(" choose · ", Style::default().fg(MUTED)),
+            Span::styled("PgUp/PgDn", Style::default().fg(INPUT).bold()),
+            Span::styled(" details · ", Style::default().fg(MUTED)),
             Span::styled("Enter", Style::default().fg(INPUT).bold()),
             Span::styled(" confirm · ", Style::default().fg(MUTED)),
             Span::styled("Esc", Style::default().fg(INPUT).bold()),
@@ -1116,46 +1182,84 @@ fn composer_rows(app: &App, width: u16) -> u16 {
     u16::try_from(lines.len()).unwrap_or(u16::MAX)
 }
 
+fn complete_wrapped_lines(value: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    for raw in value.lines().chain(value.is_empty().then_some("")) {
+        let mut remaining = raw.trim();
+        if remaining.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        while !remaining.is_empty() {
+            let (part, rest) = split_width(remaining, width);
+            lines.push(part.trim_end().to_owned());
+            remaining = rest.trim_start();
+        }
+    }
+    lines
+}
+
+fn push_approval_field(
+    lines: &mut Vec<Line<'static>>,
+    label: &str,
+    value: &str,
+    width: usize,
+    style: Style,
+) {
+    let label_width = UnicodeWidthStr::width(label);
+    let content_width = width.saturating_sub(label_width).max(1);
+    for (index, part) in complete_wrapped_lines(value, content_width)
+        .into_iter()
+        .enumerate()
+    {
+        lines.push(Line::from(vec![
+            Span::styled(
+                if index == 0 {
+                    label.to_owned()
+                } else {
+                    " ".repeat(label_width)
+                },
+                Style::default().fg(MUTED),
+            ),
+            Span::styled(part, style),
+        ]));
+    }
+}
+
+fn approval_detail_lines(approval: &ApprovalModal, width: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    push_approval_field(
+        &mut lines,
+        "Action  ",
+        &approval.name,
+        width,
+        Style::default().fg(Color::White).bold(),
+    );
+    push_approval_field(
+        &mut lines,
+        "Reason  ",
+        &approval.reason,
+        width,
+        Style::default().fg(GOLD),
+    );
+    lines.push(Line::from(""));
+    push_approval_field(
+        &mut lines,
+        "Request ",
+        &approval.arguments,
+        width,
+        Style::default().fg(INPUT),
+    );
+    lines.push(Line::from(""));
+    lines
+}
+
 fn render_approval_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let Some(Modal::Approval(approval)) = app.modal.clone() else {
         return;
     };
-    let request_lines = approval.arguments.lines().take(2).collect::<Vec<_>>();
-    let mut detail_lines = vec![
-        Line::from(vec![
-            Span::styled("Action  ", Style::default().fg(MUTED)),
-            Span::styled(approval.name, Style::default().fg(Color::White).bold()),
-        ]),
-        Line::from(vec![
-            Span::styled("Reason  ", Style::default().fg(MUTED)),
-            Span::styled(
-                fit(&approval.reason, usize::from(area.width.saturating_sub(10))),
-                Style::default().fg(GOLD),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Request ", Style::default().fg(MUTED)),
-            Span::styled(
-                fit(
-                    request_lines.first().copied().unwrap_or_default(),
-                    usize::from(area.width.saturating_sub(10)),
-                ),
-                Style::default().fg(INPUT),
-            ),
-        ]),
-        Line::from(Span::styled(
-            format!(
-                "        {}",
-                fit(
-                    request_lines.get(1).copied().unwrap_or_default(),
-                    usize::from(area.width.saturating_sub(10)),
-                )
-            ),
-            Style::default().fg(INPUT),
-        )),
-        Line::from(""),
-    ];
+    let detail_lines = approval_detail_lines(&approval, usize::from(area.width.saturating_sub(1)));
     let choices = if approval.allow_session {
         [" Allow session ", " Allow once ", " Deny "].as_slice()
     } else {
@@ -1195,12 +1299,18 @@ fn render_approval_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     }
     let inner_height = usize::from(area.height.saturating_sub(2));
     let detail_height = inner_height.saturating_sub(1);
-    detail_lines.truncate(detail_height);
-    while detail_lines.len() < detail_height {
-        detail_lines.push(Line::from(""));
+    let max_top = detail_lines.len().saturating_sub(detail_height);
+    let top = approval.detail_scroll.min(max_top);
+    let mut lines = detail_lines
+        .iter()
+        .skip(top)
+        .take(detail_height)
+        .cloned()
+        .collect::<Vec<_>>();
+    while lines.len() < detail_height {
+        lines.push(Line::from(""));
     }
-    detail_lines.push(Line::from(spans));
-    let lines = detail_lines;
+    lines.push(Line::from(spans));
     app.modal_viewport = TranscriptViewport {
         x: area.x,
         y: area.y.saturating_add(1),
@@ -1222,6 +1332,28 @@ fn render_approval_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             .style(Style::default().bg(Color::Reset)),
         area,
     );
+    if max_top > 0 && detail_height > 0 {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(Some("░"))
+            .thumb_symbol("█")
+            .track_style(Style::default().fg(RULE))
+            .thumb_style(Style::default().fg(INPUT));
+        let mut state = ScrollbarState::new(detail_lines.len())
+            .position(top)
+            .viewport_content_length(detail_height);
+        frame.render_stateful_widget(
+            scrollbar,
+            Rect::new(
+                area.x,
+                area.y.saturating_add(1),
+                area.width,
+                u16::try_from(detail_height).unwrap_or(0),
+            ),
+            &mut state,
+        );
+    }
 }
 
 fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -2893,16 +3025,16 @@ mod tests {
 
     use super::{
         ADDITION_BG, CORAL, CYAN, DELETE_BG, GOLD, INPUT, INPUT_LIGHT, MINT, MINT_LIGHT, MUTED,
-        PANEL_BRIGHT, REMOVAL_BG, SKY, agent_access_body, agent_identity_body, compact_diff_lines,
-        draw, format_elapsed, line_text, memory_browser_body, mode_color, mode_outline,
-        scar_browser_body, scar_editor_body, scrollbar_position, sheet_text_color, thought_label,
-        transcript_lines, traveling_sheen,
+        PANEL_BRIGHT, REMOVAL_BG, SKY, agent_access_body, agent_identity_body,
+        approval_detail_lines, compact_diff_lines, draw, format_elapsed, line_text,
+        memory_browser_body, mode_color, mode_outline, scar_browser_body, scar_editor_body,
+        scrollbar_position, sheet_text_color, thought_label, transcript_lines, traveling_sheen,
     };
     use crate::api::{MemoryRecord, Scar, Session};
     use crate::tui::app::{
-        ActivityPhase, ActivityRow, AgentEditor, AgentEditorPage, App, ApprovalModal, DreamPhase,
-        HitAction, MemoryBrowser, MenuAction, MenuOption, Modal, ScarBrowser, ScarEditor, Sheet,
-        SheetKind, TranscriptItem, TranscriptPoint,
+        ActivityCategory, ActivityPhase, ActivityRow, AgentEditor, AgentEditorPage, App,
+        ApprovalModal, DreamPhase, HitAction, MemoryBrowser, MenuAction, MenuOption, Modal,
+        ScarBrowser, ScarEditor, Sheet, SheetKind, TranscriptItem, TranscriptPoint,
     };
 
     #[test]
@@ -3211,6 +3343,7 @@ mod tests {
         let mut app = App::new(session(), Vec::new(), true);
         app.transcript.push(TranscriptItem::Activity {
             run_id: "run-diff".to_owned(),
+            collapsed: Vec::new(),
             rows: vec![ActivityRow {
                 index: 0,
                 tool_call_id: Some("edit-1".to_owned()),
@@ -3360,6 +3493,7 @@ mod tests {
         });
         app.transcript.push(TranscriptItem::Activity {
             run_id: "run-handoff".to_owned(),
+            collapsed: Vec::new(),
             rows: vec![ActivityRow {
                 index: 0,
                 tool_call_id: Some("write-1".to_owned()),
@@ -3594,6 +3728,7 @@ mod tests {
             arguments: "{}".to_owned(),
             allow_session: false,
             selected: 0,
+            detail_scroll: 0,
         }));
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -3628,6 +3763,7 @@ mod tests {
                 .to_string(),
             allow_session: true,
             selected: 0,
+            detail_scroll: 0,
         }));
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -3636,6 +3772,48 @@ mod tests {
         assert!(app.hits.iter().any(|region| {
             region.x == 2 && region.y == 4 && matches!(region.action, HitAction::Approval(0))
         }));
+    }
+
+    #[test]
+    fn permission_details_wrap_without_omitting_content() {
+        let approval = ApprovalModal {
+            approval_id: "approval-1".to_owned(),
+            request_hash: "hash".to_owned(),
+            name: "shell".to_owned(),
+            reason: "This complete permission reason must remain visible across cleanly wrapped whole words"
+                .to_owned(),
+            arguments: json!({
+                "command": "python3 a_command.py --retain every individual argument",
+                "path": "/a/deliberately/long/location/that/must/remain/complete"
+            })
+            .to_string(),
+            allow_session: true,
+            selected: 0,
+            detail_scroll: 0,
+        };
+
+        let rendered = approval_detail_lines(&approval, 32)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!rendered.contains('…'));
+        for expected in [
+            "complete",
+            "permission",
+            "visible",
+            "python3",
+            "individual",
+            "argument",
+            "remain",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing {expected:?}: {rendered}"
+            );
+        }
+        let compact = rendered.split_whitespace().collect::<String>();
+        assert!(compact.contains("/a/deliberately/long/location/that/must/remain/complete"));
     }
 
     #[test]
@@ -3732,6 +3910,7 @@ mod tests {
         let mut app = App::new(session(), Vec::new(), true);
         app.transcript.push(TranscriptItem::Activity {
             run_id: "run-memory".to_owned(),
+            collapsed: Vec::new(),
             rows: vec![
                 ActivityRow {
                     index: 0,
@@ -3774,10 +3953,20 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(rendered.contains("◆ Memory"));
+        assert!(rendered.contains("1 action · complete  ▾"));
         assert!(rendered.contains("✓ Forgot  memory 8f9b40f1"));
         assert!(!rendered.contains("◆ Run"));
         assert!(!rendered.contains("✦ Hames"));
         assert!(!rendered.contains("ec06-4706"));
+
+        app.toggle_activity(0, ActivityCategory::Memory);
+        let collapsed = transcript_lines(&app, 90)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(collapsed.contains("◆ Memory · 1 action · complete  ▸"));
+        assert!(!collapsed.contains("✓ Forgot"));
     }
 
     #[test]

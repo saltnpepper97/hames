@@ -539,6 +539,14 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         Modal::Approval(approval) => {
             let choices = if approval.allow_session { 3 } else { 2 };
             match key.code {
+                KeyCode::PageUp => {
+                    approval.detail_scroll = approval.detail_scroll.saturating_sub(3);
+                    None
+                }
+                KeyCode::PageDown => {
+                    approval.detail_scroll = approval.detail_scroll.saturating_add(3);
+                    None
+                }
                 KeyCode::Left | KeyCode::Up => {
                     approval.selected = approval.selected.saturating_sub(1);
                     None
@@ -864,6 +872,10 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                 && let Some(Modal::Memory(browser)) = &mut app.modal
             {
                 browser.detail_scroll = browser.detail_scroll.saturating_sub(3);
+            } else if app.modal_viewport.point(mouse.column, mouse.row).is_some()
+                && let Some(Modal::Approval(approval)) = &mut app.modal
+            {
+                approval.detail_scroll = approval.detail_scroll.saturating_sub(3);
             } else if mouse_over_composer(app, mouse.column, mouse.row) {
                 scroll_composer(app, -3);
             } else {
@@ -877,6 +889,10 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                 && let Some(Modal::Memory(browser)) = &mut app.modal
             {
                 browser.detail_scroll = browser.detail_scroll.saturating_add(3);
+            } else if app.modal_viewport.point(mouse.column, mouse.row).is_some()
+                && let Some(Modal::Approval(approval)) = &mut app.modal
+            {
+                approval.detail_scroll = approval.detail_scroll.saturating_add(3);
             } else if mouse_over_composer(app, mouse.column, mouse.row) {
                 scroll_composer(app, 3);
             } else {
@@ -921,6 +937,16 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                     if let Some(point) = app.transcript_viewport.point(mouse.column, mouse.row) {
                         app.begin_transcript_selection(point);
                         app.pending_thought_toggle = Some(index);
+                    }
+                    None
+                }
+                Some(HitAction::ToggleActivity {
+                    transcript_index,
+                    category,
+                }) => {
+                    if let Some(point) = app.transcript_viewport.point(mouse.column, mouse.row) {
+                        app.begin_transcript_selection(point);
+                        app.pending_activity_toggle = Some((transcript_index, category));
                     }
                     None
                 }
@@ -1036,12 +1062,16 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                     app.update_transcript_selection(point);
                 }
                 let pending_thought = app.pending_thought_toggle.take();
+                let pending_activity = app.pending_activity_toggle.take();
                 if let Some(text) = app.finish_transcript_selection() {
                     return Some(Effect::Copy(text));
                 }
                 if let Some(index) = pending_thought {
                     app.focused_thought = Some(index);
                     app.toggle_thought(index);
+                }
+                if let Some((index, category)) = pending_activity {
+                    app.toggle_activity(index, category);
                 }
             }
             None
@@ -1990,7 +2020,15 @@ fn terminal_tab_title(app: &App, frame: usize) -> String {
     } else {
         "◇"
     };
-    format!("{icon} {}", app.agent_name.replace(['\n', '\r', '\t'], " "))
+    let status = if matches!(app.modal, Some(Modal::Approval(_))) {
+        "Permission"
+    } else {
+        view::current_activity(app)
+    };
+    format!(
+        "{icon} {} · {status}",
+        app.agent_name.replace(['\n', '\r', '\t'], " ")
+    )
 }
 
 fn agent_source(editor: &AgentEditor) -> std::result::Result<String, String> {
@@ -2113,9 +2151,9 @@ mod tests {
     };
     use crate::api::{MemoryRecord, ProviderModel, Scar, Session};
     use crate::tui::app::{
-        AgentEditor, App, HitAction, HitRegion, MemoryBrowser, MenuAction, MenuOption, Modal,
-        ScarBrowser, ScarEditField, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind,
-        TranscriptViewport,
+        ActivityCategory, AgentEditor, App, HitAction, HitRegion, MemoryBrowser, MenuAction,
+        MenuOption, Modal, ScarBrowser, ScarEditField, ScrollDrag, ScrollTarget, Sheet, SheetKind,
+        ThemeKind, TranscriptItem, TranscriptViewport,
     };
 
     #[test]
@@ -2182,16 +2220,24 @@ mod tests {
     }
 
     #[test]
-    fn terminal_tab_title_is_only_a_pulsing_status_mark_and_agent_name() {
+    fn terminal_tab_title_shows_a_pulsing_mark_agent_and_live_state() {
         let mut app = App::new(session(), Vec::new(), true);
         app.agent_name = "Careful Reviewer".to_owned();
 
-        assert_eq!(terminal_tab_title(&app, 0), "◇ Careful Reviewer");
+        assert_eq!(terminal_tab_title(&app, 0), "◇ Careful Reviewer · Ready");
         app.active_run = Some("run-title".to_owned());
-        assert_eq!(terminal_tab_title(&app, 0), "◇ Careful Reviewer");
-        assert_eq!(terminal_tab_title(&app, 1), "◈ Careful Reviewer");
-        assert_eq!(terminal_tab_title(&app, 2), "◆ Careful Reviewer");
-        assert_eq!(terminal_tab_title(&app, 3), "◈ Careful Reviewer");
+        app.transcript.push(TranscriptItem::Thought {
+            run_id: "run-title".to_owned(),
+            content: String::new(),
+            duration_seconds: 0.0,
+            interrupted: false,
+            live: true,
+            collapsed: true,
+        });
+        assert_eq!(terminal_tab_title(&app, 0), "◇ Careful Reviewer · Thinking");
+        assert_eq!(terminal_tab_title(&app, 1), "◈ Careful Reviewer · Thinking");
+        assert_eq!(terminal_tab_title(&app, 2), "◆ Careful Reviewer · Thinking");
+        assert_eq!(terminal_tab_title(&app, 3), "◈ Careful Reviewer · Thinking");
     }
 
     #[test]
@@ -2562,6 +2608,56 @@ mod tests {
             ),
             Some(Effect::Copy(text)) if text == "Hames"
         ));
+    }
+
+    #[test]
+    fn clicking_an_activity_heading_toggles_its_complete_history() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::Activity {
+            run_id: "run-1".to_owned(),
+            rows: Vec::new(),
+            collapsed: Vec::new(),
+        });
+        app.transcript_viewport = TranscriptViewport {
+            x: 2,
+            y: 3,
+            width: 30,
+            height: 1,
+            lines: vec!["◆ Run · 2 actions · complete  ▾".to_owned()],
+        };
+        app.hits.push(HitRegion {
+            x: 2,
+            y: 3,
+            width: 30,
+            height: 1,
+            action: HitAction::ToggleActivity {
+                transcript_index: 0,
+                category: ActivityCategory::Run,
+            },
+        });
+
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            assert!(
+                handle_mouse(
+                    &mut app,
+                    MouseEvent {
+                        kind,
+                        column: 4,
+                        row: 3,
+                        modifiers: KeyModifiers::NONE,
+                    },
+                )
+                .is_none()
+            );
+        }
+
+        let TranscriptItem::Activity { collapsed, .. } = &app.transcript[0] else {
+            panic!("fixture should remain an activity item");
+        };
+        assert_eq!(collapsed, &[ActivityCategory::Run]);
     }
 
     #[test]

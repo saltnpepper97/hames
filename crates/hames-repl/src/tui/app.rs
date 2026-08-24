@@ -380,6 +380,7 @@ pub enum TranscriptItem {
     Activity {
         run_id: String,
         rows: Vec<ActivityRow>,
+        collapsed: Vec<ActivityCategory>,
     },
     Dream {
         job_id: String,
@@ -413,6 +414,7 @@ pub struct ApprovalModal {
     pub arguments: String,
     pub allow_session: bool,
     pub selected: usize,
+    pub detail_scroll: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -802,6 +804,10 @@ pub struct Sheet {
 #[derive(Clone, Debug)]
 pub enum HitAction {
     ToggleThought(usize),
+    ToggleActivity {
+        transcript_index: usize,
+        category: ActivityCategory,
+    },
     SelectSheet(usize),
     SelectMemory(usize),
     SelectScar(usize),
@@ -910,6 +916,7 @@ pub struct App {
     pub modal_selection: Option<TranscriptSelection>,
     pub selecting_modal: bool,
     pub pending_thought_toggle: Option<usize>,
+    pub pending_activity_toggle: Option<(usize, ActivityCategory)>,
     pub copy_notice: Option<CopyNotice>,
     pub last_sequence: u64,
     pub seen_events: HashSet<String>,
@@ -966,6 +973,7 @@ impl App {
             modal_selection: None,
             selecting_modal: false,
             pending_thought_toggle: None,
+            pending_activity_toggle: None,
             copy_notice: None,
             last_sequence: 0,
             seen_events: HashSet::new(),
@@ -1043,6 +1051,7 @@ impl App {
             selection.head = point;
             if selection.head != selection.anchor {
                 self.pending_thought_toggle = None;
+                self.pending_activity_toggle = None;
             }
         }
     }
@@ -1061,6 +1070,7 @@ impl App {
         self.transcript_selection = None;
         self.selecting_transcript = false;
         self.pending_thought_toggle = None;
+        self.pending_activity_toggle = None;
     }
 
     pub fn begin_modal_selection(&mut self, point: TranscriptPoint) {
@@ -1590,6 +1600,18 @@ impl App {
         }
     }
 
+    pub fn toggle_activity(&mut self, index: usize, category: ActivityCategory) {
+        let Some(TranscriptItem::Activity { collapsed, .. }) = self.transcript.get_mut(index)
+        else {
+            return;
+        };
+        if let Some(position) = collapsed.iter().position(|value| *value == category) {
+            collapsed.remove(position);
+        } else {
+            collapsed.push(category);
+        }
+    }
+
     pub fn focus_thought(&mut self, direction: i8) -> bool {
         let thoughts: Vec<usize> = self
             .transcript
@@ -1677,6 +1699,7 @@ impl App {
         self.transcript.push(TranscriptItem::Activity {
             run_id: run_id.to_owned(),
             rows: Vec::new(),
+            collapsed: Vec::new(),
         });
         self.transcript.len() - 1
     }
@@ -1693,7 +1716,10 @@ impl App {
                 .enumerate()
                 .rev()
                 .find_map(|(activity_index, item)| {
-                    let TranscriptItem::Activity { run_id: id, rows } = item else {
+                    let TranscriptItem::Activity {
+                        run_id: id, rows, ..
+                    } = item
+                    else {
                         return None;
                     };
                     if id != run_id {
@@ -1860,7 +1886,9 @@ impl App {
                 TranscriptItem::Assistant {
                     run_id: id, live, ..
                 } if id == run_id => *live = false,
-                TranscriptItem::Activity { run_id: id, rows } if id == run_id => {
+                TranscriptItem::Activity {
+                    run_id: id, rows, ..
+                } if id == run_id => {
                     for row in rows {
                         if !row.phase.terminal() {
                             row.phase = if cancelled {
@@ -1875,7 +1903,9 @@ impl App {
             }
         }
         for item in &mut self.transcript {
-            if let TranscriptItem::Activity { run_id: id, rows } = item
+            if let TranscriptItem::Activity {
+                run_id: id, rows, ..
+            } = item
                 && id == run_id
             {
                 rows.retain(|row| !row.name.is_empty());
@@ -1887,7 +1917,9 @@ impl App {
                 content,
                 ..
             } if id == run_id => !content.trim().is_empty(),
-            TranscriptItem::Activity { run_id: id, rows } if id == run_id => !rows.is_empty(),
+            TranscriptItem::Activity {
+                run_id: id, rows, ..
+            } if id == run_id => !rows.is_empty(),
             _ => true,
         });
     }
@@ -2023,6 +2055,7 @@ fn approval_from(payload: &Value) -> ApprovalModal {
             .and_then(Value::as_bool)
             .unwrap_or(false),
         selected: 0,
+        detail_scroll: 0,
     }
 }
 
