@@ -1248,9 +1248,7 @@ async def test_goal_runs_multiple_bounded_steps_until_evidence_backed_achievemen
                 await client.get(f"/v1/sessions/{session_id}/goals/current", headers=headers)
             ).json() is None
             assert sum(event["type"] == "goal.step.started" for event in events) == 2
-            await _wait_for_event(
-                client, headers, session_id, "run.completed", occurrences=2
-            )
+            await _wait_for_event(client, headers, session_id, "run.completed", occurrences=2)
             assert len(fake.requests) == 4
             assert "Active autonomous goal" in fake.requests[0].system
     finally:
@@ -1343,15 +1341,12 @@ async def test_foreground_request_yields_goal_then_goal_resumes_after_queue_sett
                 index
                 for index, event in enumerate(events)
                 if event["type"] == "user.message"
-                and JSON_OBJECT.validate_python(event["payload"])["content"]
-                == "Answer this first"
+                and JSON_OBJECT.validate_python(event["payload"])["content"] == "Answer this first"
             )
             resumed_index = event_types.index("goal.resumed")
             assert yielded_index < foreground_index < resumed_index
             assert sum(event_type == "goal.step.started" for event_type in event_types) == 2
-            await _wait_for_event(
-                client, headers, session_id, "run.completed", occurrences=2
-            )
+            await _wait_for_event(client, headers, session_id, "run.completed", occurrences=2)
             assert len(provider.requests) == 4
     finally:
         await state.runs.close()

@@ -688,10 +688,7 @@ async fn session_has_conversation(client: &GatewayClient, session_id: &str) -> R
 fn print_goal(goal: &Goal) {
     println!("{}", style::section("Autonomous goal"));
     println!("{}", style::key_value("State", &goal.status));
-    println!(
-        "{}",
-        style::key_value("Steps", &goal.step_count.to_string())
-    );
+    println!("{}", style::key_value("Steps", goal.step_count.to_string()));
     println!("{}", style::key_value("Objective", &goal.objective));
     if !goal.latest_summary.is_empty() {
         println!("{}", style::key_value("Latest", &goal.latest_summary));
