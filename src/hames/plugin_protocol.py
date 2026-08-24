@@ -112,14 +112,21 @@ class PluginWorker:
         try:
             if self._process.returncode is None:
                 try:
-                    await self.request("shutdown", {})
-                except (PluginProtocolError, BrokenPipeError):
+                    if not self._reader.done():
+                        await self.request("shutdown", {})
+                except (PluginProtocolError, ConnectionError):
                     pass
-                self._process.terminate()
+                try:
+                    self._process.terminate()
+                except ProcessLookupError:
+                    pass
                 try:
                     await asyncio.wait_for(self._process.wait(), timeout=2)
                 except TimeoutError:
-                    self._process.kill()
+                    try:
+                        self._process.kill()
+                    except ProcessLookupError:
+                        pass
                     await self._process.wait()
         finally:
             self._reader.cancel()
