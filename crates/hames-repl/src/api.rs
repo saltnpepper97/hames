@@ -1167,9 +1167,13 @@ impl GatewayClient {
         strategy: &str,
         note: Option<&str>,
     ) -> Result<PlanExecutionAccepted> {
+        let mut body = serde_json::json!({"strategy": strategy});
+        if let Some(note) = note.filter(|value| !value.is_empty()) {
+            body["note"] = serde_json::Value::String(note.to_owned());
+        }
         decode(
             self.post(&format!("/v1/sessions/{session_id}/plans/current/execute"))
-                .json(&serde_json::json!({"strategy": strategy, "note": note.unwrap_or("")}))
+                .json(&body)
                 .send()
                 .await?,
         )
