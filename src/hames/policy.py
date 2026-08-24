@@ -71,6 +71,8 @@ _SECRET_NAMES = {
     "credentials.json",
 }
 
+_SECRET_DIRECTORIES = {".ssh", ".gnupg", ".aws", ".kube"}
+
 _OUTSIDE_PATH = re.compile(r"(?<![\w$])/(?:home|root|etc|var|opt|srv|mnt|media)/[^\s'\";&|]+")
 
 
@@ -139,6 +141,18 @@ class PolicyGate:
                         "known secret files are not available to generic tools",
                         "secret",
                     )
+                if any(part in _SECRET_DIRECTORIES for part in target.parts):
+                    return PolicyDecision(
+                        PolicyDecisionKind.DENY,
+                        "credential stores are not available to generic tools",
+                        "secret",
+                    )
+                if arguments.workspace == "home":
+                    return PolicyDecision(
+                        PolicyDecisionKind.REQUIRE_CONFIRMATION,
+                        "tool accesses the user home outside the trusted workspace",
+                        "outside_workspace",
+                    )
 
         if isinstance(arguments, ShellArguments):
             for pattern, reason in _DENIED_SHELL:
@@ -160,6 +174,12 @@ class PolicyGate:
                 return PolicyDecision(
                     PolicyDecisionKind.REQUIRE_CONFIRMATION,
                     "command contains parent-directory traversal",
+                    "outside_workspace",
+                )
+            if re.search(r"(?:^|[\s'\"])~/", arguments.command):
+                return PolicyDecision(
+                    PolicyDecisionKind.REQUIRE_CONFIRMATION,
+                    "command references the user home outside the trusted workspace",
                     "outside_workspace",
                 )
 

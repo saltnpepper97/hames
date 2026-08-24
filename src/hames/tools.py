@@ -27,7 +27,39 @@ class ToolArguments(BaseModel):
 
 
 class WorkspaceArguments(ToolArguments):
-    workspace: Literal["project", "scratch"] = "project"
+    workspace: Literal["project", "scratch", "home"] = Field(
+        default="project",
+        description=(
+            "Select project for the trusted working directory, scratch for disposable work, "
+            "or home for a user-home path. Paths beginning with ~/ normalize to home."
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_home_path(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        raw = dict(cast(dict[str, object], value))
+        path_value = raw.get("path")
+        if not isinstance(path_value, str):
+            return raw
+        home = Path.home().resolve(strict=False)
+        if path_value == "~":
+            raw["workspace"] = "home"
+            raw["path"] = "."
+            return raw
+        if path_value.startswith("~/"):
+            raw["workspace"] = "home"
+            raw["path"] = path_value[2:]
+            return raw
+        candidate = Path(path_value)
+        if candidate.is_absolute() and candidate.is_relative_to(home):
+            raw["workspace"] = "home"
+            relative = candidate.relative_to(home)
+            raw["path"] = relative.as_posix() if relative.parts else "."
+            return raw
+        return raw
 
 
 class ReadFileArguments(WorkspaceArguments):
@@ -114,6 +146,8 @@ class ToolContext:
     def root_for(self, workspace: str) -> Path:
         if workspace == "project":
             return self.project_root
+        if workspace == "home":
+            return Path.home()
         self.scratch_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.scratch_root.chmod(0o700)
         return self.scratch_root
@@ -149,7 +183,10 @@ class ToolBase:
 
 class ReadFileTool(ToolBase):
     name = "read_file"
-    description = "Read a UTF-8 text file from the project or disposable scratch workspace."
+    description = (
+        "Read a UTF-8 text file from the project, confirmed user home, or disposable scratch "
+        "workspace. Use workspace home or a ~/ path for files under the user home."
+    )
     arguments_type: ClassVar[type[ToolArguments]] = ReadFileArguments
 
     async def execute(self, context: ToolContext, arguments: ToolArguments) -> ToolResult:
@@ -188,7 +225,9 @@ class ReadFileTool(ToolBase):
 
 class ListDirTool(ToolBase):
     name = "list_dir"
-    description = "List typed entries in a project or disposable scratch directory."
+    description = (
+        "List typed entries in a project, confirmed user home, or disposable scratch directory."
+    )
     arguments_type: ClassVar[type[ToolArguments]] = ListDirArguments
 
     async def execute(self, context: ToolContext, arguments: ToolArguments) -> ToolResult:

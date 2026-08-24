@@ -315,6 +315,101 @@ async def test_repl_preserves_tool_preparation_through_completion(tmp_path: Path
         await server_task
 
 
+@pytest.mark.asyncio
+async def test_repl_resolves_tilde_through_home_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    build = await asyncio.create_subprocess_exec(
+        "cargo",
+        "build",
+        "--quiet",
+        "--locked",
+        "--bin",
+        "hames",
+        cwd=REPOSITORY,
+    )
+    assert await build.wait() == 0
+
+    user_home = tmp_path / "user-home"
+    user_home.mkdir()
+    (user_home / ".zshrc").write_text("export HAMES_TILDE_TEST=1\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(user_home))
+    provider = FakeProvider(
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED, provider_request_id="home-1"),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="home-read-1",
+                        name="read_file",
+                        arguments_delta=json.dumps({"path": "~/.zshrc"}),
+                    ),
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED, provider_request_id="home-2"),
+                StreamEvent(
+                    kind=StreamEventKind.TEXT_DELTA, text="The approved home file was read."
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
+    )
+    paths = HamesPaths.resolve(root=tmp_path / "hames-home")
+    state = GatewayState.create(paths, providers={"fake": provider})
+    port = available_port()
+    server = uvicorn.Server(
+        uvicorn.Config(create_app(state), host="127.0.0.1", port=port, log_level="error")
+    )
+    server_task = asyncio.create_task(server.serve())
+    try:
+        await wait_for_server(port)
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "HOME": str(user_home),
+                "HAMES_HOME": str(paths.root),
+                "HAMES_GATEWAY__PORT": str(port),
+                "HAMES_RUNTIME__DEFAULT_PROVIDER": "fake",
+                "HAMES_PROVIDERS__FAKE__ADAPTER": "llama_cpp",
+                "HAMES_PROVIDERS__FAKE__BASE_URL": "http://127.0.0.1:1/v1",
+                "HAMES_PROVIDERS__FAKE__MODEL": "fixture",
+            }
+        )
+        process = await asyncio.create_subprocess_exec(
+            REPOSITORY / "target/debug/hames",
+            cwd=REPOSITORY,
+            env=environment,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(b"y\nread ~/.zshrc\ny\n/quit\n"), timeout=10
+        )
+        output = stdout.decode()
+        assert process.returncode == 0, stderr.decode()
+        assert "Preparing read" in output
+        assert "~/.zshrc" in output
+        assert "Awaiting approval" in output
+        assert "Approval" in output
+        assert "approved" in output
+        assert "Reading" in output
+        assert "Read" in output
+        assert "The approved home file was read." in output
+        assert f"{REPOSITORY}/~" not in output
+        tool_message = provider.requests[1].messages[-1]
+        assert tool_message.role == "tool"
+        assert "HAMES_TILDE_TEST=1" in tool_message.content
+    finally:
+        server.should_exit = True
+        await server_task
+
+
 class GatedProvider(FakeProvider):
     def __init__(self) -> None:
         super().__init__([])

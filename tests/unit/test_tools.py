@@ -84,6 +84,41 @@ async def test_paths_cannot_escape_and_large_results_use_blobs(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_home_paths_normalize_and_require_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_home = tmp_path / "user-home"
+    user_home.mkdir()
+    zshrc = user_home / ".zshrc"
+    zshrc.write_text("export FIXTURE=1\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(user_home))
+
+    relative = ReadFileArguments(path="~/.zshrc")
+    absolute = ReadFileArguments(path=str(zshrc))
+    assert relative.workspace == "home"
+    assert relative.path == ".zshrc"
+    assert absolute.workspace == "home"
+    assert absolute.path == ".zshrc"
+
+    context = tool_context(tmp_path)
+    gate = PolicyGate(tmp_path / "hames-home")
+    decision = gate.decide("read_file", relative, context)
+    assert decision.decision is PolicyDecisionKind.REQUIRE_CONFIRMATION
+    assert decision.risk == "outside_workspace"
+
+    read = await ReadFileTool().execute(context, relative)
+    assert read.status == "completed"
+    assert read.content == "export FIXTURE=1\n"
+
+    credential = user_home / ".ssh" / "config"
+    credential.parent.mkdir()
+    credential.write_text("Host fixture\n", encoding="utf-8")
+    denied = gate.decide("read_file", ReadFileArguments(path="~/.ssh/config"), context)
+    assert denied.decision is PolicyDecisionKind.DENY
+    assert denied.risk == "secret"
+
+
+@pytest.mark.asyncio
 async def test_shell_captures_channels_filters_secrets_and_times_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -125,6 +160,10 @@ def test_policy_classifies_safe_dangerous_and_protected_actions(tmp_path: Path) 
     )
     assert (
         gate.decide("shell", ShellArguments(command="cat /etc/passwd"), context).decision
+        is PolicyDecisionKind.REQUIRE_CONFIRMATION
+    )
+    assert (
+        gate.decide("shell", ShellArguments(command="cat ~/.zshrc"), context).decision
         is PolicyDecisionKind.REQUIRE_CONFIRMATION
     )
 

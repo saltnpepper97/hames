@@ -61,8 +61,9 @@ if TYPE_CHECKING:
 
 POLICY_SUMMARY = (
     "Reads, writes, deterministic edits, and ordinary Bash commands are allowed inside the "
-    "trusted project or disposable scratch workspace. Path escape, Hames state, and known "
-    "secret access are denied. High-risk shell operations require one-shot human approval."
+    "trusted project or disposable scratch workspace. User-home paths (workspace home or ~/...) "
+    "require one-shot human approval. Other path escapes, Hames state, and known secret access "
+    "are denied. High-risk shell operations require one-shot human approval."
 )
 
 

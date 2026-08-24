@@ -218,10 +218,11 @@ impl ToolActivity {
         };
         let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
         let workspace = self.arguments.get("workspace").and_then(Value::as_str);
-        if workspace == Some("scratch") {
-            format!("scratch:{compact}")
-        } else {
-            compact
+        match workspace {
+            Some("scratch") => format!("scratch:{compact}"),
+            Some("home") if compact == "." => "~".to_owned(),
+            Some("home") => format!("~/{compact}"),
+            _ => compact,
         }
     }
 
@@ -660,5 +661,19 @@ mod tests {
             assert!(UnicodeWidthStr::width(line.as_str()) < width);
         }
         assert!(board.row_line(0, 32).unwrap().ends_with('…'));
+    }
+
+    #[test]
+    fn home_workspace_keeps_tilde_in_the_transcript() {
+        let mut board = ActivityBoard::default();
+        board.next_turn();
+        board.transient_delta(&json!({
+            "index": 0,
+            "name": "read_file",
+            "arguments_delta": "{\"workspace\":\"home\",\"path\":\".zshrc\"}"
+        }));
+        let line = board.row_line(0, 80).unwrap();
+        assert!(line.contains("~/.zshrc"));
+        assert!(!line.contains("home:.zshrc"));
     }
 }
