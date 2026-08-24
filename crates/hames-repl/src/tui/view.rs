@@ -1145,10 +1145,12 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
     } else if app.active_run.is_some() {
         activity_bar(app)
     } else {
-        Line::from(Span::styled(
-            "  Shift+Tab mode · Ctrl+K commands",
-            Style::default().fg(MUTED),
-        ))
+        Line::from(vec![
+            Span::styled("  Shift+Tab", Style::default().fg(INPUT).bold()),
+            Span::styled(" mode · ", Style::default().fg(MUTED)),
+            Span::styled("Ctrl+K", Style::default().fg(INPUT).bold()),
+            Span::styled(" commands", Style::default().fg(MUTED)),
+        ])
     };
     frame.render_widget(Paragraph::new(left), area);
     if app.sheet.is_none()
@@ -3807,6 +3809,21 @@ mod tests {
         let buffer = terminal.backend().buffer();
         assert!((2..8).all(|x| buffer.cell((x, footer_y)).unwrap().fg == MUTED));
         assert_eq!(buffer.cell((4, footer_y)).unwrap().fg, MUTED);
+    }
+
+    #[test]
+    fn idle_footer_keys_use_the_lighter_menu_shortcut_color() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let footer_y = terminal.size().unwrap().height - 1;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((2, footer_y)).unwrap().fg, INPUT);
+        assert_eq!(buffer.cell((11, footer_y)).unwrap().fg, MUTED);
+        assert_eq!(buffer.cell((19, footer_y)).unwrap().fg, INPUT);
+        assert_eq!(buffer.cell((25, footer_y)).unwrap().fg, MUTED);
     }
 
     #[test]
