@@ -123,6 +123,15 @@ class PluginContextItem:
     text: str
 
 
+@dataclass(frozen=True, slots=True)
+class CompactionTurn:
+    content: str
+    event_ids: list[str]
+    cutoff_event_id: str
+    cutoff_sequence: int
+    estimated_tokens: int
+
+
 @dataclass(slots=True)
 class _Turn:
     source_id: str
@@ -506,6 +515,40 @@ def canonical_request_snapshot(
             "max_tokens": max_tokens,
         }
     ).encode()
+
+
+def conversation_compaction_candidates(
+    events: list[Event], *, preserve_recent_turns: int
+) -> tuple[str, list[CompactionTurn]]:
+    previous = next(
+        (event for event in reversed(events) if event.type == "context.compaction.completed"),
+        None,
+    )
+    cutoff = int(previous.payload.get("cutoff_sequence", 0)) if previous is not None else 0
+    turns, _ = _conversation_turns([event for event in events if event.sequence > cutoff], "")
+    eligible = turns[:-preserve_recent_turns] if len(turns) > preserve_recent_turns else []
+    by_id = {event.id: event for event in events}
+    result: list[CompactionTurn] = []
+    for turn in eligible:
+        compacted = _compact_turn(turn)
+        source_events = [by_id[event_id] for event_id in turn.event_ids if event_id in by_id]
+        if not source_events:
+            continue
+        cutoff_event = max(source_events, key=lambda event: event.sequence)
+        content = _canonical_json(
+            [message.model_dump(mode="json") for message in compacted.messages]
+        )
+        result.append(
+            CompactionTurn(
+                content=content,
+                event_ids=list(turn.event_ids),
+                cutoff_event_id=cutoff_event.id,
+                cutoff_sequence=cutoff_event.sequence,
+                estimated_tokens=_estimate_text(content),
+            )
+        )
+    summary = str(previous.payload.get("summary", "")) if previous is not None else ""
+    return summary, result
 
 
 def _conversation_turns(

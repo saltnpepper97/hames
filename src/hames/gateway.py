@@ -157,6 +157,11 @@ class MessageAccepted(ApiModel):
     queued: QueuedMessage | None = None
 
 
+class CompactionAccepted(ApiModel):
+    run_id: str
+    trigger: Literal["manual"] = "manual"
+
+
 class TrustStatus(ApiModel):
     path: str
     trusted: bool
@@ -1683,6 +1688,22 @@ def create_app(state: GatewayState) -> FastAPI:
             raise ApiError(404, "session_or_provider_not_found", str(exc)) from exc
         except ValueError as exc:
             raise ApiError(409, "session_not_open", str(exc)) from exc
+        except PermissionError as exc:
+            raise ApiError(409, "working_directory_untrusted", str(exc)) from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/compact",
+        dependencies=auth,
+        response_model=CompactionAccepted,
+        status_code=202,
+    )
+    async def compact_session(session_id: str) -> CompactionAccepted:
+        try:
+            return CompactionAccepted(run_id=await state.runs.compact(session_id))
+        except KeyError as exc:
+            raise ApiError(404, "session_or_provider_not_found", str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(409, "session_not_compactable", str(exc)) from exc
         except PermissionError as exc:
             raise ApiError(409, "working_directory_untrusted", str(exc)) from exc
 

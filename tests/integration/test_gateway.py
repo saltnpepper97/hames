@@ -318,7 +318,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 17
+            assert health_body["protocol_version"] == 18
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -1096,6 +1096,136 @@ async def test_runtime_executes_tool_and_continues_model_loop(tmp_path: Path) ->
                 "tool",
             ]
             assert fake.requests[1].messages[-1].tool_name == "read_file"
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_manual_compaction_uses_active_provider_and_records_a_durable_cutoff(
+    tmp_path: Path,
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    fake = FakeProvider(
+        [
+            StreamEvent(kind=StreamEventKind.STARTED, provider_request_id="compact-request"),
+            StreamEvent(
+                kind=StreamEventKind.TEXT_DELTA,
+                text="Keep the earlier requirements and completed verification.",
+            ),
+            StreamEvent(kind=StreamEventKind.USAGE, usage=Usage(input_tokens=40, output_tokens=9)),
+            StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+        ]
+    )
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            for index in range(6):
+                state.ledger.append(
+                    session_id=session_id,
+                    event_type="user.message",
+                    payload={"content": f"turn {index}"},
+                )
+
+            accepted = await client.post(
+                f"/v1/sessions/{session_id}/compact", headers=headers
+            )
+            assert accepted.status_code == 202
+            run_id = str(response_object(accepted)["run_id"])
+            events = await _wait_for_event(
+                client, headers, session_id, "context.compaction.completed"
+            )
+            completed = next(
+                event for event in events if event["type"] == "context.compaction.completed"
+            )
+            payload = JSON_OBJECT.validate_python(completed["payload"])
+            assert completed["run_id"] == run_id
+            assert payload["summary"] == "Keep the earlier requirements and completed verification."
+            assert payload["turns_compacted"] == 2
+            assert payload["provider"] == "fake"
+            assert fake.requests[0].metadata == {"purpose": "context_compaction"}
+            assert fake.requests[0].tools == []
+            requested = next(
+                event
+                for event in events
+                if event["type"] == "model.requested" and event["run_id"] == run_id
+            )
+            requested_payload = JSON_OBJECT.validate_python(requested["payload"])
+            assert requested_payload["purpose"] == "context_compaction"
+            assert any(event["type"] == "model.usage" for event in events)
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_automatic_compaction_runs_before_an_over_budget_agent_request(
+    tmp_path: Path,
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+
+    def response(text: str) -> list[StreamEvent]:
+        return [
+            StreamEvent(kind=StreamEventKind.STARTED),
+            StreamEvent(kind=StreamEventKind.TEXT_DELTA, text=text),
+            StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+        ]
+
+    fake = FakeProvider(
+        [],
+        turns=[response("rolling summary one"), response("rolling summary two"), response("done")],
+    )
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            for index in range(6):
+                state.ledger.append(
+                    session_id=session_id,
+                    event_type="user.message",
+                    payload={"content": f"old-{index}-" + ("x" * 40_000)},
+                )
+
+            sent = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "continue"},
+            )
+            assert sent.status_code == 202
+            events = await _wait_for_event(client, headers, session_id, "run.completed")
+            compacted = next(
+                event for event in events if event["type"] == "context.compaction.completed"
+            )
+            payload = JSON_OBJECT.validate_python(compacted["payload"])
+            assert payload["trigger"] == "automatic"
+            assert payload["passes"] == 2
+            assert len(fake.requests) == 3
+            assert fake.requests[0].metadata == {"purpose": "context_compaction"}
+            assert fake.requests[1].metadata == {"purpose": "context_compaction"}
+            assert fake.requests[2].metadata == {}
     finally:
         await state.runs.close()
 
