@@ -1,8 +1,10 @@
 """Run-observation and explicit-correction pathways that create Scars."""
 
+from __future__ import annotations
+
 import asyncio
 from collections.abc import Iterable
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from hames.broker import EventBroker
 from hames.config import HamesConfig
@@ -32,6 +34,9 @@ from hames.providers import (
 from hames.providers.base import JSON_OBJECT, ToolDefinition
 from hames.skill_runtime import SkillManager
 from hames.skills import SkillRegistry
+
+if TYPE_CHECKING:
+    from hames.plugin_runtime import PluginManager
 
 FAILURE_EVENT_TYPES = {
     "tool.failed",
@@ -72,6 +77,7 @@ class EvolutionManager:
         memory: MemoryStore,
         providers: dict[str, Provider] | None = None,
         skill_manager: SkillManager | None = None,
+        plugin_manager: PluginManager | None = None,
     ) -> None:
         self.ledger = ledger
         self.config = config
@@ -81,6 +87,7 @@ class EvolutionManager:
         self.memory = memory
         self.providers = providers or {}
         self.skill_manager = skill_manager
+        self.plugin_manager = plugin_manager
 
     async def propose_repair(
         self,
@@ -143,6 +150,9 @@ class EvolutionManager:
         if plan.repair_layer == "skill":
             await self._dispatch_skill_patch(session, scar, plan)
             return None
+        if plan.repair_layer == "capability_requirement":
+            await self._dispatch_plugin_proposal(session, scar)
+            return None
         if plan.required_authority != "memory_write":
             return None
         if not self.config.evolution.auto_promote_memory_repairs:
@@ -204,6 +214,18 @@ class EvolutionManager:
             goal=str(plan.proposal.get("goal", scar.expected_behavior)),
             scope=scope,
             target_skill_id=target_skill_id,
+        )
+
+    async def _dispatch_plugin_proposal(self, session: Session, scar: Scar) -> None:
+        if self.plugin_manager is None:
+            return
+        await self.plugin_manager.propose_from_scar(
+            session=session,
+            scar_id=scar.id,
+            title=scar.title,
+            description=scar.description,
+            expected_behavior=scar.expected_behavior,
+            evidence_event_ids=list(scar.evidence_event_ids),
         )
 
     async def observe_run(self, session_id: str, run_id: str) -> list[Scar]:

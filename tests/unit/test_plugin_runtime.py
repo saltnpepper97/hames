@@ -16,6 +16,7 @@ from hames.policy import PolicyGate
 from hames.tools import ToolContext
 
 WORKER = Path(__file__).resolve().parents[1] / "fixtures" / "plugins" / "loopback_worker.py"
+FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "plugins" / "project-stats"
 
 
 def _package(root: Path) -> Path:
@@ -146,6 +147,76 @@ async def test_remove_stops_the_worker(hames_paths: HamesPaths, tmp_path: Path) 
         assert removed.running is False
         assert removed.version == ""
         assert removed.tools == []
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_proposal_cannot_self_install_or_enable(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    manager = _manager(hames_paths)
+    try:
+        session = manager.ledger.create_session(
+            working_directory=tmp_path,
+            agent_id="default",
+            provider="fake",
+            model="fixture",
+        )
+        evidence = manager.ledger.append(
+            session_id=session.id,
+            event_type="user.message",
+            payload={"content": "need ripgrep"},
+        )
+        proposed = await manager.propose_from_scar(
+            session=session,
+            scar_id="scar-fixture",
+            title="Missing ripgrep",
+            description="rg is not installed",
+            expected_behavior="Search files without shelling out to a missing binary.",
+            evidence_event_ids=[evidence.id],
+        )
+        assert proposed.status == "proposed"
+        assert manager.names() == set()
+        with pytest.raises(KeyError):
+            manager.store.get(proposed.plugin_id)
+        installed = await manager.install(Path(proposed.package_path))
+        assert installed.enabled is False
+        assert installed.running is False
+        assert manager.describe_proposal(proposed.id).status == "installed"
+        assert manager.names() == set()
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_project_stats_fixture_counts_files_through_broker(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    manager = _manager(hames_paths)
+    context = _context(tmp_path)
+    try:
+        installed = await manager.install(FIXTURE)
+        assert installed.enabled is False
+        enabled = await manager.enable("project-stats")
+        assert enabled.tools == ["project-stats.summary"]
+        session = manager.control_session()
+
+        async def append(**kwargs: Any) -> Event:
+            return manager.ledger.append(**kwargs)
+
+        result = await manager.execute_tool(
+            "project-stats.summary",
+            {},
+            session=session,
+            context=context,
+            allowed_tools=frozenset({"read_file", "list_dir", "project-stats.summary"}),
+            run_id="run-1",
+            append=append,
+        )
+        assert result.status == "completed"
+        assert result.structured_data.get("files") == 1
+        assert "1 files" in result.summary
     finally:
         await manager.close()
 

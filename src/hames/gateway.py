@@ -59,7 +59,12 @@ from hames.memory import (
 from hames.memory_runtime import MemoryManager
 from hames.paths import HamesPaths
 from hames.plugin_protocol import PluginProtocolError
-from hames.plugin_runtime import PluginInspectView, PluginManager, PluginView
+from hames.plugin_runtime import (
+    PluginInspectView,
+    PluginManager,
+    PluginProposalView,
+    PluginView,
+)
 from hames.plugin_sandbox import PluginSandboxError
 from hames.providers import Provider, ProviderError, ProviderModel
 from hames.providers.registry import configured_providers
@@ -330,6 +335,13 @@ class GatewayState:
             broker=broker,
             registry=runs.skills,
         )
+        plugins = PluginManager(
+            paths=paths,
+            ledger=ledger,
+            config=config,
+            events=broker,
+            policy=runs.policy,
+        )
         evolution = EvolutionManager(
             ledger=ledger,
             config=config,
@@ -339,13 +351,7 @@ class GatewayState:
             memory=runs.memory,
             providers=selected_providers,
             skill_manager=skills,
-        )
-        plugins = PluginManager(
-            paths=paths,
-            ledger=ledger,
-            config=config,
-            events=broker,
-            policy=runs.policy,
+            plugin_manager=plugins,
         )
         runs.attach_memory_manager(memory)
         runs.attach_skill_manager(skills)
@@ -603,6 +609,21 @@ def create_app(state: GatewayState) -> FastAPI:
     @app.get("/v1/plugins", dependencies=auth, response_model=list[PluginView])
     async def list_plugins() -> list[PluginView]:
         return await asyncio.to_thread(state.plugins.list_plugins)
+
+    @app.get("/v1/plugins/proposals", dependencies=auth, response_model=list[PluginProposalView])
+    async def list_plugin_proposals() -> list[PluginProposalView]:
+        return await asyncio.to_thread(state.plugins.list_proposals)
+
+    @app.get(
+        "/v1/plugins/proposals/{proposal_id}",
+        dependencies=auth,
+        response_model=PluginProposalView,
+    )
+    async def get_plugin_proposal(proposal_id: str) -> PluginProposalView:
+        try:
+            return await asyncio.to_thread(state.plugins.describe_proposal, proposal_id)
+        except KeyError as exc:
+            raise ApiError(404, "plugin_proposal_not_found", str(exc)) from exc
 
     @app.get("/v1/plugins/{plugin_id}", dependencies=auth, response_model=PluginView)
     async def get_plugin(plugin_id: str) -> PluginView:

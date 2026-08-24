@@ -440,6 +440,7 @@ async fn handle_command(
         }
         "/memory" => handle_memory_command(client, session, &parts).await?,
         "/skills" => handle_skills_command(client, session, &parts).await?,
+        "/plugins" => handle_plugins_command(client, &parts).await?,
         "/evolution" => handle_evolution_command(client, session, &parts).await?,
         "/correct" => {
             let content = input.strip_prefix("/correct").unwrap_or("").trim();
@@ -856,6 +857,82 @@ async fn handle_memory_command(
         Some(_) => bail!(
             "usage: /memory [list|all|search|show|proposals|accept|reject|forget|promote|status|retry]"
         ),
+    }
+    Ok(())
+}
+
+async fn handle_plugins_command(client: &GatewayClient, parts: &[&str]) -> Result<()> {
+    match parts.get(1).copied() {
+        None | Some("list") => {
+            let plugins = client.plugins().await?;
+            if plugins.is_empty() {
+                println!("plugins> none installed");
+                return Ok(());
+            }
+            for plugin in plugins {
+                let state = if plugin.running {
+                    "running"
+                } else if plugin.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                };
+                println!("{:<20} {:<10} {}", plugin.id, state, plugin.name);
+            }
+        }
+        Some("show") => {
+            let id = parts.get(2).context("usage: /plugins show <id>")?;
+            let plugin = client.plugin(id).await?;
+            println!(
+                "{}  {}  v{}",
+                plugin.id,
+                if plugin.running {
+                    "running"
+                } else if plugin.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                plugin.version
+            );
+            if !plugin.permissions.is_empty() {
+                println!("permissions: {}", plugin.permissions.join(", "));
+            }
+            if !plugin.tools.is_empty() {
+                println!("tools: {}", plugin.tools.join(", "));
+            }
+            if !plugin.warning.is_empty() {
+                println!("warning: {}", plugin.warning);
+            }
+        }
+        Some("proposals") => {
+            let proposals = client.plugin_proposals().await?;
+            if proposals.is_empty() {
+                println!("plugins> no proposals");
+                return Ok(());
+            }
+            for proposal in proposals {
+                println!(
+                    "{}  {:<10} {}  {}",
+                    &proposal.id[..8.min(proposal.id.len())],
+                    proposal.status,
+                    proposal.plugin_id,
+                    proposal.package_path
+                );
+            }
+        }
+        Some("proposal") => {
+            let id = parts.get(2).context("usage: /plugins proposal <id>")?;
+            let proposal = client.plugin_proposal(id).await?;
+            println!(
+                "{}  {}  {}\n{}",
+                proposal.id, proposal.status, proposal.plugin_id, proposal.package_path
+            );
+            if !proposal.permissions.is_empty() {
+                println!("permissions: {}", proposal.permissions.join(", "));
+            }
+        }
+        Some(_) => bail!("usage: /plugins [list|show <id>|proposals|proposal <id>]"),
     }
     Ok(())
 }
@@ -1449,6 +1526,7 @@ fn print_help() {
          /skills [list|search <query>|show <id>|history <id>|jobs]\n\
          /skills author <goal>|correct <id> <change>|retry <job-id>\n\
          /skills pin|unpin|archive|restore|rollback <id>\n\
+         /plugins [list|show <id>|proposals|proposal <id>]\n\
          /correct <short explanation>\n\
          /evolution [list|open|guarded|healed|regressed|show <scar-id>]\n\
          /usage\n/inspect [run-id]\n/context [context-event-id]\n\

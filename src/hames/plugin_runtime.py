@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from hames.broker import EventBroker
 from hames.config import HamesConfig
 from hames.context import PluginContextItem
-from hames.ledger import Event, Ledger, Session
+from hames.ledger import Event, Ledger, Session, new_id
 from hames.paths import HamesPaths
 from hames.plugin_broker import Append, CapabilityBroker
 from hames.plugin_protocol import PluginProtocolError, PluginToolSpec, PluginWorker, spawn_worker
@@ -21,6 +22,8 @@ from hames.plugin_sandbox import PluginSandboxError, bwrap_available, worker_com
 from hames.plugins import (
     TOOL_SUFFIX,
     InspectedPlugin,
+    PluginManifest,
+    PluginProposalRecord,
     PluginStore,
     PluginVersionRecord,
     inspect_package,
@@ -32,6 +35,56 @@ from hames.providers.base import JSON_OBJECT, JsonValue
 from hames.tools import ToolArguments, ToolContext, ToolResult
 
 PLUGIN_TOOL_NAME = re.compile(rf"^{TOOL_SUFFIX}$")
+
+_PROPOSAL_WORKER = """\
+import json
+import sys
+
+
+def send(message):
+    sys.stdout.write(json.dumps(message, separators=(',', ':')) + '\\n')
+    sys.stdout.flush()
+
+
+def main():
+    for raw in sys.stdin:
+        message = json.loads(raw)
+        method = str(message.get('method', ''))
+        message_id = message.get('id')
+        if method == 'initialize':
+            send({
+                'id': message_id,
+                'result': {
+                    'plugin_id': message.get('params', {}).get('plugin_id', 'proposal'),
+                    'version': '0.1.0',
+                    'api_version': 1,
+                    'tools': [{
+                        'name': 'describe',
+                        'description': 'Summarize the missing capability this proposal covers',
+                        'input_schema': {'type': 'object'},
+                    }],
+                    'context_sources': [],
+                    'event_filters': [],
+                },
+            })
+        elif method == 'tool.execute':
+            send({
+                'id': message_id,
+                'result': {
+                    'summary': 'proposal is not installed',
+                    'content': 'This worker belongs to an uninstalled proposal.',
+                },
+            })
+        elif method == 'shutdown':
+            send({'id': message_id, 'result': {}})
+            return
+        else:
+            send({'id': message_id, 'error': f'unknown method: {method}'})
+
+
+if __name__ == '__main__':
+    main()
+"""
 
 
 class PluginToolArguments(ToolArguments):
@@ -63,6 +116,18 @@ class PluginInspectView(BaseModel):
     capabilities: list[str]
     entrypoint: str
     files: list[str]
+
+
+class PluginProposalView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    plugin_id: str = ""
+    scar_id: str = ""
+    status: str
+    package_path: str
+    permissions: list[str] = Field(default_factory=list)
+    created_at: str
 
 
 @dataclass
@@ -105,6 +170,12 @@ class PluginManager:
 
     def list_plugins(self) -> list[PluginView]:
         return [self.describe(plugin.id) for plugin in self.store.list_plugins()]
+
+    def list_proposals(self) -> list[PluginProposalView]:
+        return [_proposal_view(item) for item in self.store.list_proposals()]
+
+    def describe_proposal(self, proposal_id: str) -> PluginProposalView:
+        return _proposal_view(self.store.get_proposal(proposal_id))
 
     def describe(self, plugin_id: str) -> PluginView:
         plugin = self.store.get(plugin_id)
@@ -163,14 +234,106 @@ class PluginManager:
 
     async def install(self, path: Path, *, session: Session | None = None) -> PluginView:
         selected = session or self.control_session()
-        version = await asyncio.to_thread(
-            self.store.install,
-            path,
-            session_id=selected.id,
-            agent_id=selected.agent_id,
-        )
+
+        def _install() -> PluginVersionRecord:
+            resolved = path.expanduser().resolve(strict=True)
+            version = self.store.install(
+                resolved, session_id=selected.id, agent_id=selected.agent_id
+            )
+            for proposal in self.store.list_proposals():
+                if proposal.status != "proposed":
+                    continue
+                if Path(proposal.package_path).expanduser().resolve() == resolved:
+                    self.store.mark_proposal_status(proposal.id, "installed")
+            return version
+
+        version = await asyncio.to_thread(_install)
         await self._publish_latest(selected.id)
         return self.describe(version.plugin_id)
+
+    async def propose_from_scar(
+        self,
+        *,
+        session: Session,
+        scar_id: str,
+        title: str,
+        description: str,
+        expected_behavior: str,
+        evidence_event_ids: list[str],
+    ) -> PluginProposalView:
+        def _write() -> PluginProposalRecord:
+            proposal_id = new_id()
+            plugin_id = f"cap-{proposal_id.replace('-', '')[:8]}"
+            dest = self.paths.plugins / "proposals" / proposal_id
+            dest.mkdir(mode=0o700, parents=True, exist_ok=False)
+            dest.chmod(0o700)
+            name = f"Capability: {title[:48]}"
+            (dest / "plugin.toml").write_text(
+                "\n".join(
+                    [
+                        f"id = {json.dumps(plugin_id)}",
+                        f"name = {json.dumps(name)}",
+                        'version = "0.1.0"',
+                        "api_version = 1",
+                        'entrypoint = "worker.py"',
+                        'capabilities = ["tool"]',
+                        'permissions = ["broker:project_read"]',
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (dest / "README.md").write_text(
+                "\n".join(
+                    [
+                        f"# {title}",
+                        "",
+                        "## Problem",
+                        description,
+                        "",
+                        "## Expected behavior",
+                        expected_behavior,
+                        "",
+                        f"## Scar `{scar_id}`",
+                        "Evidence events:",
+                        *([f"- `{event_id}`" for event_id in evidence_event_ids] or ["- none"]),
+                        "",
+                        "## Permissions",
+                        "- `broker:project_read` only",
+                        "",
+                        "## Security notes",
+                        "This package is an agent-authored proposal. It is not installed",
+                        "and cannot enable itself. A human must `hames plugin install` the",
+                        "proposal path, then enable it.",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (dest / "worker.py").write_text(_PROPOSAL_WORKER, encoding="utf-8")
+            manifest = PluginManifest.model_validate(
+                {
+                    "id": plugin_id,
+                    "name": name,
+                    "version": "0.1.0",
+                    "api_version": 1,
+                    "entrypoint": "worker.py",
+                    "capabilities": ["tool"],
+                    "permissions": ["broker:project_read"],
+                }
+            )
+            return self.store.record_proposal(
+                package_path=dest,
+                manifest=manifest,
+                session_id=session.id,
+                agent_id=session.agent_id,
+                scar_id=scar_id,
+                proposal_id=proposal_id,
+            )
+
+        recorded = await asyncio.to_thread(_write)
+        await self._publish_latest(session.id)
+        return _proposal_view(recorded)
 
     async def enable(self, plugin_id: str, *, session: Session | None = None) -> PluginView:
         if not self.config.plugins.enabled:
@@ -481,6 +644,18 @@ class PluginManager:
         await self.events.publish(
             session_id, {"durable": True, "event": latest.model_dump(mode="json")}
         )
+
+
+def _proposal_view(proposal: PluginProposalRecord) -> PluginProposalView:
+    return PluginProposalView(
+        id=proposal.id,
+        plugin_id=proposal.plugin_id or "",
+        scar_id=proposal.scar_id or "",
+        status=proposal.status,
+        package_path=proposal.package_path,
+        permissions=list(proposal.manifest.permissions),
+        created_at=proposal.created_at,
+    )
 
 
 def _inspect_view(inspected: InspectedPlugin) -> PluginInspectView:

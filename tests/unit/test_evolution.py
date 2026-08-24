@@ -23,6 +23,8 @@ from hames.evolution_runtime import EvolutionManager
 from hames.ledger import Ledger, Session
 from hames.memory import MemoryStore
 from hames.paths import HamesPaths
+from hames.plugin_runtime import PluginManager
+from hames.policy import PolicyGate
 from hames.providers import (
     ModelRequest,
     Provider,
@@ -57,6 +59,7 @@ def _candidate(
     tmp_path: Path,
     *,
     signature: str = "tool shell failed with exit code 42",
+    detection: str = "explicit_correction",
 ) -> tuple[ScarStore, Scar]:
     evidence = ledger.append(
         session_id=session.id,
@@ -75,6 +78,7 @@ def _candidate(
         evidence_event_ids=[evidence.id],
         trigger=ScarTrigger(tool_error_signatures=["shell:exit-42"]),
         run_id=None,
+        detection=detection,
         causation_id=evidence.id,
     )
     assert len(mutation.events) == 1
@@ -254,6 +258,13 @@ def _manager(
         ledger,
         available_tools={"read_file", "list_dir", "write_file", "edit_file", "shell"},
     )
+    plugins = PluginManager(
+        paths=hames_paths,
+        ledger=ledger,
+        config=config,
+        events=EventBroker(),
+        policy=PolicyGate(hames_paths.root),
+    )
     manager = EvolutionManager(
         ledger=ledger,
         config=config,
@@ -261,6 +272,7 @@ def _manager(
         store=store,
         skills=registry,
         memory=MemoryStore(ledger),
+        plugin_manager=plugins,
     )
     return manager, store
 
@@ -648,6 +660,36 @@ def test_plan_repair_routes_to_weakest_layer(
         update={"detection": "repeated_failure", "failure_signature": "tool:shell:timeout #"}
     )
     assert plan_repair(opaque) is None
+
+
+@pytest.mark.asyncio
+async def test_capability_requirement_writes_proposal_without_enabling(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    hames_paths.ensure_foundation()
+    ledger = Ledger.open(hames_paths.database)
+    manager, store = _manager(hames_paths, ledger, tmp_path)
+    session = _session(ledger, tmp_path)
+    _, scar = _candidate(
+        ledger,
+        session,
+        tmp_path,
+        signature="tool:shell:rg: command not found",
+        detection="repeated_failure",
+    )
+    store.open(session=session, scar_id=scar.id, reason="missing capability")
+    routed, _repair = await manager.propose_repair(session.id, scar.id)
+    assert routed.status == "repair_proposed"
+    assert routed.repair_layer == "capability_requirement"
+    assert manager.plugin_manager is not None
+    proposals = manager.plugin_manager.list_proposals()
+    assert len(proposals) == 1
+    assert proposals[0].status == "proposed"
+    assert proposals[0].scar_id == scar.id
+    assert (hames_paths.plugins / "proposals" / proposals[0].id / "plugin.toml").is_file()
+    assert manager.plugin_manager.names() == set()
+    with pytest.raises(KeyError):
+        manager.plugin_manager.store.get(proposals[0].plugin_id)
 
 
 async def test_memory_repair_auto_promotes_and_guards(

@@ -141,6 +141,20 @@ pub struct InspectedPlugin {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PluginProposal {
+    pub id: String,
+    #[serde(default)]
+    pub plugin_id: String,
+    #[serde(default)]
+    pub scar_id: String,
+    pub status: String,
+    pub package_path: String,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Event {
     pub id: String,
     pub sequence: u64,
@@ -718,6 +732,19 @@ impl GatewayClient {
             self.http
                 .delete(format!("{}/v1/plugins/{id}", self.base_url))
                 .bearer_auth(&self.token)
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn plugin_proposals(&self) -> Result<Vec<PluginProposal>> {
+        decode(self.get("/v1/plugins/proposals").send().await?).await
+    }
+
+    pub async fn plugin_proposal(&self, id: &str) -> Result<PluginProposal> {
+        decode(
+            self.get(&format!("/v1/plugins/proposals/{id}"))
                 .send()
                 .await?,
         )

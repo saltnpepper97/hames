@@ -1,0 +1,7 @@
+id = "project-stats"
+name = "Project Stats"
+version = "0.1.0"
+api_version = 1
+entrypoint = "worker.py"
+capabilities = ["tool", "context"]
+permissions = ["broker:project_read"]

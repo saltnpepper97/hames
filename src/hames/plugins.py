@@ -359,8 +359,9 @@ class PluginStore:
         session_id: str,
         agent_id: str,
         scar_id: str | None = None,
+        proposal_id: str | None = None,
     ) -> PluginProposalRecord:
-        proposal_id = new_id()
+        proposal_id = proposal_id or new_id()
         now = utc_now()
         manifest_json = json.dumps(
             manifest.model_dump(mode="json"), separators=(",", ":"), sort_keys=True
@@ -415,6 +416,18 @@ class PluginStore:
                 "SELECT * FROM plugin_proposals ORDER BY created_at"
             ).fetchall()
         return [_proposal_from_row(row) for row in rows]
+
+    def mark_proposal_status(
+        self, proposal_id: str, status: Literal["proposed", "rejected", "installed"]
+    ) -> PluginProposalRecord:
+        proposal = self.get_proposal(proposal_id)
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE plugin_proposals SET status = ? WHERE id = ?",
+                (status, proposal_id),
+            )
+            connection.commit()
+        return proposal.model_copy(update={"status": status})
 
     def enabled_versions(self) -> list[PluginVersionRecord]:
         with self.database.connect() as connection:

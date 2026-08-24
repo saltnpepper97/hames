@@ -205,6 +205,15 @@ enum PluginAction {
         #[arg(long)]
         json: bool,
     },
+    Proposals {
+        #[arg(long)]
+        json: bool,
+    },
+    Proposal {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -595,6 +604,42 @@ async fn run_plugin_command(action: PluginAction) -> Result<()> {
                 print_json(&result)
             } else {
                 println!("removed plugin {id}");
+                Ok(())
+            }
+        }
+        PluginAction::Proposals { json } => {
+            let proposals = client.plugin_proposals().await?;
+            if json {
+                print_json(&proposals)
+            } else {
+                if proposals.is_empty() {
+                    println!("no plugin proposals");
+                    return Ok(());
+                }
+                for proposal in proposals {
+                    println!(
+                        "{}  {:<10} {:<20} {}",
+                        &proposal.id[..8.min(proposal.id.len())],
+                        proposal.status,
+                        proposal.plugin_id,
+                        proposal.package_path
+                    );
+                }
+                Ok(())
+            }
+        }
+        PluginAction::Proposal { id, json } => {
+            let proposal = client.plugin_proposal(&id).await?;
+            if json {
+                print_json(&proposal)
+            } else {
+                println!(
+                    "{}  {}  {}\n{}",
+                    proposal.id, proposal.status, proposal.plugin_id, proposal.package_path
+                );
+                if !proposal.permissions.is_empty() {
+                    println!("permissions: {}", proposal.permissions.join(", "));
+                }
                 Ok(())
             }
         }

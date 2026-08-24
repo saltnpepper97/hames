@@ -78,5 +78,9 @@ async def test_gateway_install_enable_and_disable(tmp_path: Path) -> None:
 
             disabled = await client.post("/v1/plugins/project-stats/disable", headers=headers)
             assert response_object(disabled)["running"] is False
+
+            proposals = await client.get("/v1/plugins/proposals", headers=headers)
+            assert proposals.status_code == 200
+            assert proposals.json() == []
     finally:
         await state.plugins.close()
