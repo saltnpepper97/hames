@@ -99,7 +99,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 15
+            assert health_body["protocol_version"] == 16
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -711,6 +711,65 @@ async def test_gateway_rejects_invalid_agent_before_creating_session(tmp_path: P
             error = response_object(created)["error"]
             assert isinstance(error, dict)
             assert error["code"] == "unknown_agent"
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_lists_available_agent_tools(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/v1/tools", headers=headers)
+
+        assert response.status_code == 200
+        assert response.json() == sorted(state.runs.tools.names())
+        assert "read_file" in response.json()
+        assert "memory_forget" in response.json()
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_creates_and_retires_custom_agent_but_protects_default(
+    tmp_path: Path,
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    source = """---
+{
+  "id": "careful-reviewer",
+  "name": "Careful Reviewer",
+  "authority": "standard",
+  "tools": {"allow": ["read_file"], "deny": ["write_file"]},
+  "skills": {"allow": [], "deny": []}
+}
+---
+# Role
+Review changes carefully.
+"""
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/agents",
+                headers=headers,
+                json={"authority": "standard", "source": source},
+            )
+            protected = await client.delete("/v1/agents/default", headers=headers)
+            retired = await client.delete("/v1/agents/careful-reviewer", headers=headers)
+            listed = await client.get("/v1/agents", headers=headers)
+
+        assert created.status_code == 201
+        assert created.json()["id"] == "careful-reviewer"
+        assert created.json()["tools_deny"] == ["write_file"]
+        assert protected.status_code == 409
+        assert retired.status_code == 200
+        assert [agent["id"] for agent in listed.json()] == ["default"]
     finally:
         await state.runs.close()
 

@@ -664,6 +664,11 @@ def create_app(state: GatewayState) -> FastAPI:
     async def list_agents() -> list[AgentPublic]:
         return [_agent_public(item) for item in await asyncio.to_thread(state.agents.list)]
 
+    @app.get("/v1/tools", dependencies=auth, response_model=list[str])
+    async def list_tools() -> list[str]:
+        """Return every tool currently available to an agent capsule."""
+        return sorted(state.runs.tools.names() | state.plugins.names())
+
     @app.get("/v1/agents/{agent_id}", dependencies=auth, response_model=AgentDetail)
     async def get_agent(agent_id: str) -> AgentDetail:
         try:
@@ -1133,6 +1138,21 @@ def create_app(state: GatewayState) -> FastAPI:
                 load_agent, state.paths.agents / session.agent_id / "AGENT.md"
             )
             return apply_agent_skill_policy(capsule, list(by_slug.values()), limit=limit)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+
+    @app.get(
+        "/v1/sessions/{session_id}/skills/available",
+        dependencies=auth,
+        response_model=list[SkillSummary],
+    )
+    async def list_available_skills(session_id: str) -> list[SkillSummary]:
+        """List workspace-visible Skills before applying the active agent's policy."""
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            return await asyncio.to_thread(
+                state.runs.skills.visible, session, query="", limit=200
+            )
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
 

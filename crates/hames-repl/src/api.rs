@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 
 #[derive(Clone)]
 pub struct GatewayClient {
@@ -750,6 +750,10 @@ impl GatewayClient {
         decode(self.get("/v1/agents").send().await?).await
     }
 
+    pub async fn tools(&self) -> Result<Vec<String>> {
+        decode(self.get("/v1/tools").send().await?).await
+    }
+
     pub async fn agent(&self, id: &str) -> Result<AgentDetail> {
         decode(self.get(&format!("/v1/agents/{id}")).send().await?).await
     }
@@ -1156,7 +1160,16 @@ impl GatewayClient {
     pub async fn skills(&self, session_id: &str, query: &str) -> Result<Vec<SkillSummary>> {
         decode(
             self.get(&format!("/v1/sessions/{session_id}/skills"))
-                .query(&[("query", query)])
+                .query(&[("query", query), ("limit", "200")])
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn available_skills(&self, session_id: &str) -> Result<Vec<SkillSummary>> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/skills/available"))
                 .send()
                 .await?,
         )

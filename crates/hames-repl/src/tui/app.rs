@@ -387,6 +387,9 @@ pub enum TranscriptItem {
         phase: DreamPhase,
         detail: String,
     },
+    Worked {
+        duration_seconds: f64,
+    },
     Status {
         text: String,
         error: bool,
@@ -467,6 +470,156 @@ pub struct ScarEditor {
     pub expected_behavior: Composer,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AgentEditorPage {
+    Identity,
+    Access,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AgentEditField {
+    Name,
+    Slug,
+    Instructions,
+}
+
+impl AgentEditField {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Name => Self::Slug,
+            Self::Slug => Self::Instructions,
+            Self::Instructions => Self::Name,
+        }
+    }
+
+    pub fn previous(self) -> Self {
+        match self {
+            Self::Name => Self::Instructions,
+            Self::Slug => Self::Name,
+            Self::Instructions => Self::Slug,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AgentChoice {
+    pub id: String,
+    pub label: String,
+    pub detail: String,
+    pub selected: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct AgentEditor {
+    pub page: AgentEditorPage,
+    pub field: AgentEditField,
+    pub name: Composer,
+    pub slug: Composer,
+    pub instructions: Composer,
+    pub slug_manual: bool,
+    pub tools: Vec<AgentChoice>,
+    pub skills: Vec<AgentChoice>,
+    pub access_selected: usize,
+}
+
+impl AgentEditor {
+    pub fn new(tools: Vec<String>, skills: Vec<(String, String, String)>) -> Self {
+        Self {
+            page: AgentEditorPage::Identity,
+            field: AgentEditField::Name,
+            name: Composer::default(),
+            slug: Composer::default(),
+            instructions: Composer::default(),
+            slug_manual: false,
+            tools: tools
+                .into_iter()
+                .map(|tool| AgentChoice {
+                    label: tool.clone(),
+                    id: tool,
+                    detail: String::new(),
+                    selected: true,
+                })
+                .collect(),
+            skills: skills
+                .into_iter()
+                .map(|(id, label, detail)| AgentChoice {
+                    id,
+                    label,
+                    detail,
+                    selected: true,
+                })
+                .collect(),
+            access_selected: 0,
+        }
+    }
+
+    pub fn active_text_mut(&mut self) -> &mut Composer {
+        match self.field {
+            AgentEditField::Name => &mut self.name,
+            AgentEditField::Slug => &mut self.slug,
+            AgentEditField::Instructions => &mut self.instructions,
+        }
+    }
+
+    pub fn sync_slug(&mut self) {
+        if self.slug_manual {
+            return;
+        }
+        self.slug.clear();
+        self.slug.insert_text(&agent_slug(&self.name.text()));
+    }
+
+    pub fn access_len(&self) -> usize {
+        self.tools.len() + self.skills.len()
+    }
+
+    pub fn move_access(&mut self, backwards: bool) {
+        let len = self.access_len();
+        if len == 0 {
+            self.access_selected = 0;
+        } else if backwards {
+            self.access_selected = if self.access_selected == 0 {
+                len - 1
+            } else {
+                self.access_selected - 1
+            };
+        } else {
+            self.access_selected = (self.access_selected + 1) % len;
+        }
+    }
+
+    pub fn toggle_access(&mut self) {
+        let index = self.access_selected;
+        if index < self.tools.len() {
+            self.tools[index].selected = !self.tools[index].selected;
+        } else if let Some(skill) = self.skills.get_mut(index.saturating_sub(self.tools.len())) {
+            skill.selected = !skill.selected;
+        }
+    }
+}
+
+fn agent_slug(value: &str) -> String {
+    let mut slug = String::new();
+    let mut separator = false;
+    for character in value.to_lowercase().chars() {
+        if character.is_ascii_alphanumeric() {
+            if separator && !slug.is_empty() && slug.len() < 63 {
+                slug.push('-');
+            }
+            separator = false;
+            if slug.len() < 63 {
+                slug.push(character);
+            }
+        } else {
+            separator = true;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    slug
+}
+
 impl ScarEditor {
     pub fn new(browser: ScarBrowser) -> Option<Self> {
         let scar = browser.records.get(browser.selected)?;
@@ -517,6 +670,7 @@ pub enum Modal {
     Memory(MemoryBrowser),
     Scars(ScarBrowser),
     ScarEdit(ScarEditor),
+    AgentEdit(AgentEditor),
     PastePreview(String),
     Error(String),
     Info { title: String, lines: Vec<String> },
@@ -531,6 +685,7 @@ pub enum MenuAction {
     OpenModels,
     OpenEfforts,
     OpenAgents,
+    CreateAgent,
     OpenModes,
     OpenThemes,
     ShowSession,
@@ -958,7 +1113,7 @@ impl App {
             ),
             option(
                 "/agent",
-                "change the active capsule",
+                "select, create, or delete agents",
                 MenuAction::OpenAgents,
             ),
             option("/mode", "manual, auto, or plan", MenuAction::OpenModes),
@@ -1333,6 +1488,11 @@ impl App {
                         text: "Turn interrupted".to_owned(),
                         error: false,
                     });
+                } else if let Some(duration_seconds) =
+                    event.payload.get("active_seconds").and_then(Value::as_f64)
+                {
+                    self.transcript
+                        .push(TranscriptItem::Worked { duration_seconds });
                 }
             }
             "memory.job.queued"
@@ -1987,7 +2147,10 @@ mod tests {
             ),
             true,
         );
-        app.ingest_durable(event(5, "run.completed", run_id, json!({})), true);
+        app.ingest_durable(
+            event(5, "run.completed", run_id, json!({"active_seconds": 251.0})),
+            true,
+        );
         assert!(app.active_run.is_none());
         assert!(app.transcript.iter().any(|item| matches!(
             item,
@@ -1998,6 +2161,10 @@ mod tests {
                 ..
             } if *duration_seconds == 12.0
         )));
+        assert!(matches!(
+            app.transcript.last(),
+            Some(TranscriptItem::Worked { duration_seconds }) if *duration_seconds == 251.0
+        ));
     }
 
     #[test]

@@ -14,15 +14,18 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::{
-    ActivityCategory, ActivityPhase, App, Composer, ComposerUnit, DreamPhase, HitAction, HitRegion,
-    MemoryBrowser, Modal, ScarBrowser, ScarEditField, ScarEditor, ScrollTarget, SheetKind,
-    ThemeKind, TranscriptItem, TranscriptViewport,
+    ActivityCategory, ActivityPhase, AgentChoice, AgentEditField, AgentEditor, AgentEditorPage,
+    App, Composer, ComposerUnit, DreamPhase, HitAction, HitRegion, MemoryBrowser, Modal,
+    ScarBrowser, ScarEditField, ScarEditor, ScrollTarget, SheetKind, ThemeKind, TranscriptItem,
+    TranscriptViewport,
 };
 
 const MINT: Color = Color::Rgb(116, 226, 192);
 const MINT_LIGHT: Color = Color::Rgb(164, 239, 218);
 const SKY: Color = Color::Rgb(112, 177, 255);
 const SKY_LIGHT: Color = Color::Rgb(166, 207, 255);
+const CYAN: Color = Color::Rgb(91, 211, 224);
+const CYAN_LIGHT: Color = Color::Rgb(154, 232, 239);
 const LILAC: Color = Color::Rgb(193, 154, 255);
 const LILAC_LIGHT: Color = Color::Rgb(220, 194, 255);
 const CORAL: Color = Color::Rgb(255, 139, 116);
@@ -91,7 +94,16 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .as_ref()
         .map(|sheet| (sheet.options.len() as u16 + 2).clamp(3, 9))
         .unwrap_or(0);
-    let bottom = composer_height + notice_height + sheet_height + 1;
+    let approval_height = if matches!(app.modal, Some(Modal::Approval(_))) {
+        9.min(
+            area.height
+                .saturating_sub(header_height + composer_height + notice_height + 2),
+        )
+    } else {
+        0
+    };
+    let tray_height = sheet_height.max(approval_height);
+    let bottom = composer_height + notice_height + tray_height + 1;
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -106,13 +118,15 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let footer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(sheet_height),
+            Constraint::Length(tray_height),
             Constraint::Length(notice_height),
             Constraint::Length(composer_height),
             Constraint::Length(1),
         ])
         .split(rows[2]);
-    if sheet_height > 0 {
+    if approval_height > 0 {
+        render_approval_tray(frame, app, footer[0]);
+    } else if sheet_height > 0 {
         render_sheet(frame, app, footer[0]);
     }
     if let Some(notice) = notice {
@@ -177,7 +191,7 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     });
 }
 
-fn current_activity(app: &App) -> &'static str {
+pub(super) fn current_activity(app: &App) -> &'static str {
     if app.active_run.is_none() {
         return "Ready";
     }
@@ -536,6 +550,30 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     sheen: None,
                 });
             }
+            TranscriptItem::Worked {
+                duration_seconds, ..
+            } => {
+                let elapsed = format_elapsed(duration_seconds.round().max(0.0) as u64);
+                let label = format!("Worked for {elapsed} ");
+                let used = 2 + UnicodeWidthStr::width(label.as_str());
+                lines.push(RenderLine {
+                    line: Line::from(""),
+                    thought: None,
+                    sheen: None,
+                });
+                lines.push(RenderLine {
+                    line: Line::from(vec![
+                        Span::styled("─ ", Style::default().fg(RULE)),
+                        Span::styled(label, Style::default().fg(MUTED)),
+                        Span::styled(
+                            "─".repeat(width.saturating_sub(used)),
+                            Style::default().fg(RULE),
+                        ),
+                    ]),
+                    thought: None,
+                    sheen: None,
+                });
+            }
             TranscriptItem::Assistant { .. } => {}
             TranscriptItem::Status { text, error } => {
                 lines.push(RenderLine {
@@ -554,10 +592,14 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 });
             }
         }
-        let compact_tool_handoff = matches!(item, TranscriptItem::Assistant { .. })
+        let compact_tool_handoff = (matches!(item, TranscriptItem::Assistant { .. })
             && matches!(
                 app.transcript.get(index + 1),
                 Some(TranscriptItem::Activity { .. })
+            ))
+            || matches!(
+                app.transcript.get(index + 1),
+                Some(TranscriptItem::Worked { .. })
             );
         if !compact_tool_handoff {
             lines.push(RenderLine {
@@ -904,7 +946,16 @@ fn scrollbar_position(top: usize, content_len: usize, viewport_len: usize) -> us
 }
 
 fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta: Duration) {
-    let left = if app.sheet.is_some() {
+    let left = if matches!(app.modal, Some(Modal::Approval(_))) {
+        Line::from(vec![
+            Span::styled("  ←→", Style::default().fg(INPUT).bold()),
+            Span::styled(" choose · ", Style::default().fg(MUTED)),
+            Span::styled("Enter", Style::default().fg(INPUT).bold()),
+            Span::styled(" confirm · ", Style::default().fg(MUTED)),
+            Span::styled("Esc", Style::default().fg(INPUT).bold()),
+            Span::styled(" deny", Style::default().fg(MUTED)),
+        ])
+    } else if app.sheet.is_some() {
         sheet_shortcuts(app)
     } else if app.active_run.is_some() {
         activity_bar(app)
@@ -915,7 +966,10 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
         ))
     };
     frame.render_widget(Paragraph::new(left), area);
-    if app.sheet.is_none() && app.active_run.is_some() {
+    if app.sheet.is_none()
+        && app.active_run.is_some()
+        && !matches!(app.modal, Some(Modal::Approval(_)))
+    {
         let effect = app
             .activity_bar_effect
             .get_or_insert_with(|| traveling_sheen(ACTIVITY_IDLE, ACTIVITY_SWEEP, Some(MINT)));
@@ -942,7 +996,9 @@ fn sheet_shortcuts(app: &App) -> Line<'static> {
     let Some(sheet) = &app.sheet else {
         return Line::default();
     };
-    if sheet.kind == SheetKind::Sessions && sheet.pending_delete.is_some() {
+    if matches!(sheet.kind, SheetKind::Sessions | SheetKind::Agents)
+        && sheet.pending_delete.is_some()
+    {
         return Line::from(vec![
             Span::styled("  ↑↓", Style::default().fg(INPUT).bold()),
             Span::styled(" cancel · ", Style::default().fg(MUTED)),
@@ -966,6 +1022,21 @@ fn sheet_shortcuts(app: &App) -> Line<'static> {
             Span::styled("Ctrl+D", Style::default().fg(INPUT).bold()),
             Span::styled(" remove · ", Style::default().fg(MUTED)),
         ]);
+    } else if sheet.kind == SheetKind::Agents {
+        spans.extend([
+            Span::styled("Ctrl+N", Style::default().fg(INPUT).bold()),
+            Span::styled(" new · ", Style::default().fg(MUTED)),
+        ]);
+        let selected_is_default = sheet
+            .options
+            .get(sheet.selected)
+            .is_some_and(|option| matches!(&option.action, super::app::MenuAction::SetAgent(id) if id == "default"));
+        if !selected_is_default {
+            spans.extend([
+                Span::styled("Ctrl+D", Style::default().fg(INPUT).bold()),
+                Span::styled(" delete · ", Style::default().fg(MUTED)),
+            ]);
+        }
     }
     spans.extend([
         Span::styled("Esc", Style::default().fg(INPUT).bold()),
@@ -1038,10 +1109,121 @@ fn composer_rows(app: &App, width: u16) -> u16 {
     u16::try_from(lines.len()).unwrap_or(u16::MAX)
 }
 
+fn render_approval_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let Some(Modal::Approval(approval)) = app.modal.clone() else {
+        return;
+    };
+    let request_lines = approval.arguments.lines().take(2).collect::<Vec<_>>();
+    let mut detail_lines = vec![
+        Line::from(vec![
+            Span::styled("Action  ", Style::default().fg(MUTED)),
+            Span::styled(approval.name, Style::default().fg(Color::White).bold()),
+        ]),
+        Line::from(vec![
+            Span::styled("Reason  ", Style::default().fg(MUTED)),
+            Span::styled(
+                fit(&approval.reason, usize::from(area.width.saturating_sub(10))),
+                Style::default().fg(GOLD),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Request ", Style::default().fg(MUTED)),
+            Span::styled(
+                fit(
+                    request_lines.first().copied().unwrap_or_default(),
+                    usize::from(area.width.saturating_sub(10)),
+                ),
+                Style::default().fg(INPUT),
+            ),
+        ]),
+        Line::from(Span::styled(
+            format!(
+                "        {}",
+                fit(
+                    request_lines.get(1).copied().unwrap_or_default(),
+                    usize::from(area.width.saturating_sub(10)),
+                )
+            ),
+            Style::default().fg(INPUT),
+        )),
+        Line::from(""),
+    ];
+    let choices = if approval.allow_session {
+        [" Allow session ", " Allow once ", " Deny "].as_slice()
+    } else {
+        [" Allow once ", " Deny "].as_slice()
+    };
+    let mut spans = vec![Span::raw("  ")];
+    let mut action_x = 2u16;
+    let action_y = area.y.saturating_add(area.height.saturating_sub(2));
+    for (index, choice) in choices.iter().enumerate() {
+        let selected = approval.selected == index;
+        spans.push(Span::styled(
+            *choice,
+            if selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(if index + 1 == choices.len() {
+                        CORAL
+                    } else {
+                        MINT
+                    })
+                    .bold()
+            } else {
+                Style::default().fg(Color::White).bg(PANEL_BRIGHT)
+            },
+        ));
+        app.hits.push(HitRegion {
+            x: area.x.saturating_add(action_x),
+            y: action_y,
+            width: u16::try_from(UnicodeWidthStr::width(*choice)).unwrap_or(0),
+            height: 1,
+            action: HitAction::Approval(index),
+        });
+        action_x = action_x
+            .saturating_add(u16::try_from(UnicodeWidthStr::width(*choice)).unwrap_or(0))
+            .saturating_add(2);
+        spans.push(Span::raw("  "));
+    }
+    let inner_height = usize::from(area.height.saturating_sub(2));
+    let detail_height = inner_height.saturating_sub(1);
+    detail_lines.truncate(detail_height);
+    while detail_lines.len() < detail_height {
+        detail_lines.push(Line::from(""));
+    }
+    detail_lines.push(Line::from(spans));
+    let lines = detail_lines;
+    app.modal_viewport = TranscriptViewport {
+        x: area.x,
+        y: area.y.saturating_add(1),
+        width: area.width,
+        height: area.height.saturating_sub(2),
+        lines: lines.iter().map(line_text).collect(),
+    };
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled("─ ", Style::default().fg(RULE)),
+            Span::styled("Permission required", Style::default().fg(INPUT).bold()),
+            Span::styled(" ─", Style::default().fg(RULE)),
+        ]))
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .border_style(Style::default().fg(RULE));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .style(Style::default().bg(Color::Reset)),
+        area,
+    );
+}
+
 fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let Some(modal) = app.modal.clone() else {
         return;
     };
+    if matches!(modal, Modal::Approval(_)) {
+        return;
+    }
     let (title, mut body, width, height) = match &modal {
         Modal::Trust => (
             "Trust this workspace",
@@ -1075,59 +1257,7 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             68,
             9,
         ),
-        Modal::Approval(approval) => {
-            let mut lines = vec![
-                Line::from(vec![
-                    Span::styled("Action  ", Style::default().fg(MUTED)),
-                    Span::styled(
-                        approval.name.clone(),
-                        Style::default().fg(Color::White).bold(),
-                    ),
-                ]),
-                Line::from(vec![
-                    Span::styled("Reason  ", Style::default().fg(MUTED)),
-                    Span::styled(fit(&approval.reason, 62), Style::default().fg(GOLD)),
-                ]),
-                Line::from(""),
-            ];
-            for line in approval.arguments.lines().take(5) {
-                lines.push(Line::from(Span::styled(
-                    format!("  {}", fit(line, 70)),
-                    Style::default().fg(Color::Rgb(180, 187, 201)),
-                )));
-            }
-            lines.push(Line::from(""));
-            let choices = if approval.allow_session {
-                [" Allow session ", " Allow once ", " Deny "].as_slice()
-            } else {
-                [" Allow once ", " Deny "].as_slice()
-            };
-            let mut spans = vec![Span::raw("  ")];
-            for (index, choice) in choices.iter().enumerate() {
-                let selected = approval.selected == index;
-                spans.push(Span::styled(
-                    *choice,
-                    if selected {
-                        Style::default()
-                            .fg(Color::Black)
-                            .bg(if index + 1 == choices.len() {
-                                CORAL
-                            } else {
-                                MINT
-                            })
-                            .bold()
-                    } else {
-                        Style::default().fg(Color::White).bg(PANEL_BRIGHT)
-                    },
-                ));
-                spans.push(Span::raw("  "));
-            }
-            while lines.len() < 9 {
-                lines.push(Line::from(""));
-            }
-            lines.push(Line::from(spans));
-            ("Permission required", lines, 76, 12)
-        }
+        Modal::Approval(_) => unreachable!("approvals render in the lower tray"),
         Modal::Help => (
             "Hames shortcuts",
             vec![
@@ -1173,6 +1303,7 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         Modal::Memory(browser) => ("Memory", memory_browser_body(browser), 92, 23),
         Modal::Scars(browser) => ("Scars and evolution", scar_browser_body(browser), 94, 25),
         Modal::ScarEdit(editor) => ("Edit Scar", scar_editor_body(editor), 94, 25),
+        Modal::AgentEdit(editor) => ("New Agent", agent_editor_body(editor), 96, 27),
         Modal::PastePreview(value) => {
             let mut lines = vec![
                 Line::from(Span::styled(
@@ -1698,6 +1829,289 @@ fn scar_editor_body(editor: &ScarEditor) -> Vec<Line<'static>> {
     lines
 }
 
+fn agent_editor_body(editor: &AgentEditor) -> Vec<Line<'static>> {
+    match editor.page {
+        AgentEditorPage::Identity => agent_identity_body(editor),
+        AgentEditorPage::Access => agent_access_body(editor),
+    }
+}
+
+fn agent_identity_body(editor: &AgentEditor) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Identity", Style::default().fg(INPUT).bold()),
+            Span::styled("  1 / 2", Style::default().fg(MUTED)),
+            Span::styled(
+                " · AGENT.md is stored as portable Markdown",
+                Style::default().fg(MUTED),
+            ),
+        ]),
+        Line::from(""),
+    ];
+    push_agent_editor_field(
+        &mut lines,
+        "Name",
+        &editor.name,
+        editor.field == AgentEditField::Name,
+        1,
+        false,
+    );
+    lines.push(Line::from(""));
+    push_agent_editor_field(
+        &mut lines,
+        "Slug",
+        &editor.slug,
+        editor.field == AgentEditField::Slug,
+        1,
+        false,
+    );
+    lines.push(Line::from(""));
+    push_agent_editor_field(
+        &mut lines,
+        "AGENT.md instructions",
+        &editor.instructions,
+        editor.field == AgentEditField::Instructions,
+        10,
+        true,
+    );
+    while lines.len() < 22 {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(vec![
+        Span::styled("↑↓", Style::default().fg(INPUT).bold()),
+        Span::styled(" field · ", Style::default().fg(MUTED)),
+        Span::styled("←→", Style::default().fg(INPUT).bold()),
+        Span::styled(" page · ", Style::default().fg(MUTED)),
+        Span::styled("Ctrl+Enter", Style::default().fg(INPUT).bold()),
+        Span::styled(" create · ", Style::default().fg(MUTED)),
+        Span::styled("Esc", Style::default().fg(INPUT).bold()),
+        Span::styled(" cancel", Style::default().fg(MUTED)),
+    ]));
+    lines
+}
+
+fn push_agent_editor_field(
+    lines: &mut Vec<Line<'static>>,
+    label: &str,
+    input: &Composer,
+    selected: bool,
+    max_rows: usize,
+    markdown: bool,
+) {
+    lines.push(Line::from(Span::styled(
+        label.to_owned(),
+        Style::default()
+            .fg(if selected { INPUT } else { MUTED })
+            .add_modifier(if selected {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            }),
+    )));
+    let value = composer_edit_text(input, selected);
+    let placeholder = if label == "Name" {
+        "Agent name"
+    } else if label == "Slug" {
+        "agent-slug"
+    } else {
+        "# Role\nDescribe how this agent should work…"
+    };
+    let empty = input.is_empty();
+    let shown = if empty {
+        format!("{}{placeholder}", if selected { "▏" } else { "" })
+    } else {
+        value.clone()
+    };
+    let mut wrapped = Vec::new();
+    for raw in shown.lines().chain(shown.is_empty().then_some("")) {
+        let mut remaining = raw;
+        loop {
+            let (part, rest) = split_width(remaining, 88);
+            wrapped.push(part.to_owned());
+            if rest.is_empty() {
+                break;
+            }
+            remaining = rest;
+        }
+    }
+    let caret_row = wrapped
+        .iter()
+        .position(|row| row.contains('▏'))
+        .unwrap_or_default();
+    let start = caret_row
+        .saturating_add(1)
+        .saturating_sub(max_rows)
+        .min(wrapped.len().saturating_sub(max_rows));
+    let first_row = lines.len();
+    for row in wrapped.into_iter().skip(start).take(max_rows) {
+        let spans = if empty {
+            vec![Span::styled(row, Style::default().fg(MUTED))]
+        } else if markdown {
+            agent_markdown_source_spans(&row)
+        } else {
+            vec![Span::styled(row, Style::default().fg(INPUT))]
+        };
+        lines.push(Line::from(spans).style(Style::default().bg(if selected {
+            PANEL_BRIGHT
+        } else {
+            Color::Reset
+        })));
+    }
+    while lines.len() < first_row + max_rows {
+        lines.push(Line::from(""));
+    }
+}
+
+fn agent_markdown_source_spans(value: &str) -> Vec<Span<'static>> {
+    if value.trim_start().starts_with('#') {
+        return vec![Span::styled(
+            value.to_owned(),
+            Style::default().fg(CYAN).bold(),
+        )];
+    }
+    let mut spans = Vec::new();
+    let mut remaining = value;
+    while let Some(open) = remaining.find('`') {
+        if open > 0 {
+            spans.push(Span::styled(
+                remaining[..open].to_owned(),
+                Style::default().fg(INPUT),
+            ));
+        }
+        spans.push(Span::styled("`", Style::default().fg(MUTED)));
+        let rest = &remaining[open + 1..];
+        if let Some(close) = rest.find('`') {
+            spans.push(Span::styled(
+                rest[..close].to_owned(),
+                Style::default().fg(CYAN),
+            ));
+            spans.push(Span::styled("`", Style::default().fg(MUTED)));
+            remaining = &rest[close + 1..];
+        } else {
+            remaining = rest;
+            break;
+        }
+    }
+    if !remaining.is_empty() || spans.is_empty() {
+        spans.push(Span::styled(
+            remaining.to_owned(),
+            Style::default().fg(INPUT),
+        ));
+    }
+    let trimmed = value.trim_start();
+    if (trimmed.starts_with("- ") || trimmed.starts_with("* "))
+        && let Some(first) = spans.first_mut()
+    {
+        first.style = first.style.fg(CYAN);
+    }
+    spans
+}
+
+fn agent_access_body(editor: &AgentEditor) -> Vec<Line<'static>> {
+    let mut rows: Vec<(Option<usize>, Line<'static>)> = Vec::new();
+    rows.push((
+        None,
+        Line::from(Span::styled("Tools", Style::default().fg(MUTED).bold())),
+    ));
+    for (index, choice) in editor.tools.iter().enumerate() {
+        rows.push((
+            Some(index),
+            agent_choice_line(choice, index == editor.access_selected),
+        ));
+    }
+    rows.push((None, Line::from("")));
+    rows.push((
+        None,
+        Line::from(Span::styled("Skills", Style::default().fg(MUTED).bold())),
+    ));
+    for (index, choice) in editor.skills.iter().enumerate() {
+        let global = editor.tools.len() + index;
+        rows.push((
+            Some(global),
+            agent_choice_line(choice, global == editor.access_selected),
+        ));
+    }
+    if editor.skills.is_empty() {
+        rows.push((
+            None,
+            Line::from(Span::styled(
+                "  No workspace Skills are currently available",
+                Style::default().fg(MUTED),
+            )),
+        ));
+    }
+    let selected_row = rows
+        .iter()
+        .position(|(index, _)| *index == Some(editor.access_selected))
+        .unwrap_or_default();
+    const WINDOW: usize = 18;
+    let start = selected_row
+        .saturating_add(1)
+        .saturating_sub(WINDOW)
+        .min(rows.len().saturating_sub(WINDOW));
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Capabilities", Style::default().fg(INPUT).bold()),
+            Span::styled("  2 / 2", Style::default().fg(MUTED)),
+            Span::styled(" · everything starts selected", Style::default().fg(MUTED)),
+        ]),
+        Line::from(""),
+    ];
+    lines.extend(
+        rows.into_iter()
+            .skip(start)
+            .take(WINDOW)
+            .map(|(_, line)| line),
+    );
+    while lines.len() < 22 {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(vec![
+        Span::styled("↑↓", Style::default().fg(INPUT).bold()),
+        Span::styled(" navigate · ", Style::default().fg(MUTED)),
+        Span::styled("←→", Style::default().fg(INPUT).bold()),
+        Span::styled(" page · ", Style::default().fg(MUTED)),
+        Span::styled("Space", Style::default().fg(INPUT).bold()),
+        Span::styled(" toggle · ", Style::default().fg(MUTED)),
+        Span::styled("Ctrl+Enter", Style::default().fg(INPUT).bold()),
+        Span::styled(" create · ", Style::default().fg(MUTED)),
+        Span::styled("Esc", Style::default().fg(INPUT).bold()),
+        Span::styled(" cancel", Style::default().fg(MUTED)),
+    ]));
+    lines
+}
+
+fn agent_choice_line(choice: &AgentChoice, focused: bool) -> Line<'static> {
+    let row_style = if focused {
+        Style::default().bg(PANEL_BRIGHT)
+    } else {
+        Style::default()
+    };
+    Line::from(vec![
+        Span::styled(
+            if choice.selected { "  ▣ " } else { "  □ " },
+            Style::default()
+                .fg(if choice.selected { CYAN } else { MUTED })
+                .patch(row_style),
+        ),
+        Span::styled(
+            fit(&choice.label, 25),
+            Style::default()
+                .fg(if focused { Color::White } else { INPUT })
+                .add_modifier(if focused {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                })
+                .patch(row_style),
+        ),
+        Span::styled(
+            format!("  {}", fit(&choice.detail, 52)),
+            Style::default().fg(MUTED).patch(row_style),
+        ),
+    ])
+}
+
 fn push_scar_editor_field(
     lines: &mut Vec<Line<'static>>,
     label: &str,
@@ -1929,7 +2343,7 @@ fn markdown_spans(value: &str, base_style: Style) -> Vec<Span<'static>> {
         {
             spans.push(Span::styled(
                 rest[..end].to_owned(),
-                Style::default().fg(SKY).bg(PANEL_BRIGHT),
+                Style::default().fg(CYAN).bg(PANEL_BRIGHT),
             ));
             remaining = &rest[end + 1..];
             continue;
@@ -2404,6 +2818,8 @@ fn terminal_color(color: Color) -> Color {
         MINT_LIGHT => Color::LightGreen,
         SKY => Color::Blue,
         SKY_LIGHT => Color::LightBlue,
+        CYAN => Color::Cyan,
+        CYAN_LIGHT => Color::LightCyan,
         LILAC => Color::Magenta,
         LILAC_LIGHT => Color::LightMagenta,
         CORAL => Color::Red,
@@ -2466,18 +2882,20 @@ mod tests {
     use ratatui::layout::Rect;
     use ratatui::style::Color;
     use serde_json::json;
+    use unicode_width::UnicodeWidthStr;
 
     use super::{
-        ADDITION_BG, CORAL, DELETE_BG, GOLD, INPUT, INPUT_LIGHT, MINT, MINT_LIGHT, MUTED, PANEL,
-        PANEL_BRIGHT, REMOVAL_BG, SKY, compact_diff_lines, draw, format_elapsed, line_text,
-        memory_browser_body, mode_color, mode_outline, scar_browser_body, scar_editor_body,
-        scrollbar_position, sheet_text_color, thought_label, transcript_lines, traveling_sheen,
+        ADDITION_BG, CORAL, CYAN, DELETE_BG, GOLD, INPUT, INPUT_LIGHT, MINT, MINT_LIGHT, MUTED,
+        PANEL_BRIGHT, REMOVAL_BG, SKY, agent_access_body, agent_identity_body, compact_diff_lines,
+        draw, format_elapsed, line_text, memory_browser_body, mode_color, mode_outline,
+        scar_browser_body, scar_editor_body, scrollbar_position, sheet_text_color, thought_label,
+        transcript_lines, traveling_sheen,
     };
     use crate::api::{MemoryRecord, Scar, Session};
     use crate::tui::app::{
-        ActivityPhase, ActivityRow, App, ApprovalModal, DreamPhase, HitAction, MemoryBrowser,
-        MenuAction, MenuOption, Modal, ScarBrowser, ScarEditor, Sheet, SheetKind, TranscriptItem,
-        TranscriptPoint,
+        ActivityPhase, ActivityRow, AgentEditor, AgentEditorPage, App, ApprovalModal, DreamPhase,
+        HitAction, MemoryBrowser, MenuAction, MenuOption, Modal, ScarBrowser, ScarEditor, Sheet,
+        SheetKind, TranscriptItem, TranscriptPoint,
     };
 
     #[test]
@@ -2677,7 +3095,7 @@ mod tests {
             .flat_map(|item| &item.line.spans)
             .find(|span| span.content == "code")
             .unwrap();
-        assert_eq!(code.style.fg, Some(SKY));
+        assert_eq!(code.style.fg, Some(CYAN));
         assert_eq!(code.style.bg, Some(PANEL_BRIGHT));
         let rendered = lines
             .iter()
@@ -2690,6 +3108,64 @@ mod tests {
         assert!(rendered.contains("  1. Docs (https://example.test)"));
         assert!(!rendered.contains("**"));
         assert!(!rendered.contains("`code`"));
+    }
+
+    #[test]
+    fn agent_editor_preserves_markdown_source_and_defaults_capabilities_on() {
+        let mut editor = AgentEditor::new(
+            vec!["read_file".to_owned()],
+            vec![(
+                "testing".to_owned(),
+                "Testing".to_owned(),
+                "Run focused tests".to_owned(),
+            )],
+        );
+        editor.instructions.insert_text("# Role\nUse `cargo test`.");
+        let identity = agent_identity_body(&editor)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(identity.contains("# Role"));
+        assert!(identity.contains("`cargo test`"));
+
+        editor.page = AgentEditorPage::Access;
+        let access = agent_access_body(&editor)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(access.contains("▣ read_file"));
+        assert!(access.contains("▣ Testing"));
+        assert!(access.contains("everything starts selected"));
+    }
+
+    #[test]
+    fn completed_work_ends_with_a_full_width_elapsed_rule() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::Assistant {
+            run_id: "run-worked".to_owned(),
+            content: "Done.".to_owned(),
+            live: false,
+            durable: true,
+        });
+        app.transcript.push(TranscriptItem::Worked {
+            duration_seconds: 251.0,
+        });
+
+        let rendered = transcript_lines(&app, 96)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>();
+        let worked = rendered
+            .iter()
+            .find(|line| line.starts_with("─ Worked for"))
+            .unwrap();
+        assert!(worked.starts_with("─ Worked for 4m 11s ─"));
+        assert_eq!(UnicodeWidthStr::width(worked.as_str()), 96);
+        let worked_index = rendered.iter().position(|line| line == worked).unwrap();
+        assert_eq!(rendered[worked_index - 1], "");
+        assert_eq!(rendered[worked_index - 2], "  Done.");
     }
 
     #[test]
@@ -3068,7 +3544,7 @@ mod tests {
     }
 
     #[test]
-    fn permission_actions_are_inset_and_the_hit_target_matches() {
+    fn permission_actions_use_the_lower_tray_with_inset_hit_targets() {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(session(), Vec::new(), true);
@@ -3084,11 +3560,18 @@ mod tests {
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer.cell((13, 19)).unwrap().bg, PANEL);
-        assert_eq!(buffer.cell((14, 19)).unwrap().bg, PANEL);
-        assert_eq!(buffer.cell((15, 19)).unwrap().bg, MINT);
+        assert_eq!(buffer.cell((1, 24)).unwrap().bg, Color::Reset);
+        assert_eq!(buffer.cell((2, 24)).unwrap().bg, MINT);
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .contains("Permission required")
+        );
         assert!(app.hits.iter().any(|region| {
-            region.x == 15 && region.y == 19 && matches!(region.action, HitAction::Approval(0))
+            region.x == 2 && region.y == 24 && matches!(region.action, HitAction::Approval(0))
         }));
     }
 
@@ -3111,9 +3594,9 @@ mod tests {
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer.cell((5, 7)).unwrap().bg, MINT);
+        assert_eq!(buffer.cell((2, 4)).unwrap().bg, MINT);
         assert!(app.hits.iter().any(|region| {
-            region.x == 5 && region.y == 7 && matches!(region.action, HitAction::Approval(0))
+            region.x == 2 && region.y == 4 && matches!(region.action, HitAction::Approval(0))
         }));
     }
 

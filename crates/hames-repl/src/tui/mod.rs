@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use app::{
-    App, HitAction, MemoryBrowser, MenuAction, MenuOption, Modal, ScarBrowser, ScarEditField,
-    ScarEditor, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind,
+    AgentEditField, AgentEditor, AgentEditorPage, App, HitAction, MemoryBrowser, MenuAction,
+    MenuOption, Modal, ScarBrowser, ScarEditField, ScarEditor, ScrollDrag, ScrollTarget, Sheet,
+    SheetKind, ThemeKind,
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -21,7 +22,7 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode, enable_raw_mode,
 };
 use futures_util::StreamExt;
 use futures_util::future::join_all;
@@ -270,6 +271,46 @@ async fn open_sessions_sheet(client: &GatewayClient, app: &mut App) -> Result<()
     Ok(())
 }
 
+async fn refresh_agents_sheet(client: &GatewayClient, app: &mut App) -> Result<()> {
+    let selected_id = app.sheet.as_ref().and_then(|sheet| {
+        sheet
+            .options
+            .get(sheet.selected)
+            .and_then(|option| match &option.action {
+                MenuAction::SetAgent(id) => Some(id.clone()),
+                _ => None,
+            })
+    });
+    let agents = client.agents().await?;
+    let options = agents
+        .into_iter()
+        .map(|agent| MenuOption {
+            detail: if agent.id == app.session.agent_id {
+                format!("{} · current · {}", agent.authority, agent.id)
+            } else {
+                format!("{} · {}", agent.authority, agent.id)
+            },
+            label: agent.name,
+            action: MenuAction::SetAgent(agent.id),
+        })
+        .collect::<Vec<_>>();
+    let selected = selected_id
+        .and_then(|id| {
+            options.iter().position(
+                |option| matches!(&option.action, MenuAction::SetAgent(value) if value == &id),
+            )
+        })
+        .unwrap_or(0);
+    app.sheet = Some(Sheet {
+        kind: SheetKind::Agents,
+        title: "Agents".to_owned(),
+        options,
+        selected,
+        pending_delete: None,
+    });
+    Ok(())
+}
+
 async fn load_app(client: &GatewayClient, session: Session) -> Result<App> {
     let (events, trust) = tokio::try_join!(
         client.history(&session.id),
@@ -291,6 +332,8 @@ enum Effect {
     DeleteMemory(String),
     DeleteScar(String),
     UpdateScar(ScarUpdate),
+    CreateAgent(String),
+    DeleteAgent(String),
 }
 
 fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
@@ -302,6 +345,15 @@ fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
             if let Some(Modal::ScarEdit(editor)) = &mut app.modal {
                 if let Some(input) = editor.active_text_mut() {
                     input.insert_text(&value);
+                }
+            } else if let Some(Modal::AgentEdit(editor)) = &mut app.modal {
+                if editor.page == AgentEditorPage::Identity {
+                    editor.active_text_mut().insert_text(&value);
+                    if editor.field == AgentEditField::Name {
+                        editor.sync_slug();
+                    } else if editor.field == AgentEditField::Slug {
+                        editor.slug_manual = true;
+                    }
                 }
             } else if app.modal.is_none() {
                 app.composer.insert_paste(value);
@@ -342,19 +394,34 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         let Some(sheet) = &mut app.sheet else {
             return None;
         };
-        if sheet.kind != SheetKind::Sessions || sheet.options.is_empty() {
+        if !matches!(sheet.kind, SheetKind::Sessions | SheetKind::Agents)
+            || sheet.options.is_empty()
+        {
             return None;
         }
         let selected = sheet.selected.min(sheet.options.len().saturating_sub(1));
+        if matches!(&sheet.options[selected].action, MenuAction::SetAgent(id) if id == "default") {
+            return None;
+        }
         if sheet.pending_delete == Some(selected) {
             sheet.pending_delete = None;
             return match &sheet.options[selected].action {
                 MenuAction::Resume(session_id) => Some(Effect::DeleteSession(session_id.clone())),
+                MenuAction::SetAgent(agent_id) => Some(Effect::DeleteAgent(agent_id.clone())),
                 _ => None,
             };
         }
         sheet.pending_delete = Some(selected);
         return None;
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && key.code == KeyCode::Char('n')
+        && app
+            .sheet
+            .as_ref()
+            .is_some_and(|sheet| sheet.kind == SheetKind::Agents)
+    {
+        return Some(Effect::Menu(MenuAction::CreateAgent));
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         if app.active_run.is_some() {
@@ -595,6 +662,87 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             }
             _ => None,
         },
+        Modal::AgentEdit(editor) => {
+            if key.code == KeyCode::Esc {
+                app.modal = None;
+                return None;
+            }
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key.code, KeyCode::Enter | KeyCode::Char('j'))
+            {
+                return match agent_source(editor) {
+                    Ok(source) => Some(Effect::CreateAgent(source)),
+                    Err(message) => {
+                        app.notice = Some(message);
+                        None
+                    }
+                };
+            }
+            if editor.page == AgentEditorPage::Access {
+                match key.code {
+                    KeyCode::Left | KeyCode::Right => {
+                        editor.page = AgentEditorPage::Identity;
+                        None
+                    }
+                    KeyCode::Up | KeyCode::BackTab => {
+                        editor.move_access(true);
+                        None
+                    }
+                    KeyCode::Down | KeyCode::Tab => {
+                        editor.move_access(false);
+                        None
+                    }
+                    KeyCode::Char(' ') | KeyCode::Enter => {
+                        editor.toggle_access();
+                        None
+                    }
+                    _ => None,
+                }
+            } else {
+                let name_field = editor.field == AgentEditField::Name;
+                let slug_field = editor.field == AgentEditField::Slug;
+                let text_edited = matches!(key.code, KeyCode::Backspace | KeyCode::Delete)
+                    || matches!(key.code, KeyCode::Char(_))
+                        && !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+                match key.code {
+                    KeyCode::Left | KeyCode::Right => {
+                        editor.page = AgentEditorPage::Access;
+                        editor.access_selected = 0;
+                    }
+                    KeyCode::Up => editor.field = editor.field.previous(),
+                    KeyCode::Down => editor.field = editor.field.next(),
+                    KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        editor.field = editor.field.previous();
+                    }
+                    KeyCode::Tab => editor.field = editor.field.next(),
+                    KeyCode::BackTab => editor.field = editor.field.previous(),
+                    KeyCode::Enter if editor.field != AgentEditField::Instructions => {
+                        editor.field = editor.field.next();
+                    }
+                    KeyCode::Enter => editor.instructions.insert_text("\n"),
+                    KeyCode::Backspace => editor.active_text_mut().backspace(),
+                    KeyCode::Delete => editor.active_text_mut().delete(),
+                    KeyCode::Home => editor.active_text_mut().move_home(),
+                    KeyCode::End => editor.active_text_mut().move_end(),
+                    KeyCode::Char(value)
+                        if !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    {
+                        editor.active_text_mut().insert_text(&value.to_string());
+                    }
+                    _ => return None,
+                }
+                if slug_field && text_edited {
+                    editor.slug_manual = true;
+                } else if name_field && text_edited {
+                    editor.sync_slug();
+                }
+                None
+            }
+        }
         Modal::ScarEdit(editor) => {
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
                 let update = ScarUpdate {
@@ -1162,6 +1310,34 @@ async fn apply_effect(
             app.modal = Some(Modal::Scars(browser));
             app.notice = Some("Scar changes saved".to_owned());
         }
+        Effect::CreateAgent(source) => {
+            app.notice = Some("Creating agent capsule…".to_owned());
+            let created = client.create_agent(None, "standard", Some(&source)).await?;
+            app.modal = None;
+            refresh_agents_sheet(client, app).await?;
+            if let Some(sheet) = &mut app.sheet {
+                sheet.selected = sheet
+                    .options
+                    .iter()
+                    .position(|option| matches!(&option.action, MenuAction::SetAgent(id) if id == &created.agent.id))
+                    .unwrap_or(0);
+            }
+            app.notice = Some(format!("Agent {} created", created.agent.name));
+        }
+        Effect::DeleteAgent(agent_id) => {
+            if agent_id == "default" {
+                app.notice = Some("The default Hames agent cannot be deleted".to_owned());
+                return Ok(None);
+            }
+            if app.session.agent_id == agent_id {
+                app.session = client
+                    .update_session_agent(&app.session.id, "default")
+                    .await?;
+            }
+            client.retire_agent(&agent_id).await?;
+            refresh_agents_sheet(client, app).await?;
+            app.notice = Some(format!("Agent {agent_id} removed"));
+        }
     }
     Ok(None)
 }
@@ -1325,22 +1501,21 @@ async fn apply_menu_action(
         }
         MenuAction::OpenAgents => {
             app.notice = Some("Loading agents…".to_owned());
-            let agents = client.agents().await?;
+            refresh_agents_sheet(client, app).await?;
             app.notice = None;
-            app.sheet = Some(Sheet {
-                kind: SheetKind::Agents,
-                title: "Agent capsule".to_owned(),
-                options: agents
+        }
+        MenuAction::CreateAgent => {
+            app.notice = Some("Loading tools and Skills…".to_owned());
+            let (tools, skills) =
+                tokio::try_join!(client.tools(), client.available_skills(&app.session.id))?;
+            app.modal = Some(Modal::AgentEdit(AgentEditor::new(
+                tools,
+                skills
                     .into_iter()
-                    .map(|agent| MenuOption {
-                        label: agent.name,
-                        detail: agent.authority,
-                        action: MenuAction::SetAgent(agent.id),
-                    })
+                    .map(|skill| (skill.slug, skill.name, skill.description))
                     .collect(),
-                selected: 0,
-                pending_delete: None,
-            });
+            )));
+            app.notice = None;
         }
         MenuAction::OpenModes => app.open_modes(),
         MenuAction::OpenThemes => app.open_themes(),
@@ -1732,6 +1907,7 @@ impl SseDecoder {
 
 struct TerminalGuard {
     terminal: Terminal<CrosstermBackend<Stdout>>,
+    last_title: String,
 }
 
 impl TerminalGuard {
@@ -1750,10 +1926,18 @@ impl TerminalGuard {
         }
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
         terminal.clear()?;
-        Ok(Self { terminal })
+        Ok(Self {
+            terminal,
+            last_title: String::new(),
+        })
     }
 
     fn draw(&mut self, app: &mut App) -> Result<()> {
+        let title = terminal_tab_title(app);
+        if self.last_title != title {
+            execute!(self.terminal.backend_mut(), SetTitle(&title))?;
+            self.last_title = title;
+        }
         self.terminal.draw(|frame| view::draw(frame, app))?;
         Ok(())
     }
@@ -1775,6 +1959,90 @@ impl Drop for TerminalGuard {
 
 fn short_id(value: &str) -> &str {
     value.get(..8).unwrap_or(value)
+}
+
+fn terminal_tab_title(app: &App) -> String {
+    let session_title = app
+        .session
+        .title
+        .as_deref()
+        .unwrap_or("New session")
+        .replace(['\n', '\r', '\t'], " ");
+    let mode = match app.session.interaction_mode.as_str() {
+        "manual" => "Manual",
+        "plan" => "Plan",
+        _ => "Auto",
+    };
+    format!(
+        "Hames · {} · {mode} · {} — {session_title}",
+        app.session.agent_id,
+        view::current_activity(app)
+    )
+}
+
+fn agent_source(editor: &AgentEditor) -> std::result::Result<String, String> {
+    let name = editor.name.text().trim().to_owned();
+    let slug = editor.slug.text().trim().to_owned();
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err("Agent name must be between 1 and 80 characters".to_owned());
+    }
+    let valid_slug = slug.len() <= 63
+        && slug
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_lowercase())
+        && slug.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+        });
+    if !valid_slug {
+        return Err(
+            "Slug must start with a-z and contain only lowercase letters, digits, or -".to_owned(),
+        );
+    }
+
+    let mut tool_allow = editor
+        .tools
+        .iter()
+        .filter(|choice| choice.selected)
+        .map(|choice| choice.id.clone())
+        .collect::<Vec<_>>();
+    let tool_deny = editor
+        .tools
+        .iter()
+        .filter(|choice| !choice.selected)
+        .map(|choice| choice.id.clone())
+        .collect::<Vec<_>>();
+    if tool_deny.is_empty() {
+        tool_allow.clear();
+    }
+    let mut skill_allow = editor
+        .skills
+        .iter()
+        .filter(|choice| choice.selected)
+        .map(|choice| choice.id.clone())
+        .collect::<Vec<_>>();
+    let skill_deny = editor
+        .skills
+        .iter()
+        .filter(|choice| !choice.selected)
+        .map(|choice| choice.id.clone())
+        .collect::<Vec<_>>();
+    if skill_deny.is_empty() {
+        skill_allow.clear();
+    }
+    let metadata = serde_json::json!({
+        "id": slug,
+        "name": name,
+        "authority": "standard",
+        "tools": {"allow": tool_allow, "deny": tool_deny},
+        "skills": {"allow": skill_allow, "deny": skill_deny},
+    });
+    let frontmatter = serde_json::to_string_pretty(&metadata)
+        .map_err(|error| format!("Could not format AGENT.md: {error}"))?;
+    Ok(format!(
+        "---\n{frontmatter}\n---\n{}\n",
+        editor.instructions.text().trim()
+    ))
 }
 
 fn compact_home(value: &str) -> String {
@@ -1827,13 +2095,14 @@ mod tests {
     };
 
     use super::{
-        Effect, SseDecoder, handle_key, handle_mouse, model_efforts, next_mode, parse_command,
-        pointer_top,
+        Effect, SseDecoder, agent_source, handle_key, handle_mouse, model_efforts, next_mode,
+        parse_command, pointer_top, terminal_tab_title,
     };
     use crate::api::{MemoryRecord, ProviderModel, Scar, Session};
     use crate::tui::app::{
-        App, HitAction, HitRegion, MemoryBrowser, MenuAction, MenuOption, Modal, ScarBrowser,
-        ScarEditField, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind, TranscriptViewport,
+        AgentEditor, App, HitAction, HitRegion, MemoryBrowser, MenuAction, MenuOption, Modal,
+        ScarBrowser, ScarEditField, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind,
+        TranscriptViewport,
     };
 
     #[test]
@@ -1900,6 +2169,19 @@ mod tests {
     }
 
     #[test]
+    fn terminal_tab_title_surfaces_agent_mode_activity_and_session() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.session.title = Some("Agent polish\npass".to_owned());
+        app.session.agent_id = "reviewer".to_owned();
+        app.session.interaction_mode = "plan".to_owned();
+
+        assert_eq!(
+            terminal_tab_title(&app),
+            "Hames · reviewer · Plan · Ready — Agent polish pass"
+        );
+    }
+
+    #[test]
     fn new_session_command_remains_a_client_action_during_active_work() {
         let mut app = App::new(session(), Vec::new(), true);
         app.active_run = Some("run-active".to_owned());
@@ -1959,6 +2241,112 @@ mod tests {
         assert!(matches!(
             handle_key(&mut app, ctrl_d),
             Some(Effect::DeleteSession(session_id)) if session_id == "session-second"
+        ));
+    }
+
+    #[test]
+    fn agent_management_protects_default_and_confirms_custom_deletion() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.sheet = Some(Sheet {
+            kind: SheetKind::Agents,
+            title: "Agents".to_owned(),
+            options: vec![
+                MenuOption {
+                    label: "Hames".to_owned(),
+                    detail: "standard · default".to_owned(),
+                    action: MenuAction::SetAgent("default".to_owned()),
+                },
+                MenuOption {
+                    label: "Reviewer".to_owned(),
+                    detail: "standard · reviewer".to_owned(),
+                    action: MenuAction::SetAgent("reviewer".to_owned()),
+                },
+            ],
+            selected: 0,
+            pending_delete: None,
+        });
+        let ctrl_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+
+        assert!(handle_key(&mut app, ctrl_d).is_none());
+        assert_eq!(app.sheet.as_ref().unwrap().pending_delete, None);
+        app.sheet.as_mut().unwrap().selected = 1;
+        assert!(handle_key(&mut app, ctrl_d).is_none());
+        assert_eq!(app.sheet.as_ref().unwrap().pending_delete, Some(1));
+        assert!(matches!(
+            handle_key(&mut app, ctrl_d),
+            Some(Effect::DeleteAgent(agent_id)) if agent_id == "reviewer"
+        ));
+    }
+
+    #[test]
+    fn agent_sheet_ctrl_n_opens_creation_flow() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.sheet = Some(Sheet {
+            kind: SheetKind::Agents,
+            title: "Agents".to_owned(),
+            options: Vec::new(),
+            selected: 0,
+            pending_delete: None,
+        });
+
+        assert!(matches!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)
+            ),
+            Some(Effect::Menu(MenuAction::CreateAgent))
+        ));
+    }
+
+    #[test]
+    fn new_agent_source_explicitly_records_selected_and_denied_capabilities() {
+        let mut editor = AgentEditor::new(
+            vec!["read_file".to_owned(), "write_file".to_owned()],
+            vec![(
+                "testing".to_owned(),
+                "Testing".to_owned(),
+                "Run the focused suite".to_owned(),
+            )],
+        );
+        editor.name.insert_text("Code Reviewer");
+        editor.sync_slug();
+        editor.instructions.insert_text("# Role\nReview carefully.");
+        editor.tools[1].selected = false;
+
+        let source = agent_source(&editor).unwrap();
+        assert!(source.contains("\"id\": \"code-reviewer\""));
+        assert!(source.contains("\"allow\": [\n      \"read_file\""));
+        assert!(source.contains("\"deny\": [\n      \"write_file\""));
+        assert!(source.ends_with("# Role\nReview carefully.\n"));
+    }
+
+    #[test]
+    fn agent_editor_uses_arrows_for_fields_and_pages_and_ctrl_enter_only_to_create() {
+        let mut editor = AgentEditor::new(vec!["read_file".to_owned()], Vec::new());
+        editor.name.insert_text("Reviewer");
+        editor.sync_slug();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.modal = Some(Modal::AgentEdit(editor));
+
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)).is_none());
+        assert!(matches!(
+            &app.modal,
+            Some(Modal::AgentEdit(editor))
+                if editor.field == crate::tui::app::AgentEditField::Instructions
+        ));
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)).is_none());
+        assert!(matches!(
+            &app.modal,
+            Some(Modal::AgentEdit(editor))
+                if editor.page == crate::tui::app::AgentEditorPage::Access
+        ));
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)).is_none());
+        assert!(matches!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)
+            ),
+            Some(Effect::CreateAgent(source)) if source.contains("\"id\": \"reviewer\"")
         ));
     }
 
