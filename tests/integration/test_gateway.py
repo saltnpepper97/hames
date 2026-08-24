@@ -107,7 +107,9 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                 "model.response.completed",
                 "run.completed",
             ]
-            events = await _wait_for_event(client, headers, session_id, "memory.job.queued")
+            # Post-run memory and Skill observers run sequentially. Waiting for the
+            # latter makes the inspection timeline deterministic on slower hosts.
+            events = await _wait_for_event(client, headers, session_id, "skill.workflow.observed")
             reasoning = next(event for event in events if event["type"] == "assistant.reasoning")
             answer = next(event for event in events if event["type"] == "assistant.message")
             reasoning_payload = reasoning["payload"]

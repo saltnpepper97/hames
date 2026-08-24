@@ -28,6 +28,11 @@ This loop is deliberately autonomous. Pin, archive, rollback, history, evidence,
 and job inspection let a user constrain or audit it without turning normal
 evolution into manual inbox work.
 
+The chat runtime exposes `skill_catalog` for inspection and `skill_control` for
+pin, unpin, archive, restore, and rollback. These operations call the same
+versioned registry used by the gateway; the model never edits package files or
+registry tables directly. Archive and rollback are approval-gated.
+
 ## Authority boundary
 
 A Skill declares which existing Hames tools its procedure expects. Declaration

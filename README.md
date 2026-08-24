@@ -36,7 +36,10 @@ before entering the context budget, and every selected record remains attributab
 in `/context`. Background extraction proposes only bounded durable facts from the
 settled turn; notable tool runs also receive deterministic episodic projections.
 Users can explicitly capture, review, correct, promote, or forget memories from the
-REPL.
+REPL. The model-facing runtime now exposes typed `memory_search`, `memory_add`,
+`memory_edit`, and `memory_forget` tools as well: corrections create immutable
+superseding records, forgetting creates a durable retraction, and destructive
+forget requests require one-shot approval.
 Procedural memory is now autonomous. Hames records settled workflow signatures,
 detects repeated successful multi-step work, drafts and independently evaluates
 immutable scoped Skills, and activates passing versions without a proposal inbox.
@@ -44,6 +47,9 @@ Only compact relevant catalog entries enter normal context; the model must load 
 Skill before its full procedure is supplied. Declared scripts self-test and run in
 an offline Bubblewrap sandbox. Pinning, archive, history, quarantine, rollback,
 jobs, evidence, and typed ledger events keep evolution inspectable and reversible.
+Chat runs can inspect the active catalog and request pin, archive, restore, or
+rollback through typed Skill controls. Archive and rollback require approval;
+read-only agents receive catalog access without mutation authority.
 
 Self-correction is now evidence-backed. Corrections (`/correct` in the REPL),
 conversational correction language, repeated failure signatures, and failing Skill
@@ -54,6 +60,10 @@ policy rules otherwise — evaluates candidates with deterministic replay checks
 optional budgeted model evaluation, then guards future runs until the fix heals or
 regresses. Approved context rules are enforced at compile time and approved policy
 rules can only add protection.
+The chat runtime can list Scars, record and open an explicit correction, and open
+or dismiss a visible Scar. Dismissal requires approval. Rule activation and plugin
+installation remain authenticated human control-plane operations rather than
+model tools.
 
 ## Quick start
 

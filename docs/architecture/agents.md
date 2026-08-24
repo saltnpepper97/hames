@@ -57,9 +57,17 @@ A Skill's `tools:` field is a declaration of what the procedure expects. It is
 not a grant. Policy, trust, the capsule, and one-shot approvals still decide
 every invocation.
 
-Core tool ids today: `read_file`, `list_dir`, `write_file`, `edit_file`, `shell`,
-`spawn_agent`, `skill_load`, `skill_author`, `skill_run`. Do not invent names
-such as `filesystem.write` until they exist as real tool ids.
+Core tool ids today:
+
+- Work: `read_file`, `list_dir`, `write_file`, `edit_file`, `shell`, `spawn_agent`.
+- Skills: `skill_load`, `skill_author`, `skill_run`, `skill_catalog`, `skill_control`.
+- Memory: `memory_search`, `memory_add`, `memory_edit`, `memory_forget`.
+- Evolution: `scar_list`, `scar_record`, `scar_control`.
+
+These are typed controller operations, not generic access to `~/.hames`. Do not
+invent names such as `filesystem.write` until they exist as real tool ids. Rule
+activation and plugin installation are deliberately absent: those stay in the
+authenticated human control plane.
 
 ## AGENT.md
 
@@ -90,7 +98,8 @@ delegation:
 Reduction-only rules:
 
 - `authority: read_only` is a preset: intersect with `read_file`, `list_dir`,
-  `skill_load`. `standard` is the default and is not a grant.
+  `skill_load`, `memory_search`, `scar_list`, and `skill_catalog`. `standard` is
+  the default and is not a grant.
 - `tools.allow` empty → all harness tools minus the preset minus `deny`.
 - `tools.allow` set → intersection with that list. Still cannot add unknown or
   policy-forbidden tools.

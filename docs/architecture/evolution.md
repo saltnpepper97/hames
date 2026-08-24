@@ -98,3 +98,10 @@ read-only from the ledger: evidence timeline, state transitions, repair
 candidates with decisions, evaluations with reports, guard counts, and a plain
 explanation of why the Scar triggered. The REPL exposes `/correct` and
 `/evolution [list|show|open|guarded|healed|regressed]`.
+
+Chat runs use typed controller tools rather than generic state-file access:
+`scar_list` inspects visible records, `scar_record` records and opens an explicit
+correction, and `scar_control` opens a candidate or dismisses a visible Scar.
+Dismissal is approval-gated. Healing, regression, repair promotion, rule
+activation, and plugin installation remain owned by evaluation or the human
+control plane; the model cannot declare those outcomes for itself.
