@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -27,6 +28,8 @@ class Goal(BaseModel):
     latest_evidence: list[str] = Field(default_factory=list)
     latest_signature: str = ""
     repeated_no_progress: int = 0
+    active_seconds: float = 0.0
+    active_since: str | None = None
     created_at: str
     updated_at: str
 
@@ -56,10 +59,13 @@ def project_goals(events: list[Event]) -> list[Goal]:
             continue
         updates: dict[str, object] = {"updated_at": event.created_at}
         if event.type == "goal.step.started":
+            active_seconds = goal.active_seconds + _active_interval(goal, event.created_at)
             updates.update(
                 status="running",
                 step_count=int(event.payload.get("step", goal.step_count + 1)),
                 current_run_id=str(event.payload.get("run_id", "")) or None,
+                active_seconds=active_seconds,
+                active_since=event.created_at,
             )
         elif event.type == "goal.progressed":
             updates.update(
@@ -70,14 +76,21 @@ def project_goals(events: list[Event]) -> list[Goal]:
                 latest_signature=str(event.payload.get("signature", "")),
             )
         elif event.type == "goal.yielded":
-            updates.update(status="yielded", current_run_id=None)
+            updates.update(
+                status="yielded",
+                current_run_id=None,
+                active_seconds=goal.active_seconds + _active_interval(goal, event.created_at),
+                active_since=None,
+            )
         elif event.type == "goal.resumed":
-            updates.update(status="running", current_run_id=None)
+            updates.update(status="running", current_run_id=None, active_since=None)
         elif event.type == "goal.paused":
             updates.update(
                 status="paused",
                 current_run_id=None,
                 latest_summary=str(event.payload.get("summary", goal.latest_summary)),
+                active_seconds=goal.active_seconds + _active_interval(goal, event.created_at),
+                active_since=None,
             )
         elif event.type in {"goal.achieved", "goal.blocked", "goal.cancelled"}:
             updates.update(
@@ -85,9 +98,20 @@ def project_goals(events: list[Event]) -> list[Goal]:
                 current_run_id=None,
                 latest_summary=str(event.payload.get("summary", goal.latest_summary)),
                 latest_evidence=list(event.payload.get("evidence", goal.latest_evidence)),
+                active_seconds=goal.active_seconds + _active_interval(goal, event.created_at),
+                active_since=None,
             )
         goals[goal_id] = goal.model_copy(update=updates)
     return [goals[goal_id] for goal_id in order]
+
+
+def _active_interval(goal: Goal, until: str) -> float:
+    if goal.active_since is None:
+        return 0.0
+    return max(
+        0.0,
+        (datetime.fromisoformat(until) - datetime.fromisoformat(goal.active_since)).total_seconds(),
+    )
 
 
 class GoalStore:

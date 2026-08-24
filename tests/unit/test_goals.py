@@ -29,6 +29,7 @@ def test_goal_projection_reconstructs_progress_pause_and_resume(
     goal, _ = store.transition(session, goal.id, "goal.step.started", run_id="run-1", step=1)
     assert goal.status == "running"
     assert goal.current_run_id == "run-1"
+    assert goal.active_since is not None
     goal, _ = store.transition(
         session,
         goal.id,
@@ -40,8 +41,12 @@ def test_goal_projection_reconstructs_progress_pause_and_resume(
     assert goal.latest_summary == "Tests now pass"
     goal, _ = store.transition(session, goal.id, "goal.paused", summary="Paused by user")
     assert goal.status == "paused"
+    paused_seconds = goal.active_seconds
+    assert goal.active_since is None
     goal, _ = store.transition(session, goal.id, "goal.resumed")
     assert goal.status == "running"
+    assert goal.active_seconds == paused_seconds
+    assert goal.active_since is None
     assert store.current(session.id) == goal
 
 

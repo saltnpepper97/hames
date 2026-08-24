@@ -3052,6 +3052,8 @@ mod tests {
             latest_summary: String::new(),
             latest_evidence: Vec::new(),
             repeated_no_progress: 0,
+            active_seconds: 0.0,
+            active_since: Some("2026-08-24T00:00:00Z".to_owned()),
             created_at: "2026-08-24T00:00:00Z".to_owned(),
             updated_at: "2026-08-24T00:00:00Z".to_owned(),
         });

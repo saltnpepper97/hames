@@ -1533,6 +1533,8 @@ impl App {
                     latest_summary: String::new(),
                     latest_evidence: Vec::new(),
                     repeated_no_progress: 0,
+                    active_seconds: 0.0,
+                    active_since: None,
                     created_at: event.created_at.clone(),
                     updated_at: event.created_at.clone(),
                 });
@@ -1543,6 +1545,9 @@ impl App {
             }
             "goal.step.started" => {
                 if let Some(goal) = &mut self.goal {
+                    if let Some(started) = self.run_started_at.take() {
+                        goal.active_seconds += started.elapsed().as_secs_f64();
+                    }
                     goal.status = "running".to_owned();
                     goal.step_count = event
                         .payload
@@ -1551,6 +1556,7 @@ impl App {
                         .and_then(|value| usize::try_from(value).ok())
                         .unwrap_or(goal.step_count + 1);
                     goal.current_run_id = Some(string(&event.payload, "run_id"));
+                    goal.active_since = Some(event.created_at.clone());
                     goal.updated_at = event.created_at.clone();
                     self.active_run.clone_from(&goal.current_run_id);
                     self.run_started_at = Some(Instant::now());
@@ -1580,8 +1586,14 @@ impl App {
                 let status = event.event_type.trim_start_matches("goal.").to_owned();
                 let summary = string(&event.payload, "summary");
                 if let Some(goal) = &mut self.goal {
+                    if goal.active_since.is_some()
+                        && let Some(started) = self.run_started_at.take()
+                    {
+                        goal.active_seconds += started.elapsed().as_secs_f64();
+                    }
                     goal.status.clone_from(&status);
                     goal.current_run_id = None;
+                    goal.active_since = None;
                     if !summary.is_empty() {
                         goal.latest_summary.clone_from(&summary);
                     }
@@ -1872,6 +1884,15 @@ impl App {
             "run.completed" | "run.cancelled" => {
                 let cancelled = event.event_type == "run.cancelled";
                 if self.active_run.as_deref() == Some(run_id.as_str()) {
+                    if let Some(goal) = &mut self.goal
+                        && goal.current_run_id.as_deref() == Some(run_id.as_str())
+                        && goal.active_since.is_some()
+                    {
+                        if let Some(started) = self.run_started_at {
+                            goal.active_seconds += started.elapsed().as_secs_f64();
+                        }
+                        goal.active_since = None;
+                    }
                     self.active_run = None;
                     self.run_started_at = None;
                 }

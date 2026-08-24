@@ -1321,11 +1321,9 @@ fn format_elapsed(seconds: u64) -> String {
     }
 }
 
-fn goal_elapsed(created_at: &str) -> String {
+fn iso_epoch_seconds(value: &str) -> Option<i64> {
     let parse = |range: std::ops::Range<usize>| {
-        created_at
-            .get(range)
-            .and_then(|value| value.parse::<i64>().ok())
+        value.get(range).and_then(|value| value.parse::<i64>().ok())
     };
     let Some((year, month, day, hour, minute, second)) = parse(0..4)
         .zip(parse(5..7))
@@ -1337,7 +1335,7 @@ fn goal_elapsed(created_at: &str) -> String {
             (year, month, day, hour, minute, second)
         })
     else {
-        return "—".to_owned();
+        return None;
     };
     let adjusted_year = year - i64::from(month <= 2);
     let era = adjusted_year.div_euclid(400);
@@ -1346,12 +1344,22 @@ fn goal_elapsed(created_at: &str) -> String {
     let day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     let days = era * 146_097 + day_of_era - 719_468;
-    let created = days * 86_400 + hour * 3_600 + minute * 60 + second;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default();
-    format_elapsed(now.saturating_sub(created.max(0) as u64))
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+fn goal_elapsed(goal: &crate::api::Goal) -> String {
+    let mut seconds = goal.active_seconds.max(0.0) as u64;
+    if goal.status == "running"
+        && let Some(active_since) = goal.active_since.as_deref()
+        && let Some(started) = iso_epoch_seconds(active_since)
+    {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or_default();
+        seconds = seconds.saturating_add(now.saturating_sub(started.max(0) as u64));
+    }
+    format_elapsed(seconds)
 }
 
 fn format_token_count(tokens: u64) -> String {
@@ -1687,7 +1695,7 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             let Some(goal) = &goal_modal.goal else {
                 return render_empty_goal_modal(frame, app, area);
             };
-            let elapsed = goal_elapsed(&goal.created_at);
+            let elapsed = goal_elapsed(goal);
             let status_color = match goal.status.as_str() {
                 "blocked" => CORAL,
                 "achieved" => MINT,
@@ -3354,12 +3362,13 @@ mod tests {
     use super::{
         ADDITION_BG, CORAL, CYAN, DELETE_BG, GOLD, INPUT, INPUT_LIGHT, MINT, MINT_LIGHT, MUTED,
         PANEL_BRIGHT, REMOVAL_BG, SKY, agent_access_body, agent_identity_body,
-        approval_detail_lines, compact_diff_lines, compact_home, draw, format_elapsed, line_text,
-        memory_browser_body, mode_color, mode_outline, scar_browser_body, scar_editor_body,
-        scrollbar_position, sheet_text_color, thought_label, transcript_lines, traveling_sheen,
+        approval_detail_lines, compact_diff_lines, compact_home, draw, format_elapsed,
+        goal_elapsed, line_text, memory_browser_body, mode_color, mode_outline, scar_browser_body,
+        scar_editor_body, scrollbar_position, sheet_text_color, thought_label, transcript_lines,
+        traveling_sheen,
     };
 
-    use crate::api::{MemoryRecord, QueuedMessage, Scar, Session};
+    use crate::api::{Goal, MemoryRecord, QueuedMessage, Scar, Session};
     use crate::tui::app::{
         ActivityPhase, ActivityRow, AgentEditor, AgentEditorPage, App, ApprovalModal, DreamPhase,
         HitAction, MemoryBrowser, MenuAction, MenuOption, Modal, ScarBrowser, ScarEditor, Sheet,
@@ -3384,6 +3393,26 @@ mod tests {
         assert_eq!(thought_label(9.4), "Thought");
         assert_eq!(thought_label(10.0), "Thought (10s)");
         assert_eq!(thought_label(68.0), "Thought (1m 8s)");
+    }
+
+    #[test]
+    fn paused_goal_elapsed_time_is_frozen_at_accumulated_active_work() {
+        let goal = Goal {
+            id: "goal-1".to_owned(),
+            session_id: "session-1".to_owned(),
+            objective: "Finish".to_owned(),
+            status: "paused".to_owned(),
+            step_count: 2,
+            current_run_id: None,
+            latest_summary: "Paused".to_owned(),
+            latest_evidence: Vec::new(),
+            repeated_no_progress: 0,
+            active_seconds: 65.0,
+            active_since: None,
+            created_at: "2026-08-24T00:00:00Z".to_owned(),
+            updated_at: "2026-08-24T00:10:00Z".to_owned(),
+        };
+        assert_eq!(goal_elapsed(&goal), "1m 05s");
     }
 
     #[test]

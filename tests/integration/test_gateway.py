@@ -1347,7 +1347,9 @@ async def test_foreground_request_yields_goal_then_goal_resumes_after_queue_sett
             assert yielded_index < foreground_index < resumed_index
             assert sum(event_type == "goal.step.started" for event_type in event_types) == 2
             await _wait_for_event(client, headers, session_id, "run.completed", occurrences=2)
-            assert len(provider.requests) == 4
+            assert len(provider.requests) >= 4
+            assert provider.requests[1].messages[-1].content == "Answer this first"
+            assert "Active autonomous goal" in provider.requests[2].system
     finally:
         await state.runs.close()
 
