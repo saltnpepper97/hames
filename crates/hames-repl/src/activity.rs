@@ -286,7 +286,8 @@ impl ToolActivity {
         let workspace = self.arguments.get("workspace").and_then(Value::as_str);
         match workspace {
             Some("scratch") => format!("scratch:{compact}"),
-            Some("home") if compact == "." => "~".to_owned(),
+            Some("home") if compact == "." || compact == "~" => "~".to_owned(),
+            Some("home") if compact.starts_with("~/") => compact,
             Some("home") => format!("~/{compact}"),
             _ => compact,
         }
@@ -777,5 +778,71 @@ mod tests {
         let line = board.row_line(0, 80).unwrap();
         assert!(line.contains("~/.zshrc"));
         assert!(!line.contains("home:.zshrc"));
+    }
+
+    #[test]
+    fn home_workspace_does_not_duplicate_an_existing_tilde_prefix() {
+        let mut board = ActivityBoard::default();
+        board.next_turn();
+        board.transient_delta(&json!({
+            "index": 0,
+            "provider_call_id": "provider-home-1",
+            "name": "write_file",
+            "arguments_delta": "{\"workspace\":\"home\",\"path\":\"~/qwentest\"}"
+        }));
+        assert_home_target(&board, "Preparing write");
+
+        board.durable_event(
+            "model.tool_call",
+            &json!({
+                "index": 0,
+                "tool_call_id": "tool-home-1",
+                "provider_call_id": "provider-home-1",
+                "name": "write_file",
+                "arguments": {"workspace": "home", "path": "~/qwentest"}
+            }),
+        );
+        assert_home_target(&board, "Preparing write");
+
+        for (event_type, expected) in [
+            ("tool.requested", "Checking policy"),
+            ("tool.started", "Writing"),
+            ("tool.completed", "Wrote"),
+        ] {
+            board.durable_event(
+                event_type,
+                &json!({
+                    "tool_call_id": "tool-home-1",
+                    "name": "write_file",
+                    "arguments": {"workspace": "home", "path": "~/qwentest"},
+                    "structured_data": {"created": true, "bytes": 6},
+                    "duration_seconds": 0.003
+                }),
+            );
+            assert_home_target(&board, expected);
+        }
+    }
+
+    #[test]
+    fn home_workspace_root_accepts_dot_and_tilde_forms() {
+        for path in [".", "~"] {
+            let mut board = ActivityBoard::default();
+            board.next_turn();
+            board.transient_delta(&json!({
+                "index": 0,
+                "name": "list_dir",
+                "arguments_delta": json!({"workspace": "home", "path": path}).to_string()
+            }));
+            let line = board.row_line(0, 80).unwrap();
+            assert!(line.contains("  ~"));
+            assert!(!line.contains("~/~"));
+        }
+    }
+
+    fn assert_home_target(board: &ActivityBoard, expected_phase: &str) {
+        let line = board.row_line(0, 100).unwrap();
+        assert!(line.contains(expected_phase), "{line}");
+        assert!(line.contains("~/qwentest"), "{line}");
+        assert!(!line.contains("~/~/"), "{line}");
     }
 }

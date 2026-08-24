@@ -351,7 +351,9 @@ async def test_repl_resolves_tilde_through_home_approval(
                         index=0,
                         provider_call_id="home-read-1",
                         name="read_file",
-                        arguments_delta=json.dumps({"path": "~/.zshrc"}),
+                        arguments_delta=json.dumps(
+                            {"workspace": "home", "path": "~/.zshrc"}
+                        ),
                     ),
                 ),
                 StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
@@ -407,6 +409,7 @@ async def test_repl_resolves_tilde_through_home_approval(
         assert "Reading" in output
         assert "Read" in output
         assert "The approved home file was read." in output
+        assert "~/~/" not in output
         assert f"{REPOSITORY}/~" not in output
         tool_message = provider.requests[1].messages[-1]
         assert tool_message.role == "tool"
