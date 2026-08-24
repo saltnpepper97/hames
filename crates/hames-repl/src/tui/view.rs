@@ -4,7 +4,8 @@ use ratatui::prelude::Stylize;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Block, BorderType, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -49,7 +50,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     }
 
     let header_height = 2;
-    let composer_width = area.width.saturating_sub(3).max(1);
+    let composer_width = area.width.saturating_sub(5).max(1);
     let composer_height = composer_rows(app, composer_width).clamp(1, 8) + 2;
     let notice_height = u16::from(app.notice.is_some());
     let sheet_height = app
@@ -464,7 +465,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     };
     let accent = mode_color(&app.session.interaction_mode);
     let title = Line::from(vec![
-        Span::styled("Model · ", Style::default().fg(MUTED)),
+        Span::styled("─ ", Style::default().fg(accent)),
         Span::styled(
             format!("{} ({reasoning})", app.session.model),
             Style::default().fg(Color::White).bold(),
@@ -478,6 +479,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .title(title)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
+        .padding(Padding::horizontal(1))
         .border_style(Style::default().fg(if app.active_run.is_some() {
             GOLD
         } else {
@@ -532,25 +534,35 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 fn composer_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize) {
     if app.composer.units.is_empty() {
         return (
-            vec![Line::from(Span::styled(
-                "Message Hames…",
-                Style::default().fg(Color::White),
-            ))],
-            0,
+            vec![Line::from(vec![
+                Span::styled(
+                    "❯ ",
+                    Style::default()
+                        .fg(mode_color(&app.session.interaction_mode))
+                        .bold(),
+                ),
+                Span::styled("Message Hames…", Style::default().fg(Color::White)),
+            ])],
+            2,
             0,
         );
     }
-    let mut rows: Vec<Vec<Span<'static>>> = vec![Vec::new()];
-    let mut x = 0;
-    let mut cursor = (0, 0);
+    let mut rows: Vec<Vec<Span<'static>>> = vec![vec![Span::styled(
+        "❯ ",
+        Style::default()
+            .fg(mode_color(&app.session.interaction_mode))
+            .bold(),
+    )]];
+    let mut x = 2;
+    let mut cursor = (2, 0);
     for (index, unit) in app.composer.units.iter().enumerate() {
         if index == app.composer.cursor {
             cursor = (x, rows.len() - 1);
         }
         let (display, style) = match unit {
             ComposerUnit::Text(value) if value == "\n" => {
-                rows.push(Vec::new());
-                x = 0;
+                rows.push(vec![Span::raw("  ")]);
+                x = 2;
                 continue;
             }
             ComposerUnit::Text(value) => (value.clone(), Style::default().fg(Color::White)),
@@ -561,10 +573,10 @@ fn composer_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize)
         };
         let token_width = UnicodeWidthStr::width(display.as_str());
         if x > 0 && x + token_width > width {
-            rows.push(Vec::new());
-            x = 0;
+            rows.push(vec![Span::raw("  ")]);
+            x = 2;
             if index == app.composer.cursor {
-                cursor = (0, rows.len() - 1);
+                cursor = (2, rows.len() - 1);
             }
         }
         rows.last_mut()
@@ -600,6 +612,14 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 Style::default().fg(mode_color(&app.session.interaction_mode)),
             ),
         ])),
+        area,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "Shift+Tab mode · Ctrl+K commands  ",
+            Style::default().fg(MUTED),
+        )))
+        .alignment(Alignment::Right),
         area,
     );
 }
@@ -702,6 +722,7 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 help_line("Enter", "send"),
                 help_line("Alt+Enter / Ctrl+J", "new line"),
                 help_line("Ctrl+K", "command palette"),
+                help_line("Shift+Tab", "cycle Manual, Auto, and Plan mode"),
                 help_line("Ctrl+C", "cancel active work"),
                 help_line("PgUp / wheel", "scroll transcript"),
                 help_line("Enter / Space", "expand or collapse a selected Thought"),
@@ -709,7 +730,7 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 help_line("/model /agent /mode", "runtime controls"),
                 Line::from(""),
                 Line::from(Span::styled(
-                    "Advanced memory, Skills, scars, plugins, and inspections remain available in hames repl.",
+                    "The palette opens status, usage, events, run/context, memory, Skills, Scars, and plugins.",
                     Style::default().fg(MUTED),
                 )),
             ],
@@ -1019,7 +1040,7 @@ fn phase_color(phase: ActivityPhase) -> Color {
 
 fn mode_color(mode: &str) -> Color {
     match mode {
-        "manual" => GOLD,
+        "manual" => Color::White,
         "plan" => LILAC,
         _ => SKY,
     }
@@ -1112,7 +1133,7 @@ mod tests {
         assert!(rendered.contains("◈ Hames"));
         assert!(rendered.contains("fake / fixture"));
         assert!(rendered.contains("Message Hames"));
-        assert!(rendered.contains("Model · fixture (medium) · Auto"));
+        assert!(rendered.contains("─ fixture (medium) · Auto"));
         assert!(rendered.contains("A fresh canvas"));
     }
 

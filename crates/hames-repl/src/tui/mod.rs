@@ -201,6 +201,13 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     if app.modal.is_some() {
         return handle_modal_key(app, key);
     }
+    if key.code == KeyCode::BackTab
+        || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
+    {
+        return Some(Effect::Menu(MenuAction::SetMode(
+            next_mode(&app.session.interaction_mode).to_owned(),
+        )));
+    }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('k') {
         app.open_commands();
         return None;
@@ -1109,6 +1116,14 @@ fn effort_label(value: &str) -> &str {
     if value.is_empty() { "default" } else { value }
 }
 
+fn next_mode(mode: &str) -> &str {
+    match mode {
+        "manual" => "auto",
+        "auto" => "plan",
+        _ => "manual",
+    }
+}
+
 fn info(title: &str, lines: Vec<String>) -> Modal {
     Modal::Info {
         title: title.to_owned(),
@@ -1118,7 +1133,7 @@ fn info(title: &str, lines: Vec<String>) -> Modal {
 
 #[cfg(test)]
 mod tests {
-    use super::{SseDecoder, parse_command};
+    use super::{SseDecoder, next_mode, parse_command};
     use crate::tui::app::MenuAction;
 
     #[test]
@@ -1151,5 +1166,12 @@ mod tests {
             parse_command("/effort xhigh"),
             Some(MenuAction::SetEffort(effort)) if effort == "xhigh"
         ));
+    }
+
+    #[test]
+    fn shift_tab_mode_cycle_is_stable() {
+        assert_eq!(next_mode("manual"), "auto");
+        assert_eq!(next_mode("auto"), "plan");
+        assert_eq!(next_mode("plan"), "manual");
     }
 }
