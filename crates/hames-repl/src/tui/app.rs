@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -391,6 +392,20 @@ pub enum TranscriptItem {
         phase: DreamPhase,
         detail: String,
     },
+    Compaction {
+        run_id: String,
+        summary: String,
+        provider: String,
+        model: String,
+        trigger: String,
+        turns_compacted: u64,
+        before_tokens: u64,
+        after_tokens: u64,
+        passes: u64,
+        partial: bool,
+        live: bool,
+        collapsed: bool,
+    },
     Worked {
         duration_seconds: f64,
     },
@@ -688,6 +703,7 @@ pub enum MenuAction {
     ClearSession,
     OpenSessions,
     OpenQueue,
+    Compact,
     ClearQueue,
     EditQueued(String),
     ForkSession,
@@ -904,6 +920,8 @@ impl HitRegion {
 pub struct App {
     pub session: Session,
     pub agent_name: String,
+    pub workspace_name: String,
+    pub git_ref: Option<String>,
     pub transcript: Vec<TranscriptItem>,
     pub composer: Composer,
     pub queued_messages: Vec<QueuedMessage>,
@@ -947,6 +965,12 @@ pub struct App {
 impl App {
     pub fn new(session: Session, events: Vec<Event>, trusted: bool) -> Self {
         let context_window = session.context_window_tokens;
+        let workspace_name = Path::new(&session.working_directory)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&session.working_directory)
+            .to_owned();
         let agent_name = if session.agent_id == "default" {
             "Hames".to_owned()
         } else {
@@ -967,6 +991,8 @@ impl App {
         let mut app = Self {
             session,
             agent_name,
+            workspace_name,
+            git_ref: None,
             transcript: Vec::new(),
             composer: Composer::default(),
             queued_messages: Vec::new(),
@@ -1022,6 +1048,7 @@ impl App {
                 TranscriptItem::Activity { rows, .. } => {
                     rows.iter().any(|row| !row.phase.terminal())
                 }
+                TranscriptItem::Compaction { live, .. } => *live,
                 _ => false,
             })
     }
@@ -1212,6 +1239,7 @@ impl App {
             ),
             option("/sessions", "resume recent work", MenuAction::OpenSessions),
             option("/queue", "inspect pending turns", MenuAction::OpenQueue),
+            option("/compact", "summarize older context", MenuAction::Compact),
             option("/fork", "branch this session", MenuAction::ForkSession),
             option(
                 "/model",
@@ -1523,7 +1551,87 @@ impl App {
                     .and_then(Value::as_bool)
                     .unwrap_or(event.event_type == "queue.paused");
             }
-            "model.requested" if self.active_run.as_deref() == Some(run_id.as_str()) => {
+            "context.compaction.started" => {
+                self.transcript.push(TranscriptItem::Compaction {
+                    run_id: run_id.clone(),
+                    summary: String::new(),
+                    provider: self.session.provider.clone(),
+                    model: self.session.model.clone(),
+                    trigger: string(&event.payload, "trigger"),
+                    turns_compacted: 0,
+                    before_tokens: 0,
+                    after_tokens: 0,
+                    passes: 0,
+                    partial: false,
+                    live: true,
+                    collapsed: false,
+                });
+                self.active_run.get_or_insert(run_id);
+                self.run_started_at.get_or_insert_with(Instant::now);
+            }
+            "context.compaction.completed" => {
+                if let Some(TranscriptItem::Compaction {
+                    summary,
+                    provider,
+                    model,
+                    trigger,
+                    turns_compacted,
+                    before_tokens,
+                    after_tokens,
+                    passes,
+                    partial,
+                    live,
+                    collapsed,
+                    ..
+                }) = self.transcript.iter_mut().rev().find(|item| {
+                    matches!(item, TranscriptItem::Compaction { run_id: id, .. } if id == &run_id)
+                }) {
+                    *summary = string(&event.payload, "summary");
+                    *provider = string(&event.payload, "provider");
+                    *model = string(&event.payload, "model");
+                    *trigger = string(&event.payload, "trigger");
+                    *turns_compacted = u64_value(&event.payload, "turns_compacted");
+                    *before_tokens = u64_value(&event.payload, "before_tokens");
+                    *after_tokens = u64_value(&event.payload, "after_tokens");
+                    *passes = u64_value(&event.payload, "passes");
+                    *partial = event
+                        .payload
+                        .get("partial")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    *live = false;
+                    *collapsed = true;
+                }
+                if string(&event.payload, "trigger") == "manual" {
+                    self.active_run = None;
+                    self.run_started_at = None;
+                    self.notice = None;
+                }
+            }
+            "context.compaction.failed" | "context.compaction.cancelled" => {
+                if let Some(TranscriptItem::Compaction {
+                    summary,
+                    live,
+                    collapsed,
+                    ..
+                }) = self.transcript.iter_mut().rev().find(|item| {
+                    matches!(item, TranscriptItem::Compaction { run_id: id, .. } if id == &run_id)
+                }) {
+                    *summary = string(&event.payload, "message");
+                    *live = false;
+                    *collapsed = false;
+                }
+                if string(&event.payload, "trigger") == "manual" {
+                    self.active_run = None;
+                    self.run_started_at = None;
+                    self.notice = None;
+                    self.error_notice = Some(string(&event.payload, "message"));
+                }
+            }
+            "model.requested"
+                if self.active_run.as_deref() == Some(run_id.as_str())
+                    && string(&event.payload, "purpose") != "context_compaction" =>
+            {
                 self.ensure_thought(&run_id, true);
             }
             "assistant.reasoning" => {
@@ -1737,11 +1845,11 @@ impl App {
     }
 
     pub fn toggle_activity(&mut self, index: usize) {
-        let Some(TranscriptItem::Activity { collapsed, .. }) = self.transcript.get_mut(index)
-        else {
-            return;
-        };
-        *collapsed = !*collapsed;
+        match self.transcript.get_mut(index) {
+            Some(TranscriptItem::Activity { collapsed, .. })
+            | Some(TranscriptItem::Compaction { collapsed, .. }) => *collapsed = !*collapsed,
+            _ => {}
+        }
     }
 
     fn ensure_thought(&mut self, run_id: &str, live: bool) -> usize {
@@ -2003,6 +2111,23 @@ impl App {
                     }
                     *collapsed = true;
                 }
+                TranscriptItem::Compaction {
+                    run_id: id,
+                    summary,
+                    live,
+                    collapsed,
+                    ..
+                } if id == run_id => {
+                    *live = false;
+                    *collapsed = false;
+                    if summary.is_empty() {
+                        *summary = if cancelled {
+                            "Compaction interrupted".to_owned()
+                        } else {
+                            "Compaction did not complete".to_owned()
+                        };
+                    }
+                }
                 _ => {}
             }
         }
@@ -2105,6 +2230,10 @@ fn string(payload: &Value, key: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned()
+}
+
+fn u64_value(payload: &Value, key: &str) -> u64 {
+    payload.get(key).and_then(Value::as_u64).unwrap_or(0)
 }
 
 fn dream_phase(event_type: &str) -> DreamPhase {
@@ -2659,6 +2788,65 @@ mod tests {
             content: "Hello".to_owned(),
         });
         assert!(!app.conversation_is_empty());
+    }
+
+    #[test]
+    fn compaction_lifecycle_becomes_one_collapsed_continuity_item() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_durable(
+            event(
+                1,
+                "context.compaction.started",
+                "compact-1",
+                json!({"trigger": "manual"}),
+            ),
+            true,
+        );
+        app.ingest_durable(
+            event(
+                2,
+                "model.requested",
+                "compact-1",
+                json!({"purpose": "context_compaction"}),
+            ),
+            true,
+        );
+        app.ingest_durable(
+            event(
+                3,
+                "context.compaction.completed",
+                "compact-1",
+                json!({
+                    "trigger": "manual",
+                    "summary": "Keep the UI calm.",
+                    "provider": "fake",
+                    "model": "fixture",
+                    "turns_compacted": 12,
+                    "before_tokens": 21_000,
+                    "after_tokens": 1_700,
+                    "passes": 1,
+                    "partial": false
+                }),
+            ),
+            true,
+        );
+
+        assert!(matches!(
+            app.transcript.last(),
+            Some(TranscriptItem::Compaction {
+                summary,
+                turns_compacted: 12,
+                live: false,
+                collapsed: true,
+                ..
+            }) if summary == "Keep the UI calm."
+        ));
+        assert!(app.active_run.is_none());
+        assert!(
+            !app.transcript
+                .iter()
+                .any(|item| matches!(item, TranscriptItem::Thought { .. }))
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@ mod view;
 use std::env;
 use std::io::{self, Stdout, Write};
 use std::path::Path;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -108,7 +109,14 @@ pub async fn run() -> Result<()> {
                     && message.session_id == app.session.id
                 {
                     match message.payload {
-                        StreamPayload::Envelope(envelope) => ingest_envelope(&mut app, *envelope),
+                        StreamPayload::Envelope(envelope) => {
+                            if ingest_envelope(&mut app, *envelope) {
+                                let (workspace_name, git_ref) =
+                                    workspace_identity(&app.session.working_directory);
+                                app.workspace_name = workspace_name;
+                                app.git_ref = git_ref;
+                            }
+                        }
                         StreamPayload::Warning(message) => app.notice = Some(message),
                     }
                 }
@@ -172,7 +180,12 @@ pub async fn run() -> Result<()> {
     let session_id = app.session.id.clone();
     let discard_empty = app.conversation_is_empty() && app.active_run.is_none();
     drop(terminal);
-    println!();
+    let exit_notice = session_exit_notice(&session_id, discard_empty);
+    let has_exit_notice =
+        queue_pause.is_err() || exit_cancellation.is_some() || exit_notice.is_some();
+    if has_exit_notice {
+        println!();
+    }
     if let Err(error) = queue_pause {
         println!("Warning: queued work could not be paused: {error:#}");
     }
@@ -184,11 +197,15 @@ pub async fn run() -> Result<()> {
     }
     if discard_empty {
         client.close_session(&session_id).await?;
-        println!("Empty session discarded · nothing to resume");
-    } else {
-        println!("Session saved · use /resume {session_id} to continue where you left off");
+    } else if let Some(notice) = exit_notice {
+        println!("{notice}");
     }
     Ok(())
+}
+
+fn session_exit_notice(session_id: &str, discard_empty: bool) -> Option<String> {
+    (!discard_empty)
+        .then(|| format!("Session saved · use /resume {session_id} to continue where you left off"))
 }
 
 async fn create_session(
@@ -355,11 +372,45 @@ async fn load_app(client: &GatewayClient, session: Session) -> Result<App> {
     )?;
     let agent = client.agent(&agent_id).await.ok();
     let mut app = App::new(session, events, trust.trusted);
+    let (workspace_name, git_ref) = workspace_identity(&app.session.working_directory);
+    app.workspace_name = workspace_name;
+    app.git_ref = git_ref;
     app.set_queue(queue);
     if let Some(agent) = agent {
         app.agent_name = agent.agent.name;
     }
     Ok(app)
+}
+
+fn workspace_identity(working_directory: &str) -> (String, Option<String>) {
+    let normalized = Path::new(working_directory)
+        .canonicalize()
+        .unwrap_or_else(|_| Path::new(working_directory).to_path_buf());
+    let directory = normalized
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(working_directory)
+        .to_owned();
+    let git = |arguments: &[&str]| -> Option<String> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(working_directory)
+            .args(arguments)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let value = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+        (!value.is_empty()).then_some(value)
+    };
+    if git(&["rev-parse", "--is-inside-work-tree"]).as_deref() != Some("true") {
+        return (directory, None);
+    }
+    let reference = git(&["branch", "--show-current"])
+        .or_else(|| git(&["rev-parse", "--short", "HEAD"]).map(|value| format!("@{value}")));
+    (directory, reference)
 }
 
 #[derive(Debug)]
@@ -1264,6 +1315,7 @@ fn parse_command(value: &str) -> Option<MenuAction> {
             Some(_) => None,
             None => Some(MenuAction::OpenQueue),
         },
+        "/compact" => Some(MenuAction::Compact),
         "/fork" => Some(MenuAction::ForkSession),
         "/model" | "/provider" => Some(MenuAction::OpenModels),
         "/effort" | "/reasoning" => parts
@@ -1551,6 +1603,12 @@ async fn apply_menu_action(
             open_sessions_sheet(client, app).await?;
         }
         MenuAction::OpenQueue => open_queue_sheet(app),
+        MenuAction::Compact => {
+            let accepted = client.compact_session(&app.session.id).await?;
+            app.active_run = Some(accepted.run_id);
+            app.run_started_at = Some(std::time::Instant::now());
+            app.notice = Some("Compacting older conversation…".to_owned());
+        }
         MenuAction::ClearQueue => {
             let state = client.clear_queue(&app.session.id).await?;
             app.set_queue(state);
@@ -1975,16 +2033,22 @@ async fn apply_menu_action(
     Ok(None)
 }
 
-fn ingest_envelope(app: &mut App, envelope: LiveEnvelope) {
+fn ingest_envelope(app: &mut App, envelope: LiveEnvelope) -> bool {
     if envelope.durable {
         if let Some(event) = envelope.event {
+            let terminal = matches!(
+                event.event_type.as_str(),
+                "run.completed" | "run.cancelled" | "run.failed"
+            );
             app.ingest_durable(event, true);
+            return terminal;
         }
     } else if let (Some(run_id), Some(event_type), Some(payload)) =
         (envelope.run_id, envelope.event_type, envelope.payload)
     {
         app.ingest_transient(&run_id, &event_type, &payload);
     }
+    false
 }
 
 struct StreamMessage {
@@ -2298,7 +2362,8 @@ mod tests {
 
     use super::{
         Effect, SseDecoder, action_error_message, agent_source, handle_key, handle_mouse,
-        model_efforts, next_mode, parse_command, pointer_top, terminal_tab_title,
+        model_efforts, next_mode, parse_command, pointer_top, session_exit_notice,
+        terminal_tab_title, workspace_identity,
     };
     use crate::api::{MemoryRecord, ProviderModel, QueuedMessage, Scar, Session};
     use crate::tui::app::{
@@ -2314,6 +2379,15 @@ mod tests {
         assert_eq!(
             decoder.push(b"able\":true}\n\n"),
             vec!["{\"durable\":true}"]
+        );
+    }
+
+    #[test]
+    fn empty_session_exit_has_no_notice() {
+        assert_eq!(session_exit_notice("empty", true), None);
+        assert_eq!(
+            session_exit_notice("kept", false).as_deref(),
+            Some("Session saved · use /resume kept to continue where you left off")
         );
     }
 
@@ -2347,6 +2421,10 @@ mod tests {
             parse_command("/queue clear"),
             Some(MenuAction::ClearQueue)
         ));
+        assert!(matches!(
+            parse_command("/compact"),
+            Some(MenuAction::Compact)
+        ));
         assert!(
             matches!(parse_command("/mode plan"), Some(MenuAction::SetMode(mode)) if mode == "plan")
         );
@@ -2369,6 +2447,18 @@ mod tests {
             parse_command("/title Refine the TUI"),
             Some(MenuAction::SetTitle(title)) if title == "Refine the TUI"
         ));
+    }
+
+    #[test]
+    fn workspace_identity_uses_directory_and_current_git_branch() {
+        let root = env!("CARGO_MANIFEST_DIR").to_owned() + "/../..";
+        let (directory, reference) = workspace_identity(&root);
+        assert_eq!(directory, "hames");
+        assert!(reference.is_some_and(|value| !value.is_empty()));
+
+        let (directory, reference) = workspace_identity("/tmp/hames-not-a-repository");
+        assert_eq!(directory, "hames-not-a-repository");
+        assert!(reference.is_none());
     }
 
     #[test]

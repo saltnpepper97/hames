@@ -14,7 +14,9 @@ remains available for line-oriented and non-interactive use.
 - `hames repl` and `hames --repl` select the classic client.
 - Non-terminal input or output falls back to the classic client.
 - Opening the TUI offers recent sessions for the same canonical working
-  directory. Exiting restores the terminal and prints an exact resume command.
+  directory. Exiting restores the terminal and prints an exact resume command
+  only when the session contains conversation; an unused session is retired
+  silently.
 - Durable replay reconstructs messages, Thoughts, grouped tool activity,
   approvals, failures, cancellation, and completed work after reconnect.
 
@@ -31,8 +33,10 @@ while idle and becomes a short, subdued neutral activity rule during a run, with
 the current activity, properly formatted elapsed time, and a truthful
 `Esc interrupt` control.
 
-The header's right edge presents a durable, human-readable session title and the
-current activity (`Ready`, `Thinking`, `Exploring`, `Writing`, and related states).
+The header identifies Hames, the current directory, and the Git branch when the
+directory belongs to a repository. Its right edge presents a durable,
+human-readable session title and the current activity (`Ready`, `Thinking`,
+`Exploring`, `Writing`, and related states).
 The model may maintain the title through `session_title_set`, which emits a typed
 `session.title.changed` event; `/title` uses the matching gateway endpoint.
 
@@ -75,6 +79,9 @@ does not jump the transcript or composer before the pointer moves.
   before starting fresh. Empty sessions are discarded and hidden. Bare `/resume`
   aliases the `/sessions` picker and `/resume <id>` remains the direct path.
   `/status` opens session continuity and `/gateway` owns gateway health.
+- `/compact` asks the gateway to summarize older conversation with the active
+  session provider and model. Its live and completed states remain one collapsed,
+  expandable transcript disclosure, and `/status` reports the latest compaction.
 - `/model` shows reachable configured providers only. Reasoning-capable model
   choice leads to a capability-specific second sheet: `on`/`off` for boolean
   reasoning or the advertised named effort scale. Both selections apply

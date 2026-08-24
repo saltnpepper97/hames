@@ -137,24 +137,26 @@ pub async fn run() -> Result<()> {
     fs::create_dir_all(&paths.root).ok();
     editor.save_history(&paths.history)?;
     make_history_private(&paths.history)?;
-    if session_has_conversation(&client, &session.id).await? {
-        print_exit_handoff(&session);
+    let has_conversation = session_has_conversation(&client, &session.id).await?;
+    if let Some(command) = exit_resume_command(&session.id, has_conversation) {
+        print_exit_handoff(&command);
     } else {
         client.close_session(&session.id).await?;
-        println!();
-        println!("{}", style::section("Empty session discarded"));
-        println!("  {}", style::dim("Nothing to resume"));
     }
     Ok(())
 }
 
-fn print_exit_handoff(session: &Session) {
+fn exit_resume_command(session_id: &str, has_conversation: bool) -> Option<String> {
+    has_conversation.then(|| format!("/resume {session_id}"))
+}
+
+fn print_exit_handoff(command: &str) {
     println!();
     println!("{}", style::section("Session saved"));
     println!(
         "  {} {}",
         style::dim("Continue where you left off with"),
-        style::paint("1", &format!("/resume {}", session.id))
+        style::paint("1", command)
     );
 }
 
@@ -508,6 +510,13 @@ async fn handle_command(
             );
         }
         "/status" => print_statuses(client).await?,
+        "/compact" => {
+            let accepted = client.compact_session(&session.id).await?;
+            println!(
+                "{}",
+                style::success(&format!("Compacting context · run {}", accepted.run_id))
+            );
+        }
         "/usage" => print_usage(client, session).await?,
         "/inspect" => {
             let inspection = if let Some(run_id) = parts.get(1) {
@@ -2283,6 +2292,7 @@ fn print_help() {
         ("/provider [provider] [model]", "Change provider or model"),
         ("/model · /reasoning [level]", "Inspect model settings"),
         ("/status · /usage", "Inspect services and token usage"),
+        ("/compact", "Compact older context with the active model"),
         (
             "/inspect [run] · /context [event]",
             "Audit a run or context",
@@ -2323,7 +2333,16 @@ fn print_help_rows(rows: &[(&str, &str)]) {
 mod tests {
     use unicode_width::UnicodeWidthStr;
 
-    use super::{SseDecoder, heading_repaint_sequence, wrap_body};
+    use super::{SseDecoder, exit_resume_command, heading_repaint_sequence, wrap_body};
+
+    #[test]
+    fn empty_session_exit_has_no_handoff_message() {
+        assert_eq!(exit_resume_command("empty", false), None);
+        assert_eq!(
+            exit_resume_command("kept", true).as_deref(),
+            Some("/resume kept")
+        );
+    }
 
     #[test]
     fn sse_decoder_handles_split_frames() {

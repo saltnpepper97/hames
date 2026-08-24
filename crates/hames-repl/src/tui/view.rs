@@ -160,13 +160,20 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
 
 fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let activity = current_activity(app);
-    let left = Line::from(vec![
+    let mut left_spans = vec![
         Span::styled(" ◈ Hames", Style::default().fg(MINT).bold()),
         Span::styled(
-            format!(" · {}", app.session.agent_id),
+            format!(" · {}", app.workspace_name),
             Style::default().fg(MUTED),
         ),
-    ]);
+    ];
+    if let Some(reference) = &app.git_ref {
+        left_spans.push(Span::styled(
+            format!(" · {reference}"),
+            Style::default().fg(MUTED),
+        ));
+    }
+    let left = Line::from(left_spans);
     let session = Line::from(vec![
         Span::styled(
             app.session.title.as_deref().unwrap_or("New session"),
@@ -186,13 +193,18 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let block = Block::default()
         .borders(Borders::BOTTOM)
         .border_style(Style::default().fg(Color::Rgb(54, 63, 78)));
-    frame.render_widget(Paragraph::new(left).block(block.clone()), area);
+    let right_start = area.width / 2;
+    frame.render_widget(
+        Paragraph::new(left),
+        Rect::new(area.x, area.y, right_start.max(1), 1),
+    );
+    frame.render_widget(block, area);
     frame.render_widget(
         Paragraph::new(session),
         Rect::new(
-            area.x + 20.min(area.width),
+            area.x + right_start,
             area.y,
-            area.width.saturating_sub(20),
+            area.width.saturating_sub(right_start),
             1,
         ),
     );
@@ -247,6 +259,7 @@ pub(super) fn current_activity(app: &App) -> &'static str {
     }
     for item in app.transcript.iter().rev() {
         match item {
+            TranscriptItem::Compaction { live: true, .. } => return "Compacting",
             TranscriptItem::Thought { live: true, .. } => return "Thinking",
             TranscriptItem::Assistant { live: true, .. } => return "Responding",
             TranscriptItem::Activity { rows, .. } => {
@@ -279,6 +292,7 @@ struct RenderLine<'a> {
 enum TranscriptDisclosure {
     Thought(usize),
     Activity(usize),
+    Compaction(usize),
 }
 
 fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta: Duration) {
@@ -343,6 +357,7 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
             let action = match disclosure {
                 TranscriptDisclosure::Thought(index) => HitAction::ToggleThought(index),
                 TranscriptDisclosure::Activity(index) => HitAction::ToggleActivity(index),
+                TranscriptDisclosure::Compaction(index) => HitAction::ToggleActivity(index),
             };
             app.hits.push(HitRegion {
                 x: area.x,
@@ -644,6 +659,71 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     thought: None,
                     sheen: None,
                 });
+            }
+            TranscriptItem::Compaction {
+                summary,
+                provider,
+                model,
+                trigger,
+                turns_compacted,
+                before_tokens,
+                after_tokens,
+                passes,
+                partial,
+                live,
+                collapsed,
+                ..
+            } => {
+                let title = if *live {
+                    "Compacting context".to_owned()
+                } else {
+                    format!(
+                        "Compacted context · {turns_compacted} turns · {} → {}",
+                        format_token_count(*before_tokens),
+                        format_token_count(*after_tokens)
+                    )
+                };
+                lines.push(RenderLine {
+                    line: Line::from(vec![
+                        Span::styled("◆ ", Style::default().fg(INPUT)),
+                        Span::styled(title, Style::default().fg(INPUT).bold()),
+                        Span::styled(
+                            if *live {
+                                String::new()
+                            } else if *collapsed {
+                                "  ▸".to_owned()
+                            } else {
+                                "  ▾".to_owned()
+                            },
+                            Style::default().fg(MUTED),
+                        ),
+                    ]),
+                    thought: (!*live).then_some(TranscriptDisclosure::Compaction(index)),
+                    sheen: live.then_some((2, 18)),
+                });
+                if !*live && !*collapsed {
+                    push_wrapped(
+                        &mut lines,
+                        &format!(
+                            "{} / {} · {} · {} {}{}",
+                            provider,
+                            model,
+                            trigger,
+                            passes,
+                            if *passes == 1 { "pass" } else { "passes" },
+                            if *partial { " · more remains" } else { "" }
+                        ),
+                        width,
+                        "  ",
+                        Style::default().fg(MUTED),
+                    );
+                    push_markdown(
+                        &mut lines,
+                        summary,
+                        width,
+                        Style::default().fg(Color::White),
+                    );
+                }
             }
             TranscriptItem::Worked {
                 duration_seconds, ..
@@ -1214,6 +1294,16 @@ fn format_elapsed(seconds: u64) -> String {
     }
 }
 
+fn format_token_count(tokens: u64) -> String {
+    if tokens >= 10_000 {
+        format!("{}k", tokens / 1_000)
+    } else if tokens >= 1_000 {
+        format!("{:.1}k", tokens as f64 / 1_000.0)
+    } else {
+        tokens.to_string()
+    }
+}
+
 fn composer_rows(app: &App, width: u16) -> u16 {
     let (lines, _, _) = composer_lines(app, usize::from(width.max(1)));
     u16::try_from(lines.len()).unwrap_or(u16::MAX)
@@ -1444,7 +1534,10 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 help_line("Ctrl+C", "cancel active work"),
                 help_line("PgUp / wheel", "scroll transcript"),
                 help_line("Enter / Space", "expand or collapse a selected Thought"),
-                help_line("/new /clear /resume", "session continuity"),
+                help_line(
+                    "/new /clear /resume /compact",
+                    "session continuity and context",
+                ),
                 help_line("/model /agent /mode", "runtime controls"),
                 Line::from(""),
                 Line::from(Span::styled(
@@ -1455,9 +1548,8 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             78,
             14,
         ),
-        Modal::Session => (
-            "Session continuity",
-            vec![
+        Modal::Session => {
+            let mut lines = vec![
                 detail_line("Session", &app.session.id),
                 detail_line("Workspace", &compact_home(&app.session.working_directory)),
                 detail_line("Agent", &app.session.agent_id),
@@ -1472,10 +1564,32 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                     format!("Classic REPL: /resume {}", app.session.id),
                     Style::default().fg(MINT),
                 )),
-            ],
-            78,
-            12,
-        ),
+            ];
+            if let Some(TranscriptItem::Compaction {
+                turns_compacted,
+                before_tokens,
+                after_tokens,
+                ..
+            }) = app
+                .transcript
+                .iter()
+                .rev()
+                .find(|item| matches!(item, TranscriptItem::Compaction { live: false, .. }))
+            {
+                lines.insert(
+                    6,
+                    detail_line(
+                        "Compaction",
+                        &format!(
+                            "{turns_compacted} turns · {} → {}",
+                            format_token_count(*before_tokens),
+                            format_token_count(*after_tokens)
+                        ),
+                    ),
+                );
+            }
+            ("Session continuity", lines, 78, 13)
+        }
         Modal::Memory(browser) => ("Memory", memory_browser_body(browser), 92, 23),
         Modal::Scars(browser) => ("Scars and evolution", scar_browser_body(browser), 94, 25),
         Modal::ScarEdit(editor) => ("Edit Scar", scar_editor_body(editor), 94, 25),
@@ -3561,6 +3675,7 @@ mod tests {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(session(), Vec::new(), true);
+        app.git_ref = Some("main".to_owned());
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let rendered = terminal
             .backend()
@@ -3570,11 +3685,49 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("◈ Hames"));
+        assert!(rendered.contains("project · main"));
+        assert!(!rendered.contains("· default"));
         assert!(rendered.contains("New session · Ready"));
         assert!(rendered.contains("[connected]"));
         assert!(rendered.contains("Message Hames"));
         assert!(rendered.contains("─ fixture (medium) · Auto"));
         assert!(rendered.contains("A fresh canvas"));
+    }
+
+    #[test]
+    fn completed_compaction_is_a_collapsed_expandable_transcript_disclosure() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::Compaction {
+            run_id: "compact-1".to_owned(),
+            summary: "Keep the interface calm and preserve queue ordering.".to_owned(),
+            provider: "fake".to_owned(),
+            model: "fixture".to_owned(),
+            trigger: "automatic".to_owned(),
+            turns_compacted: 18,
+            before_tokens: 21_000,
+            after_tokens: 1_700,
+            passes: 2,
+            partial: false,
+            live: false,
+            collapsed: true,
+        });
+
+        let collapsed = transcript_lines(&app, 90)
+            .iter()
+            .map(|line| line_text(&line.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(collapsed.contains("Compacted context · 18 turns · 21k → 1.7k  ▸"));
+        assert!(!collapsed.contains("preserve queue ordering"));
+
+        app.toggle_activity(0);
+        let expanded = transcript_lines(&app, 90)
+            .iter()
+            .map(|line| line_text(&line.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(expanded.contains("fake / fixture · automatic · 2 passes"));
+        assert!(expanded.contains("preserve queue ordering"));
     }
 
     #[test]
@@ -3806,10 +3959,10 @@ mod tests {
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer.cell((11, 9)).unwrap().symbol(), "┌");
-        assert_eq!(buffer.cell((88, 9)).unwrap().symbol(), "┐");
-        assert_eq!(buffer.cell((11, 9)).unwrap().fg, INPUT);
-        assert_ne!(buffer.cell((11, 9)).unwrap().fg, MINT);
+        assert_eq!(buffer.cell((11, 8)).unwrap().symbol(), "┌");
+        assert_eq!(buffer.cell((88, 8)).unwrap().symbol(), "┐");
+        assert_eq!(buffer.cell((11, 8)).unwrap().fg, INPUT);
+        assert_ne!(buffer.cell((11, 8)).unwrap().fg, MINT);
     }
 
     #[test]

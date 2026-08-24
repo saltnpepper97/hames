@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 18;
 
 #[derive(Clone)]
 pub struct GatewayClient {
@@ -188,6 +188,11 @@ pub struct MessageAccepted {
     pub disposition: String,
     pub run_id: Option<String>,
     pub queued: Option<QueuedMessage>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct CompactionAccepted {
+    pub run_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1038,6 +1043,15 @@ impl GatewayClient {
     pub async fn queue_state(&self, session_id: &str) -> Result<QueueState> {
         decode(
             self.get(&format!("/v1/sessions/{session_id}/queue"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn compact_session(&self, session_id: &str) -> Result<CompactionAccepted> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/compact"))
                 .send()
                 .await?,
         )
