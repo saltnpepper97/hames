@@ -3,9 +3,11 @@ mod api;
 mod local;
 mod repl;
 mod style;
+mod tui;
 
 use std::env;
 use std::fs;
+use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -18,12 +20,19 @@ use crate::local::{LocalPaths, write_private_export};
 #[derive(Debug, Parser)]
 #[command(name = "hames", version, about = "The Hames Rust REPL")]
 struct Cli {
+    /// Force the classic line-oriented REPL.
+    #[arg(long, global = true)]
+    repl: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Open the full-screen terminal interface.
+    Tui,
+    /// Open the classic line-oriented REPL.
+    Repl,
     /// Check the local Hames environment.
     Doctor,
     /// Control the persistent Python gateway.
@@ -301,6 +310,8 @@ enum EventAction {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Some(Command::Tui) => tui::run().await,
+        Some(Command::Repl) => repl::run().await,
         Some(Command::Doctor) => local::run_backend(["doctor", "--json"]),
         Some(Command::Gateway { action }) => {
             let action = match action {
@@ -315,7 +326,10 @@ async fn main() -> Result<()> {
         Some(Command::Skill { action }) => run_skill_command(action).await,
         Some(Command::Plugin { action }) => run_plugin_command(action).await,
         Some(Command::Event { action }) => run_event_command(action).await,
-        None => repl::run().await,
+        None if cli.repl || !io::stdin().is_terminal() || !io::stdout().is_terminal() => {
+            repl::run().await
+        }
+        None => tui::run().await,
     }
 }
 

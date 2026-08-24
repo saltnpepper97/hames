@@ -1,0 +1,1077 @@
+use ratatui::Frame;
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::prelude::Stylize;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use unicode_width::UnicodeWidthStr;
+
+use super::app::{
+    ActivityCategory, ActivityPhase, App, ComposerUnit, HitAction, HitRegion, Modal, TranscriptItem,
+};
+
+const MINT: Color = Color::Rgb(116, 226, 192);
+const SKY: Color = Color::Rgb(112, 177, 255);
+const LILAC: Color = Color::Rgb(193, 154, 255);
+const CORAL: Color = Color::Rgb(255, 139, 116);
+const GOLD: Color = Color::Rgb(240, 190, 92);
+const MUTED: Color = Color::Rgb(125, 134, 151);
+const PANEL: Color = Color::Rgb(19, 23, 31);
+const PANEL_BRIGHT: Color = Color::Rgb(29, 35, 46);
+
+pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
+    app.hits.clear();
+    let area = frame.area();
+    frame.render_widget(
+        Block::default().style(Style::default().bg(Color::Reset)),
+        area,
+    );
+    if area.width < 56 || area.height < 10 {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled("◈ Hames", Style::default().fg(MINT).bold())),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Needs at least 56 × 10",
+                    Style::default().fg(GOLD),
+                )),
+                Line::from(Span::styled(
+                    "Resize the terminal to continue",
+                    Style::default().fg(MUTED),
+                )),
+            ])
+            .alignment(Alignment::Center),
+            centered(area, 38, 7),
+        );
+        return;
+    }
+
+    let compact_header = area.width < 88 || area.height < 16;
+    let header_height = if compact_header { 2 } else { 3 };
+    let composer_width = area.width.saturating_sub(2).max(1);
+    let composer_height = composer_rows(app, composer_width).clamp(1, 5) + 2;
+    let notice_height = u16::from(app.notice.is_some());
+    let sheet_height = app
+        .sheet
+        .as_ref()
+        .map(|sheet| (sheet.options.len() as u16 + 2).clamp(3, 9))
+        .unwrap_or(0);
+    let bottom = composer_height + notice_height + sheet_height;
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(header_height),
+            Constraint::Min(1),
+            Constraint::Length(bottom),
+        ])
+        .split(area);
+    render_header(frame, app, rows[0], compact_header);
+    render_transcript(frame, app, rows[1]);
+
+    let footer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(sheet_height),
+            Constraint::Length(notice_height),
+            Constraint::Length(composer_height),
+        ])
+        .split(rows[2]);
+    if sheet_height > 0 {
+        render_sheet(frame, app, footer[0]);
+    }
+    if let Some(notice) = &app.notice {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("  ◆ ", Style::default().fg(GOLD)),
+                Span::styled(notice.clone(), Style::default().fg(MUTED)),
+            ])),
+            footer[1],
+        );
+    }
+    render_composer(frame, app, footer[2]);
+    render_modal(frame, app, area);
+}
+
+fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect, compact: bool) {
+    let mode = app.session.interaction_mode.to_uppercase();
+    let run = if app.active_run.is_some() {
+        "RUNNING"
+    } else {
+        "READY"
+    };
+    let reasoning = if app.session.reasoning_effort.is_empty() {
+        "default"
+    } else {
+        &app.session.reasoning_effort
+    };
+    let first = Line::from(vec![
+        Span::styled(" ◈ Hames", Style::default().fg(MINT).bold()),
+        Span::styled("  ", Style::default()),
+        Span::styled(
+            format!("{} / {}", app.session.provider, app.session.model),
+            Style::default().fg(Color::White),
+        ),
+        Span::styled(format!(" · {reasoning}"), Style::default().fg(MUTED)),
+        Span::styled(format!("   {mode}"), Style::default().fg(LILAC).bold()),
+        Span::styled(
+            format!(" · {run}"),
+            Style::default().fg(if run == "RUNNING" { GOLD } else { MINT }),
+        ),
+    ]);
+    let mut lines = vec![first];
+    if !compact {
+        let short = short_id(&app.session.id);
+        let context = app
+            .context_tokens
+            .saturating_mul(100)
+            .checked_div(app.context_window)
+            .map(|percent| format!("context {percent}%"))
+            .unwrap_or_else(|| "context —".to_owned());
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("   {}", app.session.agent_id),
+                Style::default().fg(SKY),
+            ),
+            Span::styled(
+                format!(" · {}", compact_home(&app.session.working_directory)),
+                Style::default().fg(MUTED),
+            ),
+            Span::styled(format!(" · {short}"), Style::default().fg(MUTED)),
+            Span::styled(format!(" · {context}"), Style::default().fg(MUTED)),
+        ]));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::default().fg(Color::Rgb(54, 63, 78))),
+        ),
+        area,
+    );
+    app.hits.push(HitRegion {
+        x: area.x.saturating_add(area.width.saturating_sub(24)),
+        y: area.y,
+        width: 12,
+        height: 1,
+        action: HitAction::OpenModes,
+    });
+    app.hits.push(HitRegion {
+        x: area.x,
+        y: area.y.saturating_add(1),
+        width: area.width,
+        height: u16::from(!compact),
+        action: HitAction::ShowSession,
+    });
+}
+
+struct RenderLine<'a> {
+    line: Line<'a>,
+    thought: Option<usize>,
+}
+
+fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let width = usize::from(area.width.saturating_sub(3).max(20));
+    let lines = transcript_lines(app, width);
+    let height = usize::from(area.height);
+    let bottom_start = lines.len().saturating_sub(height);
+    let start = bottom_start.saturating_sub(app.scroll.min(bottom_start));
+    let end = (start + height).min(lines.len());
+    let visible: Vec<Line<'_>> = lines[start..end]
+        .iter()
+        .map(|item| item.line.clone())
+        .collect();
+    frame.render_widget(Paragraph::new(visible), area);
+    for (offset, item) in lines[start..end].iter().enumerate() {
+        if let Some(index) = item.thought {
+            app.hits.push(HitRegion {
+                x: area.x,
+                y: area.y + u16::try_from(offset).unwrap_or(0),
+                width: area.width.saturating_sub(1),
+                height: 1,
+                action: HitAction::ToggleThought(index),
+            });
+        }
+    }
+    if start > 0 || end < lines.len() {
+        let ratio = if lines.is_empty() {
+            0
+        } else {
+            (start * height.saturating_sub(1)) / lines.len()
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "▐",
+                Style::default().fg(Color::Rgb(63, 73, 89)),
+            )),
+            Rect::new(
+                area.right().saturating_sub(1),
+                area.y + u16::try_from(ratio).unwrap_or(0),
+                1,
+                1,
+            ),
+        );
+    }
+}
+
+fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
+    let mut lines = Vec::new();
+    for (index, item) in app.transcript.iter().enumerate() {
+        match item {
+            TranscriptItem::User {
+                content,
+                paste_spans,
+            } => {
+                lines.push(RenderLine {
+                    line: Line::from(Span::styled("You", Style::default().fg(SKY).bold())),
+                    thought: None,
+                });
+                let display = pasted_display(content, paste_spans);
+                push_wrapped(
+                    &mut lines,
+                    &display,
+                    width,
+                    "  ",
+                    Style::default().fg(Color::White),
+                );
+            }
+            TranscriptItem::Thought {
+                content,
+                duration_seconds,
+                live,
+                collapsed,
+                ..
+            } => {
+                let label = if *live {
+                    sheen_line("◈ Thinking", app.tick, LILAC)
+                } else {
+                    Line::from(vec![
+                        Span::styled("◈ ", Style::default().fg(LILAC)),
+                        Span::styled(
+                            thought_label(*duration_seconds),
+                            Style::default().fg(LILAC).bold(),
+                        ),
+                        Span::styled(
+                            if *collapsed { "  ▸" } else { "  ▾" },
+                            Style::default().fg(MUTED),
+                        ),
+                    ])
+                };
+                lines.push(RenderLine {
+                    line: if app.focused_thought == Some(index) {
+                        label.style(Style::default().bg(PANEL_BRIGHT))
+                    } else {
+                        label
+                    },
+                    thought: Some(index),
+                });
+                if !*collapsed {
+                    if content.is_empty() {
+                        lines.push(RenderLine {
+                            line: Line::from(Span::styled(
+                                "  Working…",
+                                Style::default().fg(MUTED),
+                            )),
+                            thought: None,
+                        });
+                    } else {
+                        push_wrapped(
+                            &mut lines,
+                            content,
+                            width,
+                            "  ",
+                            Style::default().fg(Color::Rgb(174, 180, 192)),
+                        );
+                    }
+                }
+            }
+            TranscriptItem::Assistant { content, live, .. } => {
+                lines.push(RenderLine {
+                    line: if *live {
+                        sheen_line("✦ Hames", app.tick, MINT)
+                    } else {
+                        Line::from(Span::styled("✦ Hames", Style::default().fg(MINT).bold()))
+                    },
+                    thought: None,
+                });
+                push_wrapped(
+                    &mut lines,
+                    content,
+                    width,
+                    "  ",
+                    Style::default().fg(Color::White),
+                );
+            }
+            TranscriptItem::Activity { rows, .. } => {
+                let mut category = None;
+                for row in rows {
+                    if category != Some(row.category()) {
+                        category = Some(row.category());
+                        let color = category_color(row.category());
+                        lines.push(RenderLine {
+                            line: Line::from(vec![
+                                Span::styled("◆ ", Style::default().fg(color)),
+                                Span::styled(
+                                    row.category().label(),
+                                    Style::default().fg(color).bold(),
+                                ),
+                            ]),
+                            thought: None,
+                        });
+                    }
+                    let glyph = match row.phase {
+                        ActivityPhase::Preparing => "·",
+                        ActivityPhase::Checking | ActivityPhase::Approval => "○",
+                        ActivityPhase::Running => "◐",
+                        ActivityPhase::Completed => "✓",
+                        ActivityPhase::Failed | ActivityPhase::Cancelled => "×",
+                        ActivityPhase::Rejected => "!",
+                    };
+                    let color = phase_color(row.phase);
+                    let mut detail = row.target();
+                    if !row.summary.is_empty() && row.summary != detail {
+                        detail.push_str(" · ");
+                        detail.push_str(&row.summary.replace('\n', " "));
+                    }
+                    let prefix = format!("  {glyph} {}  ", row.verb());
+                    let body_width = width.saturating_sub(UnicodeWidthStr::width(prefix.as_str()));
+                    let fitted = fit(&detail, body_width);
+                    let line = if matches!(
+                        row.phase,
+                        ActivityPhase::Preparing | ActivityPhase::Checking | ActivityPhase::Running
+                    ) {
+                        let mut spans = vec![Span::styled(
+                            format!("  {glyph} "),
+                            Style::default().fg(color),
+                        )];
+                        spans.extend(sheen_spans(row.verb(), app.tick, color));
+                        spans.push(Span::raw("  "));
+                        spans.push(Span::styled(fitted, Style::default().fg(MUTED)));
+                        Line::from(spans)
+                    } else {
+                        Line::from(vec![
+                            Span::styled(
+                                format!("  {glyph} {}  ", row.verb()),
+                                Style::default().fg(color),
+                            ),
+                            Span::styled(fitted, Style::default().fg(MUTED)),
+                        ])
+                    };
+                    lines.push(RenderLine {
+                        line,
+                        thought: None,
+                    });
+                }
+            }
+            TranscriptItem::Status { text, error } => {
+                lines.push(RenderLine {
+                    line: Line::from(vec![
+                        Span::styled(
+                            if *error { "× " } else { "◆ " },
+                            Style::default().fg(if *error { CORAL } else { GOLD }),
+                        ),
+                        Span::styled(
+                            text.clone(),
+                            Style::default().fg(if *error { CORAL } else { MUTED }),
+                        ),
+                    ]),
+                    thought: None,
+                });
+            }
+        }
+        lines.push(RenderLine {
+            line: Line::from(""),
+            thought: None,
+        });
+    }
+    if lines.is_empty() {
+        lines.extend([
+            RenderLine {
+                line: Line::from(Span::styled(
+                    "  A fresh canvas.",
+                    Style::default().fg(MUTED),
+                )),
+                thought: None,
+            },
+            RenderLine {
+                line: Line::from(Span::styled(
+                    "  Ask Hames to explore, change, or run something.",
+                    Style::default().fg(MUTED),
+                )),
+                thought: None,
+            },
+        ]);
+    }
+    lines
+}
+
+fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let Some(sheet) = &app.sheet else {
+        return;
+    };
+    let inner_height = usize::from(area.height.saturating_sub(2));
+    let start = sheet
+        .selected
+        .saturating_add(1)
+        .saturating_sub(inner_height);
+    let mut lines = Vec::new();
+    for (offset, option) in sheet
+        .options
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(inner_height)
+    {
+        let selected = offset == sheet.selected;
+        let style = if selected {
+            Style::default().fg(Color::Black).bg(MINT).bold()
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let detail_style = if selected {
+            Style::default().fg(Color::Rgb(38, 55, 54)).bg(MINT)
+        } else {
+            Style::default().fg(MUTED)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {} {:<20}", if selected { "›" } else { " " }, option.label),
+                style,
+            ),
+            Span::styled(format!(" {}", option.detail), detail_style),
+        ]));
+        app.hits.push(HitRegion {
+            x: area.x + 1,
+            y: area.y + 1 + u16::try_from(offset - start).unwrap_or(0),
+            width: area.width.saturating_sub(2),
+            height: 1,
+            action: HitAction::SelectSheet(offset),
+        });
+    }
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .title(format!(" {} ", sheet.title))
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(MINT))
+                .style(Style::default().bg(PANEL)),
+        ),
+        area,
+    );
+}
+
+fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let block = Block::default()
+        .title(if app.active_run.is_some() {
+            " Working · Ctrl+C cancel "
+        } else {
+            " Enter send · Alt+Enter newline · Ctrl+K menu "
+        })
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(if app.active_run.is_some() { GOLD } else { MINT }))
+        .style(Style::default().bg(PANEL));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    app.hits.push(HitRegion {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: area.height,
+        action: HitAction::FocusComposer,
+    });
+    let (lines, cursor_x, cursor_y) = composer_lines(app, usize::from(inner.width.max(1)));
+    let available = usize::from(inner.height);
+    let start = lines.len().saturating_sub(available);
+    frame.render_widget(Paragraph::new(lines[start..].to_vec()), inner);
+    if app.modal.is_none() {
+        let adjusted_y = cursor_y.saturating_sub(start);
+        if adjusted_y < available {
+            frame.set_cursor_position((
+                inner.x
+                    + u16::try_from(cursor_x)
+                        .unwrap_or(0)
+                        .min(inner.width.saturating_sub(1)),
+                inner.y + u16::try_from(adjusted_y).unwrap_or(0),
+            ));
+        }
+    }
+}
+
+fn composer_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize) {
+    if app.composer.units.is_empty() {
+        return (
+            vec![Line::from(Span::styled(
+                "Message Hames…",
+                Style::default().fg(MUTED),
+            ))],
+            0,
+            0,
+        );
+    }
+    let mut rows: Vec<Vec<Span<'static>>> = vec![Vec::new()];
+    let mut x = 0;
+    let mut cursor = (0, 0);
+    for (index, unit) in app.composer.units.iter().enumerate() {
+        if index == app.composer.cursor {
+            cursor = (x, rows.len() - 1);
+        }
+        let (display, style) = match unit {
+            ComposerUnit::Text(value) if value == "\n" => {
+                rows.push(Vec::new());
+                x = 0;
+                continue;
+            }
+            ComposerUnit::Text(value) => (value.clone(), Style::default().fg(Color::White)),
+            ComposerUnit::Paste(value) => (
+                paste_capsule(value),
+                Style::default().fg(Color::Black).bg(LILAC).bold(),
+            ),
+        };
+        let token_width = UnicodeWidthStr::width(display.as_str());
+        if x > 0 && x + token_width > width {
+            rows.push(Vec::new());
+            x = 0;
+            if index == app.composer.cursor {
+                cursor = (0, rows.len() - 1);
+            }
+        }
+        rows.last_mut()
+            .expect("composer row")
+            .push(Span::styled(display, style));
+        x += token_width;
+    }
+    if app.composer.cursor == app.composer.units.len() {
+        cursor = (x, rows.len() - 1);
+    }
+    (
+        rows.into_iter().map(Line::from).collect(),
+        cursor.0,
+        cursor.1,
+    )
+}
+
+fn composer_rows(app: &App, width: u16) -> u16 {
+    let (lines, _, _) = composer_lines(app, usize::from(width.max(1)));
+    u16::try_from(lines.len()).unwrap_or(u16::MAX)
+}
+
+fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let Some(modal) = &app.modal else {
+        return;
+    };
+    let (title, body, width, height) = match modal {
+        Modal::Trust => (
+            "Trust this workspace",
+            vec![
+                Line::from(Span::styled(
+                    compact_home(&app.session.working_directory),
+                    Style::default().fg(Color::White).bold(),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Hames can inspect this project after you trust it.",
+                    Style::default().fg(MUTED),
+                )),
+                Line::from(Span::styled(
+                    "Tool permissions still follow the selected execution mode.",
+                    Style::default().fg(MUTED),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled(
+                        "  Trust workspace  ",
+                        Style::default().fg(Color::Black).bg(MINT).bold(),
+                    ),
+                    Span::raw("    "),
+                    Span::styled(
+                        "  Quit  ",
+                        Style::default().fg(Color::White).bg(PANEL_BRIGHT),
+                    ),
+                ]),
+            ],
+            68,
+            9,
+        ),
+        Modal::Approval(approval) => {
+            let mut lines = vec![
+                Line::from(vec![
+                    Span::styled("Action  ", Style::default().fg(MUTED)),
+                    Span::styled(
+                        approval.name.clone(),
+                        Style::default().fg(Color::White).bold(),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("Reason  ", Style::default().fg(MUTED)),
+                    Span::styled(approval.reason.clone(), Style::default().fg(GOLD)),
+                ]),
+                Line::from(""),
+            ];
+            for line in approval.arguments.lines().take(5) {
+                lines.push(Line::from(Span::styled(
+                    format!("  {line}"),
+                    Style::default().fg(Color::Rgb(180, 187, 201)),
+                )));
+            }
+            lines.push(Line::from(""));
+            let choices = if approval.allow_session {
+                [" Allow session ", " Allow once ", " Deny "].as_slice()
+            } else {
+                [" Allow once ", " Deny "].as_slice()
+            };
+            let mut spans = Vec::new();
+            for (index, choice) in choices.iter().enumerate() {
+                let selected = approval.selected == index;
+                spans.push(Span::styled(
+                    *choice,
+                    if selected {
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(if index + 1 == choices.len() {
+                                CORAL
+                            } else {
+                                MINT
+                            })
+                            .bold()
+                    } else {
+                        Style::default().fg(Color::White).bg(PANEL_BRIGHT)
+                    },
+                ));
+                spans.push(Span::raw("  "));
+            }
+            lines.push(Line::from(spans));
+            ("Permission required", lines, 76, 12)
+        }
+        Modal::Help => (
+            "Hames shortcuts",
+            vec![
+                help_line("Enter", "send"),
+                help_line("Alt+Enter / Ctrl+J", "new line"),
+                help_line("Ctrl+K", "command palette"),
+                help_line("Ctrl+C", "cancel active work"),
+                help_line("PgUp / wheel", "scroll transcript"),
+                help_line("Enter / Space", "expand or collapse a selected Thought"),
+                help_line("/new /fork /sessions", "session continuity"),
+                help_line("/model /agent /mode", "runtime controls"),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Advanced memory, Skills, scars, plugins, and inspections remain available in hames repl.",
+                    Style::default().fg(MUTED),
+                )),
+            ],
+            78,
+            14,
+        ),
+        Modal::Session => (
+            "Session continuity",
+            vec![
+                detail_line("Session", &app.session.id),
+                detail_line("Workspace", &compact_home(&app.session.working_directory)),
+                detail_line("Agent", &app.session.agent_id),
+                detail_line(
+                    "Model",
+                    &format!("{} / {}", app.session.provider, app.session.model),
+                ),
+                detail_line("Mode", &app.session.interaction_mode),
+                detail_line("Lineage", &app.session.lineage_kind),
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!("Classic REPL: /resume {}", app.session.id),
+                    Style::default().fg(MINT),
+                )),
+            ],
+            78,
+            12,
+        ),
+        Modal::PastePreview(value) => {
+            let mut lines = vec![
+                Line::from(Span::styled(
+                    paste_capsule(value),
+                    Style::default().fg(LILAC).bold(),
+                )),
+                Line::from(""),
+            ];
+            for line in value.lines().take(10) {
+                lines.push(Line::from(Span::styled(
+                    fit(line, 70),
+                    Style::default().fg(Color::White),
+                )));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "Backspace or Delete removes the entire paste capsule.",
+                Style::default().fg(MUTED),
+            )));
+            ("Pasted text preview", lines, 78, 16)
+        }
+        Modal::Error(message) => (
+            "Something went wrong",
+            vec![
+                Line::from(Span::styled(message.clone(), Style::default().fg(CORAL))),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Press Esc or Enter to return to the transcript.",
+                    Style::default().fg(MUTED),
+                )),
+            ],
+            72,
+            7,
+        ),
+    };
+    let popup = centered(area, width, height);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(body)
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .block(
+                Block::default()
+                    .title(format!(" {title} "))
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(match modal {
+                        Modal::Approval(_) => GOLD,
+                        Modal::Error(_) => CORAL,
+                        _ => MINT,
+                    }))
+                    .style(Style::default().bg(PANEL)),
+            ),
+        popup,
+    );
+    match modal {
+        Modal::Trust => {
+            let y = popup.bottom().saturating_sub(2);
+            app.hits.push(HitRegion {
+                x: popup.x + 2,
+                y,
+                width: 19,
+                height: 1,
+                action: HitAction::TrustWorkspace,
+            });
+            app.hits.push(HitRegion {
+                x: popup.x + 25,
+                y,
+                width: 8,
+                height: 1,
+                action: HitAction::Quit,
+            });
+        }
+        Modal::Approval(approval) => {
+            let count = if approval.allow_session { 3 } else { 2 };
+            let y = popup.bottom().saturating_sub(2);
+            for index in 0..count {
+                app.hits.push(HitRegion {
+                    x: popup.x + 2 + u16::try_from(index * 18).unwrap_or(0),
+                    y,
+                    width: 16,
+                    height: 1,
+                    action: HitAction::Approval(index),
+                });
+            }
+        }
+        _ => app.hits.push(HitRegion {
+            x: popup.x,
+            y: popup.y,
+            width: popup.width,
+            height: popup.height,
+            action: HitAction::CloseModal,
+        }),
+    }
+}
+
+fn push_wrapped(
+    lines: &mut Vec<RenderLine<'static>>,
+    value: &str,
+    width: usize,
+    prefix: &str,
+    style: Style,
+) {
+    for raw in value.split('\n') {
+        let mut remaining = raw;
+        if remaining.is_empty() {
+            lines.push(RenderLine {
+                line: Line::from(prefix.to_owned()),
+                thought: None,
+            });
+            continue;
+        }
+        while !remaining.is_empty() {
+            let available = width.saturating_sub(UnicodeWidthStr::width(prefix)).max(1);
+            let (part, rest) = split_width(remaining, available);
+            lines.push(RenderLine {
+                line: Line::from(vec![
+                    Span::raw(prefix.to_owned()),
+                    Span::styled(part.to_owned(), style),
+                ]),
+                thought: None,
+            });
+            remaining = rest.trim_start_matches(' ');
+        }
+    }
+}
+
+fn split_width(value: &str, width: usize) -> (&str, &str) {
+    if UnicodeWidthStr::width(value) <= width {
+        return (value, "");
+    }
+    let mut last_space = None;
+    let mut end = 0;
+    for (index, character) in value.char_indices() {
+        let next = index + character.len_utf8();
+        if UnicodeWidthStr::width(&value[..next]) > width {
+            break;
+        }
+        end = next;
+        if character.is_whitespace() {
+            last_space = Some(index);
+        }
+    }
+    let split = last_space.filter(|index| *index > 0).unwrap_or(end.max(1));
+    (&value[..split], &value[split..])
+}
+
+fn sheen_line(label: &str, tick: u64, color: Color) -> Line<'static> {
+    Line::from(sheen_spans(label, tick, color))
+}
+
+fn sheen_spans(label: &str, tick: u64, color: Color) -> Vec<Span<'static>> {
+    let chars: Vec<char> = label.chars().collect();
+    let highlight = usize::try_from(tick).unwrap_or(0) % chars.len().max(1);
+    chars
+        .into_iter()
+        .enumerate()
+        .map(|(index, character)| {
+            Span::styled(
+                character.to_string(),
+                Style::default()
+                    .fg(if index.abs_diff(highlight) <= 1 {
+                        Color::White
+                    } else {
+                        color
+                    })
+                    .add_modifier(Modifier::BOLD),
+            )
+        })
+        .collect()
+}
+
+fn thought_label(duration: f64) -> String {
+    let seconds = duration.max(0.0) as u64;
+    if seconds < 10 {
+        return "Thought".to_owned();
+    }
+    if seconds < 60 {
+        return format!("Thought ({seconds}s)");
+    }
+    let minutes = seconds / 60;
+    let remainder = seconds % 60;
+    if remainder == 0 {
+        format!("Thought ({minutes}m)")
+    } else {
+        format!("Thought ({minutes}m {remainder}s)")
+    }
+}
+
+fn pasted_display(content: &str, spans: &[crate::api::PasteSpan]) -> String {
+    if spans.is_empty() {
+        return content.to_owned();
+    }
+    let mut result = String::new();
+    let mut cursor = 0;
+    for span in spans {
+        if span.start_byte < cursor || span.end_byte > content.len() {
+            continue;
+        }
+        result.push_str(&content[cursor..span.start_byte]);
+        result.push_str(&format!(
+            "[Pasted Text · {} lines · {}]",
+            span.line_count,
+            size_label(span.byte_count)
+        ));
+        cursor = span.end_byte;
+    }
+    result.push_str(&content[cursor..]);
+    result
+}
+
+fn paste_capsule(value: &str) -> String {
+    let lines = value
+        .as_bytes()
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count()
+        + 1;
+    format!(
+        " Pasted Text · {lines} lines · {} ",
+        size_label(value.len())
+    )
+}
+
+fn size_label(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    }
+}
+
+fn fit(value: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(value) <= width {
+        return value.to_owned();
+    }
+    let (prefix, _) = split_width(value, width.saturating_sub(1).max(1));
+    format!("{}…", prefix.trim_end())
+}
+
+fn category_color(category: ActivityCategory) -> Color {
+    match category {
+        ActivityCategory::Explore => SKY,
+        ActivityCategory::Change => CORAL,
+        ActivityCategory::Run => GOLD,
+        ActivityCategory::Delegate => MINT,
+        ActivityCategory::Skills => LILAC,
+        ActivityCategory::Memory => MINT,
+        ActivityCategory::Scars => CORAL,
+        ActivityCategory::Plugin => LILAC,
+    }
+}
+
+fn phase_color(phase: ActivityPhase) -> Color {
+    match phase {
+        ActivityPhase::Completed => MINT,
+        ActivityPhase::Failed | ActivityPhase::Cancelled => CORAL,
+        ActivityPhase::Rejected | ActivityPhase::Approval => GOLD,
+        _ => SKY,
+    }
+}
+
+fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width.saturating_sub(4)).max(1);
+    let height = height.min(area.height.saturating_sub(2)).max(1);
+    Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
+}
+
+fn short_id(value: &str) -> &str {
+    value.get(..8).unwrap_or(value)
+}
+
+fn compact_home(value: &str) -> String {
+    std::env::var("HOME")
+        .ok()
+        .and_then(|home| value.strip_prefix(&home).map(|suffix| format!("~{suffix}")))
+        .unwrap_or_else(|| value.to_owned())
+}
+
+fn detail_line(label: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<12}"), Style::default().fg(MUTED)),
+        Span::styled(value.to_owned(), Style::default().fg(Color::White)),
+    ])
+}
+
+fn help_line(key: &str, description: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{key:<24}"), Style::default().fg(MINT).bold()),
+        Span::styled(description.to_owned(), Style::default().fg(Color::White)),
+    ])
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use super::{draw, pasted_display, thought_label};
+    use crate::api::{PasteSpan, Session};
+    use crate::tui::app::App;
+
+    #[test]
+    fn thought_duration_uses_significance_threshold_and_readable_units() {
+        assert_eq!(thought_label(9.4), "Thought");
+        assert_eq!(thought_label(10.0), "Thought (10s)");
+        assert_eq!(thought_label(68.0), "Thought (1m 8s)");
+    }
+
+    #[test]
+    fn transcript_replaces_paste_bytes_with_durable_capsule() {
+        let content = "before é\nafter";
+        let start = "before ".len();
+        let end = start + "é\n".len();
+        assert_eq!(
+            pasted_display(
+                content,
+                &[PasteSpan {
+                    start_byte: start,
+                    end_byte: end,
+                    line_count: 2,
+                    byte_count: end - start
+                }]
+            ),
+            "before [Pasted Text · 2 lines · 3 B]after"
+        );
+    }
+
+    #[test]
+    fn test_backend_renders_adaptive_header_and_composer() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("◈ Hames"));
+        assert!(rendered.contains("fake / fixture"));
+        assert!(rendered.contains("Message Hames"));
+        assert!(rendered.contains("A fresh canvas"));
+    }
+
+    #[test]
+    fn test_backend_renders_minimum_size_warning() {
+        let backend = TestBackend::new(55, 9);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Needs at least 56 × 10"));
+    }
+
+    fn session() -> Session {
+        Session {
+            id: "session-123456789".to_owned(),
+            created_at: "2026-08-24T00:00:00Z".to_owned(),
+            status: "open".to_owned(),
+            title: None,
+            working_directory: "/tmp/project".to_owned(),
+            agent_id: "default".to_owned(),
+            provider: "fake".to_owned(),
+            model: "fixture".to_owned(),
+            reasoning_effort: "medium".to_owned(),
+            context_window_tokens: 32_768,
+            context_window_source: "provider".to_owned(),
+            parent_session_id: None,
+            fork_event_id: None,
+            lineage_kind: "root".to_owned(),
+            delegation_depth: 0,
+            interaction_mode: "auto".to_owned(),
+        }
+    }
+}
