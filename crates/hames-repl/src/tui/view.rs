@@ -465,14 +465,14 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     };
     let accent = mode_color(&app.session.interaction_mode);
     let title = Line::from(vec![
-        Span::styled("─ ", Style::default().fg(accent)),
+        Span::styled("─ ", Style::default().fg(MUTED)),
         Span::styled(
             format!("{} ({reasoning})", app.session.model),
-            Style::default().fg(Color::White).bold(),
+            Style::default().fg(MUTED).bold(),
         ),
         Span::styled(" · ", Style::default().fg(MUTED)),
         Span::styled(mode, Style::default().fg(accent).bold()),
-        Span::raw("  "),
+        Span::styled(" ─", Style::default().fg(MUTED)),
     ])
     .right_aligned();
     let block = Block::default()
@@ -480,11 +480,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .padding(Padding::horizontal(1))
-        .border_style(Style::default().fg(if app.active_run.is_some() {
-            GOLD
-        } else {
-            accent
-        }));
+        .border_style(Style::default().fg(MUTED));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.hits.push(HitRegion {
@@ -1040,9 +1036,8 @@ fn phase_color(phase: ActivityPhase) -> Color {
 
 fn mode_color(mode: &str) -> Color {
     match mode {
-        "manual" => Color::White,
-        "plan" => LILAC,
-        _ => SKY,
+        "plan" => GOLD,
+        _ => MUTED,
     }
 }
 
