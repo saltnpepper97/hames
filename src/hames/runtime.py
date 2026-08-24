@@ -589,9 +589,7 @@ class RunManager:
             if active_run is not None:
                 terminal = any(
                     event.type in {"run.completed", "run.failed", "run.cancelled"}
-                    for event in await asyncio.to_thread(
-                        self.ledger.list_run_events, active_run
-                    )
+                    for event in await asyncio.to_thread(self.ledger.list_run_events, active_run)
                 )
                 if terminal:
                     self._mark_post_terminal(active_run, session_id)
@@ -1947,6 +1945,7 @@ class RunManager:
         reasoning_started_at: float | None = None
         reasoning_finished_at: float | None = None
         published_answer_length = 0
+        provider_items: list[dict[str, JsonValue]] = []
         plan_response = session.interaction_mode == "plan"
 
         def reasoning_duration() -> float:
@@ -2043,6 +2042,7 @@ class RunManager:
                         reasoning_finished_at = time.monotonic()
                     completed = True
                     finish_reason = stream_event.finish_reason or "stop"
+                    provider_items = stream_event.provider_items
             if not completed:
                 raise ProviderError("provider_protocol_error", "provider stream did not complete")
             invocations = [tool_calls[index].invocation() for index in sorted(tool_calls)]
@@ -2070,6 +2070,16 @@ class RunManager:
                 force_message=bool(invocations),
                 reasoning_duration_seconds=reasoning_duration(),
             )
+            if provider_items:
+                await self._append(
+                    session_id=session.id,
+                    run_id=run_id,
+                    agent_id=session.agent_id,
+                    event_type="model.provider_state",
+                    payload={"provider": session.provider, "items": provider_items},
+                    causation_id=request_event.id,
+                    correlation_id=run_id,
+                )
             for invocation in invocations:
                 await self._append(
                     session_id=session.id,

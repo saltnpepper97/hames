@@ -29,6 +29,9 @@ class ProviderMessage(ProviderBoundary):
     tool_calls: list[ToolCall] = Field(default_factory=lambda: list[ToolCall]())
     tool_call_id: str | None = None
     tool_name: str | None = None
+    provider_items: list[dict[str, JsonValue]] = Field(
+        default_factory=lambda: list[dict[str, JsonValue]]()
+    )
 
 
 class ToolDefinition(ProviderBoundary):
@@ -93,6 +96,9 @@ class StreamEvent(ProviderBoundary):
     finish_reason: str | None = None
     provider_request_id: str | None = None
     error_code: str | None = None
+    provider_items: list[dict[str, JsonValue]] = Field(
+        default_factory=lambda: list[dict[str, JsonValue]]()
+    )
 
 
 class ProviderError(RuntimeError):

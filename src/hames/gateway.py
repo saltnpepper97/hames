@@ -524,14 +524,21 @@ def create_app(state: GatewayState) -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+        errors = cast(list[dict[str, object]], json.loads(json.dumps(exc.errors(), default=str)))
+        first = errors[0] if errors else {}
+        raw_location = first.get("loc", [])
+        location_parts = cast(list[object], raw_location) if isinstance(raw_location, list) else []
+        location = ".".join(str(part) for part in location_parts if part != "body")
+        detail = str(first.get("msg", "request validation failed"))
+        message = f"{location}: {detail}" if location else detail
         return JSONResponse(
             status_code=422,
             content={
                 "error": {
                     "code": "validation_error",
-                    "message": "request validation failed",
+                    "message": message,
                     "retryable": False,
-                    "details": {"errors": json.loads(json.dumps(exc.errors(), default=str))},
+                    "details": {"errors": errors},
                 }
             },
         )

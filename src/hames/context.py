@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -16,6 +16,7 @@ from hames.ledger import Event, Session
 from hames.memory import RetrievedMemory, canonical_memory_context
 from hames.plans import project_plans
 from hames.providers import ProviderMessage, ToolCall, ToolDefinition
+from hames.providers.base import JsonValue
 from hames.rules import ContextRule
 from hames.skills import SkillSummary, SkillVersion
 from hames.tasks import project_tasks
@@ -707,6 +708,14 @@ def _conversation_turns(
                 )
             )
             current.event_ids.append(event.id)
+        elif event.type == "model.provider_state" and event.causation_id and current is not None:
+            assistant = assistants_by_request.get(event.causation_id)
+            if assistant is not None:
+                raw_items = event.payload.get("items", [])
+                assistant.provider_items = [
+                    cast(dict[str, JsonValue], item) for item in raw_items if isinstance(item, dict)
+                ]
+                current.event_ids.append(event.id)
         elif (
             event.type in {"tool.completed", "tool.failed", "tool.rejected"} and current is not None
         ):

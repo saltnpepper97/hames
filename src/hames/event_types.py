@@ -74,6 +74,11 @@ class MessagePayload(EventPayload):
     paste_spans: list[PasteSpanPayload] = Field(default_factory=_empty_paste_spans, max_length=64)
 
 
+class ModelProviderStatePayload(EventPayload):
+    provider: str
+    items: list[dict[str, JsonValue]] = Field(default_factory=lambda: list[dict[str, JsonValue]]())
+
+
 class QueuedMessagePayload(MessagePayload):
     queue_id: str
     position: int = Field(ge=1, le=2)
@@ -779,6 +784,7 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "goal.blocked": GoalEventPayload,
     "goal.cancelled": GoalEventPayload,
     "model.requested": ModelRequestedPayload,
+    "model.provider_state": ModelProviderStatePayload,
     "model.response.started": ModelStartedPayload,
     "model.usage": ModelUsagePayload,
     "model.tool_call": ModelToolCallPayload,

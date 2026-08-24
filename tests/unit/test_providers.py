@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import sys
+import textwrap
+from pathlib import Path
 
 import httpx
 import pytest
@@ -13,8 +16,10 @@ from hames.providers import (
     ToolCall,
     ToolDefinition,
 )
+from hames.providers.codex import CodexProvider
 from hames.providers.llama_cpp import LlamaCppProvider
 from hames.providers.ollama import OllamaProvider
+from hames.providers.openai import OpenAIProvider
 
 
 @pytest.mark.asyncio
@@ -411,3 +416,217 @@ async def test_ollama_rejects_data_after_completed_chunk() -> None:
         ]
     assert raised.value.code == "malformed_provider_event"
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_openai_responses_stream_preserves_encrypted_reasoning_state() -> None:
+    seen_request: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer fixture-key"
+        if request.url.path == "/v1/models":
+            return httpx.Response(
+                200,
+                json={"data": [{"id": "gpt-5.4"}, {"id": "text-embedding-3-small"}]},
+            )
+        if request.url.path == "/v1/responses":
+            seen_request.update(json.loads(request.content))
+            return httpx.Response(
+                200,
+                text="\n".join(
+                    [
+                        'data: {"type":"response.created","response":{"id":"resp-1"}}',
+                        'data: {"type":"response.reasoning_summary_text.delta","delta":"check "}',
+                        'data: {"type":"response.output_text.delta","delta":"done"}',
+                        'data: {"type":"response.completed","response":{"usage":'
+                        '{"input_tokens":8,"output_tokens":3,"input_tokens_details":'
+                        '{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":1}},'
+                        '"output":[{"type":"reasoning","id":"rs-1",'
+                        '"encrypted_content":"opaque"}]}}',
+                        "data: [DONE]",
+                    ]
+                ),
+            )
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = OpenAIProvider(
+        "https://api.openai.test/v1",
+        environ={"OPENAI_API_KEY": "fixture-key"},
+        supported_reasoning_efforts=["low", "medium", "high"],
+        client=client,
+    )
+    models = await provider.list_models()
+    assert [model.id for model in models] == ["gpt-5.4"]
+    assert models[0].reasoning_efforts == ["low", "medium", "high"]
+    events = [
+        event
+        async for event in provider.stream(
+            ModelRequest(
+                model="gpt-5.4",
+                messages=[ProviderMessage(role="user", content="hello")],
+                system="contract",
+                reasoning_effort="medium",
+            )
+        )
+    ]
+    assert [event.kind for event in events] == [
+        StreamEventKind.STARTED,
+        StreamEventKind.REASONING_DELTA,
+        StreamEventKind.TEXT_DELTA,
+        StreamEventKind.USAGE,
+        StreamEventKind.COMPLETED,
+    ]
+    assert seen_request["store"] is False
+    assert seen_request["include"] == ["reasoning.encrypted_content"]
+    assert events[-1].provider_items[0]["encrypted_content"] == "opaque"
+    await client.aclose()
+
+
+def _fake_codex_app_server(tmp_path: Path) -> Path:
+    script = tmp_path / "fake_codex.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import json
+            import sys
+
+            for line in sys.stdin:
+                message = json.loads(line)
+                request_id = message.get("id")
+                method = message.get("method")
+                params = message.get("params", {})
+                if request_id is None:
+                    continue
+                if method == "initialize":
+                    result = {"userAgent": "fixture"}
+                elif method == "account/read":
+                    result = {"account": {"type": "chatgpt"}}
+                elif method == "model/list":
+                    result = {"data": [{
+                        "id": "fixture-id",
+                        "model": "gpt-5.4-codex",
+                        "hidden": False,
+                        "inputModalities": ["text", "image"],
+                        "supportedReasoningEfforts": [
+                            {"reasoningEffort": "medium", "description": "balanced"},
+                            {"reasoningEffort": "high", "description": "deep"},
+                        ],
+                    }], "nextCursor": None}
+                elif method == "thread/start":
+                    if not params.get("dynamicTools"):
+                        print(json.dumps({"id": request_id, "error": {
+                            "code": -1, "message": "dynamic tools missing"}}), flush=True)
+                        continue
+                    result = {"thread": {"id": "thread-1"}}
+                elif method == "turn/start":
+                    result = {"turn": {"id": "turn-1"}}
+                    print(json.dumps({"id": request_id, "result": result}), flush=True)
+                    prompt = params["input"][0]["text"]
+                    if "USE TOOL" in prompt:
+                        print(json.dumps({
+                            "id": 900,
+                            "method": "item/tool/call",
+                            "params": {"callId": "call-1", "threadId": "thread-1",
+                                       "turnId": "turn-1", "tool": "read_file",
+                                       "arguments": {"path": "README.md"}},
+                        }), flush=True)
+                    else:
+                        print(json.dumps({"method": "item/reasoning/summaryTextDelta",
+                                          "params": {"delta": "consider ", "itemId": "r1",
+                                                     "threadId": "thread-1", "turnId": "turn-1",
+                                                     "summaryIndex": 0}}), flush=True)
+                        print(json.dumps({"method": "item/agentMessage/delta",
+                                          "params": {"delta": "answer", "itemId": "a1",
+                                                     "threadId": "thread-1", "turnId": "turn-1"}}),
+                              flush=True)
+                        print(json.dumps({"method": "thread/tokenUsage/updated", "params": {
+                            "threadId": "thread-1", "turnId": "turn-1", "tokenUsage": {
+                                "last": {"inputTokens": 9, "outputTokens": 4,
+                                         "cachedInputTokens": 2, "reasoningOutputTokens": 1,
+                                         "totalTokens": 13},
+                                "total": {"inputTokens": 9, "outputTokens": 4,
+                                          "cachedInputTokens": 2, "reasoningOutputTokens": 1,
+                                          "totalTokens": 13}}}}), flush=True)
+                        print(json.dumps({"method": "turn/completed", "params": {
+                            "threadId": "thread-1", "turn": {"id": "turn-1", "items": [],
+                                                                  "status": "completed"}}}),
+                              flush=True)
+                    continue
+                else:
+                    result = {}
+                print(json.dumps({"id": request_id, "result": result}), flush=True)
+            """
+        ),
+        encoding="utf-8",
+    )
+    return script
+
+
+@pytest.mark.asyncio
+async def test_codex_subscription_discovers_models_and_normalizes_app_server_stream(
+    tmp_path: Path,
+) -> None:
+    provider = CodexProvider(command=(sys.executable, str(_fake_codex_app_server(tmp_path))))
+    models = await provider.list_models()
+    assert [model.id for model in models] == ["gpt-5.4-codex"]
+    assert models[0].input_modalities == ["text", "image"]
+    assert models[0].reasoning_efforts == ["medium", "high"]
+
+    events = [
+        event
+        async for event in provider.stream(
+            ModelRequest(
+                model="gpt-5.4-codex",
+                messages=[ProviderMessage(role="user", content="ANSWER")],
+                system="contract",
+                reasoning_effort="medium",
+                tools=[
+                    ToolDefinition(
+                        name="read_file",
+                        description="Read one file",
+                        input_schema={"type": "object"},
+                    )
+                ],
+            )
+        )
+    ]
+    assert [event.kind for event in events] == [
+        StreamEventKind.STARTED,
+        StreamEventKind.REASONING_DELTA,
+        StreamEventKind.TEXT_DELTA,
+        StreamEventKind.USAGE,
+        StreamEventKind.COMPLETED,
+    ]
+    assert events[-2].usage is not None
+    assert events[-2].usage.cached_input_tokens == 2
+
+
+@pytest.mark.asyncio
+async def test_codex_dynamic_tools_return_to_the_hames_tool_loop(tmp_path: Path) -> None:
+    provider = CodexProvider(command=(sys.executable, str(_fake_codex_app_server(tmp_path))))
+    events = [
+        event
+        async for event in provider.stream(
+            ModelRequest(
+                model="gpt-5.4-codex",
+                messages=[ProviderMessage(role="user", content="USE TOOL")],
+                system="contract",
+                tools=[
+                    ToolDefinition(
+                        name="read_file",
+                        description="Read one file",
+                        input_schema={"type": "object"},
+                    )
+                ],
+            )
+        )
+    ]
+    assert [event.kind for event in events] == [
+        StreamEventKind.STARTED,
+        StreamEventKind.TOOL_CALL_DELTA,
+        StreamEventKind.COMPLETED,
+    ]
+    assert events[1].tool_call is not None
+    assert events[1].tool_call.name == "read_file"
+    assert events[-1].finish_reason == "tool_calls"

@@ -141,6 +141,7 @@ class GatewayConfig(StrictModel):
 class ProviderProfileConfig(StrictModel):
     adapter: str
     base_url: str
+    api_key_env: str = ""
     model: str = ""
     reasoning_effort: str = ""
     supported_reasoning_efforts: list[str] = Field(default_factory=list)
@@ -150,21 +151,38 @@ class ProviderProfileConfig(StrictModel):
     @field_validator("adapter")
     @classmethod
     def known_adapter(cls, value: str) -> str:
-        if value not in {"llama_cpp", "ollama"}:
+        if value not in {"llama_cpp", "ollama", "openai", "codex"}:
             raise ValueError(f"unknown provider adapter: {value}")
         return value
 
-    @field_validator("base_url")
+    @field_validator("api_key_env")
     @classmethod
-    def valid_http_url(cls, value: str) -> str:
+    def valid_api_key_env(cls, value: str) -> str:
+        import re
+
+        if value and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value) is None:
+            raise ValueError("api_key_env must be an environment variable name")
+        return value
+
+    @model_validator(mode="after")
+    def valid_endpoint(self) -> ProviderProfileConfig:
         from urllib.parse import urlsplit
 
-        parsed = urlsplit(value)
+        if self.adapter == "codex":
+            if self.base_url != "app-server://codex":
+                raise ValueError("codex provider base_url must be app-server://codex")
+            if self.api_key_env:
+                raise ValueError("codex subscription auth does not use api_key_env")
+            return self
+        parsed = urlsplit(self.base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("provider base_url must be an absolute HTTP(S) URL")
         if parsed.username or parsed.password:
             raise ValueError("provider base_url must not contain credentials")
-        return value.rstrip("/")
+        self.base_url = self.base_url.rstrip("/")
+        if self.adapter == "openai" and not self.api_key_env:
+            self.api_key_env = "OPENAI_API_KEY"
+        return self
 
     @field_validator("supported_reasoning_efforts")
     @classmethod

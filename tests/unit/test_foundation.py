@@ -92,6 +92,38 @@ supported_reasoning_efforts = ["low", "medium", "xhigh"]
     assert config.providers["deep"].base_url == "http://127.0.0.1:8081"
 
 
+def test_cloud_provider_profiles_keep_api_and_subscription_auth_separate(
+    hames_paths: HamesPaths,
+) -> None:
+    hames_paths.ensure_foundation()
+    hames_paths.config_file.write_text(
+        """\
+[providers.openai]
+adapter = "openai"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+[providers.codex]
+adapter = "codex"
+base_url = "app-server://codex"
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(hames_paths, environ={})
+
+    assert config.providers["openai"].api_key_env == "OPENAI_API_KEY"
+    assert config.providers["codex"].api_key_env == ""
+    with pytest.raises(ValidationError, match="subscription auth does not use api_key_env"):
+        config.providers["codex"].model_validate(
+            {
+                "adapter": "codex",
+                "base_url": "app-server://codex",
+                "api_key_env": "OPENAI_API_KEY",
+            }
+        )
+
+
 def test_blob_threshold_environment_override(hames_paths: HamesPaths) -> None:
     config = load_config(
         hames_paths,
