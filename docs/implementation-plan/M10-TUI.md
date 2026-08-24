@@ -37,6 +37,9 @@ The model may maintain the title through `session_title_set`, which emits a type
 `session.title.changed` event; `/title` uses the matching gateway endpoint.
 
 Enter sends a message. Alt+Enter, Shift+Enter, or Ctrl+J inserts a new line.
+An empty opening transcript centers a bounded ASCII mark sampled from the bundled
+text asset. A slow gray sheen is separated by a long fully idle interval; the
+first composer character, newline, or paste dismisses the mark for that session.
 Large pastes are shown as compact capsules while their exact bytes and ranges
 remain durable in the user-message event. The transcript and composer both
 render proportional scrollbars with solid thumbs when content exceeds their

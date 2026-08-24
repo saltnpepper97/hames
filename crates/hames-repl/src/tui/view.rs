@@ -28,6 +28,9 @@ const RULE: Color = Color::Rgb(49, 56, 69);
 const DELETE_BG: Color = Color::Rgb(78, 31, 39);
 const PANEL: Color = Color::Rgb(19, 23, 31);
 const PANEL_BRIGHT: Color = Color::Rgb(29, 35, 46);
+const OPENING_ART: &str = include_str!("../../assets/welcome-ascii.txt");
+const ART_IDLE_TICKS: u64 = 150;
+const ART_SHINE_TICKS: u64 = 100;
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     app.hits.clear();
@@ -85,6 +88,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .split(area);
     render_header(frame, app, rows[0]);
     render_transcript(frame, app, rows[1]);
+    if app.show_opening_art() && app.modal.is_none() && app.sheet.is_none() {
+        render_opening_art(frame, rows[1], app.tick);
+    }
 
     let footer = Layout::default()
         .direction(Direction::Vertical)
@@ -256,6 +262,132 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             },
         });
     }
+}
+
+fn render_opening_art(frame: &mut Frame<'_>, area: Rect, tick: u64) {
+    let max_width = usize::from(area.width.saturating_sub(8)).min(42);
+    let max_height = usize::from(area.height.saturating_sub(2)).min(20);
+    let grid = sampled_ascii(OPENING_ART, max_width, max_height);
+    let Some(width) = grid.first().map(Vec::len) else {
+        return;
+    };
+    let height = grid.len();
+    let shine = opening_art_shine_position(tick, width, height);
+    let lines = grid
+        .into_iter()
+        .enumerate()
+        .map(|(y, row)| {
+            Line::from(
+                row.into_iter()
+                    .enumerate()
+                    .map(|(x, character)| {
+                        if character == ' ' {
+                            return Span::raw(" ");
+                        }
+                        let diagonal = isize::try_from(x + y / 3).unwrap_or(isize::MAX);
+                        let distance = shine.map(|position| diagonal.abs_diff(position));
+                        Span::styled(
+                            character.to_string(),
+                            Style::default().fg(match (distance, character) {
+                                (Some(0..=1), _) => INPUT,
+                                (_, '.') => RULE,
+                                _ => MUTED,
+                            }),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let art_area = Rect::new(
+        area.x + area.width.saturating_sub(u16::try_from(width).unwrap_or(0)) / 2,
+        area.y
+            + area
+                .height
+                .saturating_sub(u16::try_from(height).unwrap_or(0))
+                / 2,
+        u16::try_from(width).unwrap_or(0),
+        u16::try_from(height).unwrap_or(0),
+    );
+    frame.render_widget(Paragraph::new(lines), art_area);
+}
+
+fn sampled_ascii(source: &str, max_width: usize, max_height: usize) -> Vec<Vec<char>> {
+    if max_width < 12 || max_height < 6 {
+        return Vec::new();
+    }
+    let source = source
+        .lines()
+        .map(|line| line.chars().collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    let source_height = source.len();
+    let source_width = source.iter().map(Vec::len).max().unwrap_or_default();
+    if source_width == 0 || source_height == 0 {
+        return Vec::new();
+    }
+
+    let mut width = max_width.min(source_width);
+    let mut height = source_height.saturating_mul(width) / source_width;
+    if height > max_height {
+        height = max_height;
+        width = source_width.saturating_mul(height) / source_height;
+    }
+    width = width.max(1);
+    height = height.max(1);
+
+    (0..height)
+        .map(|y| {
+            let y_start = y.saturating_mul(source_height) / height;
+            let y_end = ((y + 1)
+                .saturating_mul(source_height)
+                .saturating_add(height - 1)
+                / height)
+                .min(source_height)
+                .max(y_start + 1);
+            (0..width)
+                .map(|x| {
+                    let x_start = x.saturating_mul(source_width) / width;
+                    let x_end = ((x + 1)
+                        .saturating_mul(source_width)
+                        .saturating_add(width - 1)
+                        / width)
+                        .min(source_width)
+                        .max(x_start + 1);
+                    let mut occupied = 0usize;
+                    let mut total = 0usize;
+                    for row in &source[y_start..y_end] {
+                        if let Some(cells) = row.get(x_start..x_end) {
+                            total += cells.len();
+                            occupied += cells.iter().filter(|cell| !cell.is_whitespace()).count();
+                        }
+                    }
+                    match occupied.saturating_mul(100) / total.max(1) {
+                        66.. => '#',
+                        35..=65 => '+',
+                        13..=34 => '.',
+                        _ => ' ',
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn opening_art_shine_position(tick: u64, width: usize, height: usize) -> Option<isize> {
+    let cycle = ART_IDLE_TICKS + ART_SHINE_TICKS;
+    let phase = tick % cycle;
+    if phase < ART_IDLE_TICKS {
+        return None;
+    }
+    let travel = width.saturating_add(height / 3).saturating_add(8);
+    let progress = usize::try_from(phase - ART_IDLE_TICKS).unwrap_or_default();
+    Some(
+        isize::try_from(
+            progress.saturating_mul(travel) / usize::try_from(ART_SHINE_TICKS).unwrap_or(1),
+        )
+        .unwrap_or(isize::MAX)
+            - 4,
+    )
 }
 
 fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
@@ -1917,10 +2049,11 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        DELETE_BG, GOLD, INPUT, MINT, MUTED, PANEL, PANEL_BRIGHT, SKY, draw, format_elapsed,
-        line_text, memory_browser_body, mode_color, mode_outline, pasted_display,
-        scar_browser_body, scar_editor_body, scrollbar_position, sheen_spans, sheet_text_color,
-        thought_label, transcript_lines,
+        ART_IDLE_TICKS, ART_SHINE_TICKS, DELETE_BG, GOLD, INPUT, MINT, MUTED, OPENING_ART, PANEL,
+        PANEL_BRIGHT, SKY, draw, format_elapsed, line_text, memory_browser_body, mode_color,
+        mode_outline, opening_art_shine_position, pasted_display, sampled_ascii, scar_browser_body,
+        scar_editor_body, scrollbar_position, sheen_spans, sheet_text_color, thought_label,
+        transcript_lines,
     };
     use crate::api::{MemoryRecord, PasteSpan, Scar, Session};
     use crate::tui::app::{
@@ -1946,6 +2079,69 @@ mod tests {
             sheen_spans("Thinking", 1, INPUT),
             sheen_spans("Thinking", 2, INPUT)
         );
+    }
+
+    #[test]
+    fn opening_art_is_bounded_and_has_a_long_shine_free_interval() {
+        let art = sampled_ascii(OPENING_ART, 42, 20);
+        assert!(!art.is_empty());
+        assert!(art.len() <= 20);
+        assert!(art.iter().all(|row| row.len() <= 42));
+        assert!(
+            art.iter()
+                .flatten()
+                .filter(|character| **character != ' ')
+                .count()
+                > 40
+        );
+        assert_eq!(opening_art_shine_position(0, 40, 20), None);
+        assert_eq!(opening_art_shine_position(ART_IDLE_TICKS - 1, 40, 20), None);
+        assert!(opening_art_shine_position(ART_IDLE_TICKS, 40, 20).is_some());
+        assert_eq!(
+            opening_art_shine_position(ART_IDLE_TICKS + ART_SHINE_TICKS, 40, 20),
+            None
+        );
+    }
+
+    #[test]
+    fn opening_art_vanishes_from_the_frame_on_first_typed_character() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let opening_marks = (2..26)
+            .flat_map(|y| (0..100).map(move |x| (x, y)))
+            .filter(|position| {
+                terminal
+                    .backend()
+                    .buffer()
+                    .cell(*position)
+                    .unwrap()
+                    .symbol()
+                    == "+"
+            })
+            .count();
+        assert!(opening_marks > 40);
+
+        app.handle_composer_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('h'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let remaining_marks = (2..26)
+            .flat_map(|y| (0..100).map(move |x| (x, y)))
+            .filter(|position| {
+                terminal
+                    .backend()
+                    .buffer()
+                    .cell(*position)
+                    .unwrap()
+                    .symbol()
+                    == "+"
+            })
+            .count();
+        assert_eq!(remaining_marks, 0);
     }
 
     #[test]

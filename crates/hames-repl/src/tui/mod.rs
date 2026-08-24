@@ -290,6 +290,7 @@ fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
                 }
             } else if app.modal.is_none() {
                 app.composer.insert_paste(value);
+                app.opening_art_visible = false;
                 app.update_slash_sheet();
             }
             None

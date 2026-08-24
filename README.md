@@ -108,6 +108,10 @@ the client without sending anything does not create resumable clutter.
 The TUI keeps the transcript, activity continuity, and an expanding composer on
 one screen. The composer grows through eight visible content rows and then
 scrolls. Enter sends; Alt+Enter, Shift+Enter, or Ctrl+J inserts a new line.
+An empty new session opens with a compact, proportionally sampled ASCII mark
+derived from `crates/hames-repl/assets/welcome-ascii.txt`. It stays subdued for
+about twelve seconds between slow neutral-gray sheen passes and disappears
+permanently as soon as composer typing or paste input begins.
 Shift+Tab cycles
 Manual, Auto, and Plan modes, with a distinct composer border for each. Ctrl+K
 opens the command palette, Page Up/Page Down and the mouse wheel scroll the

@@ -744,6 +744,7 @@ pub struct App {
     pub focused_thought: Option<usize>,
     pub theme: ThemeKind,
     pub reopen_sessions_after_switch: bool,
+    pub opening_art_visible: bool,
 }
 
 impl App {
@@ -780,15 +781,18 @@ impl App {
             focused_thought: None,
             theme: ThemeKind::Hames,
             reopen_sessions_after_switch: false,
+            opening_art_visible: true,
         };
         for event in events {
             app.ingest_durable(event, false);
         }
+        app.opening_art_visible = app.transcript.is_empty();
         app
     }
 
     pub fn animating(&self) -> bool {
-        self.active_run.is_some()
+        self.show_opening_art()
+            || self.active_run.is_some()
             || self.copy_notice().is_some()
             || self.transcript.iter().any(|item| match item {
                 TranscriptItem::Thought { live, .. } | TranscriptItem::Assistant { live, .. } => {
@@ -806,6 +810,13 @@ impl App {
             .transcript
             .iter()
             .any(|item| matches!(item, TranscriptItem::User { .. }))
+    }
+
+    pub fn show_opening_art(&self) -> bool {
+        self.opening_art_visible
+            && self.composer.is_empty()
+            && self.transcript.is_empty()
+            && self.active_run.is_none()
     }
 
     pub fn copy_notice(&self) -> Option<&str> {
@@ -1050,31 +1061,55 @@ impl App {
 
     pub fn handle_composer_key(&mut self, key: KeyEvent) -> bool {
         self.composer_scroll = None;
-        match key.code {
-            KeyCode::Backspace => self.composer.backspace(),
-            KeyCode::Delete => self.composer.delete(),
-            KeyCode::Left => self.composer.move_left(),
-            KeyCode::Right => self.composer.move_right(),
-            KeyCode::Home => self.composer.move_home(),
-            KeyCode::End => self.composer.move_end(),
+        let typed = match key.code {
+            KeyCode::Backspace => {
+                self.composer.backspace();
+                false
+            }
+            KeyCode::Delete => {
+                self.composer.delete();
+                false
+            }
+            KeyCode::Left => {
+                self.composer.move_left();
+                false
+            }
+            KeyCode::Right => {
+                self.composer.move_right();
+                false
+            }
+            KeyCode::Home => {
+                self.composer.move_home();
+                false
+            }
+            KeyCode::End => {
+                self.composer.move_end();
+                false
+            }
             KeyCode::Enter
                 if key
                     .modifiers
                     .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) =>
             {
-                self.composer.insert_text("\n")
+                self.composer.insert_text("\n");
+                true
             }
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.composer.insert_text("\n")
+                self.composer.insert_text("\n");
+                true
             }
             KeyCode::Char(value)
                 if !key
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                self.composer.insert_text(&value.to_string())
+                self.composer.insert_text(&value.to_string());
+                true
             }
             _ => return false,
+        };
+        if typed {
+            self.opening_art_visible = false;
         }
         self.update_slash_sheet();
         true
@@ -1703,6 +1738,19 @@ mod tests {
         assert_eq!(composer.units.len(), 2);
         composer.backspace();
         assert_eq!(composer.text(), "é");
+    }
+
+    #[test]
+    fn opening_art_disappears_permanently_when_composer_typing_starts() {
+        let mut app = App::new(session(), Vec::new(), true);
+        assert!(app.show_opening_art());
+        assert!(app.animating());
+
+        assert!(app.handle_composer_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE)));
+        assert!(!app.show_opening_art());
+        app.handle_composer_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert!(app.composer.is_empty());
+        assert!(!app.show_opening_art());
     }
 
     #[test]
