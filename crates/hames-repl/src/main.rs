@@ -30,7 +30,14 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Configure Hames and its private local services.
-    Setup,
+    Setup {
+        /// Configure one provider directly; omit for the state-aware setup flow.
+        #[arg(value_enum)]
+        provider: Option<SetupProvider>,
+        /// Replace the current config before running setup.
+        #[arg(long)]
+        fresh: bool,
+    },
     /// Open the full-screen terminal interface.
     Tui,
     /// Open the classic line-oriented REPL.
@@ -79,6 +86,14 @@ enum GatewayAction {
     Start,
     Stop,
     Status,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum SetupProvider {
+    LlamaCpp,
+    Ollama,
+    Openai,
+    Codex,
 }
 
 #[derive(Clone, Debug, Subcommand)]
@@ -326,9 +341,18 @@ enum EventAction {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Some(Command::Setup) => {
+        Some(Command::Setup { provider, fresh }) => {
             let paths = LocalPaths::resolve()?;
-            local::ensure_search_setup(&paths, true)
+            local::run_setup(
+                &paths,
+                provider.map(|value| match value {
+                    SetupProvider::LlamaCpp => local::ProviderBackend::LlamaCpp,
+                    SetupProvider::Ollama => local::ProviderBackend::Ollama,
+                    SetupProvider::Openai => local::ProviderBackend::OpenAi,
+                    SetupProvider::Codex => local::ProviderBackend::Codex,
+                }),
+                fresh,
+            )
         }
         Some(Command::Tui) => tui::run().await,
         Some(Command::Repl) => repl::run().await,

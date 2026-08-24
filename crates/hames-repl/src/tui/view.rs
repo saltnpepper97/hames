@@ -345,16 +345,14 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
         y: area.y,
         width: area.width.saturating_sub(1),
         height: area.height,
-        lines: lines[start..end]
-            .iter()
-            .map(|item| line_text(&item.line))
-            .collect(),
+        line_offset: start,
+        lines: lines.iter().map(|item| line_text(&item.line)).collect(),
     };
     let visible: Vec<Line<'_>> = lines[start..end]
         .iter()
         .enumerate()
         .map(|(row, item)| {
-            app.transcript_selection_range(row).map_or_else(
+            app.transcript_selection_range(start + row).map_or_else(
                 || item.line.clone(),
                 |range| highlight_line(&item.line, range),
             )
@@ -1699,6 +1697,7 @@ fn render_approval_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         y: area.y.saturating_add(1),
         width: area.width,
         height: area.height.saturating_sub(2),
+        line_offset: 0,
         lines: lines.iter().map(line_text).collect(),
     };
     let block = Block::default()
@@ -1757,6 +1756,7 @@ fn render_empty_goal_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         y: popup.y.saturating_add(1),
         width: popup.width.saturating_sub(2),
         height: popup.height.saturating_sub(2),
+        line_offset: 0,
         lines: body.iter().map(line_text).collect(),
     };
     frame.render_widget(Clear, popup);
@@ -2031,6 +2031,7 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         y: popup.y.saturating_add(1),
         width: popup.width.saturating_sub(2),
         height: popup.height.saturating_sub(2),
+        line_offset: 0,
         lines: body.iter().take(inner_height).map(line_text).collect(),
     };
     let body: Vec<Line<'_>> = body

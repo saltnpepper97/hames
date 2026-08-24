@@ -932,6 +932,7 @@ pub struct TranscriptViewport {
     pub y: u16,
     pub width: u16,
     pub height: u16,
+    pub line_offset: usize,
     pub lines: Vec<String>,
 }
 
@@ -946,7 +947,10 @@ impl TranscriptViewport {
             return None;
         }
         Some(TranscriptPoint {
-            row: usize::from(y - self.y).min(self.lines.len().saturating_sub(1)),
+            row: self
+                .line_offset
+                .saturating_add(usize::from(y - self.y))
+                .min(self.lines.len().saturating_sub(1)),
             column: usize::from(x - self.x),
         })
     }
@@ -2719,10 +2723,10 @@ fn option(label: &str, detail: &str, action: MenuAction) -> MenuOption {
 
 fn task_checkbox(task: &SessionTask) -> &'static str {
     match task.status.as_str() {
-        "in_progress" => "[•]",
-        "completed" => "[x]",
-        "blocked" => "[!]",
-        _ => "[ ]",
+        "in_progress" => "▣",
+        "completed" => "☑",
+        "blocked" => "⚠",
+        _ => "☐",
     }
 }
 
@@ -3462,6 +3466,7 @@ mod tests {
             y: 5,
             width: 40,
             height: 2,
+            line_offset: 0,
             lines: vec!["Hello world".to_owned(), "Second line".to_owned()],
         };
         app.begin_transcript_selection(TranscriptPoint { row: 0, column: 6 });
@@ -3473,6 +3478,36 @@ mod tests {
         );
         assert_eq!(app.transcript_selection_range(0), Some((6, 11)));
         assert_eq!(app.transcript_selection_range(1), Some((0, 6)));
+    }
+
+    #[test]
+    fn transcript_selection_uses_absolute_rows_while_scrolled() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript_viewport = TranscriptViewport {
+            x: 4,
+            y: 8,
+            width: 40,
+            height: 2,
+            line_offset: 2,
+            lines: vec![
+                "first".to_owned(),
+                "second".to_owned(),
+                "third line".to_owned(),
+                "fourth line".to_owned(),
+            ],
+        };
+        let start = app.transcript_viewport.point(4, 8).unwrap();
+        let end = app.transcript_viewport.point(9, 9).unwrap();
+        assert_eq!(start.row, 2);
+        assert_eq!(end.row, 3);
+
+        app.begin_transcript_selection(start);
+        app.update_transcript_selection(end);
+
+        assert_eq!(
+            app.finish_transcript_selection().as_deref(),
+            Some("third line\nfourth")
+        );
     }
 
     #[test]

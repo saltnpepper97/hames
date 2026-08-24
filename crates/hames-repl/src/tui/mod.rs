@@ -484,7 +484,6 @@ fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
-    app.clear_transcript_selection();
     if app.modal.is_some() {
         return handle_modal_key(app, key);
     }
@@ -1106,7 +1105,6 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
 fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
-            app.clear_transcript_selection();
             if app.modal_viewport.point(mouse.column, mouse.row).is_some()
                 && let Some(Modal::Memory(browser)) = &mut app.modal
             {
@@ -1123,7 +1121,6 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
             None
         }
         MouseEventKind::ScrollDown => {
-            app.clear_transcript_selection();
             if app.modal_viewport.point(mouse.column, mouse.row).is_some()
                 && let Some(Modal::Memory(browser)) = &mut app.modal
             {
@@ -2926,6 +2923,7 @@ mod tests {
             updated_at: "now".to_owned(),
         });
         app.open_tasks();
+        assert_eq!(app.sheet.as_ref().unwrap().options[0].label, "☐");
         assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).is_none());
         assert!(app.sheet.is_some());
         assert!(
@@ -3379,6 +3377,7 @@ mod tests {
             y: 3,
             width: 30,
             height: 1,
+            line_offset: 0,
             lines: vec!["Hames transcript".to_owned()],
         };
         assert!(
@@ -3432,6 +3431,7 @@ mod tests {
             y: 3,
             width: 30,
             height: 1,
+            line_offset: 0,
             lines: vec!["◆ Run · 2 actions · complete  ▾".to_owned()],
         };
         app.hits.push(HitRegion {
@@ -3478,6 +3478,7 @@ mod tests {
             y: 5,
             width: 30,
             height: 1,
+            line_offset: 0,
             lines: vec!["Modal content".to_owned()],
         };
         assert!(
