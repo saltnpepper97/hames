@@ -92,7 +92,7 @@ def test_scar_schema_is_migration_nine_and_upgrades_m8(tmp_path: Path) -> None:
     Database(path).migrate()
     assert len(MIGRATIONS) == 15
     with Database(path).connect() as connection:
-        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 14
+        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 15
         tables = {
             str(row["name"])
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
