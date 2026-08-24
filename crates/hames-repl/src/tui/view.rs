@@ -193,7 +193,17 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let block = Block::default()
         .borders(Borders::BOTTOM)
         .border_style(Style::default().fg(Color::Rgb(54, 63, 78)));
-    let right_start = area.width / 2;
+    let desired_left = u16::try_from(
+        11 + app.workspace_name.chars().count()
+            + app
+                .git_ref
+                .as_ref()
+                .map_or(0, |reference| 3 + reference.chars().count()),
+    )
+    .unwrap_or(area.width);
+    let right_start = (area.width / 2)
+        .max(desired_left)
+        .min(area.width.saturating_sub(24));
     frame.render_widget(
         Paragraph::new(left),
         Rect::new(area.x, area.y, right_start.max(1), 1),
@@ -3685,7 +3695,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("◈ Hames"));
-        assert!(rendered.contains("project · main"));
+        assert!(rendered.contains("/tmp/project · main"));
         assert!(!rendered.contains("· default"));
         assert!(rendered.contains("New session · Ready"));
         assert!(rendered.contains("[connected]"));

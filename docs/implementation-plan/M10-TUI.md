@@ -33,8 +33,8 @@ while idle and becomes a short, subdued neutral activity rule during a run, with
 the current activity, properly formatted elapsed time, and a truthful
 `Esc interrupt` control.
 
-The header identifies Hames, the current directory, and the Git branch when the
-directory belongs to a repository. Its right edge presents a durable,
+The header identifies Hames, the full current-directory path, and the Git branch
+when the directory belongs to a repository. Its right edge presents a durable,
 human-readable session title and the current activity (`Ready`, `Thinking`,
 `Exploring`, `Writing`, and related states).
 The model may maintain the title through `session_title_set`, which emits a typed

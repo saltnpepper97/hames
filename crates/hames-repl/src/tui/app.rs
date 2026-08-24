@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -965,12 +964,7 @@ pub struct App {
 impl App {
     pub fn new(session: Session, events: Vec<Event>, trusted: bool) -> Self {
         let context_window = session.context_window_tokens;
-        let workspace_name = Path::new(&session.working_directory)
-            .file_name()
-            .and_then(|value| value.to_str())
-            .filter(|value| !value.is_empty())
-            .unwrap_or(&session.working_directory)
-            .to_owned();
+        let workspace_name = session.working_directory.clone();
         let agent_name = if session.agent_id == "default" {
             "Hames".to_owned()
         } else {

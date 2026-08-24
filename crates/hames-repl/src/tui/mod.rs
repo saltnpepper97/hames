@@ -386,12 +386,7 @@ fn workspace_identity(working_directory: &str) -> (String, Option<String>) {
     let normalized = Path::new(working_directory)
         .canonicalize()
         .unwrap_or_else(|_| Path::new(working_directory).to_path_buf());
-    let directory = normalized
-        .file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .unwrap_or(working_directory)
-        .to_owned();
+    let directory = normalized.to_string_lossy().into_owned();
     let git = |arguments: &[&str]| -> Option<String> {
         let output = Command::new("git")
             .arg("-C")
@@ -2453,11 +2448,17 @@ mod tests {
     fn workspace_identity_uses_directory_and_current_git_branch() {
         let root = env!("CARGO_MANIFEST_DIR").to_owned() + "/../..";
         let (directory, reference) = workspace_identity(&root);
-        assert_eq!(directory, "hames");
+        assert_eq!(
+            directory,
+            std::path::Path::new(&root)
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+        );
         assert!(reference.is_some_and(|value| !value.is_empty()));
 
         let (directory, reference) = workspace_identity("/tmp/hames-not-a-repository");
-        assert_eq!(directory, "hames-not-a-repository");
+        assert_eq!(directory, "/tmp/hames-not-a-repository");
         assert!(reference.is_none());
     }
 
