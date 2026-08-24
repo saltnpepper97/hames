@@ -167,9 +167,17 @@ async fn create_session(
     let agent = current
         .map(|session| session.agent_id.as_str())
         .unwrap_or("default");
-    client
+    let mut created = client
         .create_session(&cwd.to_string_lossy(), agent, &provider, &model, &reasoning)
-        .await
+        .await?;
+    if let Some(current) = current
+        && created.interaction_mode != current.interaction_mode
+    {
+        created = client
+            .update_session_mode(&created.id, &current.interaction_mode)
+            .await?;
+    }
+    Ok(created)
 }
 
 async fn load_app(client: &GatewayClient, session: Session) -> Result<App> {
@@ -578,6 +586,7 @@ fn parse_command(value: &str) -> Option<MenuAction> {
     let mut parts = value.split_whitespace();
     match parts.next()? {
         "/new" => Some(MenuAction::NewSession),
+        "/clear" => Some(MenuAction::ClearSession),
         "/sessions" => Some(MenuAction::OpenSessions),
         "/fork" => Some(MenuAction::ForkSession),
         "/model" | "/provider" => Some(MenuAction::OpenModels),
@@ -626,7 +635,10 @@ fn parse_command(value: &str) -> Option<MenuAction> {
             let content = parts.collect::<Vec<_>>().join(" ");
             (!content.is_empty()).then_some(MenuAction::Correct(content))
         }
-        "/resume" => parts.next().map(|id| MenuAction::Resume(id.to_owned())),
+        "/resume" => parts
+            .next()
+            .map(|id| MenuAction::Resume(id.to_owned()))
+            .or(Some(MenuAction::OpenSessions)),
         "/cancel" => Some(MenuAction::CancelRun),
         "/help" => Some(MenuAction::Help),
         "/quit" | "/exit" => Some(MenuAction::Quit),
@@ -714,6 +726,16 @@ async fn apply_menu_action(
             return Ok(Some(
                 create_session(client, paths, Some(&app.session)).await?,
             ));
+        }
+        MenuAction::ClearSession => {
+            app.notice = Some("Clearing this conversation…".to_owned());
+            let previous = app.session.clone();
+            let created = create_session(client, paths, Some(&previous)).await?;
+            if let Err(error) = client.close_session(&previous.id).await {
+                let _ = client.close_session(&created.id).await;
+                return Err(error);
+            }
+            return Ok(Some(created));
         }
         MenuAction::OpenSessions => {
             app.notice = Some("Loading sessions…".to_owned());
@@ -1386,7 +1408,14 @@ mod tests {
             parse_command("/new"),
             Some(MenuAction::NewSession)
         ));
-        assert!(parse_command("/clear").is_none());
+        assert!(matches!(
+            parse_command("/clear"),
+            Some(MenuAction::ClearSession)
+        ));
+        assert!(matches!(
+            parse_command("/resume"),
+            Some(MenuAction::OpenSessions)
+        ));
         assert!(matches!(
             parse_command("/status"),
             Some(MenuAction::ShowSession)

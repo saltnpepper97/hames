@@ -148,8 +148,9 @@ The first REPL command set is:
 ```text
 /help
 /new
+/clear
 /sessions
-/resume <session-id>
+/resume [session-id]
 /provider [provider] [model]
 /model
 /status

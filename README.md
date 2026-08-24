@@ -124,8 +124,13 @@ clipboard protocol and briefly confirms the copy above the composer.
 Slash commands and the Ctrl+K command palette use an open tray with quiet rules
 above and below the choices rather than a traditional bordered box. The active
 row uses a subdued gray background; green is reserved for query-matching letters.
-The tray shows literal commands: `/new` starts a session, `/status` opens session
-continuity, and `/gateway` shows service health and active work.
+The tray shows literal commands: `/new` starts a session while retaining the
+current conversation in `/sessions`; `/clear` retires the current conversation
+and starts fresh. Bare `/resume` aliases the `/sessions` picker while
+`/resume <session-id>` continues directly. `/status` opens session continuity,
+and `/gateway` shows service health and active work. Every above-composer picker
+shares the palette's open top-and-bottom rules, with its name inset into the top
+rule. Centered dialogs use quiet, square corners rather than rounded popup frames.
 
 The top-right header shows the durable session title beside the current activity
 instead of repeating model controls. The model can set or revise that title with
@@ -238,7 +243,8 @@ exits the client.
 After a completed answer, `/fork` creates a branch and switches to it. `/agent`
 lists portable capsules; `/agent <id>` changes the selected agent for the next
 turn while preserving historical attribution. `/new` creates a separate fresh
-chat; `/clear` also clears the display before beginning one. `/events`
+chat and retains the old one in `/sessions`; `/clear` retires the old chat from
+the resumable list before beginning a new one. `/events`
 shows the effective inherited history and `/session` shows the current ancestry.
 Tool requests and results are printed concisely. Scratch work requested by the
 model lives under `/tmp/hames/runs/<run-id>/<agent-id>/workspace` for that run and

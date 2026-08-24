@@ -274,24 +274,29 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
             TranscriptItem::Thought {
                 content,
                 duration_seconds,
+                interrupted,
                 live,
                 collapsed,
                 ..
             } => {
+                let interactive = !(*interrupted && !*live && content.is_empty());
                 let label = if *live {
                     sheen_line("◈ Thinking", app.tick, LILAC)
                 } else {
-                    Line::from(vec![
+                    let mut spans = vec![
                         Span::styled("◈ ", Style::default().fg(LILAC)),
                         Span::styled(
                             thought_label(*duration_seconds),
                             Style::default().fg(LILAC).bold(),
                         ),
-                        Span::styled(
+                    ];
+                    if interactive {
+                        spans.push(Span::styled(
                             if *collapsed { "  ▸" } else { "  ▾" },
                             Style::default().fg(MUTED),
-                        ),
-                    ])
+                        ));
+                    }
+                    Line::from(spans)
                 };
                 lines.push(RenderLine {
                     line: if app.focused_thought == Some(index) {
@@ -299,7 +304,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     } else {
                         label
                     },
-                    thought: Some(index),
+                    thought: interactive.then_some(index),
                 });
                 if !*collapsed && !content.is_empty() {
                     push_wrapped(
@@ -456,81 +461,73 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .take(inner_height)
     {
         let selected = offset == sheet.selected;
+        let row_style = if selected {
+            Style::default().bg(PANEL_BRIGHT)
+        } else {
+            Style::default()
+        };
+        let mut spans = vec![Span::styled(
+            if selected { "  •" } else { "   " },
+            Style::default()
+                .fg(if selected { INPUT } else { MUTED })
+                .patch(row_style),
+        )];
+        let label_field = format!(" {:<20}", option.label);
         if command_tray {
-            let row_style = if selected {
-                Style::default().bg(PANEL_BRIGHT)
-            } else {
-                Style::default()
-            };
-            let mut spans = vec![Span::styled(
-                if selected { "  •" } else { "   " },
-                Style::default()
-                    .fg(if selected { INPUT } else { MUTED })
-                    .patch(row_style),
-            )];
             spans.extend(command_label_spans(
                 &option.label,
                 &command_query,
                 selected,
                 row_style,
             ));
-            spans.push(Span::styled(
-                format!(" {}", option.detail),
-                Style::default().fg(MUTED).patch(row_style),
-            ));
-            let used = 25 + UnicodeWidthStr::width(option.detail.as_str());
-            spans.push(Span::styled(
-                " ".repeat(usize::from(area.width).saturating_sub(used)),
-                row_style,
-            ));
-            lines.push(Line::from(spans));
         } else {
-            let style = if selected {
-                Style::default().fg(Color::Black).bg(MINT).bold()
-            } else {
-                Style::default().fg(sheet_text_color(app.theme))
-            };
-            let detail_style = if selected {
-                Style::default().fg(Color::Rgb(38, 55, 54)).bg(MINT)
-            } else {
-                Style::default().fg(MUTED)
-            };
-            lines.push(Line::from(vec![
-                Span::raw("   "),
-                Span::styled(format!(" {:<20}", option.label), style),
-                Span::styled(format!(" {}", option.detail), detail_style),
-            ]));
+            spans.push(Span::styled(
+                label_field.clone(),
+                Style::default()
+                    .fg(sheet_text_color(app.theme))
+                    .add_modifier(if selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    })
+                    .patch(row_style),
+            ));
         }
+        spans.push(Span::styled(
+            format!(" {}", option.detail),
+            Style::default().fg(MUTED).patch(row_style),
+        ));
+        let used = 4
+            + UnicodeWidthStr::width(label_field.as_str())
+            + UnicodeWidthStr::width(option.detail.as_str());
+        spans.push(Span::styled(
+            " ".repeat(usize::from(area.width).saturating_sub(used)),
+            row_style,
+        ));
+        lines.push(Line::from(spans));
         app.hits.push(HitRegion {
-            x: area.x + u16::from(!command_tray),
+            x: area.x,
             y: area.y + 1 + u16::try_from(offset - start).unwrap_or(0),
-            width: area.width.saturating_sub(if command_tray { 0 } else { 2 }),
+            width: area.width,
             height: 1,
             action: HitAction::SelectSheet(offset),
         });
     }
-    if command_tray {
-        frame.render_widget(
-            Paragraph::new(lines).block(
-                Block::default()
-                    .borders(Borders::TOP | Borders::BOTTOM)
-                    .border_style(Style::default().fg(Color::Rgb(49, 56, 69))),
-            ),
-            area,
-        );
-        return;
+    let rule = Style::default().fg(Color::Rgb(49, 56, 69));
+    let title = (!command_tray).then(|| {
+        Line::from(vec![
+            Span::styled("─ ", rule),
+            Span::styled(sheet.title.clone(), Style::default().fg(INPUT).bold()),
+            Span::styled(" ─", rule),
+        ])
+    });
+    let mut block = Block::default()
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .border_style(rule);
+    if let Some(title) = title {
+        block = block.title(title);
     }
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .title(format!(" {} ", sheet.title))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(MINT))
-                .style(Style::default().bg(PANEL)),
-        ),
-        area,
-    );
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn command_label_spans(
@@ -913,7 +910,7 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 help_line("Ctrl+C", "cancel active work"),
                 help_line("PgUp / wheel", "scroll transcript"),
                 help_line("Enter / Space", "expand or collapse a selected Thought"),
-                help_line("/new /fork /sessions", "session continuity"),
+                help_line("/new /clear /resume", "session continuity"),
                 help_line("/model /agent /mode", "runtime controls"),
                 Line::from(""),
                 Line::from(Span::styled(
@@ -1005,7 +1002,7 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 Block::default()
                     .title(format!(" {title} "))
                     .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
+                    .border_type(BorderType::Plain)
                     .border_style(Style::default().fg(match modal {
                         Modal::Approval(_) => GOLD,
                         Modal::Error(_) => CORAL,
@@ -1239,7 +1236,7 @@ fn mode_outline(mode: &str) -> Color {
 
 fn sheet_text_color(theme: ThemeKind) -> Color {
     match theme {
-        ThemeKind::Hames => Color::White,
+        ThemeKind::Hames => INPUT,
         ThemeKind::Terminal => Color::DarkGray,
     }
 }
@@ -1322,7 +1319,7 @@ mod tests {
         mode_outline, pasted_display, scrollbar_position, sheet_text_color, thought_label,
     };
     use crate::api::{PasteSpan, Session};
-    use crate::tui::app::{App, TranscriptItem, TranscriptPoint};
+    use crate::tui::app::{App, HitAction, Modal, TranscriptItem, TranscriptPoint};
 
     #[test]
     fn thought_duration_uses_significance_threshold_and_readable_units() {
@@ -1390,6 +1387,38 @@ mod tests {
     }
 
     #[test]
+    fn empty_interrupted_thought_has_no_disclosure_or_click_target() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::Thought {
+            run_id: "run-interrupted".to_owned(),
+            content: String::new(),
+            duration_seconds: 3.0,
+            interrupted: true,
+            live: false,
+            collapsed: true,
+        });
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Thought"));
+        assert!(!rendered.contains('▸'));
+        assert!(!rendered.contains('▾'));
+        assert!(
+            !app.hits
+                .iter()
+                .any(|region| matches!(region.action, HitAction::ToggleThought(_)))
+        );
+    }
+
+    #[test]
     fn composer_mode_colors_keep_the_caret_neutral() {
         assert_eq!(INPUT, Color::Rgb(156, 164, 178));
         assert_eq!(mode_color("manual"), MUTED);
@@ -1398,6 +1427,7 @@ mod tests {
         assert_eq!(mode_outline("manual"), MUTED);
         assert_eq!(mode_outline("auto"), MUTED);
         assert_eq!(mode_outline("plan"), GOLD);
+        assert_eq!(sheet_text_color(crate::tui::app::ThemeKind::Hames), INPUT);
         assert_eq!(
             sheet_text_color(crate::tui::app::ThemeKind::Terminal),
             Color::DarkGray
@@ -1534,6 +1564,7 @@ mod tests {
         let options = &app.sheet.as_ref().unwrap().options;
         assert!(options.iter().any(|option| option.label == "/status"));
         assert!(options.iter().any(|option| option.label == "/gateway"));
+        assert!(options.iter().any(|option| option.label == "/clear"));
 
         app.composer.clear();
         app.composer.insert_text("/mo");
@@ -1546,6 +1577,40 @@ mod tests {
         assert_eq!(buffer.cell((5, narrowed_top + 1)).unwrap().fg, MINT);
         assert_eq!(buffer.cell((6, narrowed_top + 1)).unwrap().fg, MINT);
         assert_eq!(buffer.cell((7, narrowed_top + 1)).unwrap().fg, INPUT);
+    }
+
+    #[test]
+    fn selection_sheets_share_the_open_tray_with_an_inset_title() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.open_modes();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let tray_top = 21;
+        let tray_bottom = 25;
+        assert_eq!(buffer.cell((0, tray_top)).unwrap().symbol(), "─");
+        assert_eq!(buffer.cell((1, tray_top)).unwrap().symbol(), " ");
+        assert_eq!(buffer.cell((2, tray_top)).unwrap().symbol(), "E");
+        assert_eq!(buffer.cell((99, tray_top)).unwrap().symbol(), "─");
+        assert_eq!(buffer.cell((0, tray_bottom)).unwrap().symbol(), "─");
+        assert_eq!(buffer.cell((99, tray_bottom)).unwrap().symbol(), "─");
+        assert_eq!(buffer.cell((2, tray_top + 2)).unwrap().symbol(), "•");
+        assert_eq!(buffer.cell((50, tray_top + 2)).unwrap().bg, PANEL_BRIGHT);
+    }
+
+    #[test]
+    fn centered_modals_use_square_corners() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.modal = Some(Modal::Session);
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((11, 9)).unwrap().symbol(), "┌");
+        assert_eq!(buffer.cell((88, 9)).unwrap().symbol(), "┐");
     }
 
     #[test]

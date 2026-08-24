@@ -257,9 +257,15 @@ async fn handle_command(
         "/clear" => {
             *remember_next = false;
             let mode = session.interaction_mode.clone();
-            *session = client
+            let previous_id = session.id.clone();
+            let created = client
                 .create_session(cwd, &session.agent_id, provider, model, reasoning)
                 .await?;
+            if let Err(error) = client.close_session(&previous_id).await {
+                let _ = client.close_session(&created.id).await;
+                return Err(error);
+            }
+            *session = created;
             if mode != "auto" {
                 *session = client.update_session_mode(&session.id, &mode).await?;
             }
@@ -271,30 +277,7 @@ async fn handle_command(
                 style::success(&format!("Fresh session {}", session.id))
             );
         }
-        "/sessions" => {
-            let sessions = client.sessions().await?;
-            println!("{}", style::section("Sessions"));
-            if sessions.is_empty() {
-                println!("  {}", style::dim("No sessions"));
-            }
-            for item in sessions {
-                println!(
-                    "{}  {:<8}  {}  {} / {}  {:<6}  {}  {}{}",
-                    item.id,
-                    item.status,
-                    item.created_at,
-                    item.provider,
-                    item.model,
-                    item.interaction_mode,
-                    item.agent_id,
-                    item.title.as_deref().unwrap_or(&item.working_directory),
-                    item.parent_session_id
-                        .as_ref()
-                        .map(|parent| format!("  branch-of {parent}"))
-                        .unwrap_or_default()
-                );
-            }
-        }
+        "/sessions" => print_open_sessions(client).await?,
         "/session" => print_session(session),
         "/project" => {
             println!("{}", style::section("Project"));
@@ -399,7 +382,10 @@ async fn handle_command(
         }
         "/resume" => {
             *remember_next = false;
-            let id = parts.get(1).context("usage: /resume <session-id>")?;
+            let Some(id) = parts.get(1) else {
+                print_open_sessions(client).await?;
+                return Ok(CommandOutcome::Continue);
+            };
             *session = client.session(id).await?;
             *provider = session.provider.clone();
             *model = session.model.clone();
@@ -615,6 +601,36 @@ async fn handle_command(
         unknown => bail!("unknown command: {unknown}; use /help"),
     }
     Ok(CommandOutcome::Continue)
+}
+
+async fn print_open_sessions(client: &GatewayClient) -> Result<()> {
+    let sessions = client
+        .sessions()
+        .await?
+        .into_iter()
+        .filter(|session| session.status == "open")
+        .collect::<Vec<_>>();
+    println!("{}", style::section("Sessions"));
+    if sessions.is_empty() {
+        println!("  {}", style::dim("No sessions"));
+    }
+    for item in sessions {
+        println!(
+            "{}  {}  {} / {}  {:<6}  {}  {}{}",
+            item.id,
+            item.created_at,
+            item.provider,
+            item.model,
+            item.interaction_mode,
+            item.agent_id,
+            item.title.as_deref().unwrap_or(&item.working_directory),
+            item.parent_session_id
+                .as_ref()
+                .map(|parent| format!("  branch-of {parent}"))
+                .unwrap_or_default()
+        );
+    }
+    Ok(())
 }
 
 fn select_model(
@@ -2220,9 +2236,13 @@ impl SseDecoder {
 fn print_help() {
     println!("{}", style::section("Conversation"));
     print_help_rows(&[
-        ("/new · /clear", "Start a fresh session"),
+        ("/new", "Start fresh and retain this conversation"),
+        ("/clear", "Retire this conversation and start fresh"),
         ("/session · /sessions", "Inspect or list sessions"),
-        ("/resume <id> · /fork [event]", "Resume or branch history"),
+        (
+            "/resume [id] · /fork [event]",
+            "Choose, resume, or branch history",
+        ),
         ("/agent [id]", "Inspect or change the active agent"),
         (
             "/mode [manual|auto|plan]",

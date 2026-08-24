@@ -328,6 +328,7 @@ pub enum Modal {
 #[derive(Clone, Debug)]
 pub enum MenuAction {
     NewSession,
+    ClearSession,
     OpenSessions,
     ForkSession,
     OpenModels,
@@ -673,7 +674,16 @@ impl App {
 
     pub fn command_options(&self) -> Vec<MenuOption> {
         vec![
-            option("/new", "start a clean conversation", MenuAction::NewSession),
+            option(
+                "/new",
+                "start fresh and keep this conversation",
+                MenuAction::NewSession,
+            ),
+            option(
+                "/clear",
+                "discard this conversation and start fresh",
+                MenuAction::ClearSession,
+            ),
             option("/sessions", "resume recent work", MenuAction::OpenSessions),
             option("/fork", "branch this session", MenuAction::ForkSession),
             option(
@@ -1032,7 +1042,15 @@ impl App {
     }
 
     pub fn toggle_thought(&mut self, index: usize) {
-        if let Some(TranscriptItem::Thought { collapsed, .. }) = self.transcript.get_mut(index) {
+        if let Some(TranscriptItem::Thought {
+            content,
+            interrupted,
+            live,
+            collapsed,
+            ..
+        }) = self.transcript.get_mut(index)
+            && !(*interrupted && !*live && content.is_empty())
+        {
             *collapsed = !*collapsed;
         }
     }
@@ -1042,8 +1060,15 @@ impl App {
             .transcript
             .iter()
             .enumerate()
-            .filter_map(|(index, item)| {
-                matches!(item, TranscriptItem::Thought { .. }).then_some(index)
+            .filter_map(|(index, item)| match item {
+                TranscriptItem::Thought {
+                    content,
+                    interrupted: true,
+                    live: false,
+                    ..
+                } if content.is_empty() => None,
+                TranscriptItem::Thought { .. } => Some(index),
+                _ => None,
             })
             .collect();
         if thoughts.is_empty() {

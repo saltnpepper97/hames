@@ -743,6 +743,27 @@ def create_app(state: GatewayState) -> FastAPI:
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
 
+    @app.delete("/v1/sessions/{session_id}", dependencies=auth, response_model=Session)
+    async def close_session(session_id: str) -> Session:
+        if not await state.runs.finish_terminal_session(session_id):
+            raise ApiError(
+                409,
+                "session_run_active",
+                "cannot clear a session during an active run",
+            )
+        try:
+            return await asyncio.to_thread(state.ledger.close_session, session_id)
+        except KeyError as exc:
+            try:
+                await asyncio.to_thread(state.ledger.get_session, session_id)
+            except KeyError:
+                raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+            raise ApiError(
+                409,
+                "session_not_open",
+                "session is already closed",
+            ) from exc
+
     async def session_trust(session_id: str) -> tuple[Session, object | None]:
         try:
             session = await asyncio.to_thread(state.ledger.get_session, session_id)

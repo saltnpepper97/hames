@@ -86,8 +86,9 @@ An agent may restrict its tool set below global/project policy but cannot broade
 Provider, model, and reasoning settings are session-owned. Selecting an agent
 changes only the capsule used for future turns in the current session and emits a
 durable `session.agent.changed` event. It is rejected while a run is active, and
-never rewrites historical event attribution. `/new` begins a separate chat;
-`/clear` clears the display and begins one. `/fork` remains the explicit way to
+never rewrites historical event attribution. `/new` begins a separate chat and
+keeps the previous session resumable; `/clear` retires the previous session
+before beginning one. `/fork` remains the explicit way to
 carry history into a branch before selecting another agent.
 
 ## Context integration

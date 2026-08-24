@@ -55,7 +55,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 12
+            assert health_body["protocol_version"] == 13
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -266,6 +266,57 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             )
             assert verified.status_code == 200
             assert response_object(verified)["ok"] is True
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_closes_session_without_erasing_audit_history(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            assert created.status_code == 201
+            session_id = str(response_object(created)["id"])
+
+            closed = await client.delete(f"/v1/sessions/{session_id}", headers=headers)
+            assert closed.status_code == 200
+            assert response_object(closed)["status"] == "closed"
+
+            recent = await client.get(
+                "/v1/sessions/recent",
+                headers=headers,
+                params={"working_directory": str(tmp_path)},
+            )
+            assert recent.status_code == 200
+            assert recent.json() is None
+
+            history = await client.get(f"/v1/sessions/{session_id}/history", headers=headers)
+            assert history.status_code == 200
+            events = EVENT_LIST.validate_python(cast(object, history.json()))
+            assert [event["type"] for event in events] == [
+                "session.opened",
+                "session.closed",
+            ]
+
+            closed_again = await client.delete(f"/v1/sessions/{session_id}", headers=headers)
+            assert closed_again.status_code == 409
+            error = response_object(closed_again)["error"]
+            assert isinstance(error, dict)
+            assert error["code"] == "session_not_open"
+            missing = await client.delete("/v1/sessions/missing", headers=headers)
+            assert missing.status_code == 404
     finally:
         await state.runs.close()
 

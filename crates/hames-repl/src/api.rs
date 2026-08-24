@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 #[derive(Clone)]
 pub struct GatewayClient {
@@ -632,6 +632,17 @@ impl GatewayClient {
                     model,
                     reasoning_effort,
                 })
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn close_session(&self, session_id: &str) -> Result<Session> {
+        decode(
+            self.http
+                .delete(format!("{}/v1/sessions/{session_id}", self.base_url))
+                .bearer_auth(&self.token)
                 .send()
                 .await?,
         )

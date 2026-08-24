@@ -55,8 +55,12 @@ viewport. Their tracks support mouse clicks and dragging.
 - Slash commands and Ctrl+K share a borderless command tray: horizontal rules
   define its top and bottom while the selectable rows remain visually open. A
   gray band marks the active row and green marks only the query-matching text.
-  Rows use their literal slash names; `/new` creates a session, `/status` opens
-  session continuity, and `/gateway` owns gateway health.
+  All other above-composer selection sheets reuse those open rules and subdued
+  rows, adding only an inset title to the top rule.
+  Rows use their literal slash names. `/new` preserves the current conversation
+  and starts another; `/clear` retires it before starting fresh. Bare `/resume`
+  aliases the `/sessions` picker and `/resume <id>` remains the direct path.
+  `/status` opens session continuity and `/gateway` owns gateway health.
 - `/model` shows reachable configured providers only. Reasoning-capable model
   choice leads to a capability-specific second sheet: `on`/`off` for boolean
   reasoning or the advertised named effort scale. Both selections apply
@@ -69,7 +73,8 @@ viewport. Their tracks support mouse clicks and dragging.
 - Only `model.requested` events belonging to the active foreground chat run may
   create a pending Thought; background memory and workflow model jobs remain out
   of the conversation transcript.
-- Trust and approval decisions use focused modals. Approvals preserve the
+- Centered modals use square borders. Trust and approval decisions use focused
+  modals. Approvals preserve the
   gateway's allow-for-session, allow-once, and deny semantics.
 - Status, usage, events, inspection, context, memory, Skills, Scars, plugins,
   export, correction, and explicit memory capture are reachable from the palette
