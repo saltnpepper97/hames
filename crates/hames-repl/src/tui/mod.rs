@@ -42,6 +42,7 @@ const RECENT_SESSION_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 pub async fn run() -> Result<()> {
     let paths = LocalPaths::resolve()?;
+    crate::local::ensure_search_setup(&paths, false)?;
     ensure_gateway(&paths).await?;
     let client = GatewayClient::from_paths(&paths)?;
     let health = client.health().await?;
@@ -208,16 +209,12 @@ pub async fn run() -> Result<()> {
         client.close_session(&session_id).await?;
     } else if let Some(notice) = exit_notice {
         println!("{notice}");
-        if goal_continues {
-            println!("Goal continues in the gateway");
-        }
     }
     Ok(())
 }
 
 fn session_exit_notice(session_id: &str, discard_empty: bool) -> Option<String> {
-    (!discard_empty)
-        .then(|| format!("Session saved · use /resume {session_id} to continue where you left off"))
+    (!discard_empty).then(|| format!("Resume session with\n  /resume {session_id}"))
 }
 
 async fn create_session(
@@ -1925,24 +1922,35 @@ async fn apply_menu_action(
         }
         MenuAction::Status => {
             let health = client.health().await?;
-            app.modal = Some(info(
-                "Gateway status",
-                vec![
-                    format!("Status       {}", health.status),
-                    format!("Core         {}", health.version),
-                    format!("Protocol     {}", health.protocol_version),
-                    format!(
-                        "Database     {}",
-                        if health.database_ready {
-                            "ready"
-                        } else {
-                            "not ready"
-                        }
-                    ),
-                    format!("Active runs  {}", health.active_runs),
-                    format!("Provider     {}", health.default_provider),
-                ],
-            ));
+            let mut lines = vec![
+                format!("Status       {}", health.status),
+                format!("Core         {}", health.version),
+                format!("Protocol     {}", health.protocol_version),
+                format!(
+                    "Database     {}",
+                    if health.database_ready {
+                        "ready"
+                    } else {
+                        "not ready"
+                    }
+                ),
+                format!("Active runs  {}", health.active_runs),
+                format!("Provider     {}", health.default_provider),
+            ];
+            if let Some(search) = health.search {
+                lines.push(format!("Web search   {}", search.mcp_status));
+                if !search.protocol_version.is_empty() {
+                    lines.push(format!("Search MCP   {}", search.protocol_version));
+                }
+                lines.push(format!("SearXNG      {}", search.service.status));
+                if !search.service.runtime.is_empty() {
+                    lines.push(format!("Runtime      {}", search.service.runtime));
+                }
+                if !search.error.is_empty() {
+                    lines.push(format!("Search issue {}", search.error));
+                }
+            }
+            app.modal = Some(info("Gateway status", lines));
         }
         MenuAction::Usage => {
             let usage = client.usage(&app.session.id).await?;
@@ -2535,7 +2543,7 @@ mod tests {
         assert_eq!(session_exit_notice("empty", true), None);
         assert_eq!(
             session_exit_notice("kept", false).as_deref(),
-            Some("Session saved · use /resume kept to continue where you left off")
+            Some("Resume session with\n  /resume kept")
         );
     }
 

@@ -257,6 +257,7 @@ impl ActivityRow {
             .or_else(|| self.arguments.get("command"))
             .or_else(|| self.arguments.get("goal"))
             .or_else(|| self.arguments.get("query"))
+            .or_else(|| self.arguments.get("url"))
             .and_then(Value::as_str)
             .unwrap_or_default();
         if path.is_empty() {
@@ -269,6 +270,30 @@ impl ActivityRow {
     pub fn verb(&self) -> &'static str {
         let write = matches!(self.name.as_str(), "write_file" | "edit_file");
         let read = matches!(self.name.as_str(), "read_file" | "list_dir");
+        if self.name == "web_search" {
+            return match self.phase {
+                ActivityPhase::Preparing => "Preparing search",
+                ActivityPhase::Checking => "Checking access",
+                ActivityPhase::Approval => "Awaiting permission",
+                ActivityPhase::Running => "Searching",
+                ActivityPhase::Completed => "Searched",
+                ActivityPhase::Failed => "Failed",
+                ActivityPhase::Rejected => "Rejected",
+                ActivityPhase::Cancelled => "Cancelled",
+            };
+        }
+        if self.name == "web_fetch" {
+            return match self.phase {
+                ActivityPhase::Preparing => "Preparing fetch",
+                ActivityPhase::Checking => "Checking access",
+                ActivityPhase::Approval => "Awaiting permission",
+                ActivityPhase::Running => "Fetching",
+                ActivityPhase::Completed => "Fetched",
+                ActivityPhase::Failed => "Failed",
+                ActivityPhase::Rejected => "Rejected",
+                ActivityPhase::Cancelled => "Cancelled",
+            };
+        }
         if self.name == "memory_forget" {
             return match self.phase {
                 ActivityPhase::Preparing => "Preparing",
@@ -2440,7 +2465,7 @@ fn approval_from(payload: &Value) -> ApprovalModal {
 
 fn category_for_tool(name: &str) -> ActivityCategory {
     match name {
-        "read_file" | "list_dir" => ActivityCategory::Explore,
+        "read_file" | "list_dir" | "web_search" | "web_fetch" => ActivityCategory::Explore,
         "write_file" | "edit_file" | "session_title_set" => ActivityCategory::Change,
         "shell" | "skill_run" => ActivityCategory::Run,
         "spawn_agent" => ActivityCategory::Delegate,

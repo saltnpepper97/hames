@@ -67,6 +67,26 @@ class HamesPaths:
         return self.root / "plugins"
 
     @property
+    def services(self) -> Path:
+        return self.root / "services"
+
+    @property
+    def search_service(self) -> Path:
+        return self.services / "search"
+
+    @property
+    def search_state(self) -> Path:
+        return self.search_service / "state.json"
+
+    @property
+    def search_config(self) -> Path:
+        return self.search_service / "config"
+
+    @property
+    def search_cache(self) -> Path:
+        return self.search_service / "cache"
+
+    @property
     def logs(self) -> Path:
         return self.root / "logs"
 
@@ -95,6 +115,7 @@ class HamesPaths:
             self.agents / "default",
             self.skills,
             self.plugins,
+            self.services,
             self.logs,
             self.runtime,
         ):

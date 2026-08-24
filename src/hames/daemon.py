@@ -23,6 +23,7 @@ from hames.gateway import GatewayState, create_app
 from hames.logging import configure_logging
 from hames.paths import HamesPaths
 from hames.providers.base import JSON_OBJECT
+from hames.search_service import SearchService
 
 
 class GatewayAlreadyRunning(RuntimeError):
@@ -70,6 +71,7 @@ class GatewayProcessStatus:
     url: str
     protocol_version: int | None = None
     version: str | None = None
+    search: dict[str, object] | None = None
 
     def to_json(self) -> str:
         return json.dumps(
@@ -80,6 +82,7 @@ class GatewayProcessStatus:
                 "url": self.url,
                 "protocol_version": self.protocol_version,
                 "version": self.version,
+                "search": self.search,
             },
             sort_keys=True,
         )
@@ -224,6 +227,7 @@ def gateway_status(paths: HamesPaths) -> GatewayProcessStatus:
         data = JSON_OBJECT.validate_python(cast(object, response.json()))
         protocol = data.get("protocol_version")
         version = data.get("version")
+        search = data.get("search")
         return GatewayProcessStatus(
             running=True,
             pid=pid,
@@ -231,6 +235,7 @@ def gateway_status(paths: HamesPaths) -> GatewayProcessStatus:
             url=url,
             protocol_version=int(protocol) if isinstance(protocol, int) else None,
             version=str(version) if version is not None else None,
+            search=cast(dict[str, object], search) if isinstance(search, dict) else None,
         )
     except (httpx.HTTPError, ValueError):
         return GatewayProcessStatus(running=pid is not None, pid=pid, healthy=False, url=url)
@@ -298,9 +303,11 @@ def stop(paths: HamesPaths, *, wait_seconds: float = 10.0) -> GatewayProcessStat
     status = gateway_status(paths)
     if status.pid is None:
         paths.gateway_pid.unlink(missing_ok=True)
+        SearchService(paths).stop()
         return status
     if not is_owned_gateway_process(status.pid):
         raise RuntimeError("gateway PID file does not identify an owned Hames gateway process")
     _terminate_pid(status.pid, wait_seconds)
     paths.gateway_pid.unlink(missing_ok=True)
+    SearchService(paths).stop()
     return gateway_status(paths)

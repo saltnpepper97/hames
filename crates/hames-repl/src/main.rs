@@ -29,6 +29,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Configure Hames and its private local services.
+    Setup,
     /// Open the full-screen terminal interface.
     Tui,
     /// Open the classic line-oriented REPL.
@@ -39,6 +41,11 @@ enum Command {
     Gateway {
         #[command(subcommand)]
         action: GatewayAction,
+    },
+    /// Inspect and control private web search.
+    Search {
+        #[command(subcommand)]
+        action: SearchAction,
     },
     /// Inspect and branch durable sessions.
     Session {
@@ -72,6 +79,15 @@ enum GatewayAction {
     Start,
     Stop,
     Status,
+}
+
+#[derive(Clone, Debug, Subcommand)]
+enum SearchAction {
+    Status,
+    Start,
+    Stop,
+    Restart,
+    Update,
 }
 
 #[derive(Clone, Debug, Subcommand)]
@@ -310,16 +326,34 @@ enum EventAction {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Some(Command::Setup) => {
+            let paths = LocalPaths::resolve()?;
+            local::ensure_search_setup(&paths, true)
+        }
         Some(Command::Tui) => tui::run().await,
         Some(Command::Repl) => repl::run().await,
         Some(Command::Doctor) => local::run_backend(["doctor", "--json"]),
         Some(Command::Gateway { action }) => {
+            let paths = LocalPaths::resolve()?;
+            if matches!(action, GatewayAction::Start) {
+                local::ensure_search_setup(&paths, false)?;
+            }
             let action = match action {
                 GatewayAction::Start => "start",
                 GatewayAction::Stop => "stop",
                 GatewayAction::Status => "status",
             };
             local::run_backend([action, "--json"])
+        }
+        Some(Command::Search { action }) => {
+            let action = match action {
+                SearchAction::Status => "status",
+                SearchAction::Start => "start",
+                SearchAction::Stop => "stop",
+                SearchAction::Restart => "restart",
+                SearchAction::Update => "update",
+            };
+            local::run_backend(["search", action, "--json"])
         }
         Some(Command::Session { action }) => run_session_command(action).await,
         Some(Command::Agent { action }) => run_agent_command(action).await,

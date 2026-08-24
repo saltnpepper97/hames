@@ -25,6 +25,22 @@ pub struct Health {
     pub provider_profiles: Vec<String>,
     pub default_provider: String,
     pub active_runs: u64,
+    #[serde(default)]
+    pub search: Option<SearchRuntimeStatus>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct SearchRuntimeStatus {
+    pub service: SearchServiceStatus,
+    pub mcp_status: String,
+    pub protocol_version: String,
+    pub error: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct SearchServiceStatus {
+    pub status: String,
+    pub runtime: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]

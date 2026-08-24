@@ -77,6 +77,7 @@ from hames.rules import (
     PolicyRule,
 )
 from hames.runtime import RunManager
+from hames.search_runtime import SearchMcpManager, SearchRuntimeStatus
 from hames.skill_runtime import SkillManager
 from hames.skills import SkillJob, SkillSummary, SkillVersion
 
@@ -335,6 +336,7 @@ class Health(ApiModel):
     provider_profiles: list[str]
     default_provider: str
     active_runs: int
+    search: SearchRuntimeStatus
 
 
 class ApiError(Exception):
@@ -367,6 +369,7 @@ class GatewayState:
     skills: SkillManager
     evolution: EvolutionManager
     plugins: PluginManager
+    search: SearchMcpManager
     token: str
 
     @classmethod
@@ -388,6 +391,7 @@ class GatewayState:
             profile_id: SerializedProvider(provider)
             for profile_id, provider in raw_providers.items()
         }
+        search = SearchMcpManager(paths, config)
         runs = RunManager(
             ledger=ledger,
             paths=paths,
@@ -395,6 +399,7 @@ class GatewayState:
             controls=controls,
             providers=selected_providers,
             broker=broker,
+            search=search,
         )
         memory = MemoryManager(
             ledger=ledger,
@@ -443,6 +448,7 @@ class GatewayState:
             skills,
             evolution,
             plugins,
+            search,
             paths.read_gateway_token(),
         )
 
@@ -457,6 +463,7 @@ class GatewayState:
 def create_app(state: GatewayState) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
+        await state.search.start()
         await state.plugins.start_enabled()
         await state.runs.recover_queues()
         await state.runs.recover_goals()
@@ -523,6 +530,7 @@ def create_app(state: GatewayState) -> FastAPI:
             provider_profiles=sorted(state.providers),
             default_provider=state.config.runtime.default_provider,
             active_runs=state.runs.active_run_count,
+            search=state.search.status(),
         )
 
     @app.get("/v1/providers", dependencies=auth, response_model=list[ProviderProfile])

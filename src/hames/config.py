@@ -7,7 +7,7 @@ import os
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -117,6 +117,15 @@ class ToolsConfig(StrictModel):
         return self
 
 
+class WebConfig(StrictModel):
+    search_limit: int = Field(default=8, ge=1, le=20)
+    safe_search: Literal["off", "moderate", "strict"] = "moderate"
+    search_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
+    fetch_timeout_seconds: float = Field(default=15.0, gt=0, le=60)
+    fetch_max_bytes: int = Field(default=2_097_152, ge=65_536, le=10_485_760)
+    fetch_max_chars: int = Field(default=30_000, ge=1_024, le=100_000)
+
+
 class GatewayConfig(StrictModel):
     host: str = "127.0.0.1"
     port: int = Field(default=7411, ge=1, le=65535)
@@ -213,6 +222,7 @@ class HamesConfig(StrictModel):
     evolution: EvolutionConfig = EvolutionConfig()
     plugins: PluginsConfig = PluginsConfig()
     tools: ToolsConfig = ToolsConfig()
+    web: WebConfig = WebConfig()
     gateway: GatewayConfig = GatewayConfig()
     providers: dict[str, ProviderProfileConfig] = Field(default_factory=_default_provider_profiles)
     logging: LoggingConfig = LoggingConfig()

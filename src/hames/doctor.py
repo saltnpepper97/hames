@@ -14,6 +14,7 @@ from hames import PROTOCOL_VERSION, __version__
 from hames.agent import load_agent
 from hames.config import is_legacy_config, load_config
 from hames.paths import HamesPaths
+from hames.search_service import SearchService, SearchStatus
 
 
 class DoctorReport(BaseModel):
@@ -29,6 +30,7 @@ class DoctorReport(BaseModel):
     bubblewrap: bool
     default_agent_hash: str
     config_compatibility: str | None
+    search: SearchStatus
 
 
 def _has_fts5() -> bool:
@@ -62,6 +64,7 @@ def run_doctor(paths: HamesPaths) -> DoctorReport:
         bubblewrap=shutil.which("bwrap") is not None,
         default_agent_hash=agent.content_hash,
         config_compatibility=_config_compatibility(paths),
+        search=SearchService(paths).status(),
     )
 
 

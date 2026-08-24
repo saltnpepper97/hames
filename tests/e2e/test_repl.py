@@ -166,8 +166,8 @@ async def test_rust_repl_through_gateway_and_ledger(tmp_path: Path) -> None:
         assert len(sessions) == 2
         root = next(session for session in sessions if session.parent_session_id is None)
         branch = next(session for session in sessions if session.parent_session_id is not None)
-        assert "Session saved" in output
-        assert "Continue where you left off with" in output
+        assert "Resume session with" in output
+        assert "Continue where you left off with" not in output
         assert f"/resume {branch.id}" in output
         events = state.ledger.list_events(root.id)
         event_types = [event.type for event in events]
@@ -304,6 +304,8 @@ async def test_ratatui_chat_through_gateway_and_terminal_cleanup(tmp_path: Path)
         os.close(slave)
         slave = -1
         reader = asyncio.create_task(collect_pty(master, output, done))
+        await wait_for_pty_text(output, b"Enable web search?")
+        os.write(master, b"n\r")
         await wait_for_pty_text(output, b"Trust this workspace")
         os.write(master, b"t")
         await wait_for_pty_text(output, b"Message Hames")
@@ -321,8 +323,8 @@ async def test_ratatui_chat_through_gateway_and_terminal_cleanup(tmp_path: Path)
         assert any(event.type == "run.completed" for event in durable)
         os.write(master, b"\x11")
         assert await asyncio.wait_for(process.wait(), timeout=5) == 0
-        await wait_for_pty_text(output, b"Session saved")
-        assert b"use /resume" in output
+        await wait_for_pty_text(output, b"Resume session with")
+        assert b"/resume " in output
         assert b"\x1b[?1049h" in output
         assert b"\x1b[?1049l" in output
         assert provider.requests[0].messages[-1].content == "hello"

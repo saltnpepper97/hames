@@ -22,6 +22,7 @@ use crate::style;
 pub async fn run() -> Result<()> {
     style::init();
     let paths = LocalPaths::resolve()?;
+    crate::local::ensure_search_setup(&paths, false)?;
     ensure_gateway(&paths).await?;
     let client = GatewayClient::from_paths(&paths)?;
     let health = client.health().await?;
@@ -152,12 +153,8 @@ fn exit_resume_command(session_id: &str, has_conversation: bool) -> Option<Strin
 
 fn print_exit_handoff(command: &str) {
     println!();
-    println!("{}", style::section("Session saved"));
-    println!(
-        "  {} {}",
-        style::dim("Continue where you left off with"),
-        style::paint("1", command)
-    );
+    println!("{}", style::dim("Resume session with"));
+    println!("  {}", style::paint("1", command));
 }
 
 #[cfg(unix)]
@@ -768,6 +765,15 @@ async fn print_statuses(client: &GatewayClient) -> Result<()> {
         style::key_value("Default provider", &health.default_provider)
     );
     println!("{}", style::key_value("Active runs", health.active_runs));
+    if let Some(search) = &health.search {
+        println!("{}", style::key_value("Web search", &search.mcp_status));
+        if !search.protocol_version.is_empty() {
+            println!(
+                "{}",
+                style::key_value("Search MCP", &search.protocol_version)
+            );
+        }
+    }
     let profiles = client.providers().await?;
     let probes = futures_util::future::join_all(
         profiles

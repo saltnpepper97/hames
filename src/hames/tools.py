@@ -12,7 +12,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path, PurePath
-from typing import ClassVar, Literal, cast
+from typing import ClassVar, Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -213,6 +213,19 @@ class GoalReportArguments(ToolArguments):
     evidence: list[str] = Field(min_length=1, max_length=16)
 
 
+class WebSearchArguments(ToolArguments):
+    query: str = Field(min_length=1, max_length=1000)
+    limit: int = Field(default=8, ge=1, le=20)
+    language: str = Field(default="all", min_length=1, max_length=32)
+    categories: list[str] | None = Field(default=None, max_length=8)
+    time_range: Literal["day", "month", "year"] | None = None
+    safe_search: Literal["off", "moderate", "strict"] | None = None
+
+
+class WebFetchArguments(ToolArguments):
+    url: str = Field(min_length=1, max_length=4096)
+
+
 class ToolResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -226,6 +239,26 @@ class ToolResult(BaseModel):
 
     def for_model(self) -> str:
         return json.dumps(self.model_dump(mode="json"), separators=(",", ":"))
+
+
+class SearchToolExecutor(Protocol):
+    @property
+    def ready(self) -> bool: ...
+
+    def definition(self, name: str) -> ToolDefinition | None: ...
+
+    async def call(self, name: str, arguments: dict[str, JsonValue]) -> SearchCallOutcome: ...
+
+
+class SearchCallOutcome(Protocol):
+    @property
+    def failed(self) -> bool: ...
+
+    @property
+    def content(self) -> str: ...
+
+    @property
+    def structured_data(self) -> dict[str, JsonValue]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,6 +294,9 @@ class ToolBase:
     description = ""
     side_effect_class = "read"
     arguments_type: ClassVar[type[ToolArguments]] = ToolArguments
+
+    def available(self) -> bool:
+        return True
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
@@ -650,8 +686,74 @@ class GoalReportTool(ToolBase):
     arguments_type: ClassVar[type[ToolArguments]] = GoalReportArguments
 
 
+class _WebMcpTool(ToolBase):
+    def __init__(self, executor: SearchToolExecutor) -> None:
+        self.executor = executor
+
+    def available(self) -> bool:
+        return self.executor.ready
+
+    def definition(self) -> ToolDefinition:
+        return self.executor.definition(self.name) or super().definition()
+
+    async def execute(self, context: ToolContext, arguments: ToolArguments) -> ToolResult:
+        started = time.monotonic()
+        try:
+            outcome = await self.executor.call(
+                self.name,
+                cast(dict[str, JsonValue], arguments.model_dump(mode="json", exclude_none=True)),
+            )
+            failed = outcome.failed
+            structured = dict(outcome.structured_data)
+            if self.name == "web_fetch":
+                extracted = structured.pop("content", "")
+                raw_content = str(extracted) if isinstance(extracted, str) else outcome.content
+            else:
+                raw_content = "" if structured else outcome.content
+            content, truncated, references = _bounded_content(raw_content, context)
+            summary = self._summary(structured)
+            if failed:
+                summary = raw_content or f"{self.name} failed"
+            return ToolResult(
+                status="failed" if failed else "completed",
+                summary=summary,
+                content=content,
+                structured_data=structured,
+                truncated=truncated,
+                blob_references=references,
+                duration_seconds=time.monotonic() - started,
+            )
+        except asyncio.CancelledError:
+            raise
+        except (RuntimeError, ValueError) as exc:
+            return _failure(self.name, exc, started)
+
+    def _summary(self, structured: dict[str, JsonValue]) -> str:
+        raise NotImplementedError
+
+
+class WebSearchTool(_WebMcpTool):
+    name = "web_search"
+    description = "Search the public web through the managed local SearXNG service."
+    arguments_type: ClassVar[type[ToolArguments]] = WebSearchArguments
+
+    def _summary(self, structured: dict[str, JsonValue]) -> str:
+        count = structured.get("result_count", 0)
+        return f"found {count} web results"
+
+
+class WebFetchTool(_WebMcpTool):
+    name = "web_fetch"
+    description = "Fetch and extract readable text from one public web page."
+    arguments_type: ClassVar[type[ToolArguments]] = WebFetchArguments
+
+    def _summary(self, structured: dict[str, JsonValue]) -> str:
+        target = structured.get("final_url") or structured.get("url") or "web page"
+        return f"fetched {target}"
+
+
 class ToolRegistry:
-    def __init__(self) -> None:
+    def __init__(self, *, search: SearchToolExecutor | None = None) -> None:
         values: list[ToolBase] = [
             ReadFileTool(),
             ListDirTool(),
@@ -674,13 +776,15 @@ class ToolRegistry:
             SessionTitleTool(),
             GoalReportTool(),
         ]
+        if search is not None:
+            values.extend([WebSearchTool(search), WebFetchTool(search)])
         self._tools = {tool.name: tool for tool in values}
 
     def definitions(self, allowed: frozenset[str] | None = None) -> list[ToolDefinition]:
         return [
             tool.definition()
             for tool in self._tools.values()
-            if allowed is None or tool.name in allowed
+            if tool.available() and (allowed is None or tool.name in allowed)
         ]
 
     def get(self, name: str) -> ToolBase | None:

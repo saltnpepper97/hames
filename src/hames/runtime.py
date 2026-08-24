@@ -58,6 +58,7 @@ from hames.providers import (
 )
 from hames.providers.base import JSON_OBJECT, JsonValue
 from hames.rules import ContextRuleStore, PolicyRuleStore
+from hames.search_runtime import SearchMcpManager
 from hames.skills import SkillRegistry, SkillSummary, SkillVersion
 from hames.tools import (
     GoalReportArguments,
@@ -247,6 +248,7 @@ class RunManager:
         controls: ControlStore,
         providers: dict[str, Provider],
         broker: EventBroker,
+        search: SearchMcpManager | None = None,
     ) -> None:
         self.ledger = ledger
         self.paths = paths
@@ -254,7 +256,8 @@ class RunManager:
         self.controls = controls
         self.providers = providers
         self.broker = broker
-        self.tools = ToolRegistry()
+        self.search = search
+        self.tools = ToolRegistry(search=search)
         self.skills = SkillRegistry(
             paths.skills,
             ledger,
@@ -896,6 +899,8 @@ class RunManager:
             await self.skill_manager.close()
         if self.plugin_manager is not None:
             await self.plugin_manager.close()
+        if self.search is not None:
+            await self.search.close()
         for provider in self.providers.values():
             await provider.aclose()
 

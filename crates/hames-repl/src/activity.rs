@@ -77,6 +77,8 @@ impl ActivityPhase {
 enum ToolKind {
     Read,
     List,
+    WebSearch,
+    WebFetch,
     Write,
     Edit,
     Command,
@@ -102,6 +104,8 @@ impl ToolKind {
         match name {
             "read_file" => Self::Read,
             "list_dir" => Self::List,
+            "web_search" => Self::WebSearch,
+            "web_fetch" => Self::WebFetch,
             "write_file" => Self::Write,
             "edit_file" => Self::Edit,
             "shell" => Self::Command,
@@ -125,7 +129,7 @@ impl ToolKind {
 
     fn category(self) -> ActivityCategory {
         match self {
-            Self::Read | Self::List => ActivityCategory::Explore,
+            Self::Read | Self::List | Self::WebSearch | Self::WebFetch => ActivityCategory::Explore,
             Self::Write | Self::Edit => ActivityCategory::Change,
             Self::Command | Self::SkillRun => ActivityCategory::Run,
             Self::Delegate => ActivityCategory::Delegate,
@@ -149,6 +153,12 @@ impl ToolKind {
             (Self::List, ActivityPhase::Preparing) => "Preparing list",
             (Self::List, ActivityPhase::Running) => "Listing",
             (Self::List, ActivityPhase::Completed) => "Listed",
+            (Self::WebSearch, ActivityPhase::Preparing) => "Preparing search",
+            (Self::WebSearch, ActivityPhase::Running) => "Searching",
+            (Self::WebSearch, ActivityPhase::Completed) => "Searched",
+            (Self::WebFetch, ActivityPhase::Preparing) => "Preparing fetch",
+            (Self::WebFetch, ActivityPhase::Running) => "Fetching",
+            (Self::WebFetch, ActivityPhase::Completed) => "Fetched",
             (Self::Write, ActivityPhase::Preparing) => "Preparing write",
             (Self::Write, ActivityPhase::Running) => "Writing",
             (Self::Write, ActivityPhase::Completed) => "Wrote",
@@ -268,6 +278,8 @@ impl ToolActivity {
             ToolKind::MemorySearch | ToolKind::SkillCatalog => {
                 self.arguments.get("query").and_then(Value::as_str)
             }
+            ToolKind::WebSearch => self.arguments.get("query").and_then(Value::as_str),
+            ToolKind::WebFetch => self.arguments.get("url").and_then(Value::as_str),
             ToolKind::MemoryAdd => self.arguments.get("summary").and_then(Value::as_str),
             ToolKind::MemoryEdit | ToolKind::MemoryForget => {
                 self.arguments.get("memory_id").and_then(Value::as_str)
@@ -313,6 +325,19 @@ impl ToolActivity {
                     .map(Vec::len)
                 {
                     parts.push(format!("{count} entries"));
+                }
+            }
+            ToolKind::WebSearch => {
+                push_number(&mut parts, &self.structured_data, "result_count", "results");
+            }
+            ToolKind::WebFetch => {
+                if self
+                    .structured_data
+                    .get("truncated")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    parts.push("truncated".to_owned());
                 }
             }
             ToolKind::Write => {

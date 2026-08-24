@@ -1,7 +1,7 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -205,6 +205,29 @@ pub fn run_backend<const N: usize>(args: [&str; N]) -> Result<()> {
 
 pub fn start_backend() -> Result<()> {
     run_backend(["start", "--json"])
+}
+
+pub fn ensure_search_setup(paths: &LocalPaths, force: bool) -> Result<()> {
+    let state = paths.root.join("services/search/state.json");
+    if state.exists() && !force {
+        return Ok(());
+    }
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Ok(());
+    }
+    println!("Hames can set up private web search using a local SearXNG container.");
+    println!("Search queries and fetched URLs will be sent to public web services.");
+    print!("Enable web search? [Y/n] ");
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    let enabled = !matches!(answer.trim().to_ascii_lowercase().as_str(), "n" | "no");
+    run_backend([
+        "search",
+        "setup",
+        if enabled { "--enable" } else { "--disable" },
+        "--json",
+    ])
 }
 
 pub fn write_private_export(path: &Path, content: &str, force: bool) -> Result<()> {

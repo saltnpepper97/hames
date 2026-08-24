@@ -97,6 +97,20 @@ target/debug/hames doctor
 target/debug/hames
 ```
 
+On the first interactive start, Hames offers to provision private web search.
+`target/debug/hames setup` opens that choice directly. Enabling it uses an
+already-working rootless Podman or Docker installation to create a digest-pinned,
+loopback-only SearXNG container; Hames never installs a container runtime or uses
+`sudo`. If no runtime is available, the gateway still starts and reports search
+as degraded. Inspect or control it with `target/debug/hames search
+status|start|stop|restart|update` and `target/debug/hames doctor`.
+
+The gateway connects to Hames's bundled search server over private stdio using
+modern MCP `2026-07-28`. Models receive `web_search` for structured results and
+`web_fetch` for bounded readable source text. Both are read-only, visible under
+Explore, available in Plan mode, and guarded against local/private fetch targets.
+See [`docs/architecture/web-search.md`](docs/architecture/web-search.md).
+
 In a terminal, `hames` opens the transcript-first Ratatui interface. Use
 `target/debug/hames tui` to request it explicitly, or `target/debug/hames repl`
 and `target/debug/hames --repl` for the classic line-oriented client. Piped and
@@ -209,6 +223,14 @@ max_child_runs_per_parent_run = 4
 [tools]
 shell_timeout_seconds = 120.0
 shell_max_timeout_seconds = 600.0
+
+[web]
+search_limit = 8
+safe_search = "moderate" # off, moderate, or strict
+search_timeout_seconds = 20.0
+fetch_timeout_seconds = 15.0
+fetch_max_bytes = 2097152
+fetch_max_chars = 30000
 
 [context]
 fallback_window_tokens = 32768
