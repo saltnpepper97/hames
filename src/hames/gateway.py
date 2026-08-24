@@ -169,6 +169,7 @@ class CompactionAccepted(ApiModel):
 
 class PlanExecuteRequest(ApiModel):
     strategy: Literal["keep", "compact"]
+    note: str = Field(default="", max_length=8000)
 
 
 class PlanExecutionAccepted(ApiModel):
@@ -1782,7 +1783,7 @@ def create_app(state: GatewayState) -> FastAPI:
     async def execute_plan(session_id: str, request: PlanExecuteRequest) -> PlanExecutionAccepted:
         try:
             plan, tasks, run_id = await state.runs.execute_plan(
-                session_id, strategy=request.strategy
+                session_id, strategy=request.strategy, note=request.note
             )
             return PlanExecutionAccepted(plan=plan, tasks=tasks, run_id=run_id)
         except KeyError as exc:

@@ -749,7 +749,7 @@ pub enum MenuAction {
     OpenTasks,
     OpenPlanReview,
     OpenPlanNote,
-    SubmitPlanNote(String),
+    ExecutePlanWithNote(String),
     ExecutePlan(String),
     ToggleTask {
         task_id: String,
@@ -831,7 +831,7 @@ pub enum SheetKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InlineEditorKind {
-    PlanNote,
+    PlanExecutionNote,
     NewTask,
 }
 
@@ -1182,7 +1182,7 @@ impl App {
                 ),
                 option(
                     "Continue with note",
-                    "revise before approval",
+                    "attach guidance and execute",
                     MenuAction::OpenPlanNote,
                 ),
             ],
@@ -1724,6 +1724,7 @@ impl App {
                     status: "ready".to_owned(),
                     strategy: None,
                     execution_run_id: None,
+                    execution_note: String::new(),
                     error: String::new(),
                     created_at: event.created_at.clone(),
                     updated_at: event.created_at.clone(),
@@ -1770,6 +1771,12 @@ impl App {
                         .get("execution_run_id")
                         .and_then(Value::as_str)
                         .map(str::to_owned);
+                    plan.execution_note = event
+                        .payload
+                        .get("execution_note")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
                     plan.error = string(&event.payload, "message");
                     plan.updated_at = event.created_at.clone();
                 }

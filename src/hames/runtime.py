@@ -575,11 +575,28 @@ class RunManager:
         return tasks
 
     async def execute_plan(
-        self, session_id: str, *, strategy: Literal["keep", "compact"]
+        self,
+        session_id: str,
+        *,
+        strategy: Literal["keep", "compact"],
+        note: str = "",
     ) -> tuple[PlanState, SessionTaskList, str]:
         async with self._submission_lock(session_id):
-            if self.is_session_active(session_id):
-                raise ValueError("cannot execute a plan while the session has active work")
+            execution_note = note.strip()
+            if len(execution_note) > 8000:
+                raise ValueError("plan execution note cannot exceed 8000 characters")
+            active_run = self._session_runs.get(session_id)
+            if active_run is not None:
+                terminal = any(
+                    event.type in {"run.completed", "run.failed", "run.cancelled"}
+                    for event in await asyncio.to_thread(
+                        self.ledger.list_run_events, active_run
+                    )
+                )
+                if terminal:
+                    self._mark_post_terminal(active_run, session_id)
+                else:
+                    raise ValueError("cannot execute a plan while the session has active work")
             if (await self.queue_state(session_id)).items:
                 raise ValueError("cannot execute a plan while notes or turns are queued")
             session = await asyncio.to_thread(self.ledger.get_session, session_id)
@@ -595,16 +612,19 @@ class RunManager:
                 "plan.execution.requested",
                 strategy=strategy,
                 execution_run_id=run_id,
+                execution_note=execution_note,
             )
             await self._publish_store_events((requested,))
             if strategy == "keep":
                 session, tasks, user_event = await self._prepare_plan_execution(
-                    session, plan.id, run_id, strategy, requested.id
+                    session, plan.id, run_id, strategy, requested.id, execution_note
                 )
                 self._launch(session_id, user_event, run_id=run_id)
                 return await self.current_plan(session_id), tasks, run_id
             task = asyncio.create_task(
-                self._compact_and_execute_plan(session, plan.id, run_id, requested.id),
+                self._compact_and_execute_plan(
+                    session, plan.id, run_id, requested.id, execution_note
+                ),
                 name=f"hames-plan-{run_id}",
             )
             self._tasks[run_id] = task
@@ -619,6 +639,7 @@ class RunManager:
         run_id: str,
         strategy: Literal["keep", "compact"],
         causation_id: str,
+        execution_note: str,
     ) -> tuple[Session, SessionTaskList, Event]:
         state = await asyncio.to_thread(self.plans.current, session.id)
         plan = state.current
@@ -647,6 +668,7 @@ class RunManager:
             "plan.approved",
             strategy=strategy,
             execution_run_id=run_id,
+            execution_note=execution_note,
             causation_id=task_event.id,
         )
         await self._publish_store_events((approved,))
@@ -655,9 +677,12 @@ class RunManager:
             agent_id=session.agent_id,
             event_type="user.message",
             payload={
-                "content": (
-                    "Implement the approved plan now. Keep the session task checklist current "
-                    "as work begins, completes, becomes blocked, or new work is discovered."
+                "content": "Implement the approved plan now. Keep the session task checklist "
+                "current as work begins, completes, becomes blocked, or new work is discovered."
+                + (
+                    f"\n\nAdditional user execution note:\n{execution_note}"
+                    if execution_note
+                    else ""
                 ),
                 "remember": False,
                 "paste_spans": [],
@@ -673,13 +698,19 @@ class RunManager:
             "plan.execution.started",
             strategy=strategy,
             execution_run_id=run_id,
+            execution_note=execution_note,
             causation_id=user_event.id,
         )
         await self._publish_store_events((started,))
         return session, tasks, user_event
 
     async def _compact_and_execute_plan(
-        self, session: Session, plan_id: str, run_id: str, causation_id: str
+        self,
+        session: Session,
+        plan_id: str,
+        run_id: str,
+        causation_id: str,
+        execution_note: str,
     ) -> None:
         try:
             compacted = await self._perform_compaction(
@@ -690,7 +721,7 @@ class RunManager:
                 preserve_recent_turns=0,
             )
             session, _, user_event = await self._prepare_plan_execution(
-                session, plan_id, run_id, "compact", compacted.id
+                session, plan_id, run_id, "compact", compacted.id, execution_note
             )
             await self._run(run_id, session.id, user_event)
         except asyncio.CancelledError:

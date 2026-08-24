@@ -430,6 +430,7 @@ enum Effect {
     ResolveApproval(usize),
     Send(String, Vec<PasteSpan>),
     SendPlanNote(String, Vec<PasteSpan>),
+    ExecutePlanWithNote(String),
     SendNow(String, Vec<PasteSpan>),
     AddTask(String),
     DeleteTask(String),
@@ -455,7 +456,11 @@ fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
         }
         Event::Paste(value) => {
             if let Some(editor) = &mut app.inline_editor {
-                editor.input.insert_paste(value);
+                if editor.kind == InlineEditorKind::PlanExecutionNote {
+                    editor.input.insert_text(&value.replace(['\r', '\n'], " "));
+                } else {
+                    editor.input.insert_paste(value);
+                }
             } else if let Some(Modal::ScarEdit(editor)) = &mut app.modal {
                 if let Some(input) = editor.active_text_mut() {
                     input.insert_text(&value);
@@ -674,7 +679,7 @@ fn handle_inline_editor_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     if key.code == KeyCode::Esc {
         let kind = app.inline_editor.as_ref().map(|editor| editor.kind);
         app.inline_editor = None;
-        if kind == Some(InlineEditorKind::PlanNote) {
+        if kind == Some(InlineEditorKind::PlanExecutionNote) {
             app.open_plan_review();
         } else {
             app.open_tasks();
@@ -687,14 +692,14 @@ fn handle_inline_editor_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
     {
         let editor = app.inline_editor.take()?;
-        let (content, pastes) = editor.input.message();
+        let (content, _pastes) = editor.input.message();
         if content.trim().is_empty() {
             app.inline_editor = Some(editor);
             app.notice = Some("Type a note first".to_owned());
             return None;
         }
         return Some(match editor.kind {
-            InlineEditorKind::PlanNote => Effect::SendPlanNote(content, pastes),
+            InlineEditorKind::PlanExecutionNote => Effect::ExecutePlanWithNote(content),
             InlineEditorKind::NewTask => Effect::AddTask(content),
         });
     }
@@ -711,7 +716,8 @@ fn handle_inline_editor_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         KeyCode::Enter
             if key
                 .modifiers
-                .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) =>
+                .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
+                && editor.kind == InlineEditorKind::NewTask =>
         {
             editor.input.insert_text("\n");
         }
@@ -1494,7 +1500,7 @@ fn parse_command(value: &str) -> Option<MenuAction> {
                 if note.is_empty() {
                     Some(MenuAction::OpenPlanNote)
                 } else {
-                    Some(MenuAction::SubmitPlanNote(note))
+                    Some(MenuAction::ExecutePlanWithNote(note))
                 }
             }
             Some(_) => None,
@@ -1637,6 +1643,20 @@ async fn apply_effect(
             } else if let Some(item) = accepted.queued {
                 app.insert_queued_message(item);
             }
+            app.notice = None;
+        }
+        Effect::ExecutePlanWithNote(content) => {
+            let accepted = client
+                .execute_plan(&app.session.id, "keep", Some(&content))
+                .await?;
+            app.set_plan(accepted.plan);
+            app.set_tasks(accepted.tasks);
+            app.session.interaction_mode = "auto".to_owned();
+            app.active_run = Some(accepted.run_id);
+            app.run_started_at = Some(Instant::now());
+            app.composer.clear();
+            app.inline_editor = None;
+            app.sheet = None;
             app.notice = None;
         }
         Effect::SendNow(content, pastes) => {
@@ -1852,28 +1872,32 @@ async fn apply_menu_action(
             }
         }
         MenuAction::OpenPlanNote => {
-            app.sheet = None;
+            app.open_plan_review();
+            if let Some(sheet) = &mut app.sheet {
+                sheet.selected = 2;
+            }
             app.inline_editor = Some(InlineEditor {
-                kind: InlineEditorKind::PlanNote,
+                kind: InlineEditorKind::PlanExecutionNote,
                 input: Default::default(),
             });
         }
-        MenuAction::SubmitPlanNote(content) => {
+        MenuAction::ExecutePlanWithNote(content) => {
             let accepted = client
-                .send_plan_note(&app.session.id, &content, &[])
+                .execute_plan(&app.session.id, "keep", Some(&content))
                 .await?;
             app.composer.clear();
+            app.set_plan(accepted.plan);
+            app.set_tasks(accepted.tasks);
+            app.session.interaction_mode = "auto".to_owned();
+            app.active_run = Some(accepted.run_id);
+            app.run_started_at = Some(Instant::now());
             app.sheet = None;
             app.inline_editor = None;
-            if accepted.disposition == "started" {
-                app.active_run = accepted.run_id;
-                app.run_started_at = Some(Instant::now());
-            } else if let Some(item) = accepted.queued {
-                app.insert_queued_message(item);
-            }
         }
         MenuAction::ExecutePlan(strategy) => {
-            let accepted = client.execute_plan(&app.session.id, &strategy).await?;
+            let accepted = client
+                .execute_plan(&app.session.id, &strategy, None)
+                .await?;
             app.set_plan(accepted.plan);
             app.set_tasks(accepted.tasks);
             app.session.interaction_mode = "auto".to_owned();
@@ -2725,9 +2749,9 @@ mod tests {
         SessionTask, SessionTaskList,
     };
     use crate::tui::app::{
-        AgentEditor, App, HitAction, HitRegion, MemoryBrowser, MenuAction, MenuOption, Modal,
-        ScarBrowser, ScarEditField, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind,
-        TranscriptItem, TranscriptViewport,
+        AgentEditor, App, HitAction, HitRegion, InlineEditor, InlineEditorKind, MemoryBrowser,
+        MenuAction, MenuOption, Modal, ScarBrowser, ScarEditField, ScrollDrag, ScrollTarget, Sheet,
+        SheetKind, ThemeKind, TranscriptItem, TranscriptViewport,
     };
 
     #[test]
@@ -2801,7 +2825,7 @@ mod tests {
         ));
         assert!(matches!(
             parse_command("/plan note keep the API small"),
-            Some(MenuAction::SubmitPlanNote(note)) if note == "keep the API small"
+            Some(MenuAction::ExecutePlanWithNote(note)) if note == "keep the API small"
         ));
         assert!(matches!(parse_command("/goal"), Some(MenuAction::ShowGoal)));
         assert!(matches!(
@@ -2895,6 +2919,28 @@ mod tests {
             Some(Effect::SendPlanNote(content, _)) if content == "Prefer the smaller API"
         ));
         assert_eq!(app.composer.text(), "Prefer the smaller API");
+    }
+
+    #[test]
+    fn continue_with_note_is_an_execution_action_not_another_plan_turn() {
+        let mut plan_session = session();
+        plan_session.interaction_mode = "plan".to_owned();
+        let mut app = App::new(plan_session, Vec::new(), true);
+        app.set_plan(ready_plan());
+        app.inline_editor = Some(InlineEditor {
+            kind: InlineEditorKind::PlanExecutionNote,
+            input: Default::default(),
+        });
+        app.inline_editor
+            .as_mut()
+            .unwrap()
+            .input
+            .insert_text("Preserve compatibility");
+
+        assert!(matches!(
+            handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Effect::ExecutePlanWithNote(note)) if note == "Preserve compatibility"
+        ));
     }
 
     #[test]
@@ -3585,6 +3631,7 @@ mod tests {
                 status: "ready".to_owned(),
                 strategy: None,
                 execution_run_id: None,
+                execution_note: String::new(),
                 error: String::new(),
                 created_at: "2026-08-24T00:00:00Z".to_owned(),
                 updated_at: "2026-08-24T00:00:00Z".to_owned(),

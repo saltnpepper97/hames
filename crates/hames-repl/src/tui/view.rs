@@ -96,6 +96,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .as_ref()
         .map(|sheet| (sheet.options.len() as u16 + 2).clamp(3, 9))
         .unwrap_or(0);
+    let plan_note_in_sheet = app
+        .sheet
+        .as_ref()
+        .is_some_and(|sheet| sheet.kind == SheetKind::PlanReview)
+        && app.inline_editor.as_ref().is_some_and(|editor| {
+            editor.kind == crate::tui::app::InlineEditorKind::PlanExecutionNote
+        });
     let approval_height = if let Some(Modal::Approval(approval)) = &app.modal {
         let required = u16::try_from(
             approval_detail_lines(approval, usize::from(area.width.saturating_sub(1))).len() + 3,
@@ -108,7 +115,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     } else {
         0
     };
-    let inline_height = if app.inline_editor.is_some() { 5 } else { 0 };
+    let inline_height = if app.inline_editor.is_some() && !plan_note_in_sheet {
+        5
+    } else {
+        0
+    };
     let tray_height = sheet_height.max(approval_height).max(inline_height);
     let bottom = composer_height + notice_height + queue_height + tray_height + 1;
     let rows = Layout::default()
@@ -922,8 +933,15 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         } else {
             Style::default()
         };
+        let plan_review = sheet.kind == SheetKind::PlanReview;
         let mut spans = vec![Span::styled(
-            if selected { "  •" } else { "   " },
+            if plan_review {
+                if selected { "  ◉" } else { "  ○" }
+            } else if selected {
+                "  •"
+            } else {
+                "   "
+            },
             Style::default()
                 .fg(if deleting {
                     CORAL
@@ -954,7 +972,36 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             });
             continue;
         }
-        let label_field = format!(" {:<20}", option.label);
+        if plan_review
+            && offset == 2
+            && let Some(editor) = app.inline_editor.as_ref().filter(|editor| {
+                editor.kind == crate::tui::app::InlineEditorKind::PlanExecutionNote
+            })
+        {
+            let label = " 3  Continue with note  ❯ ";
+            let available = usize::from(area.width)
+                .saturating_sub(UnicodeWidthStr::width(label) + 4)
+                .max(1);
+            let input = single_line_editor(&editor.input, available);
+            spans.extend([
+                Span::styled(label, Style::default().fg(INPUT).bold().patch(row_style)),
+                Span::styled(input, Style::default().fg(INPUT_LIGHT).patch(row_style)),
+            ]);
+            lines.push(Line::from(spans));
+            app.hits.push(HitRegion {
+                x: area.x,
+                y: area.y + 1 + u16::try_from(offset - start).unwrap_or(0),
+                width: area.width,
+                height: 1,
+                action: HitAction::SelectSheet(offset),
+            });
+            continue;
+        }
+        let label_field = if plan_review {
+            format!(" {}  {:<20}", offset + 1, option.label)
+        } else {
+            format!(" {:<20}", option.label)
+        };
         if command_tray {
             spans.extend(command_label_spans(
                 &option.label,
@@ -1017,7 +1064,7 @@ fn render_inline_editor(frame: &mut Frame<'_>, app: &App, area: Rect) {
         return;
     };
     let title = match editor.kind {
-        crate::tui::app::InlineEditorKind::PlanNote => "Plan note",
+        crate::tui::app::InlineEditorKind::PlanExecutionNote => "Execution note",
         crate::tui::app::InlineEditorKind::NewTask => "New task",
     };
     let width = usize::from(area.width.saturating_sub(4).max(1));
@@ -1241,20 +1288,22 @@ fn scrollbar_position(top: usize, content_len: usize, viewport_len: usize) -> us
 
 fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta: Duration) {
     let left = if let Some(editor) = &app.inline_editor {
-        Line::from(vec![
-            Span::styled("  Enter", Style::default().fg(INPUT).bold()),
-            Span::styled(
-                match editor.kind {
-                    crate::tui::app::InlineEditorKind::PlanNote => " revise · ",
-                    crate::tui::app::InlineEditorKind::NewTask => " add · ",
-                },
-                Style::default().fg(MUTED),
-            ),
-            Span::styled("Shift/Alt+Enter", Style::default().fg(INPUT).bold()),
-            Span::styled(" newline · ", Style::default().fg(MUTED)),
-            Span::styled("Esc", Style::default().fg(INPUT).bold()),
-            Span::styled(" back", Style::default().fg(MUTED)),
-        ])
+        match editor.kind {
+            crate::tui::app::InlineEditorKind::PlanExecutionNote => Line::from(vec![
+                Span::styled("  Enter", Style::default().fg(INPUT).bold()),
+                Span::styled(" approve and execute · ", Style::default().fg(MUTED)),
+                Span::styled("Esc", Style::default().fg(INPUT).bold()),
+                Span::styled(" choices", Style::default().fg(MUTED)),
+            ]),
+            crate::tui::app::InlineEditorKind::NewTask => Line::from(vec![
+                Span::styled("  Enter", Style::default().fg(INPUT).bold()),
+                Span::styled(" add · ", Style::default().fg(MUTED)),
+                Span::styled("Shift/Alt+Enter", Style::default().fg(INPUT).bold()),
+                Span::styled(" newline · ", Style::default().fg(MUTED)),
+                Span::styled("Esc", Style::default().fg(INPUT).bold()),
+                Span::styled(" back", Style::default().fg(MUTED)),
+            ]),
+        }
     } else if matches!(app.modal, Some(Modal::Approval(_))) {
         Line::from(vec![
             Span::styled("  ←→", Style::default().fg(INPUT).bold()),
@@ -2787,6 +2836,38 @@ fn composer_edit_text(input: &Composer, caret: bool) -> String {
     value
 }
 
+fn single_line_editor(input: &Composer, width: usize) -> String {
+    let value = composer_edit_text(input, true).replace(['\r', '\n'], " ");
+    let graphemes = value.graphemes(true).collect::<Vec<_>>();
+    let caret = graphemes
+        .iter()
+        .position(|grapheme| *grapheme == "▏")
+        .unwrap_or(graphemes.len());
+    let mut start = caret;
+    let mut before_width = 0;
+    let reserve = width.saturating_sub(2);
+    while start > 0 {
+        let candidate = UnicodeWidthStr::width(graphemes[start - 1]);
+        if before_width + candidate > reserve {
+            break;
+        }
+        start -= 1;
+        before_width += candidate;
+    }
+    let mut output = if start > 0 {
+        "…".to_owned()
+    } else {
+        String::new()
+    };
+    for grapheme in graphemes.into_iter().skip(start) {
+        if UnicodeWidthStr::width(output.as_str()) + UnicodeWidthStr::width(grapheme) > width {
+            break;
+        }
+        output.push_str(grapheme);
+    }
+    output
+}
+
 fn short_identifier(value: &str) -> &str {
     value.get(..8).unwrap_or(value)
 }
@@ -3500,15 +3581,15 @@ mod tests {
         PANEL_BRIGHT, REMOVAL_BG, SKY, agent_access_body, agent_identity_body,
         approval_detail_lines, compact_diff_lines, compact_home, draw, format_elapsed,
         goal_elapsed, line_text, memory_browser_body, mode_color, mode_outline, scar_browser_body,
-        scar_editor_body, scrollbar_position, sheet_text_color, thought_label, transcript_lines,
-        traveling_sheen,
+        scar_editor_body, scrollbar_position, sheet_text_color, single_line_editor, thought_label,
+        transcript_lines, traveling_sheen,
     };
 
     use crate::api::{Goal, MemoryRecord, QueuedMessage, Scar, Session};
     use crate::tui::app::{
         ActivityPhase, ActivityRow, AgentEditor, AgentEditorPage, App, ApprovalModal, DreamPhase,
-        HitAction, MemoryBrowser, MenuAction, MenuOption, Modal, ScarBrowser, ScarEditor, Sheet,
-        SheetKind, TranscriptItem, TranscriptPoint,
+        HitAction, InlineEditor, InlineEditorKind, MemoryBrowser, MenuAction, MenuOption, Modal,
+        ScarBrowser, ScarEditor, Sheet, SheetKind, TranscriptItem, TranscriptPoint,
     };
 
     #[test]
@@ -4276,6 +4357,40 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("↑↓ navigate · Enter select · Esc close"));
+    }
+
+    #[test]
+    fn plan_review_uses_radios_and_keeps_execution_note_in_the_choice_row() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.open_plan_review();
+        app.sheet.as_mut().unwrap().selected = 2;
+        app.inline_editor = Some(InlineEditor {
+            kind: InlineEditorKind::PlanExecutionNote,
+            input: Default::default(),
+        });
+        app.inline_editor
+            .as_mut()
+            .unwrap()
+            .input
+            .insert_text("Keep the public API compatible while making this deliberately long");
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("○ 1  Proceed with plan"));
+        assert!(rendered.contains("○ 2  Clear context and proceed"));
+        assert!(rendered.contains("◉ 3  Continue with note  ❯"));
+        assert!(rendered.contains("approve and execute · Esc choices"));
+        assert!(
+            single_line_editor(&app.inline_editor.as_ref().unwrap().input, 18).ends_with("long▏")
+        );
     }
 
     #[test]

@@ -260,6 +260,8 @@ pub struct PlanRevision {
     pub status: String,
     pub strategy: Option<String>,
     pub execution_run_id: Option<String>,
+    #[serde(default)]
+    pub execution_note: String,
     pub error: String,
     pub created_at: String,
     pub updated_at: String,
@@ -1163,10 +1165,11 @@ impl GatewayClient {
         &self,
         session_id: &str,
         strategy: &str,
+        note: Option<&str>,
     ) -> Result<PlanExecutionAccepted> {
         decode(
             self.post(&format!("/v1/sessions/{session_id}/plans/current/execute"))
-                .json(&serde_json::json!({"strategy": strategy}))
+                .json(&serde_json::json!({"strategy": strategy, "note": note.unwrap_or("")}))
                 .send()
                 .await?,
         )

@@ -32,6 +32,7 @@ class PlanRevision(PlanModel):
     status: PlanStatus = "ready"
     strategy: Literal["keep", "compact"] | None = None
     execution_run_id: str | None = None
+    execution_note: str = ""
     error: str = ""
     created_at: str
     updated_at: str
@@ -106,9 +107,18 @@ def project_plans(session_id: str, events: list[Event]) -> PlanState:
         plan = revisions[index]
         updates: dict[str, object] = {"updated_at": event.created_at}
         if event.type == "plan.execution.requested":
-            updates.update(status="requested", strategy=event.payload.get("strategy"))
+            updates.update(
+                status="requested",
+                strategy=event.payload.get("strategy"),
+                execution_note=str(event.payload.get("execution_note") or ""),
+            )
         elif event.type == "plan.approved":
-            updates.update(status="approved", strategy=event.payload.get("strategy"), error="")
+            updates.update(
+                status="approved",
+                strategy=event.payload.get("strategy"),
+                execution_note=str(event.payload.get("execution_note") or plan.execution_note),
+                error="",
+            )
         elif event.type == "plan.execution.started":
             execution_run_id = event.payload.get("execution_run_id")
             updates.update(
@@ -168,6 +178,7 @@ class PlanStore:
         *,
         strategy: Literal["keep", "compact"] | None = None,
         execution_run_id: str | None = None,
+        execution_note: str = "",
         message: str = "",
         causation_id: str | None = None,
     ) -> tuple[PlanState, Event]:
@@ -183,6 +194,7 @@ class PlanStore:
                 "plan_id": plan_id,
                 "strategy": strategy,
                 "execution_run_id": execution_run_id,
+                "execution_note": execution_note,
                 "message": message,
             },
             causation_id=causation_id,

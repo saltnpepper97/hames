@@ -194,10 +194,15 @@ def compile_context(
     )
     plan_part: tuple[str, str] | None = None
     if approved_plan is not None:
+        execution_note = (
+            f"\n\nUser execution note:\n{approved_plan.execution_note}"
+            if approved_plan.execution_note
+            else ""
+        )
         plan_part = (
             f"plan.{approved_plan.id}",
             "Approved implementation plan. Execute this exact plan and keep its session task "
-            f"checklist current:\n{approved_plan.markdown}",
+            f"checklist current:\n{approved_plan.markdown}{execution_note}",
         )
     task_list = project_tasks(session.id, session_events)
     task_part: tuple[str, str] | None = None

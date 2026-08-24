@@ -54,9 +54,11 @@ def test_plan_projection_keeps_revisions_and_tracks_execution(
         plan_id,
         "plan.execution.requested",
         strategy="compact",
+        execution_note="Preserve compatibility",
     )
     assert state.current is not None
     assert state.current.status == "requested"
+    assert state.current.execution_note == "Preserve compatibility"
     state, _ = store.transition(session, plan_id, "plan.approved", strategy="compact")
     state, _ = store.transition(
         session,

@@ -102,6 +102,7 @@ class PlanTransitionPayload(EventPayload):
     plan_id: str
     strategy: Literal["keep", "compact"] | None = None
     execution_run_id: str | None = None
+    execution_note: str = ""
     message: str = ""
 
 

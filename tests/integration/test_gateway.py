@@ -681,11 +681,15 @@ async def test_plan_review_execution_and_session_tasks_lifecycle(tmp_path: Path)
             assert isinstance(current, dict)
             assert current["status"] == "ready"
             assert current["tasks"] == ["Implement lifecycle", "Verify behavior"]
+            await _wait_for_event(client, headers, session_id, "run.completed")
 
             executed = await client.post(
                 f"/v1/sessions/{session_id}/plans/current/execute",
                 headers=headers,
-                json={"strategy": "keep"},
+                json={
+                    "strategy": "keep",
+                    "note": "Keep the existing public API compatible",
+                },
             )
             assert executed.status_code == 202
             execution = response_object(executed)
@@ -701,7 +705,18 @@ async def test_plan_review_execution_and_session_tasks_lifecycle(tmp_path: Path)
             )
             assert session["interaction_mode"] == "auto"
             assert plan_markdown in fake.requests[1].system
+            assert "Keep the existing public API compatible" in fake.requests[1].system
+            assert (
+                "Keep the existing public API compatible" in fake.requests[1].messages[-1].content
+            )
             assert "Current session checklist" in fake.requests[1].system
+            completed_plan = response_object(
+                await client.get(f"/v1/sessions/{session_id}/plans/current", headers=headers)
+            )
+            assert completed_plan["current"]["status"] == "completed"  # type: ignore[index]
+            assert completed_plan["current"]["execution_note"] == (  # type: ignore[index]
+                "Keep the existing public API compatible"
+            )
 
             added = await client.post(
                 f"/v1/sessions/{session_id}/tasks",

@@ -542,7 +542,7 @@ async fn handle_command(
             let argument = input.strip_prefix("/plan").unwrap_or("").trim();
             match argument.split_once(' ').unwrap_or((argument, "")) {
                 ("proceed", _) => {
-                    let accepted = client.execute_plan(&session.id, "keep").await?;
+                    let accepted = client.execute_plan(&session.id, "keep", None).await?;
                     session.interaction_mode = "auto".to_owned();
                     println!(
                         "{}",
@@ -550,7 +550,7 @@ async fn handle_command(
                     );
                 }
                 ("compact", _) => {
-                    let accepted = client.execute_plan(&session.id, "compact").await?;
+                    let accepted = client.execute_plan(&session.id, "compact", None).await?;
                     session.interaction_mode = "auto".to_owned();
                     println!(
                         "{}",
@@ -561,16 +561,15 @@ async fn handle_command(
                     );
                 }
                 ("note", note) if !note.trim().is_empty() => {
-                    let accepted = client.send_plan_note(&session.id, note.trim(), &[]).await?;
+                    let accepted = client
+                        .execute_plan(&session.id, "keep", Some(note.trim()))
+                        .await?;
+                    session.interaction_mode = "auto".to_owned();
                     println!(
                         "{}",
                         style::success(&format!(
-                            "Plan note {}",
-                            if accepted.disposition == "queued" {
-                                "queued"
-                            } else {
-                                "started"
-                            }
+                            "Approved plan with note · run {}",
+                            accepted.run_id
                         ))
                     );
                 }
