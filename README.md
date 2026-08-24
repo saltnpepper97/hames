@@ -44,8 +44,10 @@ settled turn; notable tool runs also receive deterministic episodic projections.
 Users can explicitly capture, review, correct, promote, or forget memories from the
 REPL. The model-facing runtime now exposes typed `memory_search`, `memory_add`,
 `memory_edit`, and `memory_forget` tools as well: corrections create immutable
-superseding records, forgetting creates a durable retraction, and destructive
-forget requests require one-shot approval.
+superseding records, while forgetting permanently deletes the selected memory
+and its retrieval metadata. Manual mode asks before deletion; Auto mode proceeds
+without another prompt only when the current user message explicitly requests
+memory maintenance.
 Procedural memory is now autonomous. Hames records settled workflow signatures,
 detects repeated successful multi-step work, drafts and independently evaluates
 immutable scoped Skills, and activates passing versions without a proposal inbox.
@@ -67,7 +69,9 @@ optional budgeted model evaluation, then guards future runs until the fix heals 
 regresses. Approved context rules are enforced at compile time and approved policy
 rules can only add protection.
 The chat runtime can list Scars, record and open an explicit correction, and open
-or dismiss a visible Scar. Dismissal requires approval. Rule activation and plugin
+or dismiss a visible Scar. Dismissal preserves its audit lifecycle; explicit
+`scar_control delete` permanently removes an erroneous or unwanted scar and its
+repair projections. Both destructive controls require approval. Rule activation and plugin
 installation remain authenticated human control-plane operations rather than
 model tools.
 
@@ -98,6 +102,8 @@ running; use `target/debug/hames gateway status` or
 `target/debug/hames gateway stop` to inspect or stop it. A terminal exit also
 prints the exact `/resume <session-id>` command needed to continue the
 conversation.
+Empty sessions are discarded on exit and omitted from `/sessions`, so opening
+the client without sending anything does not create resumable clutter.
 
 The TUI keeps the transcript, activity continuity, and an expanding composer on
 one screen. The composer grows through eight visible content rows and then
@@ -109,7 +115,9 @@ transcript, and Enter or Space expands a selected Thought. Large pastes become
 compact capsules without losing their exact durable content. Recent sessions for
 the current directory are offered when the TUI opens. Scrollbar tracks and solid
 thumbs support clicking and dragging. `/themes` switches between the default
-custom Hames palette and terminal-native colors.
+custom Hames palette and terminal-native colors. The choice is a global client
+preference in `~/.hames/ui.toml`, loaded before the first frame and shared by all
+sessions.
 
 The bottom row keeps a right-aligned `[connected]` badge. While idle it shows the
 shortcut hints on the left; during work those hints become a compact animated
@@ -117,9 +125,10 @@ gray rule with a restrained white sheen, elapsed time, and `Esc interrupt`.
 Interrupted reasoning settles as a completed `Thought`, followed by a separate
 `Turn interrupted` transcript status.
 
-Transcript text supports native mouse-drag selection inside the TUI. Releasing
-the mouse automatically copies the highlighted text through the terminal
-clipboard protocol and briefly confirms the copy above the composer.
+Transcript and modal text support native mouse-drag selection inside the TUI.
+Releasing the mouse automatically copies the highlighted text through the
+terminal clipboard protocol and briefly confirms the copy above the composer.
+Clicking or selecting inside a modal never dismisses it; Esc closes deliberately.
 
 Slash commands and the Ctrl+K command palette use an open tray with quiet rules
 above and below the choices rather than a traditional bordered box. The active
@@ -140,6 +149,13 @@ The refreshed picker stays open after removal, including when Hames replaces the
 currently active session, so another conversation can be resumed or removed. A
 fresh empty replacement is omitted from that refreshed picker, making the retired
 row visibly disappear instead of replacing it with a lookalike entry.
+`/new` remains a client-side control during active work and opens the new session
+without probing or waiting on the busy model provider. The previous run continues
+in its original resumable session.
+
+`/memory` is an active-memory browser: arrow keys wrap through selectable records,
+the focused record expands its full summary and value, and Page Up/Page Down
+scroll long details. Deleted memories never appear there.
 
 The top-right header shows the durable session title beside the current activity
 instead of repeating model controls. The model can set or revise that title with

@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use app::{
-    App, HitAction, MenuAction, MenuOption, Modal, ScrollDrag, ScrollTarget, Sheet, SheetKind,
-    ThemeKind,
+    App, HitAction, MemoryBrowser, MenuAction, MenuOption, Modal, ScrollDrag, ScrollTarget, Sheet,
+    SheetKind, ThemeKind,
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -24,6 +24,7 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use futures_util::StreamExt;
+use futures_util::future::join_all;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
@@ -62,6 +63,9 @@ pub async fn run() -> Result<()> {
         None => create_session(&client, &paths, None).await?,
     };
     let mut app = load_app(&client, session).await?;
+    let configured_theme = paths.configured_theme()?;
+    app.theme = ThemeKind::from_config(&configured_theme)
+        .with_context(|| format!("unknown theme in ui.toml: {configured_theme}"))?;
     let (stream_tx, mut stream_rx) = mpsc::channel(256);
     let mut stream_task = spawn_event_stream(
         client.clone(),
@@ -126,8 +130,7 @@ pub async fn run() -> Result<()> {
                 app = load_app(&client, session).await?;
                 app.theme = theme;
                 if reopen_sessions {
-                    let replacement_id = app.session.id.clone();
-                    open_sessions_sheet(&client, &mut app, Some(&replacement_id)).await?;
+                    open_sessions_sheet(&client, &mut app).await?;
                     app.notice = Some("Session removed from resumable history".to_owned());
                 }
                 stream_task = spawn_event_stream(
@@ -149,9 +152,15 @@ pub async fn run() -> Result<()> {
     }
     stream_task.abort();
     let session_id = app.session.id.clone();
+    let discard_empty = app.conversation_is_empty() && app.active_run.is_none();
     drop(terminal);
     println!();
-    println!("Session saved · use /resume {session_id} to continue where you left off");
+    if discard_empty {
+        client.close_session(&session_id).await?;
+        println!("Empty session discarded · nothing to resume");
+    } else {
+        println!("Session saved · use /resume {session_id} to continue where you left off");
+    }
     Ok(())
 }
 
@@ -161,6 +170,11 @@ async fn create_session(
     current: Option<&Session>,
 ) -> Result<Session> {
     let cwd = env::current_dir()?.canonicalize()?;
+    if let Some(current) = current {
+        return client
+            .create_session_from(&cwd.to_string_lossy(), &current.id)
+            .await;
+    }
     let provider = current
         .map(|session| session.provider.clone())
         .unwrap_or(paths.configured_provider()?);
@@ -173,16 +187,9 @@ async fn create_session(
     let agent = current
         .map(|session| session.agent_id.as_str())
         .unwrap_or("default");
-    let mut created = client
+    let created = client
         .create_session(&cwd.to_string_lossy(), agent, &provider, &model, &reasoning)
         .await?;
-    if let Some(current) = current
-        && created.interaction_mode != current.interaction_mode
-    {
-        created = client
-            .update_session_mode(&created.id, &current.interaction_mode)
-            .await?;
-    }
     Ok(created)
 }
 
@@ -199,23 +206,36 @@ async fn replace_session(
     Ok(created)
 }
 
-async fn open_sessions_sheet(
-    client: &GatewayClient,
-    app: &mut App,
-    omitted_session_id: Option<&str>,
-) -> Result<()> {
+async fn open_sessions_sheet(client: &GatewayClient, app: &mut App) -> Result<()> {
     app.notice = Some("Loading sessions…".to_owned());
-    let sessions = client.sessions().await?;
+    let sessions = client
+        .sessions()
+        .await?
+        .into_iter()
+        .filter(|session| session.status == "open")
+        .take(40)
+        .collect::<Vec<_>>();
+    let inspected = join_all(sessions.into_iter().map(|session| async move {
+        let history = client.history(&session.id).await;
+        (session, history)
+    }))
+    .await;
+    let mut visible = Vec::new();
+    for (session, history) in inspected {
+        let history = history?;
+        let has_conversation = history
+            .iter()
+            .any(|event| event.event_type == "user.message");
+        if has_conversation {
+            visible.push(session);
+        }
+    }
     app.notice = None;
     app.sheet = Some(Sheet {
         kind: SheetKind::Sessions,
         title: "Open sessions".to_owned(),
-        options: sessions
+        options: visible
             .into_iter()
-            .filter(|session| {
-                session.status == "open" && omitted_session_id != Some(session.id.as_str())
-            })
-            .take(40)
             .map(|session| MenuOption {
                 label: session
                     .title
@@ -349,14 +369,23 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         }
         KeyCode::Up if app.sheet.is_some() => {
             if let Some(sheet) = &mut app.sheet {
-                sheet.selected = sheet.selected.saturating_sub(1);
+                sheet.selected = if sheet.options.is_empty() || sheet.selected > 0 {
+                    sheet.selected.saturating_sub(1)
+                } else {
+                    sheet.options.len() - 1
+                };
                 sheet.pending_delete = None;
             }
             None
         }
         KeyCode::Down if app.sheet.is_some() => {
             if let Some(sheet) = &mut app.sheet {
-                sheet.selected = (sheet.selected + 1).min(sheet.options.len().saturating_sub(1));
+                sheet.selected =
+                    if sheet.options.is_empty() || sheet.selected + 1 >= sheet.options.len() {
+                        0
+                    } else {
+                        sheet.selected + 1
+                    };
                 sheet.pending_delete = None;
             }
             None
@@ -434,6 +463,41 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                 _ => None,
             }
         }
+        Modal::Memory(browser) => match key.code {
+            KeyCode::Up => {
+                browser.selected = if browser.records.is_empty() || browser.selected > 0 {
+                    browser.selected.saturating_sub(1)
+                } else {
+                    browser.records.len() - 1
+                };
+                browser.detail_scroll = 0;
+                None
+            }
+            KeyCode::Down => {
+                browser.selected = if browser.records.is_empty()
+                    || browser.selected + 1 >= browser.records.len()
+                {
+                    0
+                } else {
+                    browser.selected + 1
+                };
+                browser.detail_scroll = 0;
+                None
+            }
+            KeyCode::PageUp => {
+                browser.detail_scroll = browser.detail_scroll.saturating_sub(5);
+                None
+            }
+            KeyCode::PageDown => {
+                browser.detail_scroll = browser.detail_scroll.saturating_add(5);
+                None
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                app.modal = None;
+                None
+            }
+            _ => None,
+        },
         Modal::PastePreview(_) => match key.code {
             KeyCode::Backspace | KeyCode::Delete => {
                 app.composer.remove_adjacent_paste();
@@ -459,7 +523,11 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
             app.clear_transcript_selection();
-            if mouse_over_composer(app, mouse.column, mouse.row) {
+            if app.modal_viewport.point(mouse.column, mouse.row).is_some()
+                && let Some(Modal::Memory(browser)) = &mut app.modal
+            {
+                browser.detail_scroll = browser.detail_scroll.saturating_sub(3);
+            } else if mouse_over_composer(app, mouse.column, mouse.row) {
                 scroll_composer(app, -3);
             } else {
                 app.scroll = app.scroll.saturating_add(3);
@@ -468,7 +536,11 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
         }
         MouseEventKind::ScrollDown => {
             app.clear_transcript_selection();
-            if mouse_over_composer(app, mouse.column, mouse.row) {
+            if app.modal_viewport.point(mouse.column, mouse.row).is_some()
+                && let Some(Modal::Memory(browser)) = &mut app.modal
+            {
+                browser.detail_scroll = browser.detail_scroll.saturating_add(3);
+            } else if mouse_over_composer(app, mouse.column, mouse.row) {
                 scroll_composer(app, 3);
             } else {
                 app.scroll = app.scroll.saturating_sub(3);
@@ -517,6 +589,20 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                     app.sheet = None;
                     action.map(Effect::Menu)
                 }
+                Some(HitAction::SelectMemory(index)) => {
+                    app.clear_transcript_selection();
+                    app.clear_modal_selection();
+                    if let Some(Modal::Memory(browser)) = &mut app.modal
+                        && index < browser.records.len()
+                    {
+                        browser.selected = index;
+                        browser.detail_scroll = 0;
+                    }
+                    if let Some(point) = app.modal_viewport.point(mouse.column, mouse.row) {
+                        app.begin_modal_selection(point);
+                    }
+                    None
+                }
                 Some(HitAction::Approval(index)) => {
                     app.clear_transcript_selection();
                     Some(Effect::ResolveApproval(index))
@@ -529,11 +615,6 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                     app.clear_transcript_selection();
                     Some(Effect::Quit)
                 }
-                Some(HitAction::CloseModal) => {
-                    app.clear_transcript_selection();
-                    app.modal = None;
-                    None
-                }
                 Some(HitAction::ShowSession) => {
                     app.clear_transcript_selection();
                     app.modal = Some(Modal::Session);
@@ -544,10 +625,20 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                     None
                 }
                 None => {
-                    if let Some(point) = app.transcript_viewport.point(mouse.column, mouse.row) {
+                    if app.modal.is_some() {
+                        app.clear_transcript_selection();
+                        app.clear_modal_selection();
+                        if let Some(point) = app.modal_viewport.point(mouse.column, mouse.row) {
+                            app.begin_modal_selection(point);
+                        }
+                    } else if let Some(point) =
+                        app.transcript_viewport.point(mouse.column, mouse.row)
+                    {
+                        app.clear_modal_selection();
                         app.begin_transcript_selection(point);
                     } else {
                         app.clear_transcript_selection();
+                        app.clear_modal_selection();
                     }
                     None
                 }
@@ -556,6 +647,10 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
         MouseEventKind::Drag(MouseButton::Left) => {
             if let Some(drag) = app.scroll_drag.clone() {
                 scroll_to_pointer(app, &drag, mouse.row);
+            } else if app.selecting_modal {
+                if let Some(point) = app.modal_viewport.point(mouse.column, mouse.row) {
+                    app.update_modal_selection(point);
+                }
             } else if let Some(point) = app.transcript_viewport.point(mouse.column, mouse.row) {
                 app.update_transcript_selection(point);
             }
@@ -563,6 +658,14 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
         }
         MouseEventKind::Up(MouseButton::Left) => {
             app.scroll_drag = None;
+            if app.selecting_modal {
+                if let Some(point) = app.modal_viewport.point(mouse.column, mouse.row) {
+                    app.update_modal_selection(point);
+                }
+                if let Some(text) = app.finish_modal_selection() {
+                    return Some(Effect::Copy(text));
+                }
+            }
             if app.selecting_transcript {
                 if let Some(point) = app.transcript_viewport.point(mouse.column, mouse.row) {
                     app.update_transcript_selection(point);
@@ -823,9 +926,13 @@ async fn apply_menu_action(
     match action {
         MenuAction::NewSession => {
             app.notice = Some("Starting a new session…".to_owned());
-            return Ok(Some(
-                create_session(client, paths, Some(&app.session)).await?,
-            ));
+            let previous = app.session.clone();
+            let created = if app.conversation_is_empty() && app.active_run.is_none() {
+                replace_session(client, paths, &previous).await?
+            } else {
+                create_session(client, paths, Some(&previous)).await?
+            };
+            return Ok(Some(created));
         }
         MenuAction::ClearSession => {
             app.notice = Some("Clearing this conversation…".to_owned());
@@ -833,7 +940,7 @@ async fn apply_menu_action(
             return Ok(Some(replace_session(client, paths, &previous).await?));
         }
         MenuAction::OpenSessions => {
-            open_sessions_sheet(client, app, None).await?;
+            open_sessions_sheet(client, app).await?;
         }
         MenuAction::ForkSession => {
             app.notice = Some("Forking session…".to_owned());
@@ -1096,15 +1203,13 @@ async fn apply_menu_action(
             ));
         }
         MenuAction::Memory => {
-            let memories = client.memories(&app.session.id, "active", "").await?;
-            let mut lines = vec![format!("{} active records", memories.len()), String::new()];
-            lines.extend(memories.into_iter().take(16).map(|memory| {
-                format!(
-                    "{:<12} {:<12} {}",
-                    memory.layer, memory.visibility, memory.summary
-                )
+            let mut memories = client.memories(&app.session.id, "active", "").await?;
+            memories.retain(|memory| memory.status == "active");
+            app.modal = Some(Modal::Memory(MemoryBrowser {
+                records: memories,
+                selected: 0,
+                detail_scroll: 0,
             }));
-            app.modal = Some(info("Memory", lines));
         }
         MenuAction::Skills => {
             let skills = client.skills(&app.session.id, "").await?;
@@ -1185,7 +1290,13 @@ async fn apply_menu_action(
             app.notice = Some(format!("Correction recorded · {}", scar.title));
         }
         MenuAction::Quit => app.should_quit = true,
-        MenuAction::Resume(id) => return Ok(Some(client.session(&id).await?)),
+        MenuAction::Resume(id) => {
+            let selected = client.session(&id).await?;
+            if id != app.session.id && app.conversation_is_empty() && app.active_run.is_none() {
+                client.close_session(&app.session.id).await?;
+            }
+            return Ok(Some(selected));
+        }
         MenuAction::SetModel {
             provider,
             model,
@@ -1235,6 +1346,7 @@ async fn apply_menu_action(
             ));
         }
         MenuAction::SetTheme(theme) => {
+            paths.write_theme(theme.config_value())?;
             app.theme = theme;
             app.sheet = None;
             app.notice = Some(format!("Theme · {}", theme.label()));
@@ -1464,7 +1576,7 @@ mod tests {
     };
     use crate::api::{ProviderModel, Session};
     use crate::tui::app::{
-        App, MenuAction, MenuOption, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind,
+        App, MenuAction, MenuOption, Modal, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind,
         TranscriptViewport,
     };
 
@@ -1529,6 +1641,31 @@ mod tests {
         assert_eq!(next_mode("manual"), "auto");
         assert_eq!(next_mode("auto"), "plan");
         assert_eq!(next_mode("plan"), "manual");
+    }
+
+    #[test]
+    fn new_session_command_remains_a_client_action_during_active_work() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-active".to_owned());
+        app.composer.insert_text("/new");
+
+        assert!(matches!(
+            handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Effect::Menu(MenuAction::NewSession))
+        ));
+    }
+
+    #[test]
+    fn sheet_navigation_wraps_at_both_ends() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.open_modes();
+        app.sheet.as_mut().unwrap().selected = 0;
+        assert_eq!(app.sheet.as_ref().unwrap().selected, 0);
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.sheet.as_ref().unwrap().selected, 2);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.sheet.as_ref().unwrap().selected, 0);
     }
 
     #[test]
@@ -1638,6 +1775,59 @@ mod tests {
             ),
             Some(Effect::Copy(text)) if text == "Hames"
         ));
+    }
+
+    #[test]
+    fn modal_text_drag_copies_without_dismissing_the_modal() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.modal = Some(Modal::Info {
+            title: "Fixture".to_owned(),
+            lines: vec!["Modal content".to_owned()],
+        });
+        app.modal_viewport = TranscriptViewport {
+            x: 10,
+            y: 5,
+            width: 30,
+            height: 1,
+            lines: vec!["Modal content".to_owned()],
+        };
+        assert!(
+            handle_mouse(
+                &mut app,
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: 10,
+                    row: 5,
+                    modifiers: KeyModifiers::NONE,
+                },
+            )
+            .is_none()
+        );
+        assert!(
+            handle_mouse(
+                &mut app,
+                MouseEvent {
+                    kind: MouseEventKind::Drag(MouseButton::Left),
+                    column: 14,
+                    row: 5,
+                    modifiers: KeyModifiers::NONE,
+                },
+            )
+            .is_none()
+        );
+        assert!(matches!(
+            handle_mouse(
+                &mut app,
+                MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    column: 14,
+                    row: 5,
+                    modifiers: KeyModifiers::NONE,
+                },
+            ),
+            Some(Effect::Copy(text)) if text == "Modal"
+        ));
+        assert!(app.modal.is_some());
     }
 
     #[test]

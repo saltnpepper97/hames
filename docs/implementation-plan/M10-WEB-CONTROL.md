@@ -94,7 +94,7 @@ Semantic:
 - view;
 - provenance;
 - confidence/status;
-- correct/supersede/retract;
+- correct/supersede/retract/delete;
 - approve/reject proposals.
 
 Relationships:
@@ -102,7 +102,7 @@ Relationships:
 - entity page;
 - incoming/outgoing relationships;
 - bounded relationship view;
-- create/correct/retract relationship.
+- create/correct/retract/delete relationship.
 
 Operational:
 
@@ -140,7 +140,7 @@ Approval calls backend promotion logic, not browser-side file writes.
 Implement:
 
 - Scar list by state/severity/project;
-- candidate confirmation/dismissal;
+- candidate confirmation/dismissal/deletion;
 - evidence timeline;
 - failure signature;
 - trigger explanation;

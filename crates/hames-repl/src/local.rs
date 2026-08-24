@@ -13,6 +13,7 @@ pub struct LocalPaths {
     pub token: PathBuf,
     pub history: PathBuf,
     pub config: PathBuf,
+    pub preferences: PathBuf,
 }
 
 impl LocalPaths {
@@ -28,6 +29,7 @@ impl LocalPaths {
             token: root.join("runtime/gateway.token"),
             history: root.join("repl-history"),
             config: root.join("config.toml"),
+            preferences: root.join("ui.toml"),
             root,
         })
     }
@@ -104,6 +106,53 @@ impl LocalPaths {
         Ok(self
             .legacy_provider_value(provider, "reasoning_effort")?
             .unwrap_or_default())
+    }
+
+    pub fn configured_theme(&self) -> Result<String> {
+        if !self.preferences.exists() {
+            return Ok("hames".to_owned());
+        }
+        let raw = fs::read_to_string(&self.preferences)
+            .with_context(|| format!("failed to read {}", self.preferences.display()))?;
+        let preferences: toml::Value = toml::from_str(&raw).context("invalid Hames ui.toml")?;
+        Ok(preferences
+            .get("theme")
+            .and_then(toml::Value::as_str)
+            .unwrap_or("hames")
+            .to_owned())
+    }
+
+    pub fn write_theme(&self, theme: &str) -> Result<()> {
+        if !matches!(theme, "hames" | "terminal") {
+            bail!("unknown Hames theme: {theme}");
+        }
+        fs::create_dir_all(&self.root)
+            .with_context(|| format!("failed to create {}", self.root.display()))?;
+        let mut preferences = if self.preferences.exists() {
+            let raw = fs::read_to_string(&self.preferences)
+                .with_context(|| format!("failed to read {}", self.preferences.display()))?;
+            toml::from_str(&raw).context("invalid Hames ui.toml")?
+        } else {
+            toml::Value::Table(toml::map::Map::new())
+        };
+        preferences
+            .as_table_mut()
+            .context("Hames ui.toml must contain a TOML table")?
+            .insert("theme".to_owned(), toml::Value::String(theme.to_owned()));
+        let serialized = toml::to_string_pretty(&preferences)?;
+        let mut options = OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&self.preferences)
+            .with_context(|| format!("failed to write {}", self.preferences.display()))?;
+        file.write_all(serialized.as_bytes())?;
+        file.sync_all()?;
+        Ok(())
     }
 
     fn legacy_provider_value(&self, provider: &str, field: &str) -> Result<Option<String>> {
@@ -201,7 +250,25 @@ fn backend_command() -> OsString {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::{LocalPaths, normalize_provider};
+
+    fn temporary_paths(label: &str) -> LocalPaths {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("hames-{label}-{nonce}"));
+        LocalPaths {
+            token: root.join("runtime/gateway.token"),
+            history: root.join("repl-history"),
+            config: root.join("config.toml"),
+            preferences: root.join("ui.toml"),
+            root,
+        }
+    }
 
     #[test]
     fn default_gateway_url_is_loopback() {
@@ -210,6 +277,7 @@ mod tests {
             token: "/tmp/example/token".into(),
             history: "/tmp/example/history".into(),
             config: "/tmp/example/missing.toml".into(),
+            preferences: "/tmp/example/ui.toml".into(),
         };
         assert_eq!(paths.gateway_url().unwrap(), "http://127.0.0.1:7411");
     }
@@ -218,5 +286,19 @@ mod tests {
     fn legacy_llamacpp_name_is_normalized() {
         assert_eq!(normalize_provider("llamacpp"), "llama_cpp");
         assert_eq!(normalize_provider("ollama"), "ollama");
+    }
+
+    #[test]
+    fn theme_is_persisted_as_a_global_ui_preference() {
+        let paths = temporary_paths("theme");
+        assert_eq!(paths.configured_theme().unwrap(), "hames");
+
+        paths.write_theme("terminal").unwrap();
+        assert_eq!(paths.configured_theme().unwrap(), "terminal");
+        assert!(paths.preferences.starts_with(&paths.root));
+
+        paths.write_theme("hames").unwrap();
+        assert_eq!(paths.configured_theme().unwrap(), "hames");
+        fs::remove_dir_all(&paths.root).unwrap();
     }
 }

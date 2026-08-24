@@ -6,7 +6,7 @@ use serde_json::Value;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::api::{Event, PasteSpan, Session};
+use crate::api::{Event, MemoryRecord, PasteSpan, Session};
 
 pub const LARGE_PASTE_LINES: usize = 4;
 pub const LARGE_PASTE_BYTES: usize = 400;
@@ -235,6 +235,12 @@ impl ActivityRow {
     }
 
     pub fn target(&self) -> String {
+        if let Some(memory_id) = self.arguments.get("memory_id").and_then(Value::as_str) {
+            return format!("memory {}", memory_id.get(..8).unwrap_or(memory_id));
+        }
+        if let Some(scar_id) = self.arguments.get("scar_id").and_then(Value::as_str) {
+            return format!("scar {}", scar_id.get(..8).unwrap_or(scar_id));
+        }
         let path = self
             .arguments
             .get("path")
@@ -253,6 +259,77 @@ impl ActivityRow {
     pub fn verb(&self) -> &'static str {
         let write = matches!(self.name.as_str(), "write_file" | "edit_file");
         let read = matches!(self.name.as_str(), "read_file" | "list_dir");
+        if self.name == "memory_forget" {
+            return match self.phase {
+                ActivityPhase::Preparing => "Preparing",
+                ActivityPhase::Checking => "Checking",
+                ActivityPhase::Approval => "Awaiting permission",
+                ActivityPhase::Running => "Forgetting",
+                ActivityPhase::Completed => "Forgot",
+                ActivityPhase::Failed => "Failed",
+                ActivityPhase::Rejected => "Rejected",
+                ActivityPhase::Cancelled => "Cancelled",
+            };
+        }
+        if self.name == "memory_add" {
+            return match self.phase {
+                ActivityPhase::Preparing => "Preparing",
+                ActivityPhase::Checking => "Checking",
+                ActivityPhase::Approval => "Awaiting permission",
+                ActivityPhase::Running => "Remembering",
+                ActivityPhase::Completed => "Remembered",
+                ActivityPhase::Failed => "Failed",
+                ActivityPhase::Rejected => "Rejected",
+                ActivityPhase::Cancelled => "Cancelled",
+            };
+        }
+        if self.name == "memory_edit" {
+            return match self.phase {
+                ActivityPhase::Preparing => "Preparing",
+                ActivityPhase::Checking => "Checking",
+                ActivityPhase::Approval => "Awaiting permission",
+                ActivityPhase::Running => "Updating",
+                ActivityPhase::Completed => "Updated",
+                ActivityPhase::Failed => "Failed",
+                ActivityPhase::Rejected => "Rejected",
+                ActivityPhase::Cancelled => "Cancelled",
+            };
+        }
+        if self.name == "scar_control" {
+            let action = self
+                .arguments
+                .get("action")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            return match (self.phase, action) {
+                (ActivityPhase::Running, "delete") => "Deleting",
+                (ActivityPhase::Completed, "delete") => "Deleted",
+                (ActivityPhase::Running, "dismiss") => "Dismissing",
+                (ActivityPhase::Completed, "dismiss") => "Dismissed",
+                (ActivityPhase::Running, "open") => "Opening",
+                (ActivityPhase::Completed, "open") => "Opened",
+                (ActivityPhase::Preparing, _) => "Preparing",
+                (ActivityPhase::Checking, _) => "Checking",
+                (ActivityPhase::Approval, _) => "Awaiting permission",
+                (ActivityPhase::Running, _) => "Updating",
+                (ActivityPhase::Completed, _) => "Updated",
+                (ActivityPhase::Failed, _) => "Failed",
+                (ActivityPhase::Rejected, _) => "Rejected",
+                (ActivityPhase::Cancelled, _) => "Cancelled",
+            };
+        }
+        if self.name == "scar_record" {
+            return match self.phase {
+                ActivityPhase::Running => "Recording",
+                ActivityPhase::Completed => "Recorded",
+                ActivityPhase::Preparing => "Preparing",
+                ActivityPhase::Checking => "Checking",
+                ActivityPhase::Approval => "Awaiting permission",
+                ActivityPhase::Failed => "Failed",
+                ActivityPhase::Rejected => "Rejected",
+                ActivityPhase::Cancelled => "Cancelled",
+            };
+        }
         match (self.phase, write, read) {
             (ActivityPhase::Preparing, true, _) => "Preparing write",
             (ActivityPhase::Preparing, _, true) => "Preparing explore",
@@ -315,11 +392,19 @@ pub struct ApprovalModal {
 }
 
 #[derive(Clone, Debug)]
+pub struct MemoryBrowser {
+    pub records: Vec<MemoryRecord>,
+    pub selected: usize,
+    pub detail_scroll: usize,
+}
+
+#[derive(Clone, Debug)]
 pub enum Modal {
     Trust,
     Approval(ApprovalModal),
     Help,
     Session,
+    Memory(MemoryBrowser),
     PastePreview(String),
     Error(String),
     Info { title: String, lines: Vec<String> },
@@ -405,6 +490,21 @@ impl ThemeKind {
             Self::Terminal => "Terminal",
         }
     }
+
+    pub fn config_value(self) -> &'static str {
+        match self {
+            Self::Hames => "hames",
+            Self::Terminal => "terminal",
+        }
+    }
+
+    pub fn from_config(value: &str) -> Option<Self> {
+        match value {
+            "hames" => Some(Self::Hames),
+            "terminal" => Some(Self::Terminal),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -434,8 +534,8 @@ pub struct Sheet {
 pub enum HitAction {
     ToggleThought(usize),
     SelectSheet(usize),
+    SelectMemory(usize),
     Approval(usize),
-    CloseModal,
     TrustWorkspace,
     Quit,
     ShowSession,
@@ -535,6 +635,9 @@ pub struct App {
     pub transcript_viewport: TranscriptViewport,
     pub transcript_selection: Option<TranscriptSelection>,
     pub selecting_transcript: bool,
+    pub modal_viewport: TranscriptViewport,
+    pub modal_selection: Option<TranscriptSelection>,
+    pub selecting_modal: bool,
     pub pending_thought_toggle: Option<usize>,
     pub copy_notice: Option<CopyNotice>,
     pub last_sequence: u64,
@@ -568,6 +671,9 @@ impl App {
             transcript_viewport: TranscriptViewport::default(),
             transcript_selection: None,
             selecting_transcript: false,
+            modal_viewport: TranscriptViewport::default(),
+            modal_selection: None,
+            selecting_modal: false,
             pending_thought_toggle: None,
             copy_notice: None,
             last_sequence: 0,
@@ -599,6 +705,13 @@ impl App {
                 }
                 _ => false,
             })
+    }
+
+    pub fn conversation_is_empty(&self) -> bool {
+        !self
+            .transcript
+            .iter()
+            .any(|item| matches!(item, TranscriptItem::User { .. }))
     }
 
     pub fn copy_notice(&self) -> Option<&str> {
@@ -650,29 +763,47 @@ impl App {
         self.pending_thought_toggle = None;
     }
 
-    pub fn transcript_selection_range(&self, row: usize) -> Option<(usize, usize)> {
-        let selection = self.transcript_selection?;
+    pub fn begin_modal_selection(&mut self, point: TranscriptPoint) {
+        self.modal_selection = Some(TranscriptSelection {
+            anchor: point,
+            head: point,
+        });
+        self.selecting_modal = true;
+    }
+
+    pub fn update_modal_selection(&mut self, point: TranscriptPoint) {
+        if let Some(selection) = &mut self.modal_selection
+            && self.selecting_modal
+        {
+            selection.head = point;
+        }
+    }
+
+    pub fn finish_modal_selection(&mut self) -> Option<String> {
+        self.selecting_modal = false;
+        let selection = self.modal_selection?;
         if selection.anchor == selection.head {
+            self.modal_selection = None;
             return None;
         }
-        let (start, end) = selection.bounds();
-        if row < start.row || row > end.row {
-            return None;
-        }
-        let line_width = self
-            .transcript_viewport
-            .lines
-            .get(row)
-            .map(|line| UnicodeWidthStr::width(line.as_str()))
-            .unwrap_or_default();
-        let from = if row == start.row { start.column } else { 0 }.min(line_width);
-        let to = if row == end.row {
-            end.column.saturating_add(1)
-        } else {
-            line_width
-        }
-        .min(line_width);
-        (from < to).then_some((from, to))
+        selected_transcript_text(&self.modal_viewport.lines, selection)
+    }
+
+    pub fn clear_modal_selection(&mut self) {
+        self.modal_selection = None;
+        self.selecting_modal = false;
+    }
+
+    pub fn modal_selection_range(&self, row: usize) -> Option<(usize, usize)> {
+        selection_range(&self.modal_viewport.lines, self.modal_selection, row)
+    }
+
+    pub fn transcript_selection_range(&self, row: usize) -> Option<(usize, usize)> {
+        selection_range(
+            &self.transcript_viewport.lines,
+            self.transcript_selection,
+            row,
+        )
     }
 
     pub fn command_options(&self) -> Vec<MenuOption> {
@@ -880,6 +1011,9 @@ impl App {
                     .get("text")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
+                if text.is_empty() {
+                    return;
+                }
                 let index = self.ensure_assistant(run_id, true);
                 if let TranscriptItem::Assistant { content, .. } = &mut self.transcript[index] {
                     content.push_str(text);
@@ -887,12 +1021,23 @@ impl App {
             }
             "response.tool_call_delta" => {
                 self.finish_live_thought(run_id);
+                let name = payload
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let arguments = payload
+                    .get("arguments_delta")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if name.is_empty() && arguments.is_empty() {
+                    return;
+                }
                 let index = payload.get("index").and_then(Value::as_u64).unwrap_or(0);
                 let row = self.ensure_activity_row(run_id, index, None);
-                if let Some(name) = payload.get("name").and_then(Value::as_str) {
+                if !name.is_empty() {
                     row.name.push_str(name);
                 }
-                if let Some(arguments) = payload.get("arguments_delta").and_then(Value::as_str) {
+                if !arguments.is_empty() {
                     row.argument_parts.push_str(arguments);
                     if let Ok(value) = serde_json::from_str(&row.argument_parts) {
                         row.arguments = value;
@@ -1268,6 +1413,22 @@ impl App {
                 _ => {}
             }
         }
+        for item in &mut self.transcript {
+            if let TranscriptItem::Activity { run_id: id, rows } = item
+                && id == run_id
+            {
+                rows.retain(|row| !row.name.is_empty());
+            }
+        }
+        self.transcript.retain(|item| match item {
+            TranscriptItem::Assistant {
+                run_id: id,
+                content,
+                ..
+            } if id == run_id => !content.trim().is_empty(),
+            TranscriptItem::Activity { run_id: id, rows } if id == run_id => !rows.is_empty(),
+            _ => true,
+        });
     }
 }
 
@@ -1291,6 +1452,33 @@ fn selected_transcript_text(lines: &[String], selection: TranscriptSelection) ->
     }
     let text = selected.join("\n");
     (!text.is_empty()).then_some(text)
+}
+
+fn selection_range(
+    lines: &[String],
+    selection: Option<TranscriptSelection>,
+    row: usize,
+) -> Option<(usize, usize)> {
+    let selection = selection?;
+    if selection.anchor == selection.head {
+        return None;
+    }
+    let (start, end) = selection.bounds();
+    if row < start.row || row > end.row {
+        return None;
+    }
+    let line_width = lines
+        .get(row)
+        .map(|line| UnicodeWidthStr::width(line.as_str()))
+        .unwrap_or_default();
+    let from = if row == start.row { start.column } else { 0 }.min(line_width);
+    let to = if row == end.row {
+        end.column.saturating_add(1)
+    } else {
+        line_width
+    }
+    .min(line_width);
+    (from < to).then_some((from, to))
 }
 
 fn display_slice(value: &str, start: usize, end: usize) -> String {
@@ -1521,6 +1709,40 @@ mod tests {
             item,
             TranscriptItem::Thought { run_id, .. } if run_id == "background-memory-job"
         )));
+    }
+
+    #[test]
+    fn empty_stream_deltas_do_not_create_phantom_output_or_tools() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_durable(event(1, "run.started", "run-empty", json!({})), true);
+        app.ingest_transient("run-empty", "response.text_delta", &json!({"text": ""}));
+        app.ingest_transient(
+            "run-empty",
+            "response.tool_call_delta",
+            &json!({"index": 0, "name": "", "arguments_delta": ""}),
+        );
+        app.ingest_durable(event(2, "run.completed", "run-empty", json!({})), true);
+
+        assert!(!app.transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Assistant { .. } | TranscriptItem::Activity { .. }
+        )));
+    }
+
+    #[test]
+    fn only_user_messages_make_a_session_resumable() {
+        let mut app = App::new(session(), Vec::new(), true);
+        assert!(app.conversation_is_empty());
+        app.transcript.push(TranscriptItem::Status {
+            text: "Ready".to_owned(),
+            error: false,
+        });
+        assert!(app.conversation_is_empty());
+        app.transcript.push(TranscriptItem::User {
+            content: "Hello".to_owned(),
+            paste_spans: Vec::new(),
+        });
+        assert!(!app.conversation_is_empty());
     }
 
     #[test]

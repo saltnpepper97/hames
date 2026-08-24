@@ -27,7 +27,7 @@ uses a visible prompt caret, side padding, a right-aligned model/effort/mode lab
 and mode-colored borders without imposing a filled background.
 
 The status row keeps `[connected]` on the right. Its left side shows shortcuts
-while idle and becomes an animated diamond-comet activity bar during a run, with
+while idle and becomes a short, subdued neutral activity rule during a run, with
 the current activity, properly formatted elapsed time, and a truthful
 `Esc interrupt` control.
 
@@ -45,10 +45,11 @@ viewport. Their tracks support mouse clicks and dragging.
 ## Controls and modes
 
 - Shift+Tab cycles Manual, Auto, and Plan and persists the selection through the
-  gateway.
-- Manual uses a white composer border and requests permission for changes.
-- Auto uses blue and asks only for dangerous operations.
-- Plan uses violet and allows inspection and tests while gateway policy rejects
+  gateway. A change made during an active turn applies at its next tool-policy
+  boundary.
+- Manual uses a neutral gray composer border and requests permission for changes.
+- Auto keeps the neutral border with blue mode text and asks only for dangerous operations.
+- Plan uses a yellow border and text and allows inspection and tests while gateway policy rejects
   code-writing operations.
 - Ctrl+K opens the command palette. Runtime model, reasoning effort, agent, and
   mode controls appear as native sheets above the composer.
@@ -65,7 +66,8 @@ viewport. Their tracks support mouse clicks and dragging.
   that fresh empty replacement is omitted from the refreshed list so deletion is
   visually unambiguous.
   Rows use their literal slash names. `/new` preserves the current conversation
-  and starts another; `/clear` retires it before starting fresh. Bare `/resume`
+  and starts another without waiting on an active model run; `/clear` retires it
+  before starting fresh. Empty sessions are discarded and hidden. Bare `/resume`
   aliases the `/sessions` picker and `/resume <id>` remains the direct path.
   `/status` opens session continuity and `/gateway` owns gateway health.
 - `/model` shows reachable configured providers only. Reasoning-capable model
@@ -73,16 +75,21 @@ viewport. Their tracks support mouse clicks and dragging.
   reasoning or the advertised named effort scale. Both selections apply
   atomically at the end.
 - `/themes` switches between the custom Hames RGB palette and terminal-native
-  ANSI colors. The selection survives session changes within the running client.
-- Transcript mouse selection is rendered by the TUI and copied on release with
+  ANSI colors. The global choice is persisted in `~/.hames/ui.toml` and loaded
+  before the first draw.
+- Transcript and modal mouse selection are rendered by the TUI and copied on release with
   OSC 52, preserving mouse-driven scrollbars and Thought toggles. A short copy
   confirmation occupies the notice row above the composer.
 - Only `model.requested` events belonging to the active foreground chat run may
   create a pending Thought; background memory and workflow model jobs remain out
   of the conversation transcript.
 - Centered modals use square, neutral-gray borders; semantic accents stay within
-  their content. Trust and approval decisions use focused modals. Approvals preserve the
-  gateway's allow-for-session, allow-once, and deny semantics.
+  their content. Selection inside a modal does not dismiss it. Trust and approval
+  decisions use focused modals with inset actions. Approvals preserve the gateway's
+  allow-for-session, allow-once, and deny semantics.
+- `/memory` is a selectable active-record browser. The focused memory expands its
+  full summary and value with independent detail scrolling; permanently deleted
+  memories disappear from the browser.
 - Status, usage, events, inspection, context, memory, Skills, Scars, plugins,
   export, correction, and explicit memory capture are reachable from the palette
   or slash commands.
@@ -91,7 +98,10 @@ viewport. Their tracks support mouse clicks and dragging.
 
 Adjacent operations retain ledger order while visually grouping under continuity
 headings such as Explore and Write. Preparing, streaming, completion, rejection,
-and failure states remain visible. Active Thoughts animate; settled Thoughts
+and failure states remain visible. Empty stream fragments never create phantom
+activity or assistant rows. Memory operations use semantic verbs such as
+Remembered, Updated, and Forgot rather than generic completion labels. Active
+Thoughts animate with a slow restrained sheen; settled Thoughts
 collapse when subsequent work begins and show a formatted duration only after the
 significance threshold. Keyboard and mouse controls can expand them again.
 

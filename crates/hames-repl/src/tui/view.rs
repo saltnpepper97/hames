@@ -11,13 +11,14 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::{
-    ActivityCategory, ActivityPhase, App, ComposerUnit, HitAction, HitRegion, Modal, ScrollTarget,
-    SheetKind, ThemeKind, TranscriptItem, TranscriptViewport,
+    ActivityCategory, ActivityPhase, App, ComposerUnit, HitAction, HitRegion, MemoryBrowser, Modal,
+    ScrollTarget, SheetKind, ThemeKind, TranscriptItem, TranscriptViewport,
 };
 
 const MINT: Color = Color::Rgb(116, 226, 192);
 const SKY: Color = Color::Rgb(112, 177, 255);
 const LILAC: Color = Color::Rgb(193, 154, 255);
+const THOUGHT: Color = Color::Rgb(205, 190, 230);
 const CORAL: Color = Color::Rgb(255, 139, 116);
 const GOLD: Color = Color::Rgb(240, 190, 92);
 const MUTED: Color = Color::Rgb(86, 94, 108);
@@ -29,6 +30,10 @@ const PANEL_BRIGHT: Color = Color::Rgb(29, 35, 46);
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     app.hits.clear();
+    if app.modal.is_none() {
+        app.modal_viewport = TranscriptViewport::default();
+        app.clear_modal_selection();
+    }
     let area = frame.area();
     frame.render_widget(
         Block::default().style(Style::default().bg(Color::Reset)),
@@ -283,7 +288,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
             } => {
                 let interactive = !(*interrupted && !*live && content.is_empty());
                 let label = if *live {
-                    sheen_line("◈ Thinking", app.tick, LILAC)
+                    sheen_line("◈ Thinking", app.tick, THOUGHT)
                 } else {
                     let mut spans = vec![
                         Span::styled("◈ ", Style::default().fg(LILAC)),
@@ -318,7 +323,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     );
                 }
             }
-            TranscriptItem::Assistant { content, live, .. } => {
+            TranscriptItem::Assistant { content, live, .. } if !content.trim().is_empty() => {
                 lines.push(RenderLine {
                     line: if *live {
                         sheen_line("✦ Hames", app.tick, MINT)
@@ -337,7 +342,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
             }
             TranscriptItem::Activity { rows, .. } => {
                 let mut category = None;
-                for row in rows {
+                for row in rows.iter().filter(|row| !row.name.is_empty()) {
                     if category != Some(row.category()) {
                         category = Some(row.category());
                         let color = category_color(row.category());
@@ -362,7 +367,13 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     };
                     let color = phase_color(row.phase);
                     let mut detail = row.target();
-                    if !row.summary.is_empty() && row.summary != detail {
+                    let summary_is_redundant = row.name == "memory_forget"
+                        && row
+                            .arguments
+                            .get("memory_id")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|id| row.summary.contains(id));
+                    if !row.summary.is_empty() && row.summary != detail && !summary_is_redundant {
                         detail.push_str(" · ");
                         detail.push_str(&row.summary.replace('\n', " "));
                     }
@@ -396,6 +407,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     });
                 }
             }
+            TranscriptItem::Assistant { .. } => {}
             TranscriptItem::Status { text, error } => {
                 lines.push(RenderLine {
                     line: Line::from(vec![
@@ -883,10 +895,10 @@ fn composer_rows(app: &App, width: u16) -> u16 {
 }
 
 fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    let Some(modal) = &app.modal else {
+    let Some(modal) = app.modal.clone() else {
         return;
     };
-    let (title, body, width, height) = match modal {
+    let (title, mut body, width, height) = match &modal {
         Modal::Trust => (
             "Trust this workspace",
             vec![
@@ -930,13 +942,13 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 ]),
                 Line::from(vec![
                     Span::styled("Reason  ", Style::default().fg(MUTED)),
-                    Span::styled(approval.reason.clone(), Style::default().fg(GOLD)),
+                    Span::styled(fit(&approval.reason, 62), Style::default().fg(GOLD)),
                 ]),
                 Line::from(""),
             ];
             for line in approval.arguments.lines().take(5) {
                 lines.push(Line::from(Span::styled(
-                    format!("  {line}"),
+                    format!("  {}", fit(line, 70)),
                     Style::default().fg(Color::Rgb(180, 187, 201)),
                 )));
             }
@@ -946,7 +958,7 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             } else {
                 [" Allow once ", " Deny "].as_slice()
             };
-            let mut spans = Vec::new();
+            let mut spans = vec![Span::raw("  ")];
             for (index, choice) in choices.iter().enumerate() {
                 let selected = approval.selected == index;
                 spans.push(Span::styled(
@@ -965,6 +977,9 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                     },
                 ));
                 spans.push(Span::raw("  "));
+            }
+            while lines.len() < 9 {
+                lines.push(Line::from(""));
             }
             lines.push(Line::from(spans));
             ("Permission required", lines, 76, 12)
@@ -1011,6 +1026,7 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             78,
             12,
         ),
+        Modal::Memory(browser) => ("Memory", memory_browser_body(browser), 92, 23),
         Modal::PastePreview(value) => {
             let mut lines = vec![
                 Line::from(Span::styled(
@@ -1063,6 +1079,38 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         ),
     };
     let popup = centered(area, width, height);
+    let inner_height = usize::from(popup.height.saturating_sub(2));
+    if matches!(modal, Modal::Approval(_))
+        && let Some(actions) = body.pop()
+    {
+        let content_rows = inner_height.saturating_sub(1);
+        body.truncate(content_rows);
+        while body.len() < content_rows {
+            body.push(Line::from(""));
+        }
+        body.push(actions);
+    }
+    app.modal_viewport = TranscriptViewport {
+        x: popup.x.saturating_add(1),
+        y: popup.y.saturating_add(1),
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+        lines: body.iter().take(inner_height).map(line_text).collect(),
+    };
+    let body: Vec<Line<'_>> = body
+        .iter()
+        .take(inner_height)
+        .enumerate()
+        .map(|(row, line)| {
+            app.modal_selection_range(row)
+                .map_or_else(|| line.clone(), |range| highlight_line(line, range))
+        })
+        .collect();
+    let modal_background = if width >= 78 || height >= 14 {
+        Color::Reset
+    } else {
+        PANEL
+    };
     frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(body)
@@ -1073,11 +1121,11 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                     .borders(Borders::ALL)
                     .border_type(BorderType::Plain)
                     .border_style(Style::default().fg(RULE))
-                    .style(Style::default().bg(PANEL)),
+                    .style(Style::default().bg(modal_background)),
             ),
         popup,
     );
-    match modal {
+    match &modal {
         Modal::Trust => {
             let y = popup.bottom().saturating_sub(2);
             app.hits.push(HitRegion {
@@ -1100,7 +1148,7 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             let y = popup.bottom().saturating_sub(2);
             for index in 0..count {
                 app.hits.push(HitRegion {
-                    x: popup.x + 2 + u16::try_from(index * 18).unwrap_or(0),
+                    x: popup.x + 3 + u16::try_from(index * 18).unwrap_or(0),
                     y,
                     width: 16,
                     height: 1,
@@ -1108,13 +1156,160 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 });
             }
         }
-        _ => app.hits.push(HitRegion {
-            x: popup.x,
-            y: popup.y,
-            width: popup.width,
-            height: popup.height,
-            action: HitAction::CloseModal,
-        }),
+        Modal::Memory(browser) => {
+            let (start, end) = memory_window(browser);
+            for (row, index) in (start..end).enumerate() {
+                app.hits.push(HitRegion {
+                    x: popup.x + 1,
+                    y: popup.y + 3 + u16::try_from(row).unwrap_or(0),
+                    width: popup.width.saturating_sub(2),
+                    height: 1,
+                    action: HitAction::SelectMemory(index),
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+const MEMORY_LIST_ROWS: usize = 5;
+const MEMORY_DETAIL_ROWS: usize = 8;
+
+fn memory_window(browser: &MemoryBrowser) -> (usize, usize) {
+    let selected = browser
+        .selected
+        .min(browser.records.len().saturating_sub(1));
+    let start = selected.saturating_add(1).saturating_sub(MEMORY_LIST_ROWS);
+    (start, (start + MEMORY_LIST_ROWS).min(browser.records.len()))
+}
+
+fn memory_browser_body(browser: &MemoryBrowser) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                format!("{} active memories", browser.records.len()),
+                Style::default().fg(INPUT).bold(),
+            ),
+            Span::styled(
+                " · focused memory expands below",
+                Style::default().fg(MUTED),
+            ),
+        ]),
+        Line::from(""),
+    ];
+    let (start, end) = memory_window(browser);
+    for index in start..end {
+        let memory = &browser.records[index];
+        let selected = index == browser.selected;
+        let row_style = if selected {
+            Style::default().bg(PANEL_BRIGHT)
+        } else {
+            Style::default()
+        };
+        let label = fit(
+            &format!(
+                "{}  {} · {} · {}",
+                if selected { "•" } else { " " },
+                memory.summary,
+                memory.layer,
+                memory.visibility
+            ),
+            84,
+        );
+        let used = UnicodeWidthStr::width(label.as_str());
+        lines.push(Line::from(vec![
+            Span::styled(
+                label,
+                Style::default()
+                    .fg(if selected { INPUT } else { MUTED })
+                    .add_modifier(if selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    })
+                    .patch(row_style),
+            ),
+            Span::styled(" ".repeat(84usize.saturating_sub(used)), row_style),
+        ]));
+    }
+    for _ in end - start..MEMORY_LIST_ROWS {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(Span::styled(
+        "─".repeat(84),
+        Style::default().fg(RULE),
+    )));
+
+    if let Some(memory) = browser.records.get(browser.selected) {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{} · {}", memory.subject, memory.predicate),
+                Style::default().fg(INPUT).bold(),
+            ),
+            Span::styled(
+                format!(
+                    "  {} · confidence {:.0}%",
+                    memory.status,
+                    memory.confidence * 100.0
+                ),
+                Style::default().fg(MUTED),
+            ),
+        ]));
+        let value = memory.value.as_str().map(str::to_owned).unwrap_or_else(|| {
+            serde_json::to_string_pretty(&memory.value).unwrap_or_else(|_| memory.value.to_string())
+        });
+        let mut detail = Vec::new();
+        push_memory_detail(&mut detail, "Summary", &memory.summary);
+        push_memory_detail(&mut detail, "Value", &value);
+        let start = browser
+            .detail_scroll
+            .min(detail.len().saturating_sub(MEMORY_DETAIL_ROWS));
+        lines.extend(detail.into_iter().skip(start).take(MEMORY_DETAIL_ROWS));
+        while lines.len() < 2 + MEMORY_LIST_ROWS + 1 + 1 + MEMORY_DETAIL_ROWS {
+            lines.push(Line::from(""));
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            "No active memories yet. Use /remember to capture something durable.",
+            Style::default().fg(MUTED),
+        )));
+        for _ in 1..=MEMORY_DETAIL_ROWS {
+            lines.push(Line::from(""));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("↑↓", Style::default().fg(INPUT).bold()),
+        Span::styled(" memories · ", Style::default().fg(MUTED)),
+        Span::styled("PgUp/PgDn", Style::default().fg(INPUT).bold()),
+        Span::styled(" full text · ", Style::default().fg(MUTED)),
+        Span::styled("Esc", Style::default().fg(INPUT).bold()),
+        Span::styled(" close", Style::default().fg(MUTED)),
+    ]));
+    lines
+}
+
+fn push_memory_detail(lines: &mut Vec<Line<'static>>, label: &str, value: &str) {
+    let mut first = true;
+    for raw in value.lines().chain(value.is_empty().then_some("")) {
+        let mut remaining = raw;
+        loop {
+            let prefix = if first {
+                format!("{label:<10}")
+            } else {
+                " ".repeat(10)
+            };
+            let (part, rest) = split_width(remaining, 74);
+            lines.push(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(MUTED)),
+                Span::styled(part.to_owned(), Style::default().fg(INPUT)),
+            ]));
+            first = false;
+            if rest.is_empty() {
+                break;
+            }
+            remaining = rest.trim_start_matches(' ');
+        }
     }
 }
 
@@ -1175,7 +1370,9 @@ fn sheen_line(label: &str, tick: u64, color: Color) -> Line<'static> {
 
 fn sheen_spans(label: &str, tick: u64, color: Color) -> Vec<Span<'static>> {
     let chars: Vec<char> = label.chars().collect();
-    let highlight = usize::try_from(tick).unwrap_or(0) % chars.len().max(1);
+    // Animation ticks arrive every 80 ms. Holding the highlight for four ticks
+    // keeps active work visible without making the transcript flicker.
+    let highlight = usize::try_from(tick / 2).unwrap_or(0) % chars.len().max(1);
     chars
         .into_iter()
         .enumerate()
@@ -1379,16 +1576,17 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
+    use serde_json::json;
 
     use super::{
-        DELETE_BG, GOLD, INPUT, MINT, MUTED, PANEL_BRIGHT, RULE, SKY, draw, format_elapsed,
-        mode_color, mode_outline, pasted_display, scrollbar_position, sheet_text_color,
-        thought_label,
+        DELETE_BG, GOLD, INPUT, MINT, MUTED, PANEL, PANEL_BRIGHT, RULE, SKY, draw, format_elapsed,
+        line_text, memory_browser_body, mode_color, mode_outline, pasted_display,
+        scrollbar_position, sheen_spans, sheet_text_color, thought_label, transcript_lines,
     };
-    use crate::api::{PasteSpan, Session};
+    use crate::api::{MemoryRecord, PasteSpan, Session};
     use crate::tui::app::{
-        App, HitAction, MenuAction, MenuOption, Modal, Sheet, SheetKind, TranscriptItem,
-        TranscriptPoint,
+        ActivityPhase, ActivityRow, App, ApprovalModal, HitAction, MemoryBrowser, MenuAction,
+        MenuOption, Modal, Sheet, SheetKind, TranscriptItem, TranscriptPoint,
     };
 
     #[test]
@@ -1396,6 +1594,18 @@ mod tests {
         assert_eq!(thought_label(9.4), "Thought");
         assert_eq!(thought_label(10.0), "Thought (10s)");
         assert_eq!(thought_label(68.0), "Thought (1m 8s)");
+    }
+
+    #[test]
+    fn active_sheen_moves_at_a_subdued_cadence() {
+        assert_eq!(
+            sheen_spans("Thinking", 0, INPUT),
+            sheen_spans("Thinking", 1, INPUT)
+        );
+        assert_ne!(
+            sheen_spans("Thinking", 1, INPUT),
+            sheen_spans("Thinking", 2, INPUT)
+        );
     }
 
     #[test]
@@ -1735,6 +1945,130 @@ mod tests {
     }
 
     #[test]
+    fn permission_actions_are_inset_and_the_hit_target_matches() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.modal = Some(Modal::Approval(ApprovalModal {
+            approval_id: "approval-1".to_owned(),
+            request_hash: "hash".to_owned(),
+            name: "write_file".to_owned(),
+            reason: "manual mode".to_owned(),
+            arguments: "{}".to_owned(),
+            allow_session: false,
+            selected: 0,
+        }));
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((13, 19)).unwrap().bg, PANEL);
+        assert_eq!(buffer.cell((14, 19)).unwrap().bg, PANEL);
+        assert_eq!(buffer.cell((15, 19)).unwrap().bg, MINT);
+        assert!(app.hits.iter().any(|region| {
+            region.x == 15 && region.y == 19 && matches!(region.action, HitAction::Approval(0))
+        }));
+    }
+
+    #[test]
+    fn permission_actions_remain_visible_at_the_minimum_terminal_height() {
+        let backend = TestBackend::new(76, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.modal = Some(Modal::Approval(ApprovalModal {
+            approval_id: "approval-1".to_owned(),
+            request_hash: "hash".to_owned(),
+            name: "shell".to_owned(),
+            reason: "A deliberately long permission reason that must not push actions off screen"
+                .to_owned(),
+            arguments: json!({"command": "a very long command that still needs visible controls"})
+                .to_string(),
+            allow_session: true,
+            selected: 0,
+        }));
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((5, 7)).unwrap().bg, MINT);
+        assert!(app.hits.iter().any(|region| {
+            region.x == 5 && region.y == 7 && matches!(region.action, HitAction::Approval(0))
+        }));
+    }
+
+    #[test]
+    fn memory_browser_focuses_an_active_record_and_expands_its_text() {
+        let browser = MemoryBrowser {
+            records: vec![memory_record()],
+            selected: 0,
+            detail_scroll: 0,
+        };
+        let rendered = memory_browser_body(&browser)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("1 active memories"));
+        assert!(rendered.contains("Keep the interface calm"));
+        assert!(rendered.contains("user:local · prefers_ui"));
+        assert!(rendered.contains("Subdued and polished"));
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.modal = Some(Modal::Memory(browser));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(
+            terminal.backend().buffer().cell((5, 5)).unwrap().bg,
+            Color::Reset
+        );
+    }
+
+    #[test]
+    fn activity_rows_hide_phantoms_and_describe_memory_deletion_semantically() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::Activity {
+            run_id: "run-memory".to_owned(),
+            rows: vec![
+                ActivityRow {
+                    index: 0,
+                    tool_call_id: None,
+                    name: String::new(),
+                    arguments: json!(null),
+                    argument_parts: String::new(),
+                    phase: ActivityPhase::Checking,
+                    summary: String::new(),
+                    duration_seconds: 0.0,
+                },
+                ActivityRow {
+                    index: 1,
+                    tool_call_id: Some("forget-1".to_owned()),
+                    name: "memory_forget".to_owned(),
+                    arguments: json!({"memory_id": "8f9b40f1-ec06-4706-841b-8fd60d60be85"}),
+                    argument_parts: String::new(),
+                    phase: ActivityPhase::Completed,
+                    summary: "deleted memory 8f9b40f1-ec06-4706-841b-8fd60d60be85".to_owned(),
+                    duration_seconds: 0.003,
+                },
+            ],
+        });
+        app.transcript.push(TranscriptItem::Assistant {
+            run_id: "run-memory".to_owned(),
+            content: String::new(),
+            live: true,
+        });
+
+        let rendered = transcript_lines(&app, 90)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("◆ Memory"));
+        assert!(rendered.contains("✓ Forgot  memory 8f9b40f1"));
+        assert!(!rendered.contains("◆ Run"));
+        assert!(!rendered.contains("✦ Hames"));
+        assert!(!rendered.contains("ec06-4706"));
+    }
+
+    #[test]
     fn test_backend_renders_minimum_size_warning() {
         let backend = TestBackend::new(55, 9);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1806,6 +2140,34 @@ mod tests {
                 .all(|cell| !matches!(cell.fg, Color::Rgb(_, _, _))
                     && !matches!(cell.bg, Color::Rgb(_, _, _)))
         );
+    }
+
+    fn memory_record() -> MemoryRecord {
+        MemoryRecord {
+            id: "memory-1".to_owned(),
+            layer: "relationship".to_owned(),
+            status: "active".to_owned(),
+            visibility: "global".to_owned(),
+            subject: "user:local".to_owned(),
+            predicate: "prefers_ui".to_owned(),
+            value: json!("Subdued and polished"),
+            summary: "Keep the interface calm".to_owned(),
+            confidence: 0.95,
+            importance: 0.9,
+            owner_agent_id: None,
+            workspace_path: None,
+            lineage_root_session_id: None,
+            source_session_id: "session-1".to_owned(),
+            source_run_id: Some("run-1".to_owned()),
+            origin_kind: "explicit".to_owned(),
+            valid_from: None,
+            valid_until: None,
+            superseded_by_id: None,
+            created_at: "2026-08-24T00:00:00Z".to_owned(),
+            updated_at: "2026-08-24T00:00:00Z".to_owned(),
+            anchors: Vec::new(),
+            provenance_event_ids: Vec::new(),
+        }
     }
 
     fn session() -> Session {
