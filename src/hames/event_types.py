@@ -551,6 +551,39 @@ class PolicyRuleEventPayload(EventPayload):
     reason: str = ""
 
 
+def _empty_permissions() -> list[str]:
+    return []
+
+
+class PluginLifecyclePayload(EventPayload):
+    plugin_id: str
+    version_id: str = ""
+    version: str = ""
+    fingerprint: str = ""
+    permissions: list[str] = Field(default_factory=_empty_permissions)
+    enabled: bool = False
+
+
+class PluginWorkerPayload(EventPayload):
+    plugin_id: str
+    status: str = ""
+    message: str = ""
+
+
+class PluginBrokerPayload(EventPayload):
+    plugin_id: str
+    method: str
+    status: str = ""
+    reason: str = ""
+
+
+class PluginProposalPayload(EventPayload):
+    proposal_id: str
+    plugin_id: str = ""
+    scar_id: str = ""
+    permissions: list[str] = Field(default_factory=_empty_permissions)
+
+
 EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "session.opened": SessionOpenedPayload,
     "session.closed": SessionClosedPayload,
@@ -648,6 +681,17 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "policy.rule.proposed": PolicyRuleEventPayload,
     "policy.rule.activated": PolicyRuleEventPayload,
     "policy.rule.retired": PolicyRuleEventPayload,
+    "plugin.installed": PluginLifecyclePayload,
+    "plugin.enabled": PluginLifecyclePayload,
+    "plugin.disabled": PluginLifecyclePayload,
+    "plugin.removed": PluginLifecyclePayload,
+    "plugin.worker.started": PluginWorkerPayload,
+    "plugin.worker.stopped": PluginWorkerPayload,
+    "plugin.worker.failed": PluginWorkerPayload,
+    "plugin.capability.registered": PluginLifecyclePayload,
+    "plugin.broker.requested": PluginBrokerPayload,
+    "plugin.broker.completed": PluginBrokerPayload,
+    "plugin.proposal.created": PluginProposalPayload,
 }
 
 

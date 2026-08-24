@@ -75,6 +75,13 @@ class SkillsConfig(StrictModel):
     stale_after_days: int = Field(default=90, ge=1)
 
 
+class PluginsConfig(StrictModel):
+    enabled: bool = True
+    allow_unsandboxed_user_plugins: bool = False
+    worker_timeout_seconds: float = Field(default=30.0, gt=0, le=600)
+    max_output_bytes: int = Field(default=1_048_576, ge=4096)
+
+
 class EvolutionConfig(StrictModel):
     enabled: bool = True
     conversational_detection: bool = True
@@ -199,6 +206,7 @@ class HamesConfig(StrictModel):
     memory: MemoryConfig = MemoryConfig()
     skills: SkillsConfig = SkillsConfig()
     evolution: EvolutionConfig = EvolutionConfig()
+    plugins: PluginsConfig = PluginsConfig()
     tools: ToolsConfig = ToolsConfig()
     gateway: GatewayConfig = GatewayConfig()
     providers: dict[str, ProviderProfileConfig] = Field(default_factory=_default_provider_profiles)

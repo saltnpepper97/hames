@@ -575,6 +575,51 @@ MIGRATIONS = (
         END;
         """,
     ),
+    Migration(
+        11,
+        "isolated plugins",
+        """
+        CREATE TABLE plugins (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+            active_version_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE plugin_versions (
+            id TEXT PRIMARY KEY,
+            plugin_id TEXT NOT NULL REFERENCES plugins(id),
+            version TEXT NOT NULL,
+            fingerprint TEXT NOT NULL UNIQUE,
+            package_path TEXT NOT NULL,
+            manifest_json TEXT NOT NULL,
+            permissions_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('installed', 'retired')),
+            created_at TEXT NOT NULL,
+            UNIQUE (plugin_id, version)
+        );
+        CREATE TABLE plugin_proposals (
+            id TEXT PRIMARY KEY,
+            plugin_id TEXT,
+            scar_id TEXT,
+            status TEXT NOT NULL CHECK (
+                status IN ('proposed', 'rejected', 'installed')
+            ),
+            package_path TEXT NOT NULL,
+            manifest_json TEXT NOT NULL,
+            source_session_id TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX plugin_versions_plugin_idx ON plugin_versions(plugin_id, version);
+        CREATE INDEX plugin_proposals_status_idx ON plugin_proposals(status);
+        CREATE TRIGGER plugin_versions_no_delete
+        BEFORE DELETE ON plugin_versions
+        BEGIN
+            SELECT RAISE(ABORT, 'plugin versions cannot be deleted');
+        END;
+        """,
+    ),
 )
 
 

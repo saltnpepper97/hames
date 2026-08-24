@@ -63,6 +63,10 @@ class HamesPaths:
         return self.root / "skills"
 
     @property
+    def plugins(self) -> Path:
+        return self.root / "plugins"
+
+    @property
     def logs(self) -> Path:
         return self.root / "logs"
 
@@ -90,6 +94,7 @@ class HamesPaths:
             self.agents,
             self.agents / "default",
             self.skills,
+            self.plugins,
             self.logs,
             self.runtime,
         ):
