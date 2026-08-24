@@ -61,7 +61,9 @@ viewport. Their tracks support mouse clicks and dragging.
   `/sessions` uses a reversible two-press Ctrl+D removal gesture: the first
   press marks only the selected row red, navigation or Esc disarms it, and the
   second press retires the session from resumable history. The picker refreshes
-  and remains open after every removal, including an active-session replacement.
+  and remains open after every removal, including an active-session replacement;
+  that fresh empty replacement is omitted from the refreshed list so deletion is
+  visually unambiguous.
   Rows use their literal slash names. `/new` preserves the current conversation
   and starts another; `/clear` retires it before starting fresh. Bare `/resume`
   aliases the `/sessions` picker and `/resume <id>` remains the direct path.

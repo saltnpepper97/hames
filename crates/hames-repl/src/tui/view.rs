@@ -484,16 +484,16 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 .patch(row_style),
         )];
         if deleting {
-            let lead = " Press";
-            let prompt = "Ctrl+D again to delete this entry  ";
-            let used = 3 + UnicodeWidthStr::width(lead) + UnicodeWidthStr::width(prompt);
+            let lead = format!(" {:<20}", "Press");
+            let prompt = " Ctrl+D again to delete this entry";
+            let used = 3 + UnicodeWidthStr::width(lead.as_str()) + UnicodeWidthStr::width(prompt);
             spans.extend([
                 Span::styled(lead, Style::default().fg(INPUT).patch(row_style)),
+                Span::styled(prompt, Style::default().fg(CORAL).bold().patch(row_style)),
                 Span::styled(
                     " ".repeat(usize::from(area.width).saturating_sub(used)),
                     row_style,
                 ),
-                Span::styled(prompt, Style::default().fg(CORAL).bold().patch(row_style)),
             ]);
             lines.push(Line::from(spans));
             app.hits.push(HitRegion {
@@ -1717,6 +1717,7 @@ mod tests {
         assert!(rendered.contains("Ctrl+D again to delete this entry"));
         assert!(rendered.contains("↑↓ cancel · Esc close"));
         assert!(!rendered.contains("Design pass"));
+        assert_eq!(buffer.cell((25, 24)).unwrap().symbol(), "C");
         assert_eq!(buffer.cell((50, 24)).unwrap().bg, DELETE_BG);
     }
 

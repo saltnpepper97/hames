@@ -126,7 +126,9 @@ pub async fn run() -> Result<()> {
                 app = load_app(&client, session).await?;
                 app.theme = theme;
                 if reopen_sessions {
-                    open_sessions_sheet(&client, &mut app).await?;
+                    let replacement_id = app.session.id.clone();
+                    open_sessions_sheet(&client, &mut app, Some(&replacement_id)).await?;
+                    app.notice = Some("Session removed from resumable history".to_owned());
                 }
                 stream_task = spawn_event_stream(
                     client.clone(),
@@ -197,7 +199,11 @@ async fn replace_session(
     Ok(created)
 }
 
-async fn open_sessions_sheet(client: &GatewayClient, app: &mut App) -> Result<()> {
+async fn open_sessions_sheet(
+    client: &GatewayClient,
+    app: &mut App,
+    omitted_session_id: Option<&str>,
+) -> Result<()> {
     app.notice = Some("Loading sessions…".to_owned());
     let sessions = client.sessions().await?;
     app.notice = None;
@@ -206,7 +212,9 @@ async fn open_sessions_sheet(client: &GatewayClient, app: &mut App) -> Result<()
         title: "Open sessions".to_owned(),
         options: sessions
             .into_iter()
-            .filter(|session| session.status == "open")
+            .filter(|session| {
+                session.status == "open" && omitted_session_id != Some(session.id.as_str())
+            })
             .take(40)
             .map(|session| MenuOption {
                 label: session
@@ -825,7 +833,7 @@ async fn apply_menu_action(
             return Ok(Some(replace_session(client, paths, &previous).await?));
         }
         MenuAction::OpenSessions => {
-            open_sessions_sheet(client, app).await?;
+            open_sessions_sheet(client, app, None).await?;
         }
         MenuAction::ForkSession => {
             app.notice = Some("Forking session…".to_owned());
