@@ -14,9 +14,11 @@ from hames.config import ContextConfig
 from hames.goals import project_goals
 from hames.ledger import Event, Session
 from hames.memory import RetrievedMemory, canonical_memory_context
+from hames.plans import project_plans
 from hames.providers import ProviderMessage, ToolCall, ToolDefinition
 from hames.rules import ContextRule
 from hames.skills import SkillSummary, SkillVersion
+from hames.tasks import project_tasks
 
 CORE_CONTRACT = """You are the reasoning model inside Hames, a trusted local coding-agent
 harness. Hames owns context assembly, provider calls, permissions, persistence,
@@ -183,6 +185,29 @@ def compile_context(
         ("run.workspace", f"Current project workspace: {session.working_directory}"),
         ("policy.summary", f"Policy summary: {policy_summary}"),
     ]
+    session_events = [event for event in events if event.session_id == session.id]
+    plan_state = project_plans(session.id, session_events)
+    approved_plan = (
+        plan_state.current
+        if plan_state.current is not None and plan_state.current.status in {"approved", "executing"}
+        else None
+    )
+    plan_part: tuple[str, str] | None = None
+    if approved_plan is not None:
+        plan_part = (
+            f"plan.{approved_plan.id}",
+            "Approved implementation plan. Execute this exact plan and keep its session task "
+            f"checklist current:\n{approved_plan.markdown}",
+        )
+    task_list = project_tasks(session.id, session_events)
+    task_part: tuple[str, str] | None = None
+    if task_list.items:
+        rows = "\n".join(f"- [{item.id}] {item.status}: {item.text}" for item in task_list.items)
+        task_part = (
+            f"tasks.{session.id}.{task_list.revision}",
+            "Current session checklist. Use task_update as work starts, completes, becomes "
+            f"blocked, or new work is discovered:\n{rows}",
+        )
     goals = project_goals(events)
     active_goal = next((goal for goal in reversed(goals) if goal.status == "running"), None)
     goal_part: tuple[str, str] | None = None
@@ -222,6 +247,10 @@ def compile_context(
     stable_tokens = sum(_estimate_text(content) for _, content in stable_parts)
     if goal_part is not None:
         stable_tokens += _estimate_text(goal_part[1])
+    if plan_part is not None:
+        stable_tokens += _estimate_text(plan_part[1])
+    if task_part is not None:
+        stable_tokens += _estimate_text(task_part[1])
     if delegation_part is not None:
         stable_tokens += _estimate_text(delegation_part[1])
     agent_tokens = _estimate_text(agent_part[1])
@@ -272,6 +301,23 @@ def compile_context(
             and str(event.payload.get("goal_id", "")) == active_goal.id
         ]
         selected.append(goal_source)
+    if plan_part is not None and approved_plan is not None:
+        plan_source = _source(plan_part[0], "plan", plan_part[1], 185)
+        plan_source.event_ids = [
+            event.id
+            for event in session_events
+            if event.type.startswith("plan.")
+            and str(event.payload.get("plan_id", "")) == approved_plan.id
+        ]
+        selected.append(plan_source)
+    if task_part is not None:
+        task_source = _source(task_part[0], "tasks", task_part[1], 182)
+        task_source.event_ids = [
+            event.id
+            for event in session_events
+            if event.type == "tasks.replaced" or event.type.startswith("task.")
+        ]
+        selected.append(task_source)
     if delegation_part is not None and task_card is not None:
         delegation_source = _source(delegation_part[0], "delegation", delegation_part[1], 175)
         delegation_source.event_ids = [task_card.id]
@@ -438,6 +484,10 @@ def compile_context(
     system_parts = [content for _, content in stable_parts]
     if goal_part is not None:
         system_parts.append(goal_part[1])
+    if plan_part is not None:
+        system_parts.append(plan_part[1])
+    if task_part is not None:
+        system_parts.append(task_part[1])
     if delegation_part is not None:
         system_parts.append(delegation_part[1])
     if memory_content:
@@ -553,7 +603,13 @@ def conversation_compaction_candidates(
     )
     cutoff = int(previous.payload.get("cutoff_sequence", 0)) if previous is not None else 0
     turns, _ = _conversation_turns([event for event in events if event.sequence > cutoff], "")
-    eligible = turns[:-preserve_recent_turns] if len(turns) > preserve_recent_turns else []
+    eligible = (
+        turns
+        if preserve_recent_turns == 0
+        else turns[:-preserve_recent_turns]
+        if len(turns) > preserve_recent_turns
+        else []
+    )
     by_id = {event.id: event for event in events}
     result: list[CompactionTurn] = []
     for turn in eligible:

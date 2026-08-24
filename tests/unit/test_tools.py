@@ -21,6 +21,7 @@ from hames.tools import (
     ShellArguments,
     ShellTool,
     SkillControlArguments,
+    TaskUpdateArguments,
     ToolContext,
     ToolRegistry,
     WriteFileArguments,
@@ -215,6 +216,19 @@ def test_execution_modes_are_gateway_policy_not_client_convention(tmp_path: Path
     assert (
         gate.decide("write_file", write, context, interaction_mode="plan").decision
         is PolicyDecisionKind.DENY
+    )
+    task_update = TaskUpdateArguments(action="add", text="Discovered work")
+    assert (
+        gate.decide("task_update", task_update, context, interaction_mode="plan").decision
+        is PolicyDecisionKind.DENY
+    )
+    assert (
+        gate.decide("task_update", task_update, context, interaction_mode="manual").decision
+        is PolicyDecisionKind.REQUIRE_CONFIRMATION
+    )
+    assert (
+        gate.decide("task_update", task_update, context, interaction_mode="auto").decision
+        is PolicyDecisionKind.ALLOW
     )
     assert (
         gate.decide(

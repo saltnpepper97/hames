@@ -679,6 +679,15 @@ MIGRATIONS = (
         );
         """,
     ),
+    Migration(
+        16,
+        "typed session queue entries",
+        """
+        ALTER TABLE session_queue
+            ADD COLUMN purpose TEXT NOT NULL DEFAULT 'turn'
+            CHECK (purpose IN ('turn', 'plan_note'));
+        """,
+    ),
 )
 
 

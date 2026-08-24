@@ -25,6 +25,8 @@ READ_ONLY_TOOLS = frozenset(
         "scar_list",
         "skill_catalog",
         "session_title_set",
+        "task_list",
+        "task_update",
         "web_search",
         "web_fetch",
     }

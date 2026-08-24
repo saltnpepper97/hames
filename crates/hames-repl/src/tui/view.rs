@@ -108,7 +108,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     } else {
         0
     };
-    let tray_height = sheet_height.max(approval_height);
+    let inline_height = if app.inline_editor.is_some() { 5 } else { 0 };
+    let tray_height = sheet_height.max(approval_height).max(inline_height);
     let bottom = composer_height + notice_height + queue_height + tray_height + 1;
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -133,6 +134,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .split(rows[2]);
     if approval_height > 0 {
         render_approval_tray(frame, app, footer[0]);
+    } else if inline_height > 0 {
+        render_inline_editor(frame, app, footer[0]);
     } else if sheet_height > 0 {
         render_sheet(frame, app, footer[0]);
     }
@@ -241,7 +244,12 @@ fn render_queue(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 .split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" ");
-            let prefix = format!("  Queued {}/{}  ", index + 1, total);
+            let label = if item.purpose == "plan_note" {
+                "Plan note"
+            } else {
+                "Queued"
+            };
+            let prefix = format!("  {label} {}/{}  ", index + 1, total);
             let body_width = width.saturating_sub(prefix.width());
             Line::from(vec![
                 Span::styled(prefix, Style::default().fg(INPUT)),
@@ -534,6 +542,66 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     width,
                     Style::default().fg(Color::White),
                 );
+            }
+            TranscriptItem::Plan {
+                revision,
+                title,
+                content,
+                status,
+                collapsed,
+                ..
+            } => {
+                let latest = app
+                    .plan
+                    .current
+                    .as_ref()
+                    .is_some_and(|plan| plan.revision == *revision);
+                let label = if latest { "Plan" } else { "Earlier plan" };
+                let state = match status.as_str() {
+                    "requested" => "Starting",
+                    "approved" => "Approved",
+                    "executing" => "Executing",
+                    "failed" => "Needs attention",
+                    _ => "Ready",
+                };
+                lines.push(RenderLine {
+                    line: Line::from(vec![
+                        Span::styled("◆ ", Style::default().fg(GOLD)),
+                        Span::styled(label, Style::default().fg(INPUT).bold()),
+                        Span::styled(
+                            format!(
+                                " · Revision {revision} · {state}  {}",
+                                if *collapsed { "▸" } else { "▾" }
+                            ),
+                            Style::default().fg(MUTED),
+                        ),
+                    ]),
+                    thought: Some(TranscriptDisclosure::Activity(index)),
+                    sheen: None,
+                });
+                if !*collapsed {
+                    if !title.is_empty()
+                        && !content
+                            .lines()
+                            .next()
+                            .is_some_and(|line| line.trim_start_matches('#').trim() == title)
+                    {
+                        lines.push(RenderLine {
+                            line: Line::from(Span::styled(
+                                format!("  {title}"),
+                                Style::default().fg(INPUT).bold(),
+                            )),
+                            thought: None,
+                            sheen: None,
+                        });
+                    }
+                    push_markdown(
+                        &mut lines,
+                        content,
+                        width,
+                        Style::default().fg(Color::White),
+                    );
+                }
             }
             TranscriptItem::Activity {
                 rows, collapsed, ..
@@ -944,6 +1012,43 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+fn render_inline_editor(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let Some(editor) = &app.inline_editor else {
+        return;
+    };
+    let title = match editor.kind {
+        crate::tui::app::InlineEditorKind::PlanNote => "Plan note",
+        crate::tui::app::InlineEditorKind::NewTask => "New task",
+    };
+    let width = usize::from(area.width.saturating_sub(4).max(1));
+    let value = composer_edit_text(&editor.input, true);
+    let mut lines = Vec::new();
+    for raw in value.lines().chain(value.is_empty().then_some("")) {
+        let mut remaining = raw;
+        loop {
+            let (part, rest) = split_width(remaining, width);
+            lines.push(Line::from(Span::styled(
+                format!("  {part}"),
+                Style::default().fg(INPUT),
+            )));
+            if rest.is_empty() {
+                break;
+            }
+            remaining = rest.trim_start_matches(' ');
+        }
+    }
+    let rule = Style::default().fg(RULE);
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled("─ ", rule),
+            Span::styled(title, Style::default().fg(INPUT).bold()),
+            Span::styled(" ─", rule),
+        ]))
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .border_style(rule);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
 fn command_label_spans(
     label: &str,
     query: &str,
@@ -1056,7 +1161,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             },
         });
     }
-    if app.modal.is_none() {
+    if app.modal.is_none() && app.inline_editor.is_none() {
         let adjusted_y = cursor_y.saturating_sub(start);
         if adjusted_y < available {
             frame.set_cursor_position((
@@ -1135,7 +1240,22 @@ fn scrollbar_position(top: usize, content_len: usize, viewport_len: usize) -> us
 }
 
 fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta: Duration) {
-    let left = if matches!(app.modal, Some(Modal::Approval(_))) {
+    let left = if let Some(editor) = &app.inline_editor {
+        Line::from(vec![
+            Span::styled("  Enter", Style::default().fg(INPUT).bold()),
+            Span::styled(
+                match editor.kind {
+                    crate::tui::app::InlineEditorKind::PlanNote => " revise · ",
+                    crate::tui::app::InlineEditorKind::NewTask => " add · ",
+                },
+                Style::default().fg(MUTED),
+            ),
+            Span::styled("Shift/Alt+Enter", Style::default().fg(INPUT).bold()),
+            Span::styled(" newline · ", Style::default().fg(MUTED)),
+            Span::styled("Esc", Style::default().fg(INPUT).bold()),
+            Span::styled(" back", Style::default().fg(MUTED)),
+        ])
+    } else if matches!(app.modal, Some(Modal::Approval(_))) {
         Line::from(vec![
             Span::styled("  ←→", Style::default().fg(INPUT).bold()),
             Span::styled(" choose · ", Style::default().fg(MUTED)),
@@ -1159,6 +1279,13 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
         sheet_shortcuts(app)
     } else if app.active_run.is_some() {
         activity_bar(app)
+    } else if app.plan_ready() {
+        Line::from(vec![
+            Span::styled("  Plan ready", Style::default().fg(GOLD).bold()),
+            Span::styled(" · type to revise · ", Style::default().fg(MUTED)),
+            Span::styled("Enter", Style::default().fg(INPUT).bold()),
+            Span::styled(" review", Style::default().fg(MUTED)),
+        ])
     } else {
         Line::from(vec![
             Span::styled("  Shift+Tab", Style::default().fg(INPUT).bold()),
@@ -1200,7 +1327,7 @@ fn sheet_shortcuts(app: &App) -> Line<'static> {
     };
     if matches!(
         sheet.kind,
-        SheetKind::Sessions | SheetKind::Agents | SheetKind::Queue
+        SheetKind::Sessions | SheetKind::Agents | SheetKind::Queue | SheetKind::Tasks
     ) && sheet.pending_delete.is_some()
     {
         return Line::from(vec![
@@ -1247,6 +1374,13 @@ fn sheet_shortcuts(app: &App) -> Line<'static> {
                 Span::styled(" delete · ", Style::default().fg(MUTED)),
             ]);
         }
+    } else if sheet.kind == SheetKind::Tasks {
+        spans.extend([
+            Span::styled("Ctrl+N", Style::default().fg(INPUT).bold()),
+            Span::styled(" add · ", Style::default().fg(MUTED)),
+            Span::styled("Ctrl+D", Style::default().fg(INPUT).bold()),
+            Span::styled(" delete · ", Style::default().fg(MUTED)),
+        ]);
     }
     spans.extend([
         Span::styled("Esc", Style::default().fg(INPUT).bold()),
@@ -1270,6 +1404,8 @@ fn activity_bar(app: &App) -> Line<'static> {
         .unwrap_or_else(|| "0s".to_owned());
     let queue_hint = if app.queued_messages.len() >= 2 {
         "Queue full 2/2"
+    } else if app.session.interaction_mode == "plan" {
+        "Enter add plan note"
     } else {
         "Enter queue · Alt+↑ now · ↑ edit"
     };
@@ -4662,6 +4798,7 @@ mod tests {
             content: content.to_owned(),
             remember: false,
             paste_spans: Vec::new(),
+            purpose: "turn".to_owned(),
             created_at: "2026-08-24T00:00:00Z".to_owned(),
             position,
         }

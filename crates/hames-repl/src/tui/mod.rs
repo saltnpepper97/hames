@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use app::{
-    AgentEditField, AgentEditor, AgentEditorPage, App, GoalModal, HitAction, MemoryBrowser,
-    MenuAction, MenuOption, Modal, ScarBrowser, ScarEditField, ScarEditor, ScrollDrag,
-    ScrollTarget, Sheet, SheetKind, ThemeKind,
+    AgentEditField, AgentEditor, AgentEditorPage, App, GoalModal, HitAction, InlineEditor,
+    InlineEditorKind, MemoryBrowser, MenuAction, MenuOption, Modal, ScarBrowser, ScarEditField,
+    ScarEditor, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind,
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -374,11 +374,13 @@ async fn refresh_agents_sheet(client: &GatewayClient, app: &mut App) -> Result<(
 
 async fn load_app(client: &GatewayClient, session: Session) -> Result<App> {
     let agent_id = session.agent_id.clone();
-    let (events, trust, queue, goals) = tokio::try_join!(
+    let (events, trust, queue, goals, plan, tasks) = tokio::try_join!(
         client.history(&session.id),
         client.trust_status(&session.id),
         client.queue_state(&session.id),
-        client.goals(&session.id)
+        client.goals(&session.id),
+        client.current_plan(&session.id),
+        client.tasks(&session.id)
     )?;
     let agent = client.agent(&agent_id).await.ok();
     let mut app = App::new(session, events, trust.trusted);
@@ -387,6 +389,8 @@ async fn load_app(client: &GatewayClient, session: Session) -> Result<App> {
     app.git_ref = git_ref;
     app.set_queue(queue);
     app.goal = goals.last().cloned();
+    app.set_plan(plan);
+    app.set_tasks(tasks);
     if let Some(agent) = agent {
         app.agent_name = agent.agent.name;
     }
@@ -425,7 +429,10 @@ enum Effect {
     Trust,
     ResolveApproval(usize),
     Send(String, Vec<PasteSpan>),
+    SendPlanNote(String, Vec<PasteSpan>),
     SendNow(String, Vec<PasteSpan>),
+    AddTask(String),
+    DeleteTask(String),
     TakeQueued(String),
     TakeLatestQueued,
     Cancel,
@@ -447,7 +454,9 @@ fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
             handle_key(app, key)
         }
         Event::Paste(value) => {
-            if let Some(Modal::ScarEdit(editor)) = &mut app.modal {
+            if let Some(editor) = &mut app.inline_editor {
+                editor.input.insert_paste(value);
+            } else if let Some(Modal::ScarEdit(editor)) = &mut app.modal {
                 if let Some(input) = editor.active_text_mut() {
                     input.insert_text(&value);
                 }
@@ -476,6 +485,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     if app.modal.is_some() {
         return handle_modal_key(app, key);
     }
+    if app.inline_editor.is_some() {
+        return handle_inline_editor_key(app, key);
+    }
     if key.code == KeyCode::BackTab
         || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
     {
@@ -501,7 +513,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         };
         if !matches!(
             sheet.kind,
-            SheetKind::Sessions | SheetKind::Agents | SheetKind::Queue
+            SheetKind::Sessions | SheetKind::Agents | SheetKind::Queue | SheetKind::Tasks
         ) || sheet.options.is_empty()
         {
             return None;
@@ -516,6 +528,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                 MenuAction::Resume(session_id) => Some(Effect::DeleteSession(session_id.clone())),
                 MenuAction::SetAgent(agent_id) => Some(Effect::DeleteAgent(agent_id.clone())),
                 MenuAction::EditQueued(queue_id) => Some(Effect::DeleteQueued(queue_id.clone())),
+                MenuAction::ToggleTask { task_id, .. } => Some(Effect::DeleteTask(task_id.clone())),
                 _ => None,
             };
         }
@@ -530,6 +543,20 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             .is_some_and(|sheet| sheet.kind == SheetKind::Agents)
     {
         return Some(Effect::Menu(MenuAction::CreateAgent));
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && key.code == KeyCode::Char('n')
+        && app
+            .sheet
+            .as_ref()
+            .is_some_and(|sheet| sheet.kind == SheetKind::Tasks)
+    {
+        app.sheet = None;
+        app.inline_editor = Some(InlineEditor {
+            kind: InlineEditorKind::NewTask,
+            input: Default::default(),
+        });
+        return None;
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         if app.active_run.is_some() {
@@ -641,6 +668,63 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             None
         }
     }
+}
+
+fn handle_inline_editor_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+    if key.code == KeyCode::Esc {
+        let kind = app.inline_editor.as_ref().map(|editor| editor.kind);
+        app.inline_editor = None;
+        if kind == Some(InlineEditorKind::PlanNote) {
+            app.open_plan_review();
+        } else {
+            app.open_tasks();
+        }
+        return None;
+    }
+    if key.code == KeyCode::Enter
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
+    {
+        let editor = app.inline_editor.take()?;
+        let (content, pastes) = editor.input.message();
+        if content.trim().is_empty() {
+            app.inline_editor = Some(editor);
+            app.notice = Some("Type a note first".to_owned());
+            return None;
+        }
+        return Some(match editor.kind {
+            InlineEditorKind::PlanNote => Effect::SendPlanNote(content, pastes),
+            InlineEditorKind::NewTask => Effect::AddTask(content),
+        });
+    }
+    let Some(editor) = &mut app.inline_editor else {
+        return None;
+    };
+    match key.code {
+        KeyCode::Backspace => editor.input.backspace(),
+        KeyCode::Delete => editor.input.delete(),
+        KeyCode::Left => editor.input.move_left(),
+        KeyCode::Right => editor.input.move_right(),
+        KeyCode::Home => editor.input.move_home(),
+        KeyCode::End => editor.input.move_end(),
+        KeyCode::Enter
+            if key
+                .modifiers
+                .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) =>
+        {
+            editor.input.insert_text("\n");
+        }
+        KeyCode::Char(value)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            editor.input.insert_text(&value.to_string());
+        }
+        _ => {}
+    }
+    None
 }
 
 fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
@@ -1303,6 +1387,9 @@ fn send_or_command(app: &mut App) -> Option<Effect> {
     let (content, pastes) = app.composer.message();
     let trimmed = content.trim();
     if trimmed.is_empty() {
+        if app.plan_ready() {
+            app.open_plan_review();
+        }
         return None;
     }
     if let Some(action) = parse_command(trimmed) {
@@ -1324,14 +1411,35 @@ fn send_or_command(app: &mut App) -> Option<Effect> {
     app.sheet = None;
     app.scroll = 0;
     app.notice = Some(if app.active_run.is_some() {
-        "Queuing next turn…".to_owned()
+        if app.session.interaction_mode == "plan" {
+            "Queuing plan note…".to_owned()
+        } else {
+            "Queuing next turn…".to_owned()
+        }
     } else {
-        "Sending…".to_owned()
+        if app.plan_ready() {
+            "Revising plan…".to_owned()
+        } else {
+            "Sending…".to_owned()
+        }
     });
-    Some(Effect::Send(content, pastes))
+    let revising_plan = app.active_run.is_some()
+        || app
+            .plan
+            .current
+            .as_ref()
+            .is_some_and(|plan| matches!(plan.status.as_str(), "ready" | "failed"));
+    if app.session.interaction_mode == "plan" && revising_plan {
+        Some(Effect::SendPlanNote(content, pastes))
+    } else {
+        Some(Effect::Send(content, pastes))
+    }
 }
 
 fn send_now(app: &mut App) -> Option<Effect> {
+    if app.session.interaction_mode == "plan" {
+        return send_or_command(app);
+    }
     if app.active_run.is_none() {
         app.notice = Some("Nothing to interrupt · Enter sends normally".to_owned());
         return None;
@@ -1376,6 +1484,21 @@ fn parse_command(value: &str) -> Option<MenuAction> {
             Some("clear") => Some(MenuAction::ClearQueue),
             Some(_) => None,
             None => Some(MenuAction::OpenQueue),
+        },
+        "/tasks" => Some(MenuAction::OpenTasks),
+        "/plan" => match parts.next() {
+            Some("proceed") => Some(MenuAction::ExecutePlan("keep".to_owned())),
+            Some("compact") => Some(MenuAction::ExecutePlan("compact".to_owned())),
+            Some("note") => {
+                let note = parts.collect::<Vec<_>>().join(" ");
+                if note.is_empty() {
+                    Some(MenuAction::OpenPlanNote)
+                } else {
+                    Some(MenuAction::SubmitPlanNote(note))
+                }
+            }
+            Some(_) => None,
+            None => Some(MenuAction::OpenPlanReview),
         },
         "/compact" => Some(MenuAction::Compact),
         "/goal" => {
@@ -1499,6 +1622,23 @@ async fn apply_effect(
             }
             app.notice = None;
         }
+        Effect::SendPlanNote(content, pastes) => {
+            let accepted = client
+                .send_plan_note(&app.session.id, &content, &pastes)
+                .await?;
+            app.composer.clear();
+            app.inline_editor = None;
+            app.sheet = None;
+            app.history_index = None;
+            app.history_draft = None;
+            if accepted.disposition == "started" {
+                app.active_run = accepted.run_id;
+                app.run_started_at = Some(std::time::Instant::now());
+            } else if let Some(item) = accepted.queued {
+                app.insert_queued_message(item);
+            }
+            app.notice = None;
+        }
         Effect::SendNow(content, pastes) => {
             let accepted = client
                 .send_message_now_with_pastes(&app.session.id, &content, false, &pastes)
@@ -1533,6 +1673,19 @@ async fn apply_effect(
             if let Some(run_id) = app.active_run.clone() {
                 client.cancel(&run_id).await?;
             }
+        }
+        Effect::AddTask(content) => {
+            let tasks = client.add_task(&app.session.id, &content).await?;
+            app.set_tasks(tasks);
+            app.inline_editor = None;
+            app.open_tasks();
+            app.notice = Some("Task added".to_owned());
+        }
+        Effect::DeleteTask(task_id) => {
+            let tasks = client.delete_task(&app.session.id, &task_id).await?;
+            app.set_tasks(tasks);
+            app.open_tasks();
+            app.notice = Some("Task removed".to_owned());
         }
         Effect::PauseGoal => {
             let goal = client.pause_goal(&app.session.id).await?;
@@ -1690,6 +1843,52 @@ async fn apply_menu_action(
             open_sessions_sheet(client, app).await?;
         }
         MenuAction::OpenQueue => open_queue_sheet(app),
+        MenuAction::OpenTasks => app.open_tasks(),
+        MenuAction::OpenPlanReview => {
+            if app.plan_ready() {
+                app.open_plan_review();
+            } else {
+                app.notice = Some("No plan is ready for review".to_owned());
+            }
+        }
+        MenuAction::OpenPlanNote => {
+            app.sheet = None;
+            app.inline_editor = Some(InlineEditor {
+                kind: InlineEditorKind::PlanNote,
+                input: Default::default(),
+            });
+        }
+        MenuAction::SubmitPlanNote(content) => {
+            let accepted = client
+                .send_plan_note(&app.session.id, &content, &[])
+                .await?;
+            app.composer.clear();
+            app.sheet = None;
+            app.inline_editor = None;
+            if accepted.disposition == "started" {
+                app.active_run = accepted.run_id;
+                app.run_started_at = Some(Instant::now());
+            } else if let Some(item) = accepted.queued {
+                app.insert_queued_message(item);
+            }
+        }
+        MenuAction::ExecutePlan(strategy) => {
+            let accepted = client.execute_plan(&app.session.id, &strategy).await?;
+            app.set_plan(accepted.plan);
+            app.set_tasks(accepted.tasks);
+            app.session.interaction_mode = "auto".to_owned();
+            app.active_run = Some(accepted.run_id);
+            app.run_started_at = Some(Instant::now());
+            app.sheet = None;
+            app.inline_editor = None;
+        }
+        MenuAction::ToggleTask { task_id, status } => {
+            let tasks = client
+                .update_task(&app.session.id, &task_id, &status)
+                .await?;
+            app.set_tasks(tasks);
+            app.open_tasks();
+        }
         MenuAction::Compact => {
             let accepted = client.compact_session(&app.session.id).await?;
             app.active_run = Some(accepted.run_id);
@@ -2521,7 +2720,10 @@ mod tests {
         model_efforts, next_mode, parse_command, pointer_top, session_exit_notice,
         terminal_tab_title, workspace_identity,
     };
-    use crate::api::{Goal, MemoryRecord, ProviderModel, QueuedMessage, Scar, Session};
+    use crate::api::{
+        Goal, MemoryRecord, PlanRevision, PlanState, ProviderModel, QueuedMessage, Scar, Session,
+        SessionTask, SessionTaskList,
+    };
     use crate::tui::app::{
         AgentEditor, App, HitAction, HitRegion, MemoryBrowser, MenuAction, MenuOption, Modal,
         ScarBrowser, ScarEditField, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind,
@@ -2580,6 +2782,26 @@ mod tests {
         assert!(matches!(
             parse_command("/compact"),
             Some(MenuAction::Compact)
+        ));
+        assert!(matches!(
+            parse_command("/tasks"),
+            Some(MenuAction::OpenTasks)
+        ));
+        assert!(matches!(
+            parse_command("/plan"),
+            Some(MenuAction::OpenPlanReview)
+        ));
+        assert!(matches!(
+            parse_command("/plan proceed"),
+            Some(MenuAction::ExecutePlan(strategy)) if strategy == "keep"
+        ));
+        assert!(matches!(
+            parse_command("/plan compact"),
+            Some(MenuAction::ExecutePlan(strategy)) if strategy == "compact"
+        ));
+        assert!(matches!(
+            parse_command("/plan note keep the API small"),
+            Some(MenuAction::SubmitPlanNote(note)) if note == "keep the API small"
         ));
         assert!(matches!(parse_command("/goal"), Some(MenuAction::ShowGoal)));
         assert!(matches!(
@@ -2649,6 +2871,86 @@ mod tests {
             handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
             Some(Effect::TakeLatestQueued)
         ));
+    }
+
+    #[test]
+    fn plan_ready_empty_enter_opens_review_and_live_input_becomes_a_note() {
+        let mut plan_session = session();
+        plan_session.interaction_mode = "plan".to_owned();
+        let mut app = App::new(plan_session, Vec::new(), true);
+        app.set_plan(ready_plan());
+
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).is_none());
+        assert!(
+            app.sheet
+                .as_ref()
+                .is_some_and(|sheet| sheet.kind == SheetKind::PlanReview)
+        );
+
+        app.sheet = None;
+        app.active_run = Some("run-draft".to_owned());
+        app.composer.insert_text("Prefer the smaller API");
+        assert!(matches!(
+            handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Effect::SendPlanNote(content, _)) if content == "Prefer the smaller API"
+        ));
+        assert_eq!(app.composer.text(), "Prefer the smaller API");
+    }
+
+    #[test]
+    fn task_sheet_toggles_adds_and_confirms_deletion_in_place() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.set_tasks(SessionTaskList {
+            session_id: "session-1".to_owned(),
+            title: "Approved plan".to_owned(),
+            revision: 1,
+            items: vec![SessionTask {
+                id: "task-1".to_owned(),
+                text: "Implement it".to_owned(),
+                status: "pending".to_owned(),
+                position: 0,
+                created_by: "plan".to_owned(),
+            }],
+            updated_at: "now".to_owned(),
+        });
+        app.open_tasks();
+        assert!(matches!(
+            handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Effect::Menu(MenuAction::ToggleTask { task_id, status }))
+                if task_id == "task-1" && status == "completed"
+        ));
+
+        app.open_tasks();
+        assert!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)
+            )
+            .is_none()
+        );
+        assert!(app.inline_editor.is_some());
+
+        app.inline_editor = None;
+        app.open_tasks();
+        assert!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)
+            )
+            .is_none()
+        );
+        assert_eq!(
+            app.sheet.as_ref().and_then(|sheet| sheet.pending_delete),
+            Some(0)
+        );
+        assert!(matches!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)
+            ),
+            Some(Effect::DeleteTask(task_id)) if task_id == "task-1"
+        ));
+        assert!(app.sheet.is_some());
     }
 
     #[test]
@@ -3268,6 +3570,29 @@ mod tests {
         }
     }
 
+    fn ready_plan() -> PlanState {
+        PlanState {
+            session_id: "session-1".to_owned(),
+            current: Some(PlanRevision {
+                id: "plan-1".to_owned(),
+                session_id: "session-1".to_owned(),
+                revision: 1,
+                title: "Implementation plan".to_owned(),
+                markdown: "# Implementation plan\n\n## Tasks\n- [ ] Implement it".to_owned(),
+                tasks: vec!["Implement it".to_owned()],
+                source_run_id: "run-plan".to_owned(),
+                supersedes_plan_id: None,
+                status: "ready".to_owned(),
+                strategy: None,
+                execution_run_id: None,
+                error: String::new(),
+                created_at: "2026-08-24T00:00:00Z".to_owned(),
+                updated_at: "2026-08-24T00:00:00Z".to_owned(),
+            }),
+            revisions: Vec::new(),
+        }
+    }
+
     fn queued(id: &str, content: &str) -> QueuedMessage {
         QueuedMessage {
             id: id.to_owned(),
@@ -3275,6 +3600,7 @@ mod tests {
             content: content.to_owned(),
             remember: false,
             paste_spans: Vec::new(),
+            purpose: "turn".to_owned(),
             created_at: "2026-08-24T00:00:00Z".to_owned(),
             position: 1,
         }

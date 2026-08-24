@@ -13,8 +13,8 @@ use unicode_width::UnicodeWidthChar;
 use crate::activity::{ActivityBoard, ActivityCategory};
 use crate::api::{
     ContextInspection, Event, GatewayClient, Goal, LiveEnvelope, MemoryJob, MemoryRecord,
-    PROTOCOL_VERSION, ProviderModel, ProviderProbe, ProviderProfile, RunInspection, Scar, Session,
-    SkillJob, SkillSummary, SkillVersion,
+    PROTOCOL_VERSION, PlanState, ProviderModel, ProviderProbe, ProviderProfile, RunInspection,
+    Scar, Session, SessionTaskList, SkillJob, SkillSummary, SkillVersion,
 };
 use crate::local::{LocalPaths, start_backend, write_private_export};
 use crate::style;
@@ -538,6 +538,47 @@ async fn handle_command(
                 println!("  {}", style::dim("Start one with /goal <objective>"));
             }
         }
+        "/plan" => {
+            let argument = input.strip_prefix("/plan").unwrap_or("").trim();
+            match argument.split_once(' ').unwrap_or((argument, "")) {
+                ("proceed", _) => {
+                    let accepted = client.execute_plan(&session.id, "keep").await?;
+                    session.interaction_mode = "auto".to_owned();
+                    println!(
+                        "{}",
+                        style::success(&format!("Approved plan · run {}", accepted.run_id))
+                    );
+                }
+                ("compact", _) => {
+                    let accepted = client.execute_plan(&session.id, "compact").await?;
+                    session.interaction_mode = "auto".to_owned();
+                    println!(
+                        "{}",
+                        style::success(&format!(
+                            "Compacting, then executing · run {}",
+                            accepted.run_id
+                        ))
+                    );
+                }
+                ("note", note) if !note.trim().is_empty() => {
+                    let accepted = client.send_plan_note(&session.id, note.trim(), &[]).await?;
+                    println!(
+                        "{}",
+                        style::success(&format!(
+                            "Plan note {}",
+                            if accepted.disposition == "queued" {
+                                "queued"
+                            } else {
+                                "started"
+                            }
+                        ))
+                    );
+                }
+                ("", _) => print_plan(&client.current_plan(&session.id).await?),
+                _ => bail!("use /plan, /plan proceed, /plan compact, or /plan note <text>"),
+            }
+        }
+        "/tasks" => print_tasks(&client.tasks(&session.id).await?),
         "/usage" => print_usage(client, session).await?,
         "/inspect" => {
             let inspection = if let Some(run_id) = parts.get(1) {
@@ -915,6 +956,37 @@ fn print_session(session: &Session) {
             session.fork_event_id.as_deref().unwrap_or("none")
         )
     );
+}
+
+fn print_plan(state: &PlanState) {
+    println!("{}", style::section("Plan"));
+    let Some(plan) = &state.current else {
+        println!("  {}", style::dim("No plan in this session"));
+        return;
+    };
+    println!("{}", style::key_value("Status", &plan.status));
+    println!("{}", style::key_value("Revision", plan.revision));
+    println!();
+    println!("{}", plan.markdown);
+    if matches!(plan.status.as_str(), "ready" | "failed") {
+        println!();
+        println!(
+            "  {}",
+            style::dim("/plan proceed · /plan compact · /plan note <revision>")
+        );
+    }
+}
+
+fn print_tasks(tasks: &SessionTaskList) {
+    println!("{}", style::section(&tasks.title));
+    if tasks.items.is_empty() {
+        println!("  {}", style::dim("No tasks in this session"));
+        return;
+    }
+    for item in &tasks.items {
+        let checkbox = if item.status == "completed" { "x" } else { " " };
+        println!("  [{checkbox}] {}  {}", item.text, style::dim(&item.status));
+    }
 }
 
 async fn ensure_trust(
@@ -2346,6 +2418,11 @@ fn print_help() {
             "/goal [objective|pause|resume|cancel]",
             "Supervise durable autonomous work",
         ),
+        (
+            "/plan [proceed|compact|note]",
+            "Review or approve the current plan",
+        ),
+        ("/tasks", "Show the current session checklist"),
         (
             "/inspect [run] · /context [event]",
             "Audit a run or context",

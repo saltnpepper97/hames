@@ -213,6 +213,30 @@ class GoalReportArguments(ToolArguments):
     evidence: list[str] = Field(min_length=1, max_length=16)
 
 
+class TaskListArguments(ToolArguments):
+    include_completed: bool = True
+
+
+class TaskUpdateArguments(ToolArguments):
+    action: Literal["add", "update", "remove"]
+    task_id: str | None = None
+    text: str | None = Field(default=None, max_length=500)
+    status: Literal["pending", "in_progress", "completed", "blocked"] | None = None
+    position: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def valid_action(self) -> TaskUpdateArguments:
+        if self.action == "add" and not (self.text and self.text.strip()):
+            raise ValueError("adding a task requires text")
+        if self.action in {"update", "remove"} and not self.task_id:
+            raise ValueError(f"{self.action} requires task_id")
+        if self.action == "update" and all(
+            value is None for value in (self.text, self.status, self.position)
+        ):
+            raise ValueError("updating a task requires text, status, or position")
+        return self
+
+
 class WebSearchArguments(ToolArguments):
     query: str = Field(min_length=1, max_length=1000)
     limit: int = Field(default=8, ge=1, le=20)
@@ -686,6 +710,22 @@ class GoalReportTool(ToolBase):
     arguments_type: ClassVar[type[ToolArguments]] = GoalReportArguments
 
 
+class TaskListTool(ToolBase):
+    name = "task_list"
+    description = "Read the current session checklist and stable task IDs."
+    arguments_type: ClassVar[type[ToolArguments]] = TaskListArguments
+
+
+class TaskUpdateTool(ToolBase):
+    name = "task_update"
+    description = (
+        "Add discovered work to the current session checklist, update task text/order/status, "
+        "or remove an obsolete task. Keep the checklist current while implementing work."
+    )
+    side_effect_class = "session_tasks"
+    arguments_type: ClassVar[type[ToolArguments]] = TaskUpdateArguments
+
+
 class _WebMcpTool(ToolBase):
     def __init__(self, executor: SearchToolExecutor) -> None:
         self.executor = executor
@@ -775,6 +815,8 @@ class ToolRegistry:
             SkillControlTool(),
             SessionTitleTool(),
             GoalReportTool(),
+            TaskListTool(),
+            TaskUpdateTool(),
         ]
         if search is not None:
             values.extend([WebSearchTool(search), WebFetchTool(search)])

@@ -16,6 +16,7 @@ from hames.inspection import inspect_run
 from hames.ledger import Ledger
 from hames.memory import MemoryCandidate
 from hames.paths import HamesPaths
+from hames.plans import PLAN_READY_MARKER
 from hames.providers import (
     ModelRequest,
     ProviderModel,
@@ -119,6 +120,43 @@ class QueueProvider:
             self.first_started.set()
             await self.release_first.wait()
         yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="done")
+        yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
+
+    async def aclose(self) -> None:
+        return None
+
+
+class PlanRevisionProvider:
+    profile_id = "fake"
+    adapter = "fake"
+    base_url = ""
+
+    def __init__(self) -> None:
+        self.requests: list[ModelRequest] = []
+        self.first_started = asyncio.Event()
+        self.release_first = asyncio.Event()
+
+    async def list_models(self) -> list[ProviderModel]:
+        return [
+            ProviderModel(
+                id="fixture",
+                provider="fake",
+                status="available",
+                input_modalities=["text"],
+                output_modalities=["text"],
+            )
+        ]
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+        self.requests.append(request)
+        yield StreamEvent(kind=StreamEventKind.STARTED)
+        if len(self.requests) == 1:
+            self.first_started.set()
+            await self.release_first.wait()
+            text = f"# Initial plan\n\n## Tasks\n- [ ] First step\n\n{PLAN_READY_MARKER}"
+        else:
+            text = f"# Revised plan\n\n## Tasks\n- [ ] Revised step\n\n{PLAN_READY_MARKER}"
+        yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text=text)
         yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
 
     async def aclose(self) -> None:
@@ -372,7 +410,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 19
+            assert health_body["protocol_version"] == 20
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -583,6 +621,161 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             )
             assert verified.status_code == 200
             assert response_object(verified)["ok"] is True
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_plan_review_execution_and_session_tasks_lifecycle(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    plan_markdown = "# Ship it\n\n## Tasks\n- [ ] Implement lifecycle\n- [ ] Verify behavior"
+    fake = FakeProvider(
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text=plan_markdown[:19]),
+                StreamEvent(
+                    kind=StreamEventKind.TEXT_DELTA,
+                    text=f"{plan_markdown[19:]}\n\n{PLAN_READY_MARKER}",
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="Implemented."),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
+    )
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.put(
+                f"/v1/sessions/{session_id}/mode", headers=headers, json={"mode": "plan"}
+            )
+            accepted = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Plan this change"},
+            )
+            assert accepted.status_code == 202
+            events = await _wait_for_event(client, headers, session_id, "plan.proposed")
+            assistant = next(event for event in events if event["type"] == "assistant.message")
+            assert assistant["payload"]["content"] == plan_markdown  # type: ignore[index]
+            assert PLAN_READY_MARKER not in str(assistant["payload"])  # type: ignore[index]
+
+            plan = response_object(
+                await client.get(f"/v1/sessions/{session_id}/plans/current", headers=headers)
+            )
+            current = plan["current"]
+            assert isinstance(current, dict)
+            assert current["status"] == "ready"
+            assert current["tasks"] == ["Implement lifecycle", "Verify behavior"]
+
+            executed = await client.post(
+                f"/v1/sessions/{session_id}/plans/current/execute",
+                headers=headers,
+                json={"strategy": "keep"},
+            )
+            assert executed.status_code == 202
+            execution = response_object(executed)
+            seeded = execution["tasks"]
+            assert isinstance(seeded, dict)
+            assert [item["text"] for item in seeded["items"]] == [  # type: ignore[union-attr,index]
+                "Implement lifecycle",
+                "Verify behavior",
+            ]
+            await _wait_for_event(client, headers, session_id, "plan.execution.completed")
+            session = response_object(
+                await client.get(f"/v1/sessions/{session_id}", headers=headers)
+            )
+            assert session["interaction_mode"] == "auto"
+            assert plan_markdown in fake.requests[1].system
+            assert "Current session checklist" in fake.requests[1].system
+
+            added = await client.post(
+                f"/v1/sessions/{session_id}/tasks",
+                headers=headers,
+                json={"text": "Discovered follow-up"},
+            )
+            assert added.status_code == 201
+            added_body = response_object(added)
+            added_items = added_body["items"]
+            assert isinstance(added_items, list)
+            task_id = str(added_items[-1]["id"])  # type: ignore[index]
+            updated = await client.patch(
+                f"/v1/sessions/{session_id}/tasks/{task_id}",
+                headers=headers,
+                json={"status": "completed", "position": 0},
+            )
+            assert response_object(updated)["items"][0]["status"] == "completed"  # type: ignore[index,union-attr]
+            removed = await client.delete(
+                f"/v1/sessions/{session_id}/tasks/{task_id}", headers=headers
+            )
+            assert all(
+                item["id"] != task_id
+                for item in response_object(removed)["items"]  # type: ignore[union-attr]
+            )
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_plan_notes_wait_for_draft_then_coalesce_in_order(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    provider = PlanRevisionProvider()
+    state = GatewayState.create(paths, providers={"fake": provider})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.put(
+                f"/v1/sessions/{session_id}/mode", headers=headers, json={"mode": "plan"}
+            )
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Draft a plan"},
+            )
+            await provider.first_started.wait()
+            for note in ("Prefer the smaller API", "Add a migration test"):
+                queued = await client.post(
+                    f"/v1/sessions/{session_id}/plans/current/notes",
+                    headers=headers,
+                    json={"content": note},
+                )
+                assert response_object(queued)["disposition"] == "queued"
+            provider.release_first.set()
+            events = await _wait_for_event(
+                client, headers, session_id, "plan.proposed", occurrences=2
+            )
+            assert len(provider.requests) == 2
+            revision_prompt = provider.requests[1].messages[-1].content
+            assert revision_prompt.index("Prefer the smaller API") < revision_prompt.index(
+                "Add a migration test"
+            )
+            applied = [event for event in events if event["type"] == "plan.note.applied"]
+            assert applied[-1]["payload"]["contents"] == [  # type: ignore[index]
+                "Prefer the smaller API",
+                "Add a migration test",
+            ]
     finally:
         await state.runs.close()
 
@@ -1293,7 +1486,13 @@ async def test_goal_stall_guard_blocks_three_equivalent_unreported_steps(tmp_pat
             assert current["status"] == "blocked"
             assert current["repeated_no_progress"] == 3
             assert sum(event["type"] == "goal.step.started" for event in events) == 3
-            assert len(fake.requests) == 3
+            assert (
+                sum(
+                    any(tool.name == "goal_report" for tool in request.tools)
+                    for request in fake.requests
+                )
+                == 3
+            )
     finally:
         await state.runs.close()
 
@@ -1867,6 +2066,8 @@ async def test_runtime_delegates_with_an_explicit_task_card(tmp_path: Path) -> N
                 "scar_list",
                 "skill_catalog",
                 "session_title_set",
+                "task_list",
+                "task_update",
             ]
             assert fake.requests[2].messages[-1].tool_name == "spawn_agent"
             assert run_id
@@ -1930,7 +2131,15 @@ async def test_agent_selection_changes_only_future_turns(tmp_path: Path) -> None
             assert changed_event["agent_id"] == "reviewer"
             contexts = [event for event in events if event["type"] == "context.compiled"]
             assert contexts[-1]["payload"]["agent_id"] == "reviewer"  # type: ignore[index]
-            assert [tool.name for tool in fake.requests[-1].tools] == [
+            second_turn = next(
+                request
+                for request in fake.requests
+                if any(
+                    message.role == "user" and message.content == "two"
+                    for message in request.messages
+                )
+            )
+            assert [tool.name for tool in second_turn.tools] == [
                 "read_file",
                 "list_dir",
                 "skill_load",
@@ -1938,6 +2147,8 @@ async def test_agent_selection_changes_only_future_turns(tmp_path: Path) -> None
                 "scar_list",
                 "skill_catalog",
                 "session_title_set",
+                "task_list",
+                "task_update",
             ]
     finally:
         await state.runs.close()

@@ -7,7 +7,10 @@ use tachyonfx::Effect;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::api::{Event, Goal, MemoryRecord, PasteSpan, QueueState, QueuedMessage, Scar, Session};
+use crate::api::{
+    Event, Goal, MemoryRecord, PasteSpan, PlanRevision, PlanState, QueueState, QueuedMessage, Scar,
+    Session, SessionTask, SessionTaskList,
+};
 
 pub const LARGE_PASTE_LINES: usize = 4;
 pub const LARGE_PASTE_BYTES: usize = 400;
@@ -405,6 +408,14 @@ pub enum TranscriptItem {
         live: bool,
         durable: bool,
     },
+    Plan {
+        plan_id: String,
+        revision: usize,
+        title: String,
+        content: String,
+        status: String,
+        collapsed: bool,
+    },
     Activity {
         run_id: String,
         rows: Vec<ActivityRow>,
@@ -735,6 +746,15 @@ pub enum MenuAction {
     ClearSession,
     OpenSessions,
     OpenQueue,
+    OpenTasks,
+    OpenPlanReview,
+    OpenPlanNote,
+    SubmitPlanNote(String),
+    ExecutePlan(String),
+    ToggleTask {
+        task_id: String,
+        status: String,
+    },
     Compact,
     ShowGoal,
     StartGoal(String),
@@ -805,6 +825,20 @@ pub enum SheetKind {
     Agents,
     Modes,
     Themes,
+    PlanReview,
+    Tasks,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InlineEditorKind {
+    PlanNote,
+    NewTask,
+}
+
+#[derive(Clone, Debug)]
+pub struct InlineEditor {
+    pub kind: InlineEditorKind,
+    pub input: Composer,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -969,9 +1003,12 @@ pub struct App {
     pub active_run: Option<String>,
     pub run_started_at: Option<Instant>,
     pub goal: Option<Goal>,
+    pub plan: PlanState,
+    pub tasks: SessionTaskList,
     pub trusted: bool,
     pub modal: Option<Modal>,
     pub sheet: Option<Sheet>,
+    pub inline_editor: Option<InlineEditor>,
     pub notice: Option<String>,
     pub error_notice: Option<String>,
     pub scroll: usize,
@@ -1003,6 +1040,7 @@ pub struct App {
 impl App {
     pub fn new(session: Session, events: Vec<Event>, trusted: bool) -> Self {
         let context_window = session.context_window_tokens;
+        let session_id = session.id.clone();
         let workspace_name = session.working_directory.clone();
         let agent_name = if session.agent_id == "default" {
             "Hames".to_owned()
@@ -1036,9 +1074,22 @@ impl App {
             active_run: None,
             run_started_at: None,
             goal: None,
+            plan: PlanState {
+                session_id: session_id.clone(),
+                current: None,
+                revisions: Vec::new(),
+            },
+            tasks: SessionTaskList {
+                session_id,
+                title: "Tasks".to_owned(),
+                revision: 0,
+                items: Vec::new(),
+                updated_at: String::new(),
+            },
             trusted,
             modal: (!trusted).then_some(Modal::Trust),
             sheet: None,
+            inline_editor: None,
             notice: None,
             error_notice: None,
             scroll: 0,
@@ -1090,6 +1141,92 @@ impl App {
     pub fn set_queue(&mut self, state: QueueState) {
         self.queue_paused = state.paused;
         self.queued_messages = state.items;
+    }
+
+    pub fn set_plan(&mut self, plan: PlanState) {
+        self.plan = plan;
+    }
+
+    pub fn set_tasks(&mut self, tasks: SessionTaskList) {
+        self.tasks = tasks;
+    }
+
+    pub fn plan_ready(&self) -> bool {
+        self.active_run.is_none()
+            && self.session.interaction_mode == "plan"
+            && self
+                .plan
+                .current
+                .as_ref()
+                .is_some_and(|plan| matches!(plan.status.as_str(), "ready" | "failed"))
+            && !self
+                .queued_messages
+                .iter()
+                .any(|item| item.purpose == "plan_note")
+    }
+
+    pub fn open_plan_review(&mut self) {
+        self.sheet = Some(Sheet {
+            kind: SheetKind::PlanReview,
+            title: "Plan ready".to_owned(),
+            options: vec![
+                option(
+                    "Proceed with plan",
+                    "keep conversation context",
+                    MenuAction::ExecutePlan("keep".to_owned()),
+                ),
+                option(
+                    "Clear context and proceed",
+                    "compact first, then execute",
+                    MenuAction::ExecutePlan("compact".to_owned()),
+                ),
+                option(
+                    "Continue with note",
+                    "revise before approval",
+                    MenuAction::OpenPlanNote,
+                ),
+            ],
+            selected: 0,
+            pending_delete: None,
+        });
+        self.inline_editor = None;
+    }
+
+    pub fn open_tasks(&mut self) {
+        let completed = self
+            .tasks
+            .items
+            .iter()
+            .filter(|item| item.status == "completed")
+            .count();
+        self.sheet = Some(Sheet {
+            kind: SheetKind::Tasks,
+            title: format!(
+                "Tasks · {completed}/{} · {}",
+                self.tasks.items.len(),
+                self.tasks.title
+            ),
+            options: self
+                .tasks
+                .items
+                .iter()
+                .map(|item| MenuOption {
+                    label: task_checkbox(item).to_owned(),
+                    detail: item.text.clone(),
+                    action: MenuAction::ToggleTask {
+                        task_id: item.id.clone(),
+                        status: if item.status == "completed" {
+                            "pending".to_owned()
+                        } else {
+                            "completed".to_owned()
+                        },
+                    },
+                })
+                .collect(),
+            selected: 0,
+            pending_delete: None,
+        });
+        self.inline_editor = None;
     }
 
     pub fn insert_queued_message(&mut self, item: QueuedMessage) {
@@ -1288,6 +1425,7 @@ impl App {
             ),
             option("/sessions", "resume recent work", MenuAction::OpenSessions),
             option("/queue", "inspect pending turns", MenuAction::OpenQueue),
+            option("/tasks", "current session checklist", MenuAction::OpenTasks),
             option("/compact", "summarize older context", MenuAction::Compact),
             option(
                 "/goal",
@@ -1541,10 +1679,180 @@ impl App {
             return;
         }
         self.last_sequence = self.last_sequence.max(event.sequence);
+        let refresh_tasks = matches!(
+            event.event_type.as_str(),
+            "tasks.replaced" | "task.added" | "task.updated" | "task.removed"
+        );
         let run_id = event.run_id.clone().unwrap_or_default();
         match event.event_type.as_str() {
+            "session.mode.changed" => {
+                self.session.interaction_mode = string(&event.payload, "mode");
+            }
             "session.title.changed" => {
                 self.session.title = Some(string(&event.payload, "title"));
+            }
+            "plan.proposed" => {
+                for item in &mut self.transcript {
+                    if let TranscriptItem::Plan { collapsed, .. } = item {
+                        *collapsed = true;
+                    }
+                }
+                let revision = event
+                    .payload
+                    .get("revision")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| usize::try_from(value).ok())
+                    .unwrap_or(self.plan.revisions.len() + 1);
+                let plan = PlanRevision {
+                    id: string(&event.payload, "plan_id"),
+                    session_id: self.session.id.clone(),
+                    revision,
+                    title: string(&event.payload, "title"),
+                    markdown: string(&event.payload, "markdown"),
+                    tasks: event
+                        .payload
+                        .get("tasks")
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok())
+                        .unwrap_or_default(),
+                    source_run_id: string(&event.payload, "source_run_id"),
+                    supersedes_plan_id: event
+                        .payload
+                        .get("supersedes_plan_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    status: "ready".to_owned(),
+                    strategy: None,
+                    execution_run_id: None,
+                    error: String::new(),
+                    created_at: event.created_at.clone(),
+                    updated_at: event.created_at.clone(),
+                };
+                if let Some(index) = self.transcript.iter().rposition(
+                    |item| matches!(item, TranscriptItem::Assistant { run_id: id, .. } if id == &plan.source_run_id),
+                ) {
+                    self.transcript[index] = TranscriptItem::Plan {
+                        plan_id: plan.id.clone(),
+                        revision: plan.revision,
+                        title: plan.title.clone(),
+                        content: plan.markdown.clone(),
+                        status: plan.status.clone(),
+                        collapsed: false,
+                    };
+                }
+                self.plan.revisions.push(plan.clone());
+                self.plan.current = Some(plan);
+                self.notice = None;
+            }
+            "plan.execution.requested"
+            | "plan.approved"
+            | "plan.execution.started"
+            | "plan.execution.completed"
+            | "plan.execution.failed" => {
+                let status = match event.event_type.as_str() {
+                    "plan.execution.requested" => "requested",
+                    "plan.approved" => "approved",
+                    "plan.execution.started" => "executing",
+                    "plan.execution.completed" => "completed",
+                    _ => "failed",
+                };
+                if let Some(plan) = &mut self.plan.current
+                    && plan.id == string(&event.payload, "plan_id")
+                {
+                    plan.status = status.to_owned();
+                    plan.strategy = event
+                        .payload
+                        .get("strategy")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    plan.execution_run_id = event
+                        .payload
+                        .get("execution_run_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    plan.error = string(&event.payload, "message");
+                    plan.updated_at = event.created_at.clone();
+                }
+                for item in &mut self.transcript {
+                    if let TranscriptItem::Plan {
+                        plan_id,
+                        status: item_status,
+                        ..
+                    } = item
+                        && plan_id == &string(&event.payload, "plan_id")
+                    {
+                        *item_status = status.to_owned();
+                    }
+                }
+                if status == "failed" {
+                    self.active_run = None;
+                    self.run_started_at = None;
+                    self.error_notice = Some(string(&event.payload, "message"));
+                }
+            }
+            "tasks.replaced" => {
+                self.tasks.title = string(&event.payload, "title");
+                self.tasks.revision = event
+                    .payload
+                    .get("revision")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| usize::try_from(value).ok())
+                    .unwrap_or(self.tasks.revision + 1);
+                self.tasks.items = event
+                    .payload
+                    .get("items")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok())
+                    .unwrap_or_default();
+                self.tasks.updated_at = event.created_at.clone();
+            }
+            "task.added" => {
+                if let Some(task) = event
+                    .payload
+                    .get("task")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value::<SessionTask>(value).ok())
+                {
+                    let position = task.position.min(self.tasks.items.len());
+                    self.tasks.items.insert(position, task);
+                    normalize_task_positions(&mut self.tasks.items);
+                }
+                self.tasks.updated_at = event.created_at.clone();
+            }
+            "task.updated" => {
+                let task_id = string(&event.payload, "task_id");
+                if let Some(index) = self.tasks.items.iter().position(|item| item.id == task_id) {
+                    let mut task = self.tasks.items.remove(index);
+                    if let Some(text) = event.payload.get("text").and_then(Value::as_str) {
+                        task.text = text.to_owned();
+                    }
+                    if let Some(status) = event.payload.get("status").and_then(Value::as_str) {
+                        if status == "in_progress" {
+                            for item in &mut self.tasks.items {
+                                if item.status == "in_progress" {
+                                    item.status = "pending".to_owned();
+                                }
+                            }
+                        }
+                        task.status = status.to_owned();
+                    }
+                    let position = event
+                        .payload
+                        .get("position")
+                        .and_then(Value::as_u64)
+                        .and_then(|value| usize::try_from(value).ok())
+                        .unwrap_or(index)
+                        .min(self.tasks.items.len());
+                    self.tasks.items.insert(position, task);
+                    normalize_task_positions(&mut self.tasks.items);
+                }
+                self.tasks.updated_at = event.created_at.clone();
+            }
+            "task.removed" => {
+                let task_id = string(&event.payload, "task_id");
+                self.tasks.items.retain(|item| item.id != task_id);
+                normalize_task_positions(&mut self.tasks.items);
+                self.tasks.updated_at = event.created_at.clone();
             }
             "goal.created" => {
                 let objective = string(&event.payload, "objective");
@@ -1652,6 +1960,9 @@ impl App {
                 });
             }
             "user.message" => {
+                if event.payload.get("purpose").and_then(Value::as_str) == Some("plan_execution") {
+                    return;
+                }
                 self.collapse_completed_thoughts();
                 let user_content = string(&event.payload, "content");
                 self.message_history.push(user_content.clone());
@@ -1691,6 +2002,12 @@ impl App {
                             .and_then(Value::as_bool)
                             .unwrap_or(false),
                         paste_spans,
+                        purpose: event
+                            .payload
+                            .get("purpose")
+                            .and_then(Value::as_str)
+                            .unwrap_or("turn")
+                            .to_owned(),
                         created_at: event.created_at.clone(),
                         position,
                     });
@@ -1972,6 +2289,18 @@ impl App {
             }
             _ => {}
         }
+        if refresh_tasks
+            && self
+                .sheet
+                .as_ref()
+                .is_some_and(|sheet| sheet.kind == SheetKind::Tasks)
+        {
+            let selected = self.sheet.as_ref().map(|sheet| sheet.selected).unwrap_or(0);
+            self.open_tasks();
+            if let Some(sheet) = &mut self.sheet {
+                sheet.selected = selected.min(sheet.options.len().saturating_sub(1));
+            }
+        }
     }
 
     fn update_dream(&mut self, job_id: String, label: String, phase: DreamPhase, detail: String) {
@@ -2015,7 +2344,8 @@ impl App {
     pub fn toggle_activity(&mut self, index: usize) {
         match self.transcript.get_mut(index) {
             Some(TranscriptItem::Activity { collapsed, .. })
-            | Some(TranscriptItem::Compaction { collapsed, .. }) => *collapsed = !*collapsed,
+            | Some(TranscriptItem::Compaction { collapsed, .. })
+            | Some(TranscriptItem::Plan { collapsed, .. }) => *collapsed = !*collapsed,
             _ => {}
         }
     }
@@ -2392,6 +2722,21 @@ fn option(label: &str, detail: &str, action: MenuAction) -> MenuOption {
     }
 }
 
+fn task_checkbox(task: &SessionTask) -> &'static str {
+    match task.status.as_str() {
+        "in_progress" => "[•]",
+        "completed" => "[x]",
+        "blocked" => "[!]",
+        _ => "[ ]",
+    }
+}
+
+fn normalize_task_positions(items: &mut [SessionTask]) {
+    for (position, item) in items.iter_mut().enumerate() {
+        item.position = position;
+    }
+}
+
 fn string(payload: &Value, key: &str) -> String {
     payload
         .get(key)
@@ -2725,6 +3070,58 @@ mod tests {
         assert!(!app.transcript.iter().any(|item| matches!(
             item,
             TranscriptItem::Thought { run_id, .. } if run_id == "background-memory-job"
+        )));
+    }
+
+    #[test]
+    fn plan_proposals_replace_streamed_answers_and_collapse_old_revisions() {
+        let mut app = App::new(session(), Vec::new(), true);
+        for (sequence, run_id, plan_id, revision, title) in [
+            (1, "run-plan-1", "plan-1", 1, "Initial plan"),
+            (3, "run-plan-2", "plan-2", 2, "Revised plan"),
+        ] {
+            app.ingest_durable(
+                event(
+                    sequence,
+                    "assistant.message",
+                    run_id,
+                    json!({"content": format!("# {title}"), "status": "completed"}),
+                ),
+                true,
+            );
+            app.ingest_durable(
+                event(
+                    sequence + 1,
+                    "plan.proposed",
+                    run_id,
+                    json!({
+                        "plan_id": plan_id,
+                        "revision": revision,
+                        "title": title,
+                        "markdown": format!("# {title}\n\n## Tasks\n- [ ] Implement it"),
+                        "tasks": ["Implement it"],
+                        "source_run_id": run_id,
+                        "supersedes_plan_id": if revision == 1 { json!(null) } else { json!("plan-1") }
+                    }),
+                ),
+                true,
+            );
+        }
+
+        let plans = app
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Plan {
+                    plan_id, collapsed, ..
+                } => Some((plan_id.as_str(), *collapsed)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(plans, vec![("plan-1", true), ("plan-2", false)]);
+        assert!(!app.transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Assistant { content, .. } if content.starts_with("# Initial plan") || content.starts_with("# Revised plan")
         )));
     }
 

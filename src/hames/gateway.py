@@ -60,6 +60,7 @@ from hames.memory import (
 from hames.memory_runtime import MemoryManager
 from hames.message_queue import QueuedMessage, QueueFullError, QueueState
 from hames.paths import HamesPaths
+from hames.plans import PlanState
 from hames.plugin_protocol import PluginProtocolError
 from hames.plugin_runtime import (
     PluginInspectView,
@@ -80,6 +81,7 @@ from hames.runtime import RunManager
 from hames.search_runtime import SearchMcpManager, SearchRuntimeStatus
 from hames.skill_runtime import SkillManager
 from hames.skills import SkillJob, SkillSummary, SkillVersion
+from hames.tasks import SessionTaskList, TaskStatus
 
 
 class ApiModel(BaseModel):
@@ -111,6 +113,7 @@ class MessageRequest(ApiModel):
     content: str = Field(min_length=1)
     remember: bool = False
     send_now: bool = False
+    purpose: Literal["turn", "plan_note"] = "turn"
     paste_spans: list[PasteSpan] = Field(default_factory=_empty_paste_spans, max_length=64)
 
     @model_validator(mode="after")
@@ -162,6 +165,32 @@ class MessageAccepted(ApiModel):
 class CompactionAccepted(ApiModel):
     run_id: str
     trigger: Literal["manual"] = "manual"
+
+
+class PlanExecuteRequest(ApiModel):
+    strategy: Literal["keep", "compact"]
+
+
+class PlanExecutionAccepted(ApiModel):
+    plan: PlanState
+    tasks: SessionTaskList
+    run_id: str
+
+
+class TaskCreateRequest(ApiModel):
+    text: str = Field(min_length=1, max_length=500)
+
+
+class TaskUpdateRequest(ApiModel):
+    text: str | None = Field(default=None, min_length=1, max_length=500)
+    status: TaskStatus | None = None
+    position: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def has_change(self) -> TaskUpdateRequest:
+        if self.text is None and self.status is None and self.position is None:
+            raise ValueError("task update requires text, status, or position")
+        return self
 
 
 class GoalCreateRequest(ApiModel):
@@ -1690,6 +1719,7 @@ def create_app(state: GatewayState) -> FastAPI:
                 remember=request.remember,
                 paste_spans=[span.model_dump(mode="json") for span in request.paste_spans],
                 send_now=request.send_now,
+                purpose=request.purpose,
             )
             return MessageAccepted(
                 disposition=cast(Literal["started", "queued"], result.disposition),
@@ -1704,6 +1734,116 @@ def create_app(state: GatewayState) -> FastAPI:
             raise ApiError(409, "session_not_open", str(exc)) from exc
         except PermissionError as exc:
             raise ApiError(409, "working_directory_untrusted", str(exc)) from exc
+
+    @app.get(
+        "/v1/sessions/{session_id}/plans/current",
+        dependencies=auth,
+        response_model=PlanState,
+    )
+    async def current_plan(session_id: str) -> PlanState:
+        try:
+            return await state.runs.current_plan(session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/plans/current/notes",
+        dependencies=auth,
+        response_model=MessageAccepted,
+        status_code=202,
+    )
+    async def submit_plan_note(session_id: str, request: MessageRequest) -> MessageAccepted:
+        try:
+            result = await state.runs.submit(
+                session_id,
+                request.content,
+                remember=False,
+                paste_spans=[span.model_dump(mode="json") for span in request.paste_spans],
+                purpose="plan_note",
+            )
+            return MessageAccepted(
+                disposition=cast(Literal["started", "queued"], result.disposition),
+                run_id=result.run_id,
+                queued=result.queued,
+            )
+        except QueueFullError as exc:
+            raise ApiError(409, "session_queue_full", str(exc)) from exc
+        except KeyError as exc:
+            raise ApiError(404, "session_or_provider_not_found", str(exc)) from exc
+        except (PermissionError, ValueError) as exc:
+            raise ApiError(409, "plan_note_rejected", str(exc)) from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/plans/current/execute",
+        dependencies=auth,
+        response_model=PlanExecutionAccepted,
+        status_code=202,
+    )
+    async def execute_plan(session_id: str, request: PlanExecuteRequest) -> PlanExecutionAccepted:
+        try:
+            plan, tasks, run_id = await state.runs.execute_plan(
+                session_id, strategy=request.strategy
+            )
+            return PlanExecutionAccepted(plan=plan, tasks=tasks, run_id=run_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(409, "plan_execution_rejected", str(exc)) from exc
+
+    @app.get(
+        "/v1/sessions/{session_id}/tasks",
+        dependencies=auth,
+        response_model=SessionTaskList,
+    )
+    async def session_tasks(session_id: str) -> SessionTaskList:
+        try:
+            return await state.runs.current_tasks(session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", str(exc)) from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/tasks",
+        dependencies=auth,
+        response_model=SessionTaskList,
+        status_code=201,
+    )
+    async def add_session_task(session_id: str, request: TaskCreateRequest) -> SessionTaskList:
+        try:
+            return await state.runs.add_task(session_id, request.text)
+        except (KeyError, ValueError) as exc:
+            raise ApiError(409, "task_update_rejected", str(exc)) from exc
+
+    @app.patch(
+        "/v1/sessions/{session_id}/tasks/{task_id}",
+        dependencies=auth,
+        response_model=SessionTaskList,
+    )
+    async def update_session_task(
+        session_id: str, task_id: str, request: TaskUpdateRequest
+    ) -> SessionTaskList:
+        try:
+            return await state.runs.update_task(
+                session_id,
+                task_id,
+                text=request.text,
+                status=request.status,
+                position=request.position,
+            )
+        except KeyError as exc:
+            raise ApiError(404, "task_not_found", str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(409, "task_update_rejected", str(exc)) from exc
+
+    @app.delete(
+        "/v1/sessions/{session_id}/tasks/{task_id}",
+        dependencies=auth,
+        response_model=SessionTaskList,
+    )
+    async def remove_session_task(session_id: str, task_id: str) -> SessionTaskList:
+        try:
+            return await state.runs.remove_task(session_id, task_id)
+        except KeyError as exc:
+            raise ApiError(404, "task_not_found", str(exc)) from exc
 
     @app.post(
         "/v1/sessions/{session_id}/compact",

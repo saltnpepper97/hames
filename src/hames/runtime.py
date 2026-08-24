@@ -10,7 +10,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from hames.agent import (
     AgentCapsule,
@@ -45,6 +45,7 @@ from hames.memory import (
 )
 from hames.message_queue import MessageQueueStore, QueuedMessage, QueueState
 from hames.paths import HamesPaths
+from hames.plans import PLAN_READY_MARKER, PlanState, PlanStore, visible_plan_output
 from hames.plugin_runtime import PluginToolArguments
 from hames.plugins import is_plugin_tool
 from hames.policy import PolicyDecisionKind, PolicyGate, approval_request_hash
@@ -60,6 +61,7 @@ from hames.providers.base import JSON_OBJECT, JsonValue
 from hames.rules import ContextRuleStore, PolicyRuleStore
 from hames.search_runtime import SearchMcpManager
 from hames.skills import SkillRegistry, SkillSummary, SkillVersion
+from hames.tasks import SessionTaskList, TaskStore
 from hames.tools import (
     GoalReportArguments,
     MemoryAddArguments,
@@ -77,6 +79,8 @@ from hames.tools import (
     SkillLoadArguments,
     SkillRunArguments,
     SpawnAgentArguments,
+    TaskListArguments,
+    TaskUpdateArguments,
     ToolArguments,
     ToolContext,
     ToolRegistry,
@@ -96,6 +100,8 @@ SELF_MANAGEMENT_TOOLS = frozenset(
         "skill_control",
         "session_title_set",
         "goal_report",
+        "task_list",
+        "task_update",
     }
 )
 
@@ -145,7 +151,11 @@ MODE_POLICY_SUMMARIES = {
     ),
     "plan": (
         "Execution mode is plan: inspect and run safe tests, but do not write code, delegate, "
-        "or mutate durable agent state."
+        "or mutate durable agent state. Develop a decision-complete implementation plan. A plan "
+        "that is ready for approval must contain a '## Tasks' section whose actionable steps use "
+        "Markdown '- [ ]' checkboxes, then end with the exact marker "
+        f"{PLAN_READY_MARKER}. Use that marker only when the plan is complete; omit it when asking "
+        "a question or reporting interim findings."
     ),
 }
 
@@ -229,6 +239,8 @@ class ModelTurn:
     tool_calls: list[ToolInvocation]
     allowed_tools: frozenset[str]
     capsule: AgentCapsule
+    plan_ready: bool = False
+    plan_markdown: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +281,8 @@ class RunManager:
         self.memory = MemoryStore(ledger)
         self.message_queue = MessageQueueStore(ledger)
         self.goals = GoalStore(ledger)
+        self.plans = PlanStore(ledger)
+        self.session_tasks = TaskStore(ledger)
         self.policy = PolicyGate(paths.root)
         self.context_rules = ContextRuleStore(ledger)
         self.policy_rules = PolicyRuleStore(ledger)
@@ -335,6 +349,7 @@ class RunManager:
         *,
         remember: bool = False,
         paste_spans: list[dict[str, int]] | None = None,
+        purpose: str = "turn",
     ) -> str:
         session = await asyncio.to_thread(self.ledger.get_session, session_id)
         if session.status != "open":
@@ -350,6 +365,8 @@ class RunManager:
             self._mark_post_terminal(active_run, session_id)
         if session.provider not in self.providers:
             raise KeyError(f"unknown provider: {session.provider}")
+        if purpose == "plan_note" and session.interaction_mode != "plan":
+            raise ValueError("plan notes require plan mode")
         trust = await asyncio.to_thread(self.controls.get_trust, Path(session.working_directory))
         if trust is None:
             raise PermissionError("working directory is not trusted")
@@ -360,9 +377,24 @@ class RunManager:
                 "content": content,
                 "remember": remember,
                 "paste_spans": paste_spans or [],
+                "purpose": purpose,
             },
             agent_id=session.agent_id,
         )
+        if purpose == "plan_note":
+            state = await asyncio.to_thread(self.plans.current, session_id)
+            await self._append(
+                session_id=session_id,
+                agent_id=session.agent_id,
+                event_type="plan.note.applied",
+                payload={
+                    "plan_id": state.current.id if state.current else None,
+                    "queue_ids": [],
+                    "contents": [content],
+                },
+                causation_id=user_event.id,
+                correlation_id=state.current.id if state.current else session_id,
+            )
         return self._launch(session_id, user_event)
 
     async def submit(
@@ -373,8 +405,16 @@ class RunManager:
         remember: bool = False,
         paste_spans: list[dict[str, int]] | None = None,
         send_now: bool = False,
+        purpose: str = "turn",
     ) -> SubmissionResult:
         async with self._submission_lock(session_id):
+            session = await asyncio.to_thread(self.ledger.get_session, session_id)
+            if purpose not in {"turn", "plan_note"}:
+                raise ValueError("message purpose must be turn or plan_note")
+            if purpose == "plan_note":
+                if session.interaction_mode != "plan":
+                    raise ValueError("plan notes require plan mode")
+                send_now = False
             stale_run = self._session_runs.get(session_id)
             stale_task = self._tasks.get(stale_run) if stale_run is not None else None
             if stale_run is not None and stale_task is not None and stale_task.done():
@@ -390,8 +430,10 @@ class RunManager:
                         remember=remember,
                         paste_spans=paste_spans or [],
                         priority=True,
+                        purpose=purpose,
                     )
                     await self._publish_durable(mutation.event)
+                    await self._record_plan_note_queued(session, mutation.item)
                     _, yielded_event = await asyncio.to_thread(
                         self.goals.transition,
                         await asyncio.to_thread(self.ledger.get_session, session_id),
@@ -411,8 +453,10 @@ class RunManager:
                     remember=remember,
                     paste_spans=paste_spans or [],
                     priority=send_now,
+                    purpose=purpose,
                 )
                 await self._publish_durable(mutation.event)
+                await self._record_plan_note_queued(session, mutation.item)
                 if send_now:
                     await self.cancel(active_run)
                 return SubmissionResult(disposition="queued", queued=mutation.item)
@@ -426,8 +470,10 @@ class RunManager:
                         remember=remember,
                         paste_spans=paste_spans or [],
                         priority=True,
+                        purpose=purpose,
                     )
                     await self._publish_durable(mutation.event)
+                    await self._record_plan_note_queued(session, mutation.item)
                     run_id = await self._promote_next_locked(session_id)
                     return SubmissionResult(disposition="started", run_id=run_id)
                 if not queue.paused:
@@ -438,13 +484,35 @@ class RunManager:
                     content,
                     remember=remember,
                     paste_spans=paste_spans or [],
+                    purpose=purpose,
                 )
                 await self._publish_durable(mutation.event)
+                await self._record_plan_note_queued(session, mutation.item)
                 return SubmissionResult(disposition="queued", queued=mutation.item)
             run_id = await self.start(
-                session_id, content, remember=remember, paste_spans=paste_spans
+                session_id,
+                content,
+                remember=remember,
+                paste_spans=paste_spans,
+                purpose=purpose,
             )
             return SubmissionResult(disposition="started", run_id=run_id)
+
+    async def _record_plan_note_queued(self, session: Session, item: QueuedMessage | None) -> None:
+        if item is None or item.purpose != "plan_note":
+            return
+        state = await asyncio.to_thread(self.plans.current, session.id)
+        await self._append(
+            session_id=session.id,
+            agent_id=session.agent_id,
+            event_type="plan.note.queued",
+            payload={
+                "plan_id": state.current.id if state.current else None,
+                "queue_ids": [item.id],
+                "contents": [item.content],
+            },
+            correlation_id=state.current.id if state.current else session.id,
+        )
 
     def _submission_lock(self, session_id: str) -> asyncio.Lock:
         return self._submission_locks.setdefault(session_id, asyncio.Lock())
@@ -466,6 +534,211 @@ class RunManager:
 
     async def current_goal(self, session_id: str) -> Goal | None:
         return await asyncio.to_thread(self.goals.current, session_id)
+
+    async def current_plan(self, session_id: str) -> PlanState:
+        return await asyncio.to_thread(self.plans.current, session_id)
+
+    async def current_tasks(self, session_id: str) -> SessionTaskList:
+        return await asyncio.to_thread(self.session_tasks.current, session_id)
+
+    async def add_task(self, session_id: str, text: str) -> SessionTaskList:
+        session = await asyncio.to_thread(self.ledger.get_session, session_id)
+        tasks, event = await asyncio.to_thread(self.session_tasks.add, session, text=text)
+        await self._publish_store_events((event,))
+        return tasks
+
+    async def update_task(
+        self,
+        session_id: str,
+        task_id: str,
+        *,
+        text: str | None = None,
+        status: Literal["pending", "in_progress", "completed", "blocked"] | None = None,
+        position: int | None = None,
+    ) -> SessionTaskList:
+        session = await asyncio.to_thread(self.ledger.get_session, session_id)
+        tasks, event = await asyncio.to_thread(
+            self.session_tasks.update,
+            session,
+            task_id,
+            text=text,
+            status=status,
+            position=position,
+        )
+        await self._publish_store_events((event,))
+        return tasks
+
+    async def remove_task(self, session_id: str, task_id: str) -> SessionTaskList:
+        session = await asyncio.to_thread(self.ledger.get_session, session_id)
+        tasks, event = await asyncio.to_thread(self.session_tasks.remove, session, task_id)
+        await self._publish_store_events((event,))
+        return tasks
+
+    async def execute_plan(
+        self, session_id: str, *, strategy: Literal["keep", "compact"]
+    ) -> tuple[PlanState, SessionTaskList, str]:
+        async with self._submission_lock(session_id):
+            if self.is_session_active(session_id):
+                raise ValueError("cannot execute a plan while the session has active work")
+            if (await self.queue_state(session_id)).items:
+                raise ValueError("cannot execute a plan while notes or turns are queued")
+            session = await asyncio.to_thread(self.ledger.get_session, session_id)
+            state = await asyncio.to_thread(self.plans.current, session_id)
+            plan = state.current
+            if plan is None or plan.status not in {"ready", "failed"}:
+                raise ValueError("session has no plan ready for approval")
+            run_id = new_id()
+            state, requested = await asyncio.to_thread(
+                self.plans.transition,
+                session,
+                plan.id,
+                "plan.execution.requested",
+                strategy=strategy,
+                execution_run_id=run_id,
+            )
+            await self._publish_store_events((requested,))
+            if strategy == "keep":
+                session, tasks, user_event = await self._prepare_plan_execution(
+                    session, plan.id, run_id, strategy, requested.id
+                )
+                self._launch(session_id, user_event, run_id=run_id)
+                return await self.current_plan(session_id), tasks, run_id
+            task = asyncio.create_task(
+                self._compact_and_execute_plan(session, plan.id, run_id, requested.id),
+                name=f"hames-plan-{run_id}",
+            )
+            self._tasks[run_id] = task
+            self._session_runs[session_id] = run_id
+            task.add_done_callback(lambda _: self._finish(run_id, session_id))
+            return state, await self.current_tasks(session_id), run_id
+
+    async def _prepare_plan_execution(
+        self,
+        session: Session,
+        plan_id: str,
+        run_id: str,
+        strategy: Literal["keep", "compact"],
+        causation_id: str,
+    ) -> tuple[Session, SessionTaskList, Event]:
+        state = await asyncio.to_thread(self.plans.current, session.id)
+        plan = state.current
+        if plan is None or plan.id != plan_id:
+            raise ValueError("approved plan changed before execution")
+        tasks, task_event = await asyncio.to_thread(
+            self.session_tasks.replace,
+            session,
+            title=plan.title,
+            tasks=plan.tasks,
+            created_by="plan",
+            causation_id=causation_id,
+        )
+        await self._publish_store_events((task_event,))
+        session = await asyncio.to_thread(self.ledger.update_session_mode, session.id, mode="auto")
+        mode_event = next(
+            event
+            for event in reversed(await asyncio.to_thread(self.ledger.list_events, session.id))
+            if event.type == "session.mode.changed"
+        )
+        await self._publish_durable(mode_event)
+        _, approved = await asyncio.to_thread(
+            self.plans.transition,
+            session,
+            plan_id,
+            "plan.approved",
+            strategy=strategy,
+            execution_run_id=run_id,
+            causation_id=task_event.id,
+        )
+        await self._publish_store_events((approved,))
+        user_event = await self._append(
+            session_id=session.id,
+            agent_id=session.agent_id,
+            event_type="user.message",
+            payload={
+                "content": (
+                    "Implement the approved plan now. Keep the session task checklist current "
+                    "as work begins, completes, becomes blocked, or new work is discovered."
+                ),
+                "remember": False,
+                "paste_spans": [],
+                "purpose": "plan_execution",
+            },
+            causation_id=approved.id,
+            correlation_id=plan_id,
+        )
+        _, started = await asyncio.to_thread(
+            self.plans.transition,
+            session,
+            plan_id,
+            "plan.execution.started",
+            strategy=strategy,
+            execution_run_id=run_id,
+            causation_id=user_event.id,
+        )
+        await self._publish_store_events((started,))
+        return session, tasks, user_event
+
+    async def _compact_and_execute_plan(
+        self, session: Session, plan_id: str, run_id: str, causation_id: str
+    ) -> None:
+        try:
+            compacted = await self._perform_compaction(
+                session,
+                run_id,
+                trigger="plan",
+                causation_id=causation_id,
+                preserve_recent_turns=0,
+            )
+            session, _, user_event = await self._prepare_plan_execution(
+                session, plan_id, run_id, "compact", compacted.id
+            )
+            await self._run(run_id, session.id, user_event)
+        except asyncio.CancelledError:
+            await self._append(
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                event_type="context.compaction.cancelled",
+                payload={
+                    "compaction_id": run_id,
+                    "trigger": "plan",
+                    "message": "plan compaction cancelled",
+                },
+                correlation_id=run_id,
+            )
+            _, failed = await asyncio.to_thread(
+                self.plans.transition,
+                session,
+                plan_id,
+                "plan.execution.failed",
+                strategy="compact",
+                execution_run_id=run_id,
+                message="plan compaction cancelled",
+            )
+            await self._publish_store_events((failed,))
+        except (ProviderError, ContextBudgetError, ValueError) as exc:
+            await self._append(
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                event_type="context.compaction.failed",
+                payload={
+                    "compaction_id": run_id,
+                    "trigger": "plan",
+                    "message": str(exc),
+                },
+                correlation_id=run_id,
+            )
+            _, failed = await asyncio.to_thread(
+                self.plans.transition,
+                session,
+                plan_id,
+                "plan.execution.failed",
+                strategy="compact",
+                execution_run_id=run_id,
+                message=str(exc),
+            )
+            await self._publish_store_events((failed,))
 
     async def goal_history(self, session_id: str) -> list[Goal]:
         return await asyncio.to_thread(self.goals.list, session_id)
@@ -688,6 +961,51 @@ class RunManager:
             mutation = await asyncio.to_thread(self.message_queue.set_paused, session_id, True)
             await self._publish_durable(mutation.event)
             return None
+        if state.items[0].purpose == "plan_note":
+            notes: list[QueuedMessage] = []
+            for queued in state.items:
+                if queued.purpose != "plan_note":
+                    break
+                mutation = await asyncio.to_thread(
+                    self.message_queue.take, session_id, queued.id, reason="promoted"
+                )
+                await self._publish_durable(mutation.event)
+                assert mutation.item is not None
+                notes.append(mutation.item)
+            content = (
+                notes[0].content
+                if len(notes) == 1
+                else "Plan revision notes, in order:\n\n"
+                + "\n\n".join(
+                    f"{index}. {item.content}" for index, item in enumerate(notes, start=1)
+                )
+            )
+            user_event = await self._append(
+                session_id=session_id,
+                event_type="user.message",
+                payload={
+                    "content": content,
+                    "remember": False,
+                    "paste_spans": [],
+                    "purpose": "plan_note",
+                },
+                agent_id=session.agent_id,
+                correlation_id=notes[0].id,
+            )
+            plan_state = await asyncio.to_thread(self.plans.current, session_id)
+            await self._append(
+                session_id=session_id,
+                agent_id=session.agent_id,
+                event_type="plan.note.applied",
+                payload={
+                    "plan_id": plan_state.current.id if plan_state.current else None,
+                    "queue_ids": [item.id for item in notes],
+                    "contents": [item.content for item in notes],
+                },
+                causation_id=user_event.id,
+                correlation_id=plan_state.current.id if plan_state.current else session_id,
+            )
+            return self._launch(session_id, user_event)
         mutation = await asyncio.to_thread(
             self.message_queue.take_oldest, session_id, reason="promoted"
         )
@@ -701,6 +1019,7 @@ class RunManager:
                 "content": item.content,
                 "remember": item.remember,
                 "paste_spans": item.paste_spans,
+                "purpose": item.purpose,
             },
             agent_id=session.agent_id,
             correlation_id=item.id,
@@ -965,6 +1284,7 @@ class RunManager:
             )
             await self._append_failure(session_id, run_id, error.id, "runtime_error", str(exc), {})
         finally:
+            await self._finalize_plan_execution(session_id, run_id)
             self._mark_post_terminal(run_id, session_id)
             await self._promote_next(session_id)
             await self._advance_goal_after_run(session_id, run_id)
@@ -995,6 +1315,43 @@ class RunManager:
                     )
             if scratch_root is not None:
                 await asyncio.to_thread(self._remove_scratch, scratch_root)
+
+    async def _finalize_plan_execution(self, session_id: str, run_id: str) -> None:
+        state = await asyncio.to_thread(self.plans.current, session_id)
+        plan = state.current
+        if plan is None or plan.execution_run_id != run_id or plan.status != "executing":
+            return
+        events = await asyncio.to_thread(self.ledger.list_run_events, run_id)
+        terminal = next(
+            (
+                event
+                for event in reversed(events)
+                if event.type in {"run.completed", "run.failed", "run.cancelled"}
+            ),
+            None,
+        )
+        if terminal is None:
+            return
+        completed = terminal.type == "run.completed"
+        message = ""
+        if not completed:
+            message = str(terminal.payload.get("message", "")) or (
+                "plan execution was cancelled"
+                if terminal.type == "run.cancelled"
+                else "plan execution failed"
+            )
+        session = await asyncio.to_thread(self.ledger.get_session, session_id)
+        _, event = await asyncio.to_thread(
+            self.plans.transition,
+            session,
+            plan.id,
+            "plan.execution.completed" if completed else "plan.execution.failed",
+            strategy=plan.strategy,
+            execution_run_id=run_id,
+            message=message,
+            causation_id=terminal.id,
+        )
+        await self._publish_store_events((event,))
 
     async def _run_manual_compaction(self, run_id: str, session: Session) -> None:
         try:
@@ -1033,11 +1390,17 @@ class RunManager:
         *,
         trigger: str,
         causation_id: str | None = None,
+        preserve_recent_turns: int | None = None,
     ) -> Event:
         history = await asyncio.to_thread(self.ledger.replay, session.id)
+        preserved = (
+            self.config.context.compaction_preserve_recent_turns
+            if preserve_recent_turns is None
+            else preserve_recent_turns
+        )
         rolling_summary, candidates = conversation_compaction_candidates(
             history,
-            preserve_recent_turns=self.config.context.compaction_preserve_recent_turns,
+            preserve_recent_turns=preserved,
         )
         initial_summary_tokens = (
             max(1, len(rolling_summary.encode()) // 4) if rolling_summary else 0
@@ -1052,7 +1415,7 @@ class RunManager:
             payload={
                 "compaction_id": run_id,
                 "trigger": trigger,
-                "preserve_recent_turns": self.config.context.compaction_preserve_recent_turns,
+                "preserve_recent_turns": preserved,
             },
             causation_id=causation_id,
             correlation_id=run_id,
@@ -1319,6 +1682,15 @@ class RunManager:
                 )
             )
             if not turn.tool_calls:
+                if turn.plan_ready:
+                    _, proposed = await asyncio.to_thread(
+                        self.plans.propose,
+                        session,
+                        run_id=run_id,
+                        markdown=turn.plan_markdown,
+                        causation_id=turn.request_event_id,
+                    )
+                    await self._publish_store_events((proposed,))
                 await self._append(
                     session_id=session.id,
                     run_id=run_id,
@@ -1543,6 +1915,8 @@ class RunManager:
         finish_reason = "stop"
         reasoning_started_at: float | None = None
         reasoning_finished_at: float | None = None
+        published_answer_length = 0
+        plan_response = session.interaction_mode == "plan"
 
         def reasoning_duration() -> float:
             if reasoning_started_at is None:
@@ -1590,7 +1964,21 @@ class RunManager:
                     if reasoning_started_at is not None and reasoning_finished_at is None:
                         reasoning_finished_at = time.monotonic()
                     answer_parts.append(stream_event.text)
-                    await self._publish_transient(session.id, run_id, stream_event)
+                    if plan_response:
+                        assembled = "".join(answer_parts)
+                        safe_end = max(0, len(assembled) - len(PLAN_READY_MARKER))
+                        if safe_end > published_answer_length:
+                            await self._publish_transient(
+                                session.id,
+                                run_id,
+                                StreamEvent(
+                                    kind=StreamEventKind.TEXT_DELTA,
+                                    text=assembled[published_answer_length:safe_end],
+                                ),
+                            )
+                            published_answer_length = safe_end
+                    else:
+                        await self._publish_transient(session.id, run_id, stream_event)
                 elif stream_event.kind is StreamEventKind.TOOL_CALL_DELTA:
                     if reasoning_started_at is not None and reasoning_finished_at is None:
                         reasoning_finished_at = time.monotonic()
@@ -1627,11 +2015,25 @@ class RunManager:
             if not completed:
                 raise ProviderError("provider_protocol_error", "provider stream did not complete")
             invocations = [tool_calls[index].invocation() for index in sorted(tool_calls)]
+            answer = "".join(answer_parts)
+            visible_answer, marker_present = (
+                visible_plan_output(answer) if plan_response else (answer, False)
+            )
+            plan_ready = marker_present and not invocations
+            if plan_response and published_answer_length < len(visible_answer):
+                await self._publish_transient(
+                    session.id,
+                    run_id,
+                    StreamEvent(
+                        kind=StreamEventKind.TEXT_DELTA,
+                        text=visible_answer[published_answer_length:],
+                    ),
+                )
             await self._persist_output(
                 session,
                 run_id,
                 "".join(reasoning_parts),
-                "".join(answer_parts),
+                visible_answer,
                 "interrupted" if invocations else "completed",
                 request_event.id,
                 force_message=bool(invocations),
@@ -1663,7 +2065,15 @@ class RunManager:
                 causation_id=request_event.id,
                 correlation_id=run_id,
             )
-            return ModelTurn(request_event.id, finish_reason, invocations, allowed_tools, capsule)
+            return ModelTurn(
+                request_event.id,
+                finish_reason,
+                invocations,
+                allowed_tools,
+                capsule,
+                plan_ready=plan_ready,
+                plan_markdown=visible_answer if plan_ready else "",
+            )
         except asyncio.CancelledError:
             await self._persist_output(
                 session,
@@ -2100,6 +2510,51 @@ class RunManager:
                     status="completed",
                     summary=f"goal reported {goal.status}",
                     structured_data={"goal": goal.model_dump(mode="json")},
+                )
+            if isinstance(arguments, TaskListArguments):
+                task_list = await asyncio.to_thread(self.session_tasks.current, session.id)
+                values = [
+                    item.model_dump(mode="json")
+                    for item in task_list.items
+                    if arguments.include_completed or item.status != "completed"
+                ]
+                return ToolResult(
+                    status="completed",
+                    summary=f"listed {len(values)} tasks",
+                    content=json.dumps(values, separators=(",", ":"), ensure_ascii=False),
+                    structured_data={"task_list": task_list.model_dump(mode="json")},
+                )
+            if isinstance(arguments, TaskUpdateArguments):
+                if arguments.action == "add":
+                    task_list, event = await asyncio.to_thread(
+                        self.session_tasks.add,
+                        session,
+                        text=arguments.text or "",
+                        position=arguments.position,
+                        causation_id=causation_id,
+                    )
+                elif arguments.action == "update":
+                    task_list, event = await asyncio.to_thread(
+                        self.session_tasks.update,
+                        session,
+                        arguments.task_id or "",
+                        text=arguments.text,
+                        status=arguments.status,
+                        position=arguments.position,
+                        causation_id=causation_id,
+                    )
+                else:
+                    task_list, event = await asyncio.to_thread(
+                        self.session_tasks.remove,
+                        session,
+                        arguments.task_id or "",
+                        causation_id=causation_id,
+                    )
+                await self._publish_store_events((event,))
+                return ToolResult(
+                    status="completed",
+                    summary=f"task {arguments.action} completed",
+                    structured_data={"task_list": task_list.model_dump(mode="json")},
                 )
             if isinstance(arguments, MemorySearchArguments):
                 status: MemoryStatus | None = (

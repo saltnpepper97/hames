@@ -95,6 +95,7 @@ _PLAN_DENIED_TOOLS = {
     "memory_forget",
     "scar_record",
     "scar_control",
+    "task_update",
 }
 
 _MANUAL_CONFIRM_TOOLS = {
@@ -108,6 +109,7 @@ _MANUAL_CONFIRM_TOOLS = {
     "memory_forget",
     "scar_record",
     "scar_control",
+    "task_update",
 }
 
 

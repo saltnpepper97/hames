@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 19;
+pub const PROTOCOL_VERSION: u32 = 20;
 
 #[derive(Clone)]
 pub struct GatewayClient {
@@ -237,8 +237,64 @@ pub struct QueuedMessage {
     pub content: String,
     pub remember: bool,
     pub paste_spans: Vec<PasteSpan>,
+    #[serde(default = "default_turn_purpose")]
+    pub purpose: String,
     pub created_at: String,
     pub position: usize,
+}
+
+fn default_turn_purpose() -> String {
+    "turn".to_owned()
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PlanRevision {
+    pub id: String,
+    pub session_id: String,
+    pub revision: usize,
+    pub title: String,
+    pub markdown: String,
+    pub tasks: Vec<String>,
+    pub source_run_id: String,
+    pub supersedes_plan_id: Option<String>,
+    pub status: String,
+    pub strategy: Option<String>,
+    pub execution_run_id: Option<String>,
+    pub error: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PlanState {
+    pub session_id: String,
+    pub current: Option<PlanRevision>,
+    pub revisions: Vec<PlanRevision>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SessionTask {
+    pub id: String,
+    pub text: String,
+    pub status: String,
+    pub position: usize,
+    pub created_by: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SessionTaskList {
+    pub session_id: String,
+    pub title: String,
+    pub revision: usize,
+    pub items: Vec<SessionTask>,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct PlanExecutionAccepted {
+    pub plan: PlanState,
+    pub tasks: SessionTaskList,
+    pub run_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1068,7 +1124,102 @@ impl GatewayClient {
                     "remember": remember,
                     "paste_spans": paste_spans,
                     "send_now": send_now,
+                    "purpose": "turn",
                 }))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn current_plan(&self, session_id: &str) -> Result<PlanState> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/plans/current"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn send_plan_note(
+        &self,
+        session_id: &str,
+        content: &str,
+        paste_spans: &[PasteSpan],
+    ) -> Result<MessageAccepted> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/plans/current/notes"))
+                .json(&serde_json::json!({
+                    "content": content,
+                    "paste_spans": paste_spans,
+                }))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn execute_plan(
+        &self,
+        session_id: &str,
+        strategy: &str,
+    ) -> Result<PlanExecutionAccepted> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/plans/current/execute"))
+                .json(&serde_json::json!({"strategy": strategy}))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn tasks(&self, session_id: &str) -> Result<SessionTaskList> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/tasks"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn add_task(&self, session_id: &str, content: &str) -> Result<SessionTaskList> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/tasks"))
+                .json(&serde_json::json!({"text": content}))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn update_task(
+        &self,
+        session_id: &str,
+        task_id: &str,
+        status: &str,
+    ) -> Result<SessionTaskList> {
+        decode(
+            self.http
+                .patch(format!(
+                    "{}/v1/sessions/{session_id}/tasks/{task_id}",
+                    self.base_url
+                ))
+                .bearer_auth(&self.token)
+                .json(&serde_json::json!({"status": status}))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn delete_task(&self, session_id: &str, task_id: &str) -> Result<SessionTaskList> {
+        decode(
+            self.http
+                .delete(format!(
+                    "{}/v1/sessions/{session_id}/tasks/{task_id}",
+                    self.base_url
+                ))
+                .bearer_auth(&self.token)
                 .send()
                 .await?,
         )

@@ -21,6 +21,7 @@ class QueuedMessage(QueueModel):
     content: str
     remember: bool
     paste_spans: list[dict[str, int]]
+    purpose: str = "turn"
     created_at: str
     position: int
 
@@ -72,11 +73,14 @@ class MessageQueueStore:
         remember: bool,
         paste_spans: list[dict[str, int]],
         priority: bool = False,
+        purpose: str = "turn",
     ) -> QueueMutation:
         session = self.ledger.get_session(session_id)
         if session.status != "open":
             raise ValueError("session is not open")
         queue_id = new_id()
+        if purpose not in {"turn", "plan_note"}:
+            raise ValueError("queue purpose must be turn or plan_note")
         created_at = utc_now()
         with self.ledger.transaction_lock, self.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -100,7 +104,7 @@ class MessageQueueStore:
             position = 1 if priority else count + 1
             connection.execute(
                 "INSERT INTO session_queue(id, session_id, ordinal, content, remember, "
-                "paste_spans_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "paste_spans_json, created_at, purpose) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     queue_id,
                     session_id,
@@ -109,6 +113,7 @@ class MessageQueueStore:
                     int(remember),
                     json.dumps(paste_spans, separators=(",", ":"), sort_keys=True),
                     created_at,
+                    purpose,
                 ),
             )
             event = self.ledger.append_in_transaction(
@@ -122,6 +127,7 @@ class MessageQueueStore:
                     "content": content,
                     "remember": remember,
                     "paste_spans": paste_spans,
+                    "purpose": purpose,
                 },
                 correlation_id=queue_id,
             )
@@ -227,6 +233,7 @@ class MessageQueueStore:
             content=str(row["content"]),
             remember=bool(row["remember"]),
             paste_spans=list(json.loads(str(row["paste_spans_json"]))),
+            purpose=str(row["purpose"]),
             created_at=str(row["created_at"]),
             position=position,
         )

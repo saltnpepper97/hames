@@ -70,6 +70,7 @@ def _empty_paste_spans() -> list[PasteSpanPayload]:
 class MessagePayload(EventPayload):
     content: str
     remember: bool = False
+    purpose: Literal["turn", "plan_note", "plan_execution"] = "turn"
     paste_spans: list[PasteSpanPayload] = Field(default_factory=_empty_paste_spans, max_length=64)
 
 
@@ -85,6 +86,62 @@ class QueueRemovedPayload(EventPayload):
 
 class QueueStatePayload(EventPayload):
     paused: bool
+
+
+class PlanProposedPayload(EventPayload):
+    plan_id: str
+    revision: int = Field(ge=1)
+    title: str
+    markdown: str
+    tasks: list[str] = Field(default_factory=list)
+    source_run_id: str
+    supersedes_plan_id: str | None = None
+
+
+class PlanTransitionPayload(EventPayload):
+    plan_id: str
+    strategy: Literal["keep", "compact"] | None = None
+    execution_run_id: str | None = None
+    message: str = ""
+
+
+class PlanNotePayload(EventPayload):
+    plan_id: str | None = None
+    queue_ids: list[str] = Field(default_factory=list)
+    contents: list[str] = Field(default_factory=list)
+
+
+class TaskPayload(EventPayload):
+    id: str
+    text: str
+    status: Literal["pending", "in_progress", "completed", "blocked"]
+    position: int = Field(ge=0)
+    created_by: str
+
+
+def _empty_tasks() -> list[TaskPayload]:
+    return []
+
+
+class TasksReplacedPayload(EventPayload):
+    title: str
+    revision: int = Field(ge=1)
+    items: list[TaskPayload] = Field(default_factory=_empty_tasks)
+
+
+class TaskAddedPayload(EventPayload):
+    task: TaskPayload
+
+
+class TaskUpdatedPayload(EventPayload):
+    task_id: str
+    text: str | None = None
+    status: Literal["pending", "in_progress", "completed", "blocked"] | None = None
+    position: int | None = Field(default=None, ge=0)
+
+
+class TaskRemovedPayload(EventPayload):
+    task_id: str
 
 
 class CorrectionPayload(EventPayload):
@@ -156,13 +213,13 @@ class ContextCompiledPayload(EventPayload):
 
 class ContextCompactionStartedPayload(EventPayload):
     compaction_id: str
-    trigger: Literal["automatic", "manual"]
+    trigger: Literal["automatic", "manual", "plan"]
     preserve_recent_turns: int
 
 
 class ContextCompactionCompletedPayload(EventPayload):
     compaction_id: str
-    trigger: Literal["automatic", "manual"]
+    trigger: Literal["automatic", "manual", "plan"]
     summary: str
     cutoff_event_id: str
     cutoff_sequence: int
@@ -179,7 +236,7 @@ class ContextCompactionCompletedPayload(EventPayload):
 
 class ContextCompactionTerminalPayload(EventPayload):
     compaction_id: str
-    trigger: Literal["automatic", "manual"]
+    trigger: Literal["automatic", "manual", "plan"]
     message: str = ""
 
 
@@ -691,6 +748,18 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "queue.promoted": QueueRemovedPayload,
     "queue.paused": QueueStatePayload,
     "queue.resumed": QueueStatePayload,
+    "plan.proposed": PlanProposedPayload,
+    "plan.note.queued": PlanNotePayload,
+    "plan.note.applied": PlanNotePayload,
+    "plan.execution.requested": PlanTransitionPayload,
+    "plan.approved": PlanTransitionPayload,
+    "plan.execution.started": PlanTransitionPayload,
+    "plan.execution.completed": PlanTransitionPayload,
+    "plan.execution.failed": PlanTransitionPayload,
+    "tasks.replaced": TasksReplacedPayload,
+    "task.added": TaskAddedPayload,
+    "task.updated": TaskUpdatedPayload,
+    "task.removed": TaskRemovedPayload,
     "user.correction": CorrectionPayload,
     "assistant.message": AssistantOutputPayload,
     "assistant.reasoning": AssistantReasoningPayload,
