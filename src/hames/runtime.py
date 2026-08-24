@@ -33,6 +33,8 @@ from hames.evolution_runtime import MODEL_BEHAVIOR_REPAIR_LAYERS
 from hames.ledger import Event, Ledger, Session, new_id
 from hames.memory import MemoryStore, RetrievedMemory, retrieval_query_hash
 from hames.paths import HamesPaths
+from hames.plugin_runtime import PluginToolArguments
+from hames.plugins import is_plugin_tool
 from hames.policy import PolicyDecisionKind, PolicyGate, approval_request_hash
 from hames.providers import ModelRequest, Provider, ProviderError, StreamEvent, StreamEventKind
 from hames.providers.base import JSON_OBJECT, JsonValue
@@ -53,6 +55,7 @@ from hames.tools import (
 if TYPE_CHECKING:
     from hames.evolution_runtime import EvolutionManager
     from hames.memory_runtime import MemoryManager
+    from hames.plugin_runtime import PluginManager
     from hames.skill_runtime import SkillManager
 
 POLICY_SUMMARY = (
@@ -183,6 +186,7 @@ class RunManager:
         self.memory_manager: MemoryManager | None = None
         self.skill_manager: SkillManager | None = None
         self.evolution_manager: EvolutionManager | None = None
+        self.plugin_manager: PluginManager | None = None
         self._skill_catalogs: dict[str, list[SkillSummary]] = {}
         self._loaded_skills: dict[str, dict[str, SkillVersion]] = {}
         self._prune_scratch()
@@ -195,6 +199,9 @@ class RunManager:
 
     def attach_evolution_manager(self, manager: EvolutionManager) -> None:
         self.evolution_manager = manager
+
+    def attach_plugin_manager(self, manager: PluginManager) -> None:
+        self.plugin_manager = manager
 
     def guarded_scars_for_context(
         self, session: Session, history: list[Event]
@@ -329,6 +336,8 @@ class RunManager:
             await self.memory_manager.close()
         if self.skill_manager is not None:
             await self.skill_manager.close()
+        if self.plugin_manager is not None:
+            await self.plugin_manager.close()
         for provider in self.providers.values():
             await provider.aclose()
 
@@ -543,13 +552,18 @@ class RunManager:
             load_agent, self.paths.agents / session.agent_id / "AGENT.md"
         )
         history = await asyncio.to_thread(self.ledger.replay, session.id)
-        allowed_tools = permitted_tools(capsule, set(self.tools.names()))
+        plugin_names: set[str] = (
+            self.plugin_manager.names() if self.plugin_manager is not None else set()
+        )
+        allowed_tools = permitted_tools(capsule, set(self.tools.names()) | plugin_names)
         if (
             not capsule.metadata.delegation.allow
             or session.delegation_depth >= self.config.runtime.max_delegation_depth
         ):
             allowed_tools = frozenset(allowed_tools - {"spawn_agent"})
         definitions = self.tools.definitions(allowed_tools)
+        if self.plugin_manager is not None:
+            definitions = [*definitions, *self.plugin_manager.definitions(allowed_tools)]
         active_context_rules = await asyncio.to_thread(
             self.context_rules.active_matching,
             working_directory=session.working_directory,
@@ -903,7 +917,10 @@ class RunManager:
             correlation_id=run_id,
         )
         try:
-            arguments = self.tools.validate(invocation.name, invocation.arguments)
+            if is_plugin_tool(invocation.name):
+                arguments = PluginToolArguments.model_validate(invocation.arguments)
+            else:
+                arguments = self.tools.validate(invocation.name, invocation.arguments)
         except ValueError as exc:
             await self._persist_tool_result(
                 session, run_id, invocation, _tool_failure(str(exc)), requested.id
@@ -1010,6 +1027,38 @@ class RunManager:
             )
             result = await self._handle_skill_tool(
                 run_id, session, arguments, invocation.name, context, started.id, clock
+            )
+            await self._persist_tool_result(session, run_id, invocation, result, started.id)
+            return
+        if is_plugin_tool(invocation.name):
+            if self.plugin_manager is None:
+                await self._persist_tool_result(
+                    session,
+                    run_id,
+                    invocation,
+                    ToolResult(status="failed", summary="plugins are unavailable"),
+                    policy_decided.id,
+                )
+                return
+            started = await self._append(
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                event_type="tool.started",
+                payload={"tool_call_id": invocation.tool_call_id, "name": invocation.name},
+                causation_id=policy_decided.id,
+                correlation_id=run_id,
+            )
+            result = await clock.measure(
+                self.plugin_manager.execute_tool(
+                    invocation.name,
+                    invocation.arguments,
+                    session=session,
+                    context=context,
+                    allowed_tools=allowed_tools,
+                    run_id=run_id,
+                    append=self._append,
+                )
             )
             await self._persist_tool_result(session, run_id, invocation, result, started.id)
             return

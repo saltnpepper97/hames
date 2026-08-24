@@ -58,6 +58,9 @@ from hames.memory import (
 )
 from hames.memory_runtime import MemoryManager
 from hames.paths import HamesPaths
+from hames.plugin_protocol import PluginProtocolError
+from hames.plugin_runtime import PluginInspectView, PluginManager, PluginView
+from hames.plugin_sandbox import PluginSandboxError
 from hames.providers import Provider, ProviderError, ProviderModel
 from hames.providers.registry import configured_providers
 from hames.providers.scheduled import SerializedProvider
@@ -150,6 +153,10 @@ class SkillAuthorRequest(ApiModel):
     goal: str = Field(min_length=1, max_length=4000)
     scope: Literal["workspace", "agent"] = "workspace"
     target_skill_id: str | None = None
+
+
+class PluginPathRequest(ApiModel):
+    path: str = Field(min_length=1, max_length=1024)
 
 
 class SkillControlRequest(ApiModel):
@@ -280,6 +287,7 @@ class GatewayState:
     memory: MemoryManager
     skills: SkillManager
     evolution: EvolutionManager
+    plugins: PluginManager
     token: str
 
     @classmethod
@@ -332,9 +340,17 @@ class GatewayState:
             providers=selected_providers,
             skill_manager=skills,
         )
+        plugins = PluginManager(
+            paths=paths,
+            ledger=ledger,
+            config=config,
+            events=broker,
+            policy=runs.policy,
+        )
         runs.attach_memory_manager(memory)
         runs.attach_skill_manager(skills)
         runs.attach_evolution_manager(evolution)
+        runs.attach_plugin_manager(plugins)
         return cls(
             paths,
             config,
@@ -346,6 +362,7 @@ class GatewayState:
             memory,
             skills,
             evolution,
+            plugins,
             paths.read_gateway_token(),
         )
 
@@ -360,6 +377,7 @@ class GatewayState:
 def create_app(state: GatewayState) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
+        await state.plugins.start_enabled()
         yield
         await state.runs.close()
 
@@ -581,6 +599,62 @@ def create_app(state: GatewayState) -> FastAPI:
             raise ApiError(404, "agent_not_found", str(exc)) from exc
         except ValueError as exc:
             raise ApiError(409, "agent_retirement_rejected", str(exc)) from exc
+
+    @app.get("/v1/plugins", dependencies=auth, response_model=list[PluginView])
+    async def list_plugins() -> list[PluginView]:
+        return await asyncio.to_thread(state.plugins.list_plugins)
+
+    @app.get("/v1/plugins/{plugin_id}", dependencies=auth, response_model=PluginView)
+    async def get_plugin(plugin_id: str) -> PluginView:
+        try:
+            return await asyncio.to_thread(state.plugins.describe, plugin_id)
+        except KeyError as exc:
+            raise ApiError(404, "plugin_not_found", f"unknown plugin: {plugin_id}") from exc
+
+    @app.post("/v1/plugins/inspect", dependencies=auth, response_model=PluginInspectView)
+    async def inspect_plugin(request: PluginPathRequest) -> PluginInspectView:
+        try:
+            return await asyncio.to_thread(state.plugins.inspect, Path(request.path))
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            raise ApiError(400, "invalid_plugin", str(exc)) from exc
+
+    @app.post(
+        "/v1/plugins/install",
+        dependencies=auth,
+        response_model=PluginView,
+        status_code=201,
+    )
+    async def install_plugin(request: PluginPathRequest) -> PluginView:
+        try:
+            return await state.plugins.install(Path(request.path))
+        except FileExistsError as exc:
+            raise ApiError(409, "plugin_exists", str(exc)) from exc
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            raise ApiError(400, "invalid_plugin", str(exc)) from exc
+
+    @app.post("/v1/plugins/{plugin_id}/enable", dependencies=auth, response_model=PluginView)
+    async def enable_plugin(plugin_id: str) -> PluginView:
+        try:
+            return await state.plugins.enable(plugin_id)
+        except KeyError as exc:
+            raise ApiError(404, "plugin_not_found", f"unknown plugin: {plugin_id}") from exc
+        except (PluginSandboxError, PluginProtocolError, ValueError) as exc:
+            raise ApiError(409, "plugin_enable_failed", str(exc)) from exc
+
+    @app.post("/v1/plugins/{plugin_id}/disable", dependencies=auth, response_model=PluginView)
+    async def disable_plugin(plugin_id: str) -> PluginView:
+        try:
+            return await state.plugins.disable(plugin_id)
+        except KeyError as exc:
+            raise ApiError(404, "plugin_not_found", f"unknown plugin: {plugin_id}") from exc
+
+    @app.delete("/v1/plugins/{plugin_id}", dependencies=auth)
+    async def remove_plugin(plugin_id: str) -> dict[str, bool]:
+        try:
+            await state.plugins.remove(plugin_id)
+        except KeyError as exc:
+            raise ApiError(404, "plugin_not_found", f"unknown plugin: {plugin_id}") from exc
+        return {"removed": True}
 
     @app.get("/v1/sessions/{session_id}", dependencies=auth, response_model=Session)
     async def get_session(session_id: str) -> Session:

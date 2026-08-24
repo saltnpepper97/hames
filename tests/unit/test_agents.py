@@ -101,6 +101,28 @@ def test_read_only_and_tool_lists_only_restrict_authority(tmp_path: Path) -> Non
     }
 
 
+def test_plugin_tools_follow_capsule_authority(tmp_path: Path) -> None:
+    available = {"read_file", "list_dir", "shell", "project-stats.summary"}
+    read_only = tmp_path / "read-only.md"
+    read_only.write_text(
+        "---\nid: reviewer\nname: Reviewer\nauthority: read_only\n---\nReview.\n",
+        encoding="utf-8",
+    )
+    assert permitted_tools(load_agent(read_only), available) == {"read_file", "list_dir"}
+    denied = tmp_path / "denied.md"
+    denied.write_text(
+        "---\nid: coder\nname: Coder\ntools:\n  deny: [project-stats.summary]\n---\nCode.\n",
+        encoding="utf-8",
+    )
+    assert permitted_tools(load_agent(denied), available) == {"read_file", "list_dir", "shell"}
+    pinned = tmp_path / "pinned.md"
+    pinned.write_text(
+        "---\nid: stats\nname: Stats\ntools:\n  allow: [project-stats.summary]\n---\nStats.\n",
+        encoding="utf-8",
+    )
+    assert permitted_tools(load_agent(pinned), available) == {"project-stats.summary"}
+
+
 @dataclass
 class _Skill:
     slug: str

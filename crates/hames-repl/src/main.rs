@@ -44,6 +44,11 @@ enum Command {
         #[command(subcommand)]
         action: SkillAction,
     },
+    /// Inspect, install, and enable isolated plugins.
+    Plugin {
+        #[command(subcommand)]
+        action: PluginAction,
+    },
     /// Inspect durable events.
     Event {
         #[command(subcommand)]
@@ -164,6 +169,44 @@ enum SkillAction {
     },
 }
 
+#[derive(Clone, Debug, Subcommand)]
+enum PluginAction {
+    Inspect {
+        path: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    Install {
+        path: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    Show {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Enable {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Disable {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Remove {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum AgentAuthority {
     Standard,
@@ -259,6 +302,7 @@ async fn main() -> Result<()> {
         Some(Command::Session { action }) => run_session_command(action).await,
         Some(Command::Agent { action }) => run_agent_command(action).await,
         Some(Command::Skill { action }) => run_skill_command(action).await,
+        Some(Command::Plugin { action }) => run_plugin_command(action).await,
         Some(Command::Event { action }) => run_event_command(action).await,
         None => repl::run().await,
     }
@@ -459,6 +503,125 @@ async fn run_agent_command(action: AgentAction) -> Result<()> {
                 Ok(())
             }
         }
+    }
+}
+
+async fn run_plugin_command(action: PluginAction) -> Result<()> {
+    let (_, client) = connected_client().await?;
+    match action {
+        PluginAction::Inspect { path, json } => {
+            let inspected = client
+                .inspect_plugin(&path.canonicalize()?.display().to_string())
+                .await?;
+            if json {
+                print_json(&inspected)
+            } else {
+                println!(
+                    "{}  v{}  {}",
+                    inspected.id, inspected.version, inspected.fingerprint
+                );
+                if !inspected.permissions.is_empty() {
+                    println!("permissions: {}", inspected.permissions.join(", "));
+                }
+                Ok(())
+            }
+        }
+        PluginAction::Install { path, json } => {
+            let plugin = client
+                .install_plugin(&path.canonicalize()?.display().to_string())
+                .await?;
+            if json {
+                print_json(&plugin)
+            } else {
+                println!("installed {} v{} (disabled)", plugin.id, plugin.version);
+                Ok(())
+            }
+        }
+        PluginAction::List { json } => {
+            let plugins = client.plugins().await?;
+            if json {
+                print_json(&plugins)
+            } else {
+                if plugins.is_empty() {
+                    println!("no plugins installed");
+                    return Ok(());
+                }
+                for plugin in plugins {
+                    let state = if plugin.running {
+                        "running"
+                    } else if plugin.enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    };
+                    println!("{:<20} {:<10} {}", plugin.id, state, plugin.name);
+                }
+                Ok(())
+            }
+        }
+        PluginAction::Show { id, json } => {
+            let plugin = client.plugin(&id).await?;
+            if json {
+                print_json(&plugin)
+            } else {
+                print_plugin(&plugin);
+                Ok(())
+            }
+        }
+        PluginAction::Enable { id, json } => {
+            let plugin = client.enable_plugin(&id).await?;
+            if json {
+                print_json(&plugin)
+            } else {
+                println!("enabled {}", plugin.id);
+                if !plugin.warning.is_empty() {
+                    println!("warning: {}", plugin.warning);
+                }
+                Ok(())
+            }
+        }
+        PluginAction::Disable { id, json } => {
+            let plugin = client.disable_plugin(&id).await?;
+            if json {
+                print_json(&plugin)
+            } else {
+                println!("disabled {}", plugin.id);
+                Ok(())
+            }
+        }
+        PluginAction::Remove { id, json } => {
+            let result = client.remove_plugin(&id).await?;
+            if json {
+                print_json(&result)
+            } else {
+                println!("removed plugin {id}");
+                Ok(())
+            }
+        }
+    }
+}
+
+fn print_plugin(plugin: &api::Plugin) {
+    println!(
+        "{}  {}  v{}",
+        plugin.id,
+        if plugin.running {
+            "running"
+        } else if plugin.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        plugin.version
+    );
+    if !plugin.permissions.is_empty() {
+        println!("permissions: {}", plugin.permissions.join(", "));
+    }
+    if !plugin.tools.is_empty() {
+        println!("tools: {}", plugin.tools.join(", "));
+    }
+    if !plugin.warning.is_empty() {
+        println!("warning: {}", plugin.warning);
     }
 }
 

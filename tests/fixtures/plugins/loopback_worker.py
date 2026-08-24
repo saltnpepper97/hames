@@ -1,5 +1,8 @@
 """Stdio JSON worker used by protocol tests. Not imported into the gateway."""
 
+# pyright: reportUnknownVariableType=false, reportUnknownMemberType=false
+# pyright: reportUnknownArgumentType=false
+
 from __future__ import annotations
 
 import json

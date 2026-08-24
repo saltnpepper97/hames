@@ -111,6 +111,36 @@ pub struct AgentDetail {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Plugin {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub running: bool,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub fingerprint: String,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+    #[serde(default)]
+    pub tools: Vec<String>,
+    #[serde(default)]
+    pub warning: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct InspectedPlugin {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub fingerprint: String,
+    pub permissions: Vec<String>,
+    pub capabilities: Vec<String>,
+    pub entrypoint: String,
+    pub files: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Event {
     pub id: String,
     pub sequence: u64,
@@ -475,6 +505,11 @@ struct CreateAgent<'a> {
 }
 
 #[derive(Serialize)]
+struct PluginPath<'a> {
+    path: &'a str,
+}
+
+#[derive(Serialize)]
 struct SubmitCorrection<'a> {
     content: &'a str,
 }
@@ -625,6 +660,63 @@ impl GatewayClient {
         decode(
             self.http
                 .delete(format!("{}/v1/agents/{id}", self.base_url))
+                .bearer_auth(&self.token)
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn plugins(&self) -> Result<Vec<Plugin>> {
+        decode(self.get("/v1/plugins").send().await?).await
+    }
+
+    pub async fn plugin(&self, id: &str) -> Result<Plugin> {
+        decode(self.get(&format!("/v1/plugins/{id}")).send().await?).await
+    }
+
+    pub async fn inspect_plugin(&self, path: &str) -> Result<InspectedPlugin> {
+        decode(
+            self.post("/v1/plugins/inspect")
+                .json(&PluginPath { path })
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn install_plugin(&self, path: &str) -> Result<Plugin> {
+        decode(
+            self.post("/v1/plugins/install")
+                .json(&PluginPath { path })
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn enable_plugin(&self, id: &str) -> Result<Plugin> {
+        decode(
+            self.post(&format!("/v1/plugins/{id}/enable"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn disable_plugin(&self, id: &str) -> Result<Plugin> {
+        decode(
+            self.post(&format!("/v1/plugins/{id}/disable"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn remove_plugin(&self, id: &str) -> Result<Value> {
+        decode(
+            self.http
+                .delete(format!("{}/v1/plugins/{id}", self.base_url))
                 .bearer_auth(&self.token)
                 .send()
                 .await?,
