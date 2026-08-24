@@ -73,8 +73,8 @@ viewport. Their tracks support mouse clicks and dragging.
 - Only `model.requested` events belonging to the active foreground chat run may
   create a pending Thought; background memory and workflow model jobs remain out
   of the conversation transcript.
-- Centered modals use square borders. Trust and approval decisions use focused
-  modals. Approvals preserve the
+- Centered modals use square, neutral-gray borders; semantic accents stay within
+  their content. Trust and approval decisions use focused modals. Approvals preserve the
   gateway's allow-for-session, allow-once, and deny semantics.
 - Status, usage, events, inspection, context, memory, Skills, Scars, plugins,
   export, correction, and explicit memory capture are reachable from the palette

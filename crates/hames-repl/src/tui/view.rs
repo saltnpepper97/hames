@@ -22,6 +22,7 @@ const CORAL: Color = Color::Rgb(255, 139, 116);
 const GOLD: Color = Color::Rgb(240, 190, 92);
 const MUTED: Color = Color::Rgb(86, 94, 108);
 const INPUT: Color = Color::Rgb(156, 164, 178);
+const RULE: Color = Color::Rgb(49, 56, 69);
 const PANEL: Color = Color::Rgb(19, 23, 31);
 const PANEL_BRIGHT: Color = Color::Rgb(29, 35, 46);
 
@@ -230,7 +231,7 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             .end_symbol(None)
             .track_symbol(Some("░"))
             .thumb_symbol("█")
-            .track_style(Style::default().fg(Color::Rgb(49, 56, 69)))
+            .track_style(Style::default().fg(RULE))
             .thumb_style(Style::default().fg(INPUT));
         let mut state = ScrollbarState::new(lines.len())
             .position(scrollbar_position(start, lines.len(), height))
@@ -513,7 +514,7 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             action: HitAction::SelectSheet(offset),
         });
     }
-    let rule = Style::default().fg(Color::Rgb(49, 56, 69));
+    let rule = Style::default().fg(RULE);
     let title = (!command_tray).then(|| {
         Line::from(vec![
             Span::styled("─ ", rule),
@@ -624,7 +625,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             .end_symbol(None)
             .track_symbol(Some("░"))
             .thumb_symbol("█")
-            .track_style(Style::default().fg(Color::Rgb(49, 56, 69)))
+            .track_style(Style::default().fg(RULE))
             .thumb_style(Style::default().fg(INPUT));
         let mut state = ScrollbarState::new(lines.len())
             .position(scrollbar_position(start, lines.len(), available))
@@ -1003,11 +1004,7 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                     .title(format!(" {title} "))
                     .borders(Borders::ALL)
                     .border_type(BorderType::Plain)
-                    .border_style(Style::default().fg(match modal {
-                        Modal::Approval(_) => GOLD,
-                        Modal::Error(_) => CORAL,
-                        _ => MINT,
-                    }))
+                    .border_style(Style::default().fg(RULE))
                     .style(Style::default().bg(PANEL)),
             ),
         popup,
@@ -1315,7 +1312,7 @@ mod tests {
     use ratatui::style::Color;
 
     use super::{
-        GOLD, INPUT, MINT, MUTED, PANEL_BRIGHT, SKY, draw, format_elapsed, mode_color,
+        GOLD, INPUT, MINT, MUTED, PANEL_BRIGHT, RULE, SKY, draw, format_elapsed, mode_color,
         mode_outline, pasted_display, scrollbar_position, sheet_text_color, thought_label,
     };
     use crate::api::{PasteSpan, Session};
@@ -1611,6 +1608,8 @@ mod tests {
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer.cell((11, 9)).unwrap().symbol(), "┌");
         assert_eq!(buffer.cell((88, 9)).unwrap().symbol(), "┐");
+        assert_eq!(buffer.cell((11, 9)).unwrap().fg, RULE);
+        assert_ne!(buffer.cell((11, 9)).unwrap().fg, MINT);
     }
 
     #[test]

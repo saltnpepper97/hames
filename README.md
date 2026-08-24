@@ -131,6 +131,7 @@ and starts fresh. Bare `/resume` aliases the `/sessions` picker while
 and `/gateway` shows service health and active work. Every above-composer picker
 shares the palette's open top-and-bottom rules, with its name inset into the top
 rule. Centered dialogs use quiet, square corners rather than rounded popup frames.
+Their outlines use the same neutral gray rules instead of a green accent.
 
 The top-right header shows the durable session title beside the current activity
 instead of repeating model controls. The model can set or revise that title with
