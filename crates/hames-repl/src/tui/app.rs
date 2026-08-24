@@ -1394,11 +1394,19 @@ impl App {
         ) {
             return index;
         }
-        self.transcript.push(TranscriptItem::Activity {
+        let activity = TranscriptItem::Activity {
             run_id: run_id.to_owned(),
             rows: Vec::new(),
-        });
-        self.transcript.len() - 1
+        };
+        if let Some(index) = self.transcript.iter().position(
+            |item| matches!(item, TranscriptItem::Assistant { run_id: id, .. } if id == run_id),
+        ) {
+            self.transcript.insert(index, activity);
+            index
+        } else {
+            self.transcript.push(activity);
+            self.transcript.len() - 1
+        }
     }
 
     fn ensure_activity_row(
@@ -1827,6 +1835,39 @@ mod tests {
             item,
             TranscriptItem::Thought { run_id, .. } if run_id == "background-memory-job"
         )));
+    }
+
+    #[test]
+    fn late_tool_lifecycle_stays_before_the_streaming_answer() {
+        let run_id = "run-late-tool";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_transient(run_id, "response.text_delta", &json!({"text": "Answering"}));
+        app.ingest_durable(
+            event(
+                1,
+                "tool.completed",
+                run_id,
+                json!({
+                    "index": 0,
+                    "tool_call_id": "tool-1",
+                    "name": "shell",
+                    "summary": "compiled"
+                }),
+            ),
+            true,
+        );
+
+        let activity = app
+            .transcript
+            .iter()
+            .position(|item| matches!(item, TranscriptItem::Activity { .. }))
+            .unwrap();
+        let answer = app
+            .transcript
+            .iter()
+            .position(|item| matches!(item, TranscriptItem::Assistant { .. }))
+            .unwrap();
+        assert!(activity < answer);
     }
 
     #[test]
