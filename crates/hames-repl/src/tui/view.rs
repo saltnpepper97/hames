@@ -274,7 +274,6 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
             TranscriptItem::Thought {
                 content,
                 duration_seconds,
-                interrupted,
                 live,
                 collapsed,
                 ..
@@ -287,10 +286,6 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                         Span::styled(
                             thought_label(*duration_seconds),
                             Style::default().fg(LILAC).bold(),
-                        ),
-                        Span::styled(
-                            if *interrupted { " · interrupted" } else { "" },
-                            Style::default().fg(if *interrupted { GOLD } else { MUTED }),
                         ),
                         Span::styled(
                             if *collapsed { "  ▸" } else { "  ▾" },
@@ -1275,6 +1270,37 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("Thinking"));
         assert!(!rendered.contains("Working…"));
+    }
+
+    #[test]
+    fn interruption_status_stays_below_the_thought_heading() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::Thought {
+            run_id: "run-interrupted".to_owned(),
+            content: "Partial reasoning".to_owned(),
+            duration_seconds: 12.0,
+            interrupted: true,
+            live: false,
+            collapsed: false,
+        });
+        app.transcript.push(TranscriptItem::Status {
+            text: "Turn interrupted".to_owned(),
+            error: false,
+        });
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Thought (12s)"));
+        assert!(!rendered.contains("Thought (12s) · interrupted"));
+        assert!(rendered.contains("Turn interrupted"));
     }
 
     #[test]

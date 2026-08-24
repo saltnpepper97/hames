@@ -114,8 +114,8 @@ custom Hames palette and terminal-native colors.
 The bottom row keeps a right-aligned `[connected]` badge. While idle it shows the
 shortcut hints on the left; during work those hints become a compact animated
 gray rule with a restrained white sheen, elapsed time, and `Esc interrupt`.
-Interrupted reasoning settles as a completed `Thought` marked `interrupted` in
-the transcript.
+Interrupted reasoning settles as a completed `Thought`, followed by a separate
+`Turn interrupted` transcript status.
 
 Transcript text supports native mouse-drag selection inside the TUI. Releasing
 the mouse automatically copies the highlighted text through the terminal
