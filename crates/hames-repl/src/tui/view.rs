@@ -31,9 +31,6 @@ const RULE: Color = Color::Rgb(49, 56, 69);
 const DELETE_BG: Color = Color::Rgb(78, 31, 39);
 const PANEL: Color = Color::Rgb(19, 23, 31);
 const PANEL_BRIGHT: Color = Color::Rgb(29, 35, 46);
-const OPENING_ART: &str = include_str!("../../assets/welcome-ascii.txt");
-const ART_IDLE: Duration = Duration::from_secs(9);
-const ART_SWEEP: Duration = Duration::from_millis(4_500);
 const TEXT_IDLE: Duration = Duration::from_millis(350);
 const TEXT_SWEEP: Duration = Duration::from_millis(2_200);
 const ACTIVITY_IDLE: Duration = Duration::from_millis(3_500);
@@ -96,11 +93,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .split(area);
     render_header(frame, app, rows[0]);
     render_transcript(frame, app, rows[1], fx_delta);
-    if app.show_opening_art() && app.modal.is_none() && app.sheet.is_none() {
-        render_opening_art(frame, app, rows[1], fx_delta);
-    } else {
-        app.opening_art_effect = None;
-    }
 
     let footer = Layout::default()
         .direction(Direction::Vertical)
@@ -302,98 +294,6 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
             },
         });
     }
-}
-
-fn render_opening_art(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta: Duration) {
-    let max_width = usize::from(area.width.saturating_sub(8)).min(64);
-    let max_height = usize::from(area.height.saturating_sub(2)).min(20);
-    let grid = half_block_ascii(OPENING_ART, max_width, max_height);
-    let Some(width) = grid.first().map(|line| line.chars().count()) else {
-        return;
-    };
-    let height = grid.len();
-    let lines = grid
-        .into_iter()
-        .map(|row| Line::from(Span::styled(row, Style::default().fg(MUTED))))
-        .collect::<Vec<_>>();
-    let art_area = Rect::new(
-        area.x + area.width.saturating_sub(u16::try_from(width).unwrap_or(0)) / 2,
-        area.y
-            + area
-                .height
-                .saturating_sub(u16::try_from(height).unwrap_or(0))
-                / 2,
-        u16::try_from(width).unwrap_or(0),
-        u16::try_from(height).unwrap_or(0),
-    );
-    frame.render_widget(Paragraph::new(lines), art_area);
-    let effect = app
-        .opening_art_effect
-        .get_or_insert_with(|| traveling_sheen(ART_IDLE, ART_SWEEP));
-    frame.render_effect(effect, art_area, fx_delta);
-}
-
-fn half_block_ascii(source: &str, max_width: usize, max_height: usize) -> Vec<String> {
-    if max_width < 12 || max_height < 6 {
-        return Vec::new();
-    }
-    let source = source
-        .lines()
-        .map(|line| line.chars().collect::<Vec<_>>())
-        .collect::<Vec<_>>();
-    let source_height = source.len();
-    let source_width = source.iter().map(Vec::len).max().unwrap_or_default();
-    if source_width == 0 || source_height == 0 {
-        return Vec::new();
-    }
-
-    let mut width = max_width.min(source_width);
-    let mut pixel_height = source_height.saturating_mul(width) / source_width;
-    let max_pixel_height = max_height.saturating_mul(2);
-    if pixel_height > max_pixel_height {
-        pixel_height = max_pixel_height;
-        width = source_width.saturating_mul(pixel_height) / source_height;
-    }
-    width = width.max(1);
-    pixel_height = pixel_height.max(1);
-
-    let occupied = |x: usize, y: usize| {
-        let x_start = x.saturating_mul(source_width) / width;
-        let x_end = ((x + 1)
-            .saturating_mul(source_width)
-            .saturating_add(width - 1)
-            / width)
-            .min(source_width)
-            .max(x_start + 1);
-        let y_start = y.saturating_mul(source_height) / pixel_height;
-        let y_end = ((y + 1)
-            .saturating_mul(source_height)
-            .saturating_add(pixel_height - 1)
-            / pixel_height)
-            .min(source_height)
-            .max(y_start + 1);
-        source[y_start..y_end].iter().any(|row| {
-            row.get(x_start..x_end)
-                .is_some_and(|cells| cells.iter().any(|cell| !cell.is_whitespace()))
-        })
-    };
-
-    (0..pixel_height.div_ceil(2))
-        .map(|row| {
-            (0..width)
-                .map(|x| {
-                    let top = occupied(x, row * 2);
-                    let bottom = row * 2 + 1 < pixel_height && occupied(x, row * 2 + 1);
-                    match (top, bottom) {
-                        (true, true) => '█',
-                        (true, false) => '▀',
-                        (false, true) => '▄',
-                        (false, false) => ' ',
-                    }
-                })
-                .collect()
-        })
-        .collect()
 }
 
 fn traveling_sheen(idle: Duration, sweep: Duration) -> Effect {
@@ -2067,10 +1967,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        DELETE_BG, GOLD, INPUT, MINT, MUTED, OPENING_ART, PANEL, PANEL_BRIGHT, SKY, draw,
-        format_elapsed, half_block_ascii, line_text, memory_browser_body, mode_color, mode_outline,
-        pasted_display, scar_browser_body, scar_editor_body, scrollbar_position, sheet_text_color,
-        thought_label, transcript_lines, traveling_sheen,
+        DELETE_BG, GOLD, INPUT, MINT, MUTED, PANEL, PANEL_BRIGHT, SKY, draw, format_elapsed,
+        line_text, memory_browser_body, mode_color, mode_outline, pasted_display,
+        scar_browser_body, scar_editor_body, scrollbar_position, sheet_text_color, thought_label,
+        transcript_lines, traveling_sheen,
     };
     use crate::api::{MemoryRecord, PasteSpan, Scar, Session};
     use crate::tui::app::{
@@ -2093,67 +1993,6 @@ mod tests {
         let mut effect = traveling_sheen(Duration::ZERO, Duration::from_millis(1_000));
         effect.process(Duration::from_millis(500), &mut buffer, area);
         assert!((0..8).any(|x| matches!(buffer[(x, 0)].fg, Color::White | INPUT)));
-    }
-
-    #[test]
-    fn opening_art_is_bounded_and_preserves_half_block_detail() {
-        let art = half_block_ascii(OPENING_ART, 64, 20);
-        assert!(!art.is_empty());
-        assert!(art.len() <= 20);
-        assert!(art.iter().all(|row| row.chars().count() <= 64));
-        assert!(
-            art.iter()
-                .flat_map(|row| row.chars())
-                .filter(|character| *character != ' ')
-                .count()
-                > 40
-        );
-        assert!(art.iter().any(|row| row.contains(['▀', '▄', '█'])));
-    }
-
-    #[test]
-    fn opening_art_vanishes_from_the_frame_on_first_typed_character() {
-        let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new(session(), Vec::new(), true);
-
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let opening_marks = (2..26)
-            .flat_map(|y| (0..100).map(move |x| (x, y)))
-            .filter(|position| {
-                matches!(
-                    terminal
-                        .backend()
-                        .buffer()
-                        .cell(*position)
-                        .unwrap()
-                        .symbol(),
-                    "▀" | "▄" | "█"
-                )
-            })
-            .count();
-        assert!(opening_marks > 40);
-
-        app.handle_composer_key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('h'),
-            crossterm::event::KeyModifiers::NONE,
-        ));
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let remaining_marks = (2..26)
-            .flat_map(|y| (0..100).map(move |x| (x, y)))
-            .filter(|position| {
-                matches!(
-                    terminal
-                        .backend()
-                        .buffer()
-                        .cell(*position)
-                        .unwrap()
-                        .symbol(),
-                    "▀" | "▄" | "█"
-                )
-            })
-            .count();
-        assert_eq!(remaining_marks, 0);
     }
 
     #[test]
