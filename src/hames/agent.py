@@ -15,7 +15,11 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 AGENT_ID = re.compile(r"[a-z][a-z0-9-]{0,62}")
+_NON_SLUG = re.compile(r"[^a-z0-9]+")
 READ_ONLY_TOOLS = frozenset({"read_file", "list_dir", "skill_load"})
+DEFAULT_INSTRUCTIONS = (
+    "You are {name}. Follow the assigned task carefully and report evidence clearly."
+)
 
 
 class AgentTools(BaseModel):
@@ -132,23 +136,78 @@ class AgentRegistry:
             )
         return values
 
-    def create(self, agent_id: str, name: str, *, authority: str = "standard") -> AgentCapsule:
-        _validate_id(agent_id)
+    def taken_ids(self) -> set[str]:
+        if not self.root.exists():
+            return set()
+        return {
+            item.name
+            for item in self.root.iterdir()
+            if item.is_dir() and not item.name.startswith(".")
+        }
+
+    def create(
+        self,
+        name: str | None = None,
+        *,
+        authority: str = "standard",
+        source: str | None = None,
+    ) -> AgentCapsule:
         if authority not in {"standard", "read_only"}:
             raise ValueError("authority must be standard or read_only")
+        if name is not None and not name.strip():
+            name = None
+        source_id = None
+        source_name = None
+        source_authority = None
+        body = ""
+        tools = AgentTools()
+        delegation = DelegationPolicy()
+        if source is not None:
+            metadata_raw, body = _split_agent_markdown(source)
+            if "id" in metadata_raw and metadata_raw["id"] is not None:
+                source_id = str(metadata_raw["id"])
+            if "name" in metadata_raw and metadata_raw["name"] is not None:
+                source_name = str(metadata_raw["name"])
+            if "authority" in metadata_raw and metadata_raw["authority"] is not None:
+                source_authority = str(metadata_raw["authority"])
+            tools = AgentTools.model_validate(metadata_raw.get("tools") or {})
+            delegation = DelegationPolicy.model_validate(metadata_raw.get("delegation") or {})
+            extra = set(metadata_raw) - {
+                "id",
+                "name",
+                "authority",
+                "tools",
+                "delegation",
+                "provider",
+                "model",
+            }
+            if extra:
+                raise ValueError(f"unknown AGENT.md frontmatter key: {sorted(extra)[0]}")
+        chosen_authority = source_authority or authority
+        if chosen_authority not in {"standard", "read_only"}:
+            raise ValueError("authority must be standard or read_only")
+        agent_id, display = allocate_agent_identity(
+            name=name or source_name,
+            agent_id=source_id,
+            taken=self.taken_ids(),
+        )
         path = self.path_for(agent_id)
         if path.exists():
             raise FileExistsError(path)
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=False)
         path.parent.chmod(0o700)
-        raw = (
-            "---\n"
-            f"id: {agent_id}\n"
-            f"name: {name}\n"
-            f"authority: {authority}\n"
-            "---\n"
-            f"You are {name}. Follow the assigned task carefully and report evidence clearly.\n"
-        )
+        instructions = body.strip() or DEFAULT_INSTRUCTIONS.format(name=display)
+        payload: dict[str, object] = {
+            "id": agent_id,
+            "name": display,
+            "authority": chosen_authority,
+        }
+        if tools.allow or tools.deny:
+            payload["tools"] = tools.model_dump(mode="json", exclude_defaults=True)
+        if delegation.allow or delegation.allowed_agents:
+            payload["delegation"] = delegation.model_dump(mode="json", exclude_defaults=True)
+        raw = f"---\n{yaml.safe_dump(payload, sort_keys=False)}---\n{instructions}\n"
+        AgentMetadata.model_validate(payload)
         descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(raw)
@@ -174,16 +233,8 @@ class AgentRegistry:
 
 def load_agent(path: Path) -> AgentCapsule:
     raw = path.read_text(encoding="utf-8")
-    lines = raw.splitlines()
-    if not lines or lines[0] != "---":
-        raise ValueError(f"{path}: AGENT.md must begin with YAML frontmatter")
-    try:
-        boundary = lines[1:].index("---") + 1
-    except ValueError as exc:
-        raise ValueError(f"{path}: unterminated YAML frontmatter") from exc
-    metadata_raw = cast(object, yaml.safe_load("\n".join(lines[1:boundary])))
-    metadata = AgentMetadata.model_validate(metadata_raw or {})
-    instructions = "\n".join(lines[boundary + 1 :]).strip()
+    metadata_raw, instructions = _split_agent_markdown(raw, origin=str(path))
+    metadata = AgentMetadata.model_validate(metadata_raw)
     if not instructions:
         raise ValueError(f"{path}: agent instructions cannot be empty")
     return AgentCapsule(
@@ -192,6 +243,75 @@ def load_agent(path: Path) -> AgentCapsule:
         content_hash=hashlib.sha256(raw.encode()).hexdigest(),
         path=path,
     )
+
+
+def slugify_agent_name(name: str) -> str:
+    compact = _NON_SLUG.sub("-", name.strip().casefold()).strip("-")
+    if len(compact) > 63:
+        compact = compact[:63].rstrip("-")
+    return compact if AGENT_ID.fullmatch(compact) else ""
+
+
+def allocate_agent_identity(
+    *,
+    name: str | None,
+    agent_id: str | None,
+    taken: set[str],
+) -> tuple[str, str]:
+    if agent_id:
+        _validate_id(agent_id)
+        if agent_id in taken:
+            raise FileExistsError(agent_id)
+        display = name.strip() if name and name.strip() else agent_id
+        if len(display) > 80:
+            raise ValueError("agent name is too long")
+        return agent_id, display
+    if name and name.strip():
+        display = name.strip()
+        if len(display) > 80:
+            raise ValueError("agent name is too long")
+        base = slugify_agent_name(display) or _next_hames_id(taken)
+        return _unique_agent_id(base, taken), display
+    allocated = _next_hames_id(taken)
+    return allocated, allocated
+
+
+def _next_hames_id(taken: set[str]) -> str:
+    index = 1
+    while f"hames-{index}" in taken:
+        index += 1
+    return f"hames-{index}"
+
+
+def _unique_agent_id(base: str, taken: set[str]) -> str:
+    if base not in taken:
+        return base
+    suffix = 2
+    while True:
+        extra = f"-{suffix}"
+        stem = base[: max(1, 63 - len(extra))].rstrip("-") or "hames"
+        if AGENT_ID.fullmatch(stem) is None:
+            stem = "hames"
+        candidate = f"{stem}{extra}"
+        if candidate not in taken:
+            return candidate
+        suffix += 1
+
+
+def _split_agent_markdown(raw: str, *, origin: str = "AGENT.md") -> tuple[dict[str, object], str]:
+    lines = raw.splitlines()
+    if not lines or lines[0] != "---":
+        raise ValueError(f"{origin}: AGENT.md must begin with YAML frontmatter")
+    try:
+        boundary = lines[1:].index("---") + 1
+    except ValueError as exc:
+        raise ValueError(f"{origin}: unterminated YAML frontmatter") from exc
+    loaded: object = yaml.safe_load("\n".join(lines[1:boundary])) or {}
+    if not isinstance(loaded, dict):
+        raise ValueError(f"{origin}: AGENT.md frontmatter must be a mapping")
+    metadata = {str(key): value for key, value in cast(dict[object, object], loaded).items()}
+    instructions = "\n".join(lines[boundary + 1 :]).strip()
+    return metadata, instructions
 
 
 def _validate_id(agent_id: str) -> None:

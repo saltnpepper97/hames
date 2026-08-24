@@ -3,9 +3,10 @@ mod local;
 mod repl;
 
 use std::env;
+use std::fs;
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
@@ -69,11 +70,12 @@ enum AgentAction {
         json: bool,
     },
     Create {
-        id: String,
         #[arg(long)]
         name: Option<String>,
         #[arg(long, value_enum, default_value_t = AgentAuthority::Standard)]
         authority: AgentAuthority,
+        #[arg(long = "from")]
+        from_path: Option<PathBuf>,
         #[arg(long)]
         json: bool,
     },
@@ -408,23 +410,30 @@ async fn run_agent_command(action: AgentAction) -> Result<()> {
             }
         }
         AgentAction::Create {
-            id,
             name,
             authority,
+            from_path,
             json,
         } => {
-            let default_name = id.clone();
+            let source = from_path
+                .as_ref()
+                .map(fs::read_to_string)
+                .transpose()
+                .with_context(|| {
+                    format!(
+                        "failed to read {}",
+                        from_path
+                            .as_ref()
+                            .map_or(String::new(), |path| path.display().to_string())
+                    )
+                })?;
             let agent = client
-                .create_agent(
-                    &id,
-                    name.as_deref().unwrap_or(&default_name),
-                    authority.as_str(),
-                )
+                .create_agent(name.as_deref(), authority.as_str(), source.as_deref())
                 .await?;
             if json {
                 print_json(&agent)
             } else {
-                println!("created agent {}", agent.agent.id);
+                println!("created agent {} ({})", agent.agent.id, agent.agent.name);
                 Ok(())
             }
         }

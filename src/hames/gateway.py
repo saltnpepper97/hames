@@ -121,9 +121,9 @@ class ForkSessionRequest(ApiModel):
 
 
 class AgentCreateRequest(ApiModel):
-    id: str
-    name: str = Field(min_length=1, max_length=80)
+    name: str | None = Field(default=None, max_length=80)
     authority: Literal["standard", "read_only"] = "standard"
+    source: str | None = Field(default=None, max_length=65_536)
 
 
 class MemoryCaptureRequest(ApiModel):
@@ -539,7 +539,10 @@ def create_app(state: GatewayState) -> FastAPI:
     async def create_agent(request: AgentCreateRequest) -> AgentDetail:
         try:
             capsule = await asyncio.to_thread(
-                state.agents.create, request.id, request.name, authority=request.authority
+                state.agents.create,
+                request.name,
+                authority=request.authority,
+                source=request.source,
             )
             return _agent_detail(capsule)
         except FileExistsError as exc:

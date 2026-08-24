@@ -461,9 +461,11 @@ struct ForkSession<'a> {
 
 #[derive(Serialize)]
 struct CreateAgent<'a> {
-    id: &'a str,
-    name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<&'a str>,
     authority: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -585,13 +587,18 @@ impl GatewayClient {
         decode(self.get(&format!("/v1/agents/{id}")).send().await?).await
     }
 
-    pub async fn create_agent(&self, id: &str, name: &str, authority: &str) -> Result<AgentDetail> {
+    pub async fn create_agent(
+        &self,
+        name: Option<&str>,
+        authority: &str,
+        source: Option<&str>,
+    ) -> Result<AgentDetail> {
         decode(
             self.post("/v1/agents")
                 .json(&CreateAgent {
-                    id,
                     name,
                     authority,
+                    source,
                 })
                 .send()
                 .await?,

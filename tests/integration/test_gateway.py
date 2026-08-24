@@ -560,7 +560,7 @@ async def test_runtime_delegates_with_an_explicit_task_card(tmp_path: Path) -> N
         "Delegate only focused review tasks.\n",
         encoding="utf-8",
     )
-    state.agents.create("reviewer", "Reviewer", authority="read_only")
+    state.agents.create("Reviewer", authority="read_only")
     headers = {"Authorization": f"Bearer {state.token}"}
     transport = httpx.ASGITransport(app=create_app(state))
     try:
@@ -640,7 +640,7 @@ async def test_agent_selection_changes_only_future_turns(tmp_path: Path) -> None
         ],
     )
     state = GatewayState.create(paths, providers={"fake": fake})
-    state.agents.create("reviewer", "Reviewer", authority="read_only")
+    state.agents.create("Reviewer", authority="read_only")
     headers = {"Authorization": f"Bearer {state.token}"}
     transport = httpx.ASGITransport(app=create_app(state))
     try:
