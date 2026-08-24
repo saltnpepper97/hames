@@ -125,6 +125,60 @@ class QueueProvider:
         return None
 
 
+class GoalForegroundProvider:
+    profile_id = "fake"
+    adapter = "fake"
+    base_url = ""
+
+    def __init__(self) -> None:
+        self.requests: list[ModelRequest] = []
+        self.goal_started = asyncio.Event()
+        self.never_release = asyncio.Event()
+
+    async def list_models(self) -> list[ProviderModel]:
+        return [
+            ProviderModel(
+                id="fixture",
+                provider="fake",
+                status="available",
+                input_modalities=["text"],
+                output_modalities=["text"],
+            )
+        ]
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+        self.requests.append(request)
+        turn = len(self.requests)
+        yield StreamEvent(kind=StreamEventKind.STARTED)
+        if turn == 1:
+            self.goal_started.set()
+            await self.never_release.wait()
+        elif turn == 3:
+            yield StreamEvent(
+                kind=StreamEventKind.TOOL_CALL_DELTA,
+                tool_call=ToolCallDelta(
+                    index=0,
+                    provider_call_id="goal-achieved-after-foreground",
+                    name="goal_report",
+                    arguments_delta=json.dumps(
+                        {
+                            "status": "achieved",
+                            "summary": "Goal completed after foreground request",
+                            "evidence": ["foreground request was handled first"],
+                        }
+                    ),
+                ),
+            )
+            yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls")
+            return
+        else:
+            yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="done")
+        yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
+
+    async def aclose(self) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_gateway_queues_two_messages_and_promotes_them_fifo(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
@@ -1194,6 +1248,9 @@ async def test_goal_runs_multiple_bounded_steps_until_evidence_backed_achievemen
                 await client.get(f"/v1/sessions/{session_id}/goals/current", headers=headers)
             ).json() is None
             assert sum(event["type"] == "goal.step.started" for event in events) == 2
+            await _wait_for_event(
+                client, headers, session_id, "run.completed", occurrences=2
+            )
             assert len(fake.requests) == 4
             assert "Active autonomous goal" in fake.requests[0].system
     finally:
@@ -1239,6 +1296,63 @@ async def test_goal_stall_guard_blocks_three_equivalent_unreported_steps(tmp_pat
             assert current["repeated_no_progress"] == 3
             assert sum(event["type"] == "goal.step.started" for event in events) == 3
             assert len(fake.requests) == 3
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_foreground_request_yields_goal_then_goal_resumes_after_queue_settles(
+    tmp_path: Path,
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    provider = GoalForegroundProvider()
+    state = GatewayState.create(paths, providers={"fake": provider})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.post(
+                f"/v1/sessions/{session_id}/goals",
+                headers=headers,
+                json={"objective": "Complete after handling foreground work"},
+            )
+            await asyncio.wait_for(provider.goal_started.wait(), timeout=1)
+
+            foreground = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Answer this first"},
+            )
+            assert response_object(foreground)["disposition"] == "queued"
+            events = await _wait_for_event(client, headers, session_id, "goal.achieved")
+
+            event_types = [event["type"] for event in events]
+            yielded_index = event_types.index("goal.yielded")
+            foreground_index = next(
+                index
+                for index, event in enumerate(events)
+                if event["type"] == "user.message"
+                and JSON_OBJECT.validate_python(event["payload"])["content"]
+                == "Answer this first"
+            )
+            resumed_index = event_types.index("goal.resumed")
+            assert yielded_index < foreground_index < resumed_index
+            assert sum(event_type == "goal.step.started" for event_type in event_types) == 2
+            await _wait_for_event(
+                client, headers, session_id, "run.completed", occurrences=2
+            )
+            assert len(provider.requests) == 4
     finally:
         await state.runs.close()
 

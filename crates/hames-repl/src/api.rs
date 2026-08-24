@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 18;
+pub const PROTOCOL_VERSION: u32 = 19;
 
 #[derive(Clone)]
 pub struct GatewayClient {
@@ -193,6 +193,21 @@ pub struct MessageAccepted {
 #[derive(Clone, Debug, Deserialize)]
 pub struct CompactionAccepted {
     pub run_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Goal {
+    pub id: String,
+    pub session_id: String,
+    pub objective: String,
+    pub status: String,
+    pub step_count: usize,
+    pub current_run_id: Option<String>,
+    pub latest_summary: String,
+    pub latest_evidence: Vec<String>,
+    pub repeated_no_progress: usize,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1052,6 +1067,52 @@ impl GatewayClient {
     pub async fn compact_session(&self, session_id: &str) -> Result<CompactionAccepted> {
         decode(
             self.post(&format!("/v1/sessions/{session_id}/compact"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn start_goal(&self, session_id: &str, objective: &str) -> Result<Goal> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/goals"))
+                .json(&serde_json::json!({"objective": objective}))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn goals(&self, session_id: &str) -> Result<Vec<Goal>> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/goals"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn pause_goal(&self, session_id: &str) -> Result<Goal> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/goals/current/pause"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn resume_goal(&self, session_id: &str) -> Result<Goal> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/goals/current/resume"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn cancel_goal(&self, session_id: &str) -> Result<Goal> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/goals/current/cancel"))
                 .send()
                 .await?,
         )

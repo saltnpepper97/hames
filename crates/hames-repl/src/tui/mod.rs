@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use app::{
-    AgentEditField, AgentEditor, AgentEditorPage, App, HitAction, MemoryBrowser, MenuAction,
-    MenuOption, Modal, ScarBrowser, ScarEditField, ScarEditor, ScrollDrag, ScrollTarget, Sheet,
-    SheetKind, ThemeKind,
+    AgentEditField, AgentEditor, AgentEditorPage, App, GoalModal, HitAction, MemoryBrowser,
+    MenuAction, MenuOption, Modal, ScarBrowser, ScarEditField, ScarEditor, ScrollDrag,
+    ScrollTarget, Sheet, SheetKind, ThemeKind,
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -163,8 +163,15 @@ pub async fn run() -> Result<()> {
             break;
         }
     }
-    let queue_pause = client.pause_queue(&app.session.id).await;
-    let exit_cancellation = if let Some(run_id) = app.active_run.clone() {
+    let goal_continues = app.goal_keeps_session_alive();
+    let queue_pause = if goal_continues {
+        None
+    } else {
+        Some(client.pause_queue(&app.session.id).await)
+    };
+    let exit_cancellation = if app.active_run_is_goal_step() {
+        None
+    } else if let Some(run_id) = app.active_run.clone() {
         match client.cancel(&run_id).await {
             Ok(()) => {
                 app.active_run = None;
@@ -178,15 +185,17 @@ pub async fn run() -> Result<()> {
     };
     stream_task.abort();
     let session_id = app.session.id.clone();
-    let discard_empty = app.conversation_is_empty() && app.active_run.is_none();
+    let discard_empty =
+        app.conversation_is_empty() && app.active_run.is_none() && !app.goal_keeps_session_alive();
     drop(terminal);
     let exit_notice = session_exit_notice(&session_id, discard_empty);
-    let has_exit_notice =
-        queue_pause.is_err() || exit_cancellation.is_some() || exit_notice.is_some();
+    let has_exit_notice = queue_pause.as_ref().is_some_and(Result::is_err)
+        || exit_cancellation.is_some()
+        || exit_notice.is_some();
     if has_exit_notice {
         println!();
     }
-    if let Err(error) = queue_pause {
+    if let Some(Err(error)) = queue_pause {
         println!("Warning: queued work could not be paused: {error:#}");
     }
     if let Some(result) = exit_cancellation {
@@ -199,6 +208,9 @@ pub async fn run() -> Result<()> {
         client.close_session(&session_id).await?;
     } else if let Some(notice) = exit_notice {
         println!("{notice}");
+        if goal_continues {
+            println!("Goal continues in the gateway");
+        }
     }
     Ok(())
 }
@@ -365,10 +377,11 @@ async fn refresh_agents_sheet(client: &GatewayClient, app: &mut App) -> Result<(
 
 async fn load_app(client: &GatewayClient, session: Session) -> Result<App> {
     let agent_id = session.agent_id.clone();
-    let (events, trust, queue) = tokio::try_join!(
+    let (events, trust, queue, goals) = tokio::try_join!(
         client.history(&session.id),
         client.trust_status(&session.id),
-        client.queue_state(&session.id)
+        client.queue_state(&session.id),
+        client.goals(&session.id)
     )?;
     let agent = client.agent(&agent_id).await.ok();
     let mut app = App::new(session, events, trust.trusted);
@@ -376,6 +389,7 @@ async fn load_app(client: &GatewayClient, session: Session) -> Result<App> {
     app.workspace_name = workspace_name;
     app.git_ref = git_ref;
     app.set_queue(queue);
+    app.goal = goals.last().cloned();
     if let Some(agent) = agent {
         app.agent_name = agent.agent.name;
     }
@@ -418,6 +432,7 @@ enum Effect {
     TakeQueued(String),
     TakeLatestQueued,
     Cancel,
+    PauseGoal,
     Copy(String),
     Menu(MenuAction),
     DeleteSession(String),
@@ -521,6 +536,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         if app.active_run.is_some() {
+            if app.active_run_is_goal_step() {
+                app.notice = Some("Pausing autonomous goal…".to_owned());
+                return Some(Effect::PauseGoal);
+            }
             app.notice = Some("Cancelling current work…".to_owned());
             return Some(Effect::Cancel);
         }
@@ -541,6 +560,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                 return None;
             }
             if app.active_run.is_some() {
+                if app.active_run_is_goal_step() {
+                    app.notice = Some("Pausing autonomous goal…".to_owned());
+                    return Some(Effect::PauseGoal);
+                }
                 app.notice = Some("Interrupting current work…".to_owned());
                 return Some(Effect::Cancel);
             }
@@ -660,6 +683,53 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                     Some(Effect::ResolveApproval(choices - 1))
                 }
                 KeyCode::Enter => Some(Effect::ResolveApproval(approval.selected)),
+                _ => None,
+            }
+        }
+        Modal::Goal(goal_modal) => {
+            let status = goal_modal
+                .goal
+                .as_ref()
+                .map(|goal| goal.status.clone())
+                .unwrap_or_else(|| "none".to_owned());
+            let can_control = !matches!(status.as_str(), "none" | "achieved" | "cancelled");
+            match key.code {
+                KeyCode::Esc if goal_modal.confirm_cancel => {
+                    goal_modal.confirm_cancel = false;
+                    None
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    app.modal = None;
+                    None
+                }
+                KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down if can_control => {
+                    goal_modal.selected = usize::from(goal_modal.selected == 0);
+                    goal_modal.confirm_cancel = false;
+                    None
+                }
+                KeyCode::Char('p') if matches!(status.as_str(), "running" | "yielded") => {
+                    Some(Effect::Menu(MenuAction::PauseGoal))
+                }
+                KeyCode::Char('r')
+                    if matches!(status.as_str(), "paused" | "blocked" | "yielded") =>
+                {
+                    Some(Effect::Menu(MenuAction::ResumeGoal))
+                }
+                KeyCode::Enter if can_control && goal_modal.selected == 0 => {
+                    if matches!(status.as_str(), "running" | "yielded") {
+                        Some(Effect::Menu(MenuAction::PauseGoal))
+                    } else {
+                        Some(Effect::Menu(MenuAction::ResumeGoal))
+                    }
+                }
+                KeyCode::Enter if can_control => {
+                    if goal_modal.confirm_cancel {
+                        Some(Effect::Menu(MenuAction::CancelGoal))
+                    } else {
+                        goal_modal.confirm_cancel = true;
+                        None
+                    }
+                }
                 _ => None,
             }
         }
@@ -1311,6 +1381,16 @@ fn parse_command(value: &str) -> Option<MenuAction> {
             None => Some(MenuAction::OpenQueue),
         },
         "/compact" => Some(MenuAction::Compact),
+        "/goal" => {
+            let rest = parts.collect::<Vec<_>>();
+            match rest.as_slice() {
+                [] => Some(MenuAction::ShowGoal),
+                [command] if *command == "pause" => Some(MenuAction::PauseGoal),
+                [command] if *command == "resume" => Some(MenuAction::ResumeGoal),
+                [command] if *command == "cancel" => Some(MenuAction::CancelGoal),
+                _ => Some(MenuAction::StartGoal(rest.join(" "))),
+            }
+        }
         "/fork" => Some(MenuAction::ForkSession),
         "/model" | "/provider" => Some(MenuAction::OpenModels),
         "/effort" | "/reasoning" => parts
@@ -1457,6 +1537,18 @@ async fn apply_effect(
                 client.cancel(&run_id).await?;
             }
         }
+        Effect::PauseGoal => {
+            let goal = client.pause_goal(&app.session.id).await?;
+            app.goal = Some(goal.clone());
+            app.active_run = None;
+            app.run_started_at = None;
+            app.notice = Some("Goal paused · use /goal resume to continue".to_owned());
+            if let Some(Modal::Goal(modal)) = &mut app.modal {
+                modal.goal = Some(goal);
+                modal.selected = 0;
+                modal.confirm_cancel = false;
+            }
+        }
         Effect::Copy(text) => {
             copy_to_clipboard(&text)?;
             app.show_copy_notice(text.chars().count());
@@ -1591,6 +1683,9 @@ async fn apply_menu_action(
         }
         MenuAction::ClearSession => {
             app.notice = Some("Clearing this conversation…".to_owned());
+            if app.goal_keeps_session_alive() {
+                client.cancel_goal(&app.session.id).await?;
+            }
             let previous = app.session.clone();
             return Ok(Some(replace_session(client, paths, &previous).await?));
         }
@@ -1603,6 +1698,58 @@ async fn apply_menu_action(
             app.active_run = Some(accepted.run_id);
             app.run_started_at = Some(std::time::Instant::now());
             app.notice = Some("Compacting older conversation…".to_owned());
+        }
+        MenuAction::ShowGoal => {
+            app.modal = Some(Modal::Goal(GoalModal {
+                goal: app.goal.clone(),
+                selected: 0,
+                confirm_cancel: false,
+            }));
+            app.sheet = None;
+        }
+        MenuAction::StartGoal(objective) => {
+            let goal = client.start_goal(&app.session.id, &objective).await?;
+            app.active_run.clone_from(&goal.current_run_id);
+            app.run_started_at = goal.current_run_id.as_ref().map(|_| Instant::now());
+            app.goal = Some(goal);
+            app.sheet = None;
+            app.notice = Some("Autonomous goal started".to_owned());
+        }
+        MenuAction::PauseGoal => {
+            let goal = client.pause_goal(&app.session.id).await?;
+            app.active_run = None;
+            app.run_started_at = None;
+            app.goal = Some(goal.clone());
+            app.modal = Some(Modal::Goal(GoalModal {
+                goal: Some(goal),
+                selected: 0,
+                confirm_cancel: false,
+            }));
+            app.notice = Some("Goal paused".to_owned());
+        }
+        MenuAction::ResumeGoal => {
+            let goal = client.resume_goal(&app.session.id).await?;
+            app.active_run.clone_from(&goal.current_run_id);
+            app.run_started_at = goal.current_run_id.as_ref().map(|_| Instant::now());
+            app.goal = Some(goal.clone());
+            app.modal = Some(Modal::Goal(GoalModal {
+                goal: Some(goal),
+                selected: 0,
+                confirm_cancel: false,
+            }));
+            app.notice = Some("Goal resumed".to_owned());
+        }
+        MenuAction::CancelGoal => {
+            let goal = client.cancel_goal(&app.session.id).await?;
+            app.active_run = None;
+            app.run_started_at = None;
+            app.goal = Some(goal.clone());
+            app.modal = Some(Modal::Goal(GoalModal {
+                goal: Some(goal),
+                selected: 0,
+                confirm_cancel: false,
+            }));
+            app.notice = Some("Goal cancelled".to_owned());
         }
         MenuAction::ClearQueue => {
             let state = client.clear_queue(&app.session.id).await?;
@@ -1763,7 +1910,13 @@ async fn apply_menu_action(
         MenuAction::ShowSession => app.modal = Some(Modal::Session),
         MenuAction::Help => app.modal = Some(Modal::Help),
         MenuAction::CancelRun => {
-            if let Some(run_id) = app.active_run.clone() {
+            if app.active_run_is_goal_step() {
+                let goal = client.pause_goal(&app.session.id).await?;
+                app.active_run = None;
+                app.run_started_at = None;
+                app.goal = Some(goal);
+                app.notice = Some("Goal paused".to_owned());
+            } else if let Some(run_id) = app.active_run.clone() {
                 client.cancel(&run_id).await?;
                 app.notice = Some("Cancelling current work…".to_owned());
             } else {
@@ -2360,7 +2513,7 @@ mod tests {
         model_efforts, next_mode, parse_command, pointer_top, session_exit_notice,
         terminal_tab_title, workspace_identity,
     };
-    use crate::api::{MemoryRecord, ProviderModel, QueuedMessage, Scar, Session};
+    use crate::api::{Goal, MemoryRecord, ProviderModel, QueuedMessage, Scar, Session};
     use crate::tui::app::{
         AgentEditor, App, HitAction, HitRegion, MemoryBrowser, MenuAction, MenuOption, Modal,
         ScarBrowser, ScarEditField, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind,
@@ -2419,6 +2572,15 @@ mod tests {
         assert!(matches!(
             parse_command("/compact"),
             Some(MenuAction::Compact)
+        ));
+        assert!(matches!(parse_command("/goal"), Some(MenuAction::ShowGoal)));
+        assert!(matches!(
+            parse_command("/goal pause"),
+            Some(MenuAction::PauseGoal)
+        ));
+        assert!(matches!(
+            parse_command("/goal ship the release"),
+            Some(MenuAction::StartGoal(objective)) if objective == "ship the release"
         ));
         assert!(
             matches!(parse_command("/mode plan"), Some(MenuAction::SetMode(mode)) if mode == "plan")
@@ -2873,6 +3035,29 @@ mod tests {
         assert!(matches!(
             handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
             Some(Effect::Cancel)
+        ));
+    }
+
+    #[test]
+    fn escape_pauses_an_active_goal_step() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-goal".to_owned());
+        app.goal = Some(Goal {
+            id: "goal-1".to_owned(),
+            session_id: "session-1".to_owned(),
+            objective: "Finish the release".to_owned(),
+            status: "running".to_owned(),
+            step_count: 1,
+            current_run_id: Some("run-goal".to_owned()),
+            latest_summary: String::new(),
+            latest_evidence: Vec::new(),
+            repeated_no_progress: 0,
+            created_at: "2026-08-24T00:00:00Z".to_owned(),
+            updated_at: "2026-08-24T00:00:00Z".to_owned(),
+        });
+        assert!(matches!(
+            handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            Some(Effect::PauseGoal)
         ));
     }
 

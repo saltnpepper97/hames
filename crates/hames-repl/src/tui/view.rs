@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -264,6 +264,9 @@ fn render_queue(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 pub(super) fn current_activity(app: &App) -> &'static str {
     if app.active_run.is_none() {
         return "Ready";
+    }
+    if app.active_run_is_goal_step() {
+        return "Goal";
     }
     for item in app.transcript.iter().rev() {
         match item {
@@ -1140,6 +1143,15 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
             Span::styled("Esc", Style::default().fg(INPUT).bold()),
             Span::styled(" deny", Style::default().fg(MUTED)),
         ])
+    } else if matches!(app.modal, Some(Modal::Goal(_))) {
+        Line::from(vec![
+            Span::styled("  ←→", Style::default().fg(INPUT).bold()),
+            Span::styled(" choose · ", Style::default().fg(MUTED)),
+            Span::styled("Enter", Style::default().fg(INPUT).bold()),
+            Span::styled(" confirm · ", Style::default().fg(MUTED)),
+            Span::styled("Esc", Style::default().fg(INPUT).bold()),
+            Span::styled(" close", Style::default().fg(MUTED)),
+        ])
     } else if app.sheet.is_some() {
         sheet_shortcuts(app)
     } else if app.active_run.is_some() {
@@ -1258,8 +1270,13 @@ fn activity_bar(app: &App) -> Line<'static> {
     } else {
         "Enter queue · Alt+↑ now · ↑ edit"
     };
+    let escape_hint = if app.active_run_is_goal_step() {
+        "Esc pause"
+    } else {
+        "Esc interrupt"
+    };
     spans.push(Span::styled(
-        format!(" · {elapsed} · {queue_hint} · Esc interrupt"),
+        format!(" · {elapsed} · {queue_hint} · {escape_hint}"),
         Style::default().fg(MUTED),
     ));
     Line::from(spans)
@@ -1302,6 +1319,39 @@ fn format_elapsed(seconds: u64) -> String {
             seconds % 60
         ),
     }
+}
+
+fn goal_elapsed(created_at: &str) -> String {
+    let parse = |range: std::ops::Range<usize>| {
+        created_at
+            .get(range)
+            .and_then(|value| value.parse::<i64>().ok())
+    };
+    let Some((year, month, day, hour, minute, second)) = parse(0..4)
+        .zip(parse(5..7))
+        .zip(parse(8..10))
+        .zip(parse(11..13))
+        .zip(parse(14..16))
+        .zip(parse(17..19))
+        .map(|(((((year, month), day), hour), minute), second)| {
+            (year, month, day, hour, minute, second)
+        })
+    else {
+        return "—".to_owned();
+    };
+    let adjusted_year = year - i64::from(month <= 2);
+    let era = adjusted_year.div_euclid(400);
+    let year_of_era = adjusted_year - era * 400;
+    let shifted_month = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    let created = days * 86_400 + hour * 3_600 + minute * 60 + second;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    format_elapsed(now.saturating_sub(created.max(0) as u64))
 }
 
 fn format_token_count(tokens: u64) -> String {
@@ -1493,6 +1543,39 @@ fn render_approval_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     }
 }
 
+fn render_empty_goal_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let popup = centered(area, 68, 7);
+    let body = vec![
+        Line::from(Span::styled(
+            "No goal has been started in this session.",
+            Style::default().fg(INPUT),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Start one with ", Style::default().fg(MUTED)),
+            Span::styled("/goal <objective>", Style::default().fg(INPUT_LIGHT).bold()),
+        ]),
+    ];
+    app.modal_viewport = TranscriptViewport {
+        x: popup.x.saturating_add(1),
+        y: popup.y.saturating_add(1),
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+        lines: body.iter().map(line_text).collect(),
+    };
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(body).block(
+            Block::default()
+                .title(" Autonomous goal ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Plain)
+                .border_style(Style::default().fg(INPUT)),
+        ),
+        popup,
+    );
+}
+
 fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let Some(modal) = app.modal.clone() else {
         return;
@@ -1545,7 +1628,7 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 help_line("PgUp / wheel", "scroll transcript"),
                 help_line("Enter / Space", "expand or collapse a selected Thought"),
                 help_line(
-                    "/new /clear /resume /compact",
+                    "/new /clear /resume /compact /goal",
                     "session continuity and context",
                 ),
                 help_line("/model /agent /mode", "runtime controls"),
@@ -1599,6 +1682,86 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 );
             }
             ("Session continuity", lines, 78, 13)
+        }
+        Modal::Goal(goal_modal) => {
+            let Some(goal) = &goal_modal.goal else {
+                return render_empty_goal_modal(frame, app, area);
+            };
+            let elapsed = goal_elapsed(&goal.created_at);
+            let status_color = match goal.status.as_str() {
+                "blocked" => CORAL,
+                "achieved" => MINT,
+                "paused" | "yielded" => GOLD,
+                _ => INPUT_LIGHT,
+            };
+            let mut lines = vec![
+                detail_line("State", &goal.status),
+                detail_line("Elapsed", &elapsed),
+                detail_line("Steps", &goal.step_count.to_string()),
+                detail_line("Mode", &app.session.interaction_mode),
+                detail_line(
+                    "Model",
+                    &format!("{} / {}", app.session.provider, app.session.model),
+                ),
+                Line::from(""),
+                Line::from(Span::styled("Objective", Style::default().fg(MUTED))),
+                Line::from(Span::styled(
+                    goal.objective.clone(),
+                    Style::default().fg(Color::White),
+                )),
+            ];
+            if !goal.latest_summary.is_empty() {
+                lines.extend([
+                    Line::from(""),
+                    Line::from(Span::styled("Latest progress", Style::default().fg(MUTED))),
+                    Line::from(Span::styled(
+                        goal.latest_summary.clone(),
+                        Style::default().fg(INPUT_LIGHT),
+                    )),
+                ]);
+            }
+            if !goal.latest_evidence.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "Evidence",
+                    Style::default().fg(MUTED),
+                )));
+                for evidence in goal.latest_evidence.iter().take(3) {
+                    lines.push(Line::from(vec![
+                        Span::styled("• ", Style::default().fg(status_color)),
+                        Span::styled(evidence.clone(), Style::default().fg(INPUT)),
+                    ]));
+                }
+            }
+            if !matches!(goal.status.as_str(), "achieved" | "cancelled") {
+                lines.push(Line::from(""));
+                let primary = if matches!(goal.status.as_str(), "running" | "yielded") {
+                    "Pause"
+                } else {
+                    "Resume"
+                };
+                let primary_style = if goal_modal.selected == 0 {
+                    Style::default().fg(Color::White).bg(PANEL_BRIGHT).bold()
+                } else {
+                    Style::default().fg(INPUT)
+                };
+                let cancel_label = if goal_modal.confirm_cancel {
+                    "Press Enter again to cancel"
+                } else {
+                    "Cancel goal"
+                };
+                let cancel_style = if goal_modal.selected == 1 {
+                    Style::default().fg(CORAL_LIGHT).bg(PANEL_BRIGHT).bold()
+                } else {
+                    Style::default().fg(MUTED_LIGHT)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {primary}  "), primary_style),
+                    Span::raw("   "),
+                    Span::styled(format!("  {cancel_label}  "), cancel_style),
+                ]));
+            }
+            ("Autonomous goal", lines, 86, 22)
         }
         Modal::Memory(browser) => ("Memory", memory_browser_body(browser), 92, 23),
         Modal::Scars(browser) => ("Scars and evolution", scar_browser_body(browser), 94, 25),

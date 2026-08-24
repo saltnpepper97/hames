@@ -7,7 +7,7 @@ use tachyonfx::Effect;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::api::{Event, MemoryRecord, PasteSpan, QueueState, QueuedMessage, Scar, Session};
+use crate::api::{Event, Goal, MemoryRecord, PasteSpan, QueueState, QueuedMessage, Scar, Session};
 
 pub const LARGE_PASTE_LINES: usize = 4;
 pub const LARGE_PASTE_BYTES: usize = 400;
@@ -687,6 +687,7 @@ pub enum Modal {
     Approval(ApprovalModal),
     Help,
     Session,
+    Goal(GoalModal),
     Memory(MemoryBrowser),
     Scars(ScarBrowser),
     ScarEdit(ScarEditor),
@@ -697,12 +698,24 @@ pub enum Modal {
 }
 
 #[derive(Clone, Debug)]
+pub struct GoalModal {
+    pub goal: Option<Goal>,
+    pub selected: usize,
+    pub confirm_cancel: bool,
+}
+
+#[derive(Clone, Debug)]
 pub enum MenuAction {
     NewSession,
     ClearSession,
     OpenSessions,
     OpenQueue,
     Compact,
+    ShowGoal,
+    StartGoal(String),
+    PauseGoal,
+    ResumeGoal,
+    CancelGoal,
     ClearQueue,
     EditQueued(String),
     ForkSession,
@@ -930,6 +943,7 @@ pub struct App {
     pub history_draft: Option<String>,
     pub active_run: Option<String>,
     pub run_started_at: Option<Instant>,
+    pub goal: Option<Goal>,
     pub trusted: bool,
     pub modal: Option<Modal>,
     pub sheet: Option<Sheet>,
@@ -996,6 +1010,7 @@ impl App {
             history_draft: None,
             active_run: None,
             run_started_at: None,
+            goal: None,
             trusted,
             modal: (!trusted).then_some(Modal::Trust),
             sheet: None,
@@ -1119,10 +1134,25 @@ impl App {
     }
 
     pub fn conversation_is_empty(&self) -> bool {
-        !self
-            .transcript
-            .iter()
-            .any(|item| matches!(item, TranscriptItem::User { .. }))
+        self.goal.is_none()
+            && !self
+                .transcript
+                .iter()
+                .any(|item| matches!(item, TranscriptItem::User { .. }))
+    }
+
+    pub fn active_run_is_goal_step(&self) -> bool {
+        self.goal.as_ref().is_some_and(|goal| {
+            goal.status == "running"
+                && goal.current_run_id.as_deref() == self.active_run.as_deref()
+                && self.active_run.is_some()
+        })
+    }
+
+    pub fn goal_keeps_session_alive(&self) -> bool {
+        self.goal
+            .as_ref()
+            .is_some_and(|goal| !matches!(goal.status.as_str(), "achieved" | "cancelled"))
     }
 
     pub fn copy_notice(&self) -> Option<&str> {
@@ -1234,6 +1264,11 @@ impl App {
             option("/sessions", "resume recent work", MenuAction::OpenSessions),
             option("/queue", "inspect pending turns", MenuAction::OpenQueue),
             option("/compact", "summarize older context", MenuAction::Compact),
+            option(
+                "/goal",
+                "start or inspect autonomous goal work",
+                MenuAction::ShowGoal,
+            ),
             option("/fork", "branch this session", MenuAction::ForkSession),
             option(
                 "/model",
@@ -1485,6 +1520,99 @@ impl App {
         match event.event_type.as_str() {
             "session.title.changed" => {
                 self.session.title = Some(string(&event.payload, "title"));
+            }
+            "goal.created" => {
+                let objective = string(&event.payload, "objective");
+                self.goal = Some(Goal {
+                    id: string(&event.payload, "goal_id"),
+                    session_id: self.session.id.clone(),
+                    objective: objective.clone(),
+                    status: "running".to_owned(),
+                    step_count: 0,
+                    current_run_id: None,
+                    latest_summary: String::new(),
+                    latest_evidence: Vec::new(),
+                    repeated_no_progress: 0,
+                    created_at: event.created_at.clone(),
+                    updated_at: event.created_at.clone(),
+                });
+                self.transcript.push(TranscriptItem::Status {
+                    text: format!("Goal started · {objective}"),
+                    error: false,
+                });
+            }
+            "goal.step.started" => {
+                if let Some(goal) = &mut self.goal {
+                    goal.status = "running".to_owned();
+                    goal.step_count = event
+                        .payload
+                        .get("step")
+                        .and_then(Value::as_u64)
+                        .and_then(|value| usize::try_from(value).ok())
+                        .unwrap_or(goal.step_count + 1);
+                    goal.current_run_id = Some(string(&event.payload, "run_id"));
+                    goal.updated_at = event.created_at.clone();
+                    self.active_run.clone_from(&goal.current_run_id);
+                    self.run_started_at = Some(Instant::now());
+                }
+            }
+            "goal.progressed" => {
+                if let Some(goal) = &mut self.goal {
+                    goal.status = "running".to_owned();
+                    goal.latest_summary = string(&event.payload, "summary");
+                    goal.latest_evidence = event
+                        .payload
+                        .get("evidence")
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok())
+                        .unwrap_or_default();
+                    goal.repeated_no_progress = event
+                        .payload
+                        .get("repeated_no_progress")
+                        .and_then(Value::as_u64)
+                        .and_then(|value| usize::try_from(value).ok())
+                        .unwrap_or_default();
+                    goal.updated_at = event.created_at.clone();
+                }
+            }
+            "goal.yielded" | "goal.resumed" | "goal.paused" | "goal.achieved" | "goal.blocked"
+            | "goal.cancelled" => {
+                let status = event.event_type.trim_start_matches("goal.").to_owned();
+                let summary = string(&event.payload, "summary");
+                if let Some(goal) = &mut self.goal {
+                    goal.status.clone_from(&status);
+                    goal.current_run_id = None;
+                    if !summary.is_empty() {
+                        goal.latest_summary.clone_from(&summary);
+                    }
+                    if let Some(evidence) = event
+                        .payload
+                        .get("evidence")
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok())
+                    {
+                        goal.latest_evidence = evidence;
+                    }
+                    goal.updated_at = event.created_at.clone();
+                }
+                let label = match status.as_str() {
+                    "yielded" => "Goal yielded to foreground work",
+                    "resumed" => "Goal resumed",
+                    "paused" => "Goal paused",
+                    "achieved" => "Goal achieved",
+                    "blocked" => "Goal blocked",
+                    "cancelled" => "Goal cancelled",
+                    _ => "Goal updated",
+                };
+                let text = if summary.is_empty() {
+                    label.to_owned()
+                } else {
+                    format!("{label} · {summary}")
+                };
+                self.transcript.push(TranscriptItem::Status {
+                    text,
+                    error: status == "blocked",
+                });
             }
             "user.message" => {
                 self.collapse_completed_thoughts();
@@ -2782,6 +2910,51 @@ mod tests {
             content: "Hello".to_owned(),
         });
         assert!(!app.conversation_is_empty());
+    }
+
+    #[test]
+    fn durable_goal_events_rebuild_supervisor_state_and_keep_session_resumable() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_durable(
+            event(
+                1,
+                "goal.created",
+                "",
+                json!({"goal_id": "goal-1", "objective": "Finish the release"}),
+            ),
+            false,
+        );
+        app.ingest_durable(
+            event(
+                2,
+                "goal.step.started",
+                "run-goal",
+                json!({"goal_id": "goal-1", "run_id": "run-goal", "step": 2}),
+            ),
+            true,
+        );
+
+        assert!(!app.conversation_is_empty());
+        assert!(app.active_run_is_goal_step());
+        assert!(matches!(
+            app.goal.as_ref(),
+            Some(goal) if goal.objective == "Finish the release" && goal.step_count == 2
+        ));
+
+        app.ingest_durable(
+            event(
+                3,
+                "goal.paused",
+                "run-goal",
+                json!({"goal_id": "goal-1", "summary": "Waiting for review"}),
+            ),
+            true,
+        );
+        assert!(matches!(
+            app.goal.as_ref(),
+            Some(goal) if goal.status == "paused" && goal.latest_summary == "Waiting for review"
+        ));
+        assert!(app.goal_keeps_session_alive());
     }
 
     #[test]

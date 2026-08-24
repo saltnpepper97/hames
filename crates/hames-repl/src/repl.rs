@@ -12,7 +12,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::activity::{ActivityBoard, ActivityCategory};
 use crate::api::{
-    ContextInspection, Event, GatewayClient, LiveEnvelope, MemoryJob, MemoryRecord,
+    ContextInspection, Event, GatewayClient, Goal, LiveEnvelope, MemoryJob, MemoryRecord,
     PROTOCOL_VERSION, ProviderModel, ProviderProbe, ProviderProfile, RunInspection, Scar, Session,
     SkillJob, SkillSummary, SkillVersion,
 };
@@ -267,6 +267,14 @@ async fn handle_command(
         "/clear" => {
             *remember_next = false;
             let previous_id = session.id.clone();
+            if client
+                .goals(&previous_id)
+                .await?
+                .last()
+                .is_some_and(|goal| !matches!(goal.status.as_str(), "achieved" | "cancelled"))
+            {
+                client.cancel_goal(&previous_id).await?;
+            }
             let created = client.create_session_from(cwd, &previous_id).await?;
             if let Err(error) = client.close_session(&previous_id).await {
                 let _ = client.close_session(&created.id).await;
@@ -517,6 +525,22 @@ async fn handle_command(
                 style::success(&format!("Compacting context · run {}", accepted.run_id))
             );
         }
+        "/goal" => {
+            let argument = input.strip_prefix("/goal").unwrap_or("").trim();
+            let goal = match argument {
+                "" => client.goals(&session.id).await?.last().cloned(),
+                "pause" => Some(client.pause_goal(&session.id).await?),
+                "resume" => Some(client.resume_goal(&session.id).await?),
+                "cancel" => Some(client.cancel_goal(&session.id).await?),
+                objective => Some(client.start_goal(&session.id, objective).await?),
+            };
+            if let Some(goal) = goal {
+                print_goal(&goal);
+            } else {
+                println!("  {}", style::dim("No goal in this session"));
+                println!("  {}", style::dim("Start one with /goal <objective>"));
+            }
+        }
         "/usage" => print_usage(client, session).await?,
         "/inspect" => {
             let inspection = if let Some(run_id) = parts.get(1) {
@@ -658,7 +682,29 @@ async fn session_has_conversation(client: &GatewayClient, session_id: &str) -> R
         .history(session_id)
         .await?
         .iter()
-        .any(|event| event.event_type == "user.message"))
+        .any(|event| matches!(event.event_type.as_str(), "user.message" | "goal.created")))
+}
+
+fn print_goal(goal: &Goal) {
+    println!("{}", style::section("Autonomous goal"));
+    println!("{}", style::key_value("State", &goal.status));
+    println!(
+        "{}",
+        style::key_value("Steps", &goal.step_count.to_string())
+    );
+    println!("{}", style::key_value("Objective", &goal.objective));
+    if !goal.latest_summary.is_empty() {
+        println!("{}", style::key_value("Latest", &goal.latest_summary));
+    }
+    for evidence in &goal.latest_evidence {
+        println!("  • {evidence}");
+    }
+    if !matches!(goal.status.as_str(), "achieved" | "cancelled") {
+        println!(
+            "  {}",
+            style::dim("/goal pause · /goal resume · /goal cancel")
+        );
+    }
 }
 
 fn select_model(
@@ -2293,6 +2339,10 @@ fn print_help() {
         ("/model · /reasoning [level]", "Inspect model settings"),
         ("/status · /usage", "Inspect services and token usage"),
         ("/compact", "Compact older context with the active model"),
+        (
+            "/goal [objective|pause|resume|cancel]",
+            "Supervise durable autonomous work",
+        ),
         (
             "/inspect [run] · /context [event]",
             "Audit a run or context",
