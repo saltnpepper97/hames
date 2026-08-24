@@ -1,7 +1,7 @@
 # Runtime and policy boundary
 
 The Python runtime is the only component allowed to execute model-requested work.
-Clients send messages and decisions through protocol v10; provider adapters only
+Clients send messages and decisions through protocol v19; provider adapters only
 translate normalized messages and streams. Neither the Rust REPL nor a provider
 adapter directly reads files, writes files, or starts commands.
 
@@ -14,6 +14,9 @@ denials, and human denials become structured tool results so the model can expla
 or recover. Limit exhaustion and provider/runtime failures produce typed
 `run.failed` terminals. Cancellation kills an active shell process group before
 recording `run.cancelled`.
+
+Durable goals supervise a sequence of these independently bounded runs. They do
+not weaken or combine the per-run budgets. See [goals.md](goals.md).
 
 ## Workspaces and tools
 

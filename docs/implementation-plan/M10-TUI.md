@@ -83,6 +83,13 @@ does not jump the transcript or composer before the pointer moves.
 - `/compact` asks the gateway to summarize older conversation with the active
   session provider and model. Its live and completed states remain one collapsed,
   expandable transcript disclosure, and `/status` reports the latest compaction.
+- `/goal <objective>` starts durable gateway-supervised autonomous work, while
+  bare `/goal` opens a square supervisor view with state, elapsed time, steps,
+  latest progress and evidence, mode, provider, and model. Pause, resume, and
+  confirmed cancellation are available from the view or slash subcommands.
+  Foreground messages yield the goal and run first; `Esc` pauses an active goal
+  step. `/new` leaves the old session's goal running, `/clear` cancels it, and a
+  terminal exit leaves it under gateway ownership.
 - `/model` shows reachable configured providers only. Reasoning-capable model
   choice leads to a capability-specific second sheet: `on`/`off` for boolean
   reasoning or the advertised named effort scale. Both selections apply

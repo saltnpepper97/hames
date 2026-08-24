@@ -24,6 +24,11 @@ Execution mode is session-owned and gateway-enforced: `/mode manual` confirms
 state changes with allow-once/allow-for-session/deny choices, `/mode auto`
 confirms only dangerous work, and `/mode plan` permits inspection and tests
 without writes.
+Durable autonomous goals can span multiple independently bounded runs without
+losing foreground responsiveness. `/goal <objective>` starts one; explicit,
+evidence-backed `goal_report` results advance or complete it, and a deterministic
+three-step stall guard blocks repeated no-progress loops. Foreground chat yields
+the goal and runs first, while client exit leaves goal supervision in the gateway.
 Every provider request now passes through a deterministic, budgeted context
 compiler. Attributed manifests record selected, compacted, and omitted sources,
 while content-addressed request snapshots make the exact normalized input
@@ -129,6 +134,12 @@ shortcut hints on the left; during work those hints become a compact animated
 gray rule with a restrained white sheen, elapsed time, and `Esc interrupt`.
 Interrupted reasoning settles as a completed `Thought`, followed by a separate
 `Turn interrupted` transcript status.
+
+`/goal <objective>` starts durable autonomous work. Bare `/goal` opens its
+supervisor view; `/goal pause`, `/goal resume`, and `/goal cancel` provide direct
+controls. `Esc` pauses an active goal step, while ordinary runs retain
+`Esc interrupt`. Closing the TUI leaves a running goal with the gateway and prints
+the session resume handoff.
 
 Transcript and modal text support native mouse-drag selection inside the TUI.
 Releasing the mouse automatically copies the highlighted text through the
