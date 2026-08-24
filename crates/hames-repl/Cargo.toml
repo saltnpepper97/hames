@@ -20,6 +20,7 @@ reqwest.workspace = true
 rustyline.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tachyonfx.workspace = true
 tokio.workspace = true
 toml.workspace = true
 unicode-width.workspace = true

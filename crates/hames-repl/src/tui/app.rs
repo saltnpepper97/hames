@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
+use tachyonfx::Effect;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -738,13 +739,16 @@ pub struct App {
     pub seen_events: HashSet<String>,
     pub context_tokens: u64,
     pub context_window: u64,
-    pub tick: u64,
     pub hits: Vec<HitRegion>,
     pub should_quit: bool,
     pub focused_thought: Option<usize>,
     pub theme: ThemeKind,
     pub reopen_sessions_after_switch: bool,
     pub opening_art_visible: bool,
+    pub opening_art_effect: Option<Effect>,
+    pub activity_bar_effect: Option<Effect>,
+    pub transcript_sheen_effect: Option<Effect>,
+    pub fx_last_frame: Instant,
 }
 
 impl App {
@@ -775,13 +779,16 @@ impl App {
             seen_events: HashSet::new(),
             context_tokens: 0,
             context_window,
-            tick: 0,
             hits: Vec::new(),
             should_quit: false,
             focused_thought: None,
             theme: ThemeKind::Hames,
             reopen_sessions_after_switch: false,
             opening_art_visible: true,
+            opening_art_effect: None,
+            activity_bar_effect: None,
+            transcript_sheen_effect: None,
+            fx_last_frame: Instant::now(),
         };
         for event in events {
             app.ingest_durable(event, false);
@@ -803,6 +810,13 @@ impl App {
                 }
                 _ => false,
             })
+    }
+
+    pub fn take_effect_delta(&mut self) -> Duration {
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(self.fx_last_frame);
+        self.fx_last_frame = now;
+        elapsed.min(Duration::from_millis(250))
     }
 
     pub fn conversation_is_empty(&self) -> bool {

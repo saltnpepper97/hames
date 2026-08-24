@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::prelude::Stylize;
@@ -7,6 +9,7 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
     ScrollbarState,
 };
+use tachyonfx::{Effect, EffectRenderer, EffectTimer, Interpolation, fx};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -29,8 +32,12 @@ const DELETE_BG: Color = Color::Rgb(78, 31, 39);
 const PANEL: Color = Color::Rgb(19, 23, 31);
 const PANEL_BRIGHT: Color = Color::Rgb(29, 35, 46);
 const OPENING_ART: &str = include_str!("../../assets/welcome-ascii.txt");
-const ART_IDLE_TICKS: u64 = 150;
-const ART_SHINE_TICKS: u64 = 100;
+const ART_IDLE: Duration = Duration::from_secs(9);
+const ART_SWEEP: Duration = Duration::from_millis(4_500);
+const TEXT_IDLE: Duration = Duration::from_millis(350);
+const TEXT_SWEEP: Duration = Duration::from_millis(2_200);
+const ACTIVITY_IDLE: Duration = Duration::from_millis(3_500);
+const ACTIVITY_SWEEP: Duration = Duration::from_millis(1_600);
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     app.hits.clear();
@@ -64,6 +71,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         return;
     }
 
+    let fx_delta = app.take_effect_delta();
     let header_height = 2;
     let composer_width = area.width.saturating_sub(5).max(1);
     let composer_height = composer_rows(app, composer_width).clamp(1, 8) + 2;
@@ -87,9 +95,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         ])
         .split(area);
     render_header(frame, app, rows[0]);
-    render_transcript(frame, app, rows[1]);
+    render_transcript(frame, app, rows[1], fx_delta);
     if app.show_opening_art() && app.modal.is_none() && app.sheet.is_none() {
-        render_opening_art(frame, rows[1], app.tick);
+        render_opening_art(frame, app, rows[1], fx_delta);
+    } else {
+        app.opening_art_effect = None;
     }
 
     let footer = Layout::default()
@@ -114,7 +124,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         );
     }
     render_composer(frame, app, footer[2]);
-    render_status_bar(frame, app, footer[3]);
+    render_status_bar(frame, app, footer[3], fx_delta);
     render_modal(frame, app, area);
     apply_theme(frame, area, app.theme);
 }
@@ -197,9 +207,10 @@ fn current_activity(app: &App) -> &'static str {
 struct RenderLine<'a> {
     line: Line<'a>,
     thought: Option<usize>,
+    sheen: Option<(u16, u16)>,
 }
 
-fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta: Duration) {
     let width = usize::from(area.width.saturating_sub(3).max(20));
     let lines = transcript_lines(app, width);
     let height = usize::from(area.height);
@@ -227,6 +238,35 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         })
         .collect();
     frame.render_widget(Paragraph::new(visible), area);
+    let sheen_regions = lines[start..end]
+        .iter()
+        .enumerate()
+        .filter_map(|(row, item)| {
+            item.sheen.map(|(x, width)| {
+                Rect::new(
+                    area.x.saturating_add(x),
+                    area.y.saturating_add(u16::try_from(row).unwrap_or(0)),
+                    width.min(area.width.saturating_sub(x)),
+                    1,
+                )
+            })
+        })
+        .filter(|region| region.width > 0)
+        .collect::<Vec<_>>();
+    if sheen_regions.is_empty() {
+        app.transcript_sheen_effect = None;
+    } else {
+        let effect = app
+            .transcript_sheen_effect
+            .get_or_insert_with(|| traveling_sheen(TEXT_IDLE, TEXT_SWEEP));
+        for (index, region) in sheen_regions.into_iter().enumerate() {
+            frame.render_effect(
+                effect,
+                region,
+                if index == 0 { fx_delta } else { Duration::ZERO },
+            );
+        }
+    }
     for (offset, item) in lines[start..end].iter().enumerate() {
         if let Some(index) = item.thought {
             app.hits.push(HitRegion {
@@ -264,40 +304,17 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     }
 }
 
-fn render_opening_art(frame: &mut Frame<'_>, area: Rect, tick: u64) {
-    let max_width = usize::from(area.width.saturating_sub(8)).min(42);
+fn render_opening_art(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta: Duration) {
+    let max_width = usize::from(area.width.saturating_sub(8)).min(64);
     let max_height = usize::from(area.height.saturating_sub(2)).min(20);
-    let grid = sampled_ascii(OPENING_ART, max_width, max_height);
-    let Some(width) = grid.first().map(Vec::len) else {
+    let grid = half_block_ascii(OPENING_ART, max_width, max_height);
+    let Some(width) = grid.first().map(|line| line.chars().count()) else {
         return;
     };
     let height = grid.len();
-    let shine = opening_art_shine_position(tick, width, height);
     let lines = grid
         .into_iter()
-        .enumerate()
-        .map(|(y, row)| {
-            Line::from(
-                row.into_iter()
-                    .enumerate()
-                    .map(|(x, character)| {
-                        if character == ' ' {
-                            return Span::raw(" ");
-                        }
-                        let diagonal = isize::try_from(x + y / 3).unwrap_or(isize::MAX);
-                        let distance = shine.map(|position| diagonal.abs_diff(position));
-                        Span::styled(
-                            character.to_string(),
-                            Style::default().fg(match (distance, character) {
-                                (Some(0..=1), _) => INPUT,
-                                (_, '.') => RULE,
-                                _ => MUTED,
-                            }),
-                        )
-                    })
-                    .collect::<Vec<_>>(),
-            )
-        })
+        .map(|row| Line::from(Span::styled(row, Style::default().fg(MUTED))))
         .collect::<Vec<_>>();
     let art_area = Rect::new(
         area.x + area.width.saturating_sub(u16::try_from(width).unwrap_or(0)) / 2,
@@ -310,9 +327,13 @@ fn render_opening_art(frame: &mut Frame<'_>, area: Rect, tick: u64) {
         u16::try_from(height).unwrap_or(0),
     );
     frame.render_widget(Paragraph::new(lines), art_area);
+    let effect = app
+        .opening_art_effect
+        .get_or_insert_with(|| traveling_sheen(ART_IDLE, ART_SWEEP));
+    frame.render_effect(effect, art_area, fx_delta);
 }
 
-fn sampled_ascii(source: &str, max_width: usize, max_height: usize) -> Vec<Vec<char>> {
+fn half_block_ascii(source: &str, max_width: usize, max_height: usize) -> Vec<String> {
     if max_width < 12 || max_height < 6 {
         return Vec::new();
     }
@@ -327,45 +348,47 @@ fn sampled_ascii(source: &str, max_width: usize, max_height: usize) -> Vec<Vec<c
     }
 
     let mut width = max_width.min(source_width);
-    let mut height = source_height.saturating_mul(width) / source_width;
-    if height > max_height {
-        height = max_height;
-        width = source_width.saturating_mul(height) / source_height;
+    let mut pixel_height = source_height.saturating_mul(width) / source_width;
+    let max_pixel_height = max_height.saturating_mul(2);
+    if pixel_height > max_pixel_height {
+        pixel_height = max_pixel_height;
+        width = source_width.saturating_mul(pixel_height) / source_height;
     }
     width = width.max(1);
-    height = height.max(1);
+    pixel_height = pixel_height.max(1);
 
-    (0..height)
-        .map(|y| {
-            let y_start = y.saturating_mul(source_height) / height;
-            let y_end = ((y + 1)
-                .saturating_mul(source_height)
-                .saturating_add(height - 1)
-                / height)
-                .min(source_height)
-                .max(y_start + 1);
+    let occupied = |x: usize, y: usize| {
+        let x_start = x.saturating_mul(source_width) / width;
+        let x_end = ((x + 1)
+            .saturating_mul(source_width)
+            .saturating_add(width - 1)
+            / width)
+            .min(source_width)
+            .max(x_start + 1);
+        let y_start = y.saturating_mul(source_height) / pixel_height;
+        let y_end = ((y + 1)
+            .saturating_mul(source_height)
+            .saturating_add(pixel_height - 1)
+            / pixel_height)
+            .min(source_height)
+            .max(y_start + 1);
+        source[y_start..y_end].iter().any(|row| {
+            row.get(x_start..x_end)
+                .is_some_and(|cells| cells.iter().any(|cell| !cell.is_whitespace()))
+        })
+    };
+
+    (0..pixel_height.div_ceil(2))
+        .map(|row| {
             (0..width)
                 .map(|x| {
-                    let x_start = x.saturating_mul(source_width) / width;
-                    let x_end = ((x + 1)
-                        .saturating_mul(source_width)
-                        .saturating_add(width - 1)
-                        / width)
-                        .min(source_width)
-                        .max(x_start + 1);
-                    let mut occupied = 0usize;
-                    let mut total = 0usize;
-                    for row in &source[y_start..y_end] {
-                        if let Some(cells) = row.get(x_start..x_end) {
-                            total += cells.len();
-                            occupied += cells.iter().filter(|cell| !cell.is_whitespace()).count();
-                        }
-                    }
-                    match occupied.saturating_mul(100) / total.max(1) {
-                        66.. => '#',
-                        35..=65 => '+',
-                        13..=34 => '.',
-                        _ => ' ',
+                    let top = occupied(x, row * 2);
+                    let bottom = row * 2 + 1 < pixel_height && occupied(x, row * 2 + 1);
+                    match (top, bottom) {
+                        (true, true) => '█',
+                        (true, false) => '▀',
+                        (false, true) => '▄',
+                        (false, false) => ' ',
                     }
                 })
                 .collect()
@@ -373,21 +396,36 @@ fn sampled_ascii(source: &str, max_width: usize, max_height: usize) -> Vec<Vec<c
         .collect()
 }
 
-fn opening_art_shine_position(tick: u64, width: usize, height: usize) -> Option<isize> {
-    let cycle = ART_IDLE_TICKS + ART_SHINE_TICKS;
-    let phase = tick % cycle;
-    if phase < ART_IDLE_TICKS {
-        return None;
-    }
-    let travel = width.saturating_add(height / 3).saturating_add(8);
-    let progress = usize::try_from(phase - ART_IDLE_TICKS).unwrap_or_default();
-    Some(
-        isize::try_from(
-            progress.saturating_mul(travel) / usize::try_from(ART_SHINE_TICKS).unwrap_or(1),
-        )
-        .unwrap_or(isize::MAX)
-            - 4,
-    )
+fn traveling_sheen(idle: Duration, sweep: Duration) -> Effect {
+    let sweep_ms = u32::try_from(sweep.as_millis()).unwrap_or(u32::MAX);
+    let highlight = fx::effect_fn(
+        (),
+        EffectTimer::from_ms(sweep_ms, Interpolation::SineInOut),
+        |_, context, cells| {
+            let travel = f32::from(
+                context
+                    .area
+                    .width
+                    .saturating_add(context.area.height / 3)
+                    .saturating_add(8),
+            );
+            let center = context.alpha() * travel - 4.0;
+            for (position, cell) in cells {
+                if cell.symbol().trim().is_empty() {
+                    continue;
+                }
+                let coordinate = f32::from(position.x.saturating_sub(context.area.x))
+                    + f32::from(position.y.saturating_sub(context.area.y)) / 3.0;
+                let distance = (coordinate - center).abs();
+                if distance < 0.8 {
+                    cell.set_fg(Color::White);
+                } else if distance < 2.0 {
+                    cell.set_fg(INPUT);
+                }
+            }
+        },
+    );
+    fx::repeating(fx::sequence(&[fx::sleep(idle), highlight]))
 }
 
 fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
@@ -401,6 +439,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 lines.push(RenderLine {
                     line: Line::from(Span::styled("You", Style::default().fg(SKY).bold())),
                     thought: None,
+                    sheen: None,
                 });
                 let display = pasted_display(content, paste_spans);
                 push_wrapped(
@@ -421,7 +460,10 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
             } => {
                 let interactive = !(*interrupted && !*live && content.is_empty());
                 let label = if *live {
-                    sheen_line("◈ Thinking", app.tick, THOUGHT)
+                    Line::from(Span::styled(
+                        "◈ Thinking",
+                        Style::default().fg(THOUGHT).bold(),
+                    ))
                 } else {
                     let mut spans = vec![
                         Span::styled("◈ ", Style::default().fg(LILAC)),
@@ -445,6 +487,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                         label
                     },
                     thought: interactive.then_some(index),
+                    sheen: live.then_some((0, 10)),
                 });
                 if !*collapsed && !content.is_empty() {
                     push_wrapped(
@@ -458,12 +501,9 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
             }
             TranscriptItem::Assistant { content, live, .. } if !content.trim().is_empty() => {
                 lines.push(RenderLine {
-                    line: if *live {
-                        sheen_line("✦ Hames", app.tick, MINT)
-                    } else {
-                        Line::from(Span::styled("✦ Hames", Style::default().fg(MINT).bold()))
-                    },
+                    line: Line::from(Span::styled("✦ Hames", Style::default().fg(MINT).bold())),
                     thought: None,
+                    sheen: live.then_some((0, 7)),
                 });
                 push_wrapped(
                     &mut lines,
@@ -488,6 +528,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                                 ),
                             ]),
                             thought: None,
+                            sheen: None,
                         });
                     }
                     let glyph = match row.phase {
@@ -513,30 +554,22 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     let prefix = format!("  {glyph} {}  ", row.verb());
                     let body_width = width.saturating_sub(UnicodeWidthStr::width(prefix.as_str()));
                     let fitted = fit(&detail, body_width);
-                    let line = if matches!(
+                    let active = matches!(
                         row.phase,
                         ActivityPhase::Preparing | ActivityPhase::Checking | ActivityPhase::Running
-                    ) {
-                        let mut spans = vec![Span::styled(
-                            format!("  {glyph} "),
+                    );
+                    let line = Line::from(vec![
+                        Span::styled(
+                            format!("  {glyph} {}  ", row.verb()),
                             Style::default().fg(color),
-                        )];
-                        spans.extend(sheen_spans(row.verb(), app.tick, color));
-                        spans.push(Span::raw("  "));
-                        spans.push(Span::styled(fitted, Style::default().fg(MUTED)));
-                        Line::from(spans)
-                    } else {
-                        Line::from(vec![
-                            Span::styled(
-                                format!("  {glyph} {}  ", row.verb()),
-                                Style::default().fg(color),
-                            ),
-                            Span::styled(fitted, Style::default().fg(MUTED)),
-                        ])
-                    };
+                        ),
+                        Span::styled(fitted, Style::default().fg(MUTED)),
+                    ]);
                     lines.push(RenderLine {
                         line,
                         thought: None,
+                        sheen: active
+                            .then_some((4, u16::try_from(row.verb().width()).unwrap_or(0))),
                     });
                 }
             }
@@ -554,12 +587,14 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                         ),
                     ]),
                     thought: None,
+                    sheen: None,
                 });
             }
         }
         lines.push(RenderLine {
             line: Line::from(""),
             thought: None,
+            sheen: None,
         });
     }
     if lines.is_empty() {
@@ -570,6 +605,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     Style::default().fg(MUTED),
                 )),
                 thought: None,
+                sheen: None,
             },
             RenderLine {
                 line: Line::from(Span::styled(
@@ -577,6 +613,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     Style::default().fg(MUTED),
                 )),
                 thought: None,
+                sheen: None,
             },
         ]);
     }
@@ -896,7 +933,7 @@ fn scrollbar_position(top: usize, content_len: usize, viewport_len: usize) -> us
         / max_top
 }
 
-fn render_status_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta: Duration) {
     let left = if app.sheet.is_some() {
         sheet_shortcuts(app)
     } else if app.active_run.is_some() {
@@ -908,6 +945,18 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ))
     };
     frame.render_widget(Paragraph::new(left), area);
+    if app.sheet.is_none() && app.active_run.is_some() {
+        let effect = app
+            .activity_bar_effect
+            .get_or_insert_with(|| traveling_sheen(ACTIVITY_IDLE, ACTIVITY_SWEEP));
+        frame.render_effect(
+            effect,
+            Rect::new(area.x.saturating_add(2), area.y, 6.min(area.width), 1),
+            fx_delta,
+        );
+    } else {
+        app.activity_bar_effect = None;
+    }
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("[", Style::default().fg(MUTED)),
@@ -956,18 +1005,10 @@ fn sheet_shortcuts(app: &App) -> Line<'static> {
 }
 
 fn activity_bar(app: &App) -> Line<'static> {
-    const TRACK: [&str; 6] = ["━"; 6];
-    let shine = usize::try_from(app.tick / 8).unwrap_or(0) % TRACK.len();
-    let mut spans = vec![Span::raw("  ")];
-    for (index, segment) in TRACK.iter().enumerate() {
-        let distance = index.abs_diff(shine);
-        let color = match distance {
-            0 => Color::White,
-            1 => INPUT,
-            _ => MUTED,
-        };
-        spans.push(Span::styled(*segment, Style::default().fg(color)));
-    }
+    let mut spans = vec![
+        Span::raw("  "),
+        Span::styled("──────", Style::default().fg(MUTED)),
+    ];
     spans.push(Span::styled(
         format!("  {}", current_activity(app)),
         Style::default().fg(INPUT),
@@ -1796,6 +1837,7 @@ fn push_wrapped(
             lines.push(RenderLine {
                 line: Line::from(prefix.to_owned()),
                 thought: None,
+                sheen: None,
             });
             continue;
         }
@@ -1808,6 +1850,7 @@ fn push_wrapped(
                     Span::styled(part.to_owned(), style),
                 ]),
                 thought: None,
+                sheen: None,
             });
             remaining = rest.trim_start_matches(' ');
         }
@@ -1832,33 +1875,6 @@ fn split_width(value: &str, width: usize) -> (&str, &str) {
     }
     let split = last_space.filter(|index| *index > 0).unwrap_or(end.max(1));
     (&value[..split], &value[split..])
-}
-
-fn sheen_line(label: &str, tick: u64, color: Color) -> Line<'static> {
-    Line::from(sheen_spans(label, tick, color))
-}
-
-fn sheen_spans(label: &str, tick: u64, color: Color) -> Vec<Span<'static>> {
-    let chars: Vec<char> = label.chars().collect();
-    // Animation ticks arrive every 80 ms. Holding the highlight for four ticks
-    // keeps active work visible without making the transcript flicker.
-    let highlight = usize::try_from(tick / 2).unwrap_or(0) % chars.len().max(1);
-    chars
-        .into_iter()
-        .enumerate()
-        .map(|(index, character)| {
-            Span::styled(
-                character.to_string(),
-                Style::default()
-                    .fg(if index.abs_diff(highlight) <= 1 {
-                        Color::White
-                    } else {
-                        color
-                    })
-                    .add_modifier(Modifier::BOLD),
-            )
-        })
-        .collect()
 }
 
 fn thought_label(duration: f64) -> String {
@@ -2045,15 +2061,16 @@ mod tests {
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
     use ratatui::style::Color;
     use serde_json::json;
 
     use super::{
-        ART_IDLE_TICKS, ART_SHINE_TICKS, DELETE_BG, GOLD, INPUT, MINT, MUTED, OPENING_ART, PANEL,
-        PANEL_BRIGHT, SKY, draw, format_elapsed, line_text, memory_browser_body, mode_color,
-        mode_outline, opening_art_shine_position, pasted_display, sampled_ascii, scar_browser_body,
-        scar_editor_body, scrollbar_position, sheen_spans, sheet_text_color, thought_label,
-        transcript_lines,
+        DELETE_BG, GOLD, INPUT, MINT, MUTED, OPENING_ART, PANEL, PANEL_BRIGHT, SKY, draw,
+        format_elapsed, half_block_ascii, line_text, memory_browser_body, mode_color, mode_outline,
+        pasted_display, scar_browser_body, scar_editor_body, scrollbar_position, sheet_text_color,
+        thought_label, transcript_lines, traveling_sheen,
     };
     use crate::api::{MemoryRecord, PasteSpan, Scar, Session};
     use crate::tui::app::{
@@ -2070,37 +2087,28 @@ mod tests {
     }
 
     #[test]
-    fn active_sheen_moves_at_a_subdued_cadence() {
-        assert_eq!(
-            sheen_spans("Thinking", 0, INPUT),
-            sheen_spans("Thinking", 1, INPUT)
-        );
-        assert_ne!(
-            sheen_spans("Thinking", 1, INPUT),
-            sheen_spans("Thinking", 2, INPUT)
-        );
+    fn tachyon_sheen_crosses_non_blank_text() {
+        let area = Rect::new(0, 0, 8, 1);
+        let mut buffer = Buffer::with_lines(["Thinking"]);
+        let mut effect = traveling_sheen(Duration::ZERO, Duration::from_millis(1_000));
+        effect.process(Duration::from_millis(500), &mut buffer, area);
+        assert!((0..8).any(|x| matches!(buffer[(x, 0)].fg, Color::White | INPUT)));
     }
 
     #[test]
-    fn opening_art_is_bounded_and_has_a_long_shine_free_interval() {
-        let art = sampled_ascii(OPENING_ART, 42, 20);
+    fn opening_art_is_bounded_and_preserves_half_block_detail() {
+        let art = half_block_ascii(OPENING_ART, 64, 20);
         assert!(!art.is_empty());
         assert!(art.len() <= 20);
-        assert!(art.iter().all(|row| row.len() <= 42));
+        assert!(art.iter().all(|row| row.chars().count() <= 64));
         assert!(
             art.iter()
-                .flatten()
-                .filter(|character| **character != ' ')
+                .flat_map(|row| row.chars())
+                .filter(|character| *character != ' ')
                 .count()
                 > 40
         );
-        assert_eq!(opening_art_shine_position(0, 40, 20), None);
-        assert_eq!(opening_art_shine_position(ART_IDLE_TICKS - 1, 40, 20), None);
-        assert!(opening_art_shine_position(ART_IDLE_TICKS, 40, 20).is_some());
-        assert_eq!(
-            opening_art_shine_position(ART_IDLE_TICKS + ART_SHINE_TICKS, 40, 20),
-            None
-        );
+        assert!(art.iter().any(|row| row.contains(['▀', '▄', '█'])));
     }
 
     #[test]
@@ -2113,13 +2121,15 @@ mod tests {
         let opening_marks = (2..26)
             .flat_map(|y| (0..100).map(move |x| (x, y)))
             .filter(|position| {
-                terminal
-                    .backend()
-                    .buffer()
-                    .cell(*position)
-                    .unwrap()
-                    .symbol()
-                    == "+"
+                matches!(
+                    terminal
+                        .backend()
+                        .buffer()
+                        .cell(*position)
+                        .unwrap()
+                        .symbol(),
+                    "▀" | "▄" | "█"
+                )
             })
             .count();
         assert!(opening_marks > 40);
@@ -2132,13 +2142,15 @@ mod tests {
         let remaining_marks = (2..26)
             .flat_map(|y| (0..100).map(move |x| (x, y)))
             .filter(|position| {
-                terminal
-                    .backend()
-                    .buffer()
-                    .cell(*position)
-                    .unwrap()
-                    .symbol()
-                    == "+"
+                matches!(
+                    terminal
+                        .backend()
+                        .buffer()
+                        .cell(*position)
+                        .unwrap()
+                        .symbol(),
+                    "▀" | "▄" | "█"
+                )
             })
             .count();
         assert_eq!(remaining_marks, 0);
@@ -2319,14 +2331,13 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(rendered.contains("━━━━━━"));
+        assert!(rendered.contains("──────"));
         assert!(rendered.contains("Working · 12s · Esc interrupt"));
         assert!(rendered.contains("[connected]"));
         assert!(!rendered.contains("Shift+Tab mode"));
         let footer_y = terminal.size().unwrap().height - 1;
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer.cell((2, footer_y)).unwrap().fg, Color::White);
-        assert_eq!(buffer.cell((3, footer_y)).unwrap().fg, INPUT);
+        assert!((2..8).all(|x| buffer.cell((x, footer_y)).unwrap().fg == MUTED));
         assert_eq!(buffer.cell((4, footer_y)).unwrap().fg, MUTED);
     }
 

@@ -108,10 +108,7 @@ pub async fn run() -> Result<()> {
                 }
                 None
             }
-            _ = tokio::time::sleep(tick_delay) => {
-                app.tick = app.tick.wrapping_add(1);
-                None
-            }
+            _ = tokio::time::sleep(tick_delay) => None
         };
         dirty = true;
         let Some(effect) = effect else {
