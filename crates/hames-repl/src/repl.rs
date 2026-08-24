@@ -1558,7 +1558,7 @@ impl RenderedOutput {
         if text.is_empty() {
             return Ok(());
         }
-        let padded = indent_body(text, !self.body_started);
+        let padded = wrap_body(text, self.body_col, style::columns().max(16));
         let rendered = if dim {
             style::dim(&padded)
         } else {
@@ -1567,22 +1567,16 @@ impl RenderedOutput {
         print!("{rendered}");
         self.body_started = true;
         self.account_visible(&padded);
-        self.open_line = !text.ends_with('\n');
+        self.open_line = !padded.ends_with('\n');
         io::stdout().flush()?;
         Ok(())
     }
 
     fn account_visible(&mut self, visible: &str) {
-        let cols = style::columns().max(8);
         for ch in visible.chars() {
             if ch == '\n' {
                 self.distance = self.distance.saturating_add(1);
                 self.body_col = 0;
-                continue;
-            }
-            if self.body_col + 1 > cols {
-                self.distance = self.distance.saturating_add(1);
-                self.body_col = 1;
             } else {
                 self.body_col += 1;
             }
@@ -1601,7 +1595,10 @@ impl RenderedOutput {
     }
 
     fn push_reasoning(&mut self, text: &str) -> Result<()> {
-        if text.is_empty() {
+        if text.is_empty() || !self.answer.is_empty() {
+            return Ok(());
+        }
+        if matches!(self.current, Some(style::Badge::Hames)) {
             return Ok(());
         }
         self.open_badge(style::Badge::Thinking)?;
@@ -1642,33 +1639,50 @@ impl RenderedOutput {
     }
 
     fn reconcile_reasoning(&mut self, content: &str) -> Result<()> {
-        let suffix = content
-            .strip_prefix(&self.reasoning)
-            .unwrap_or(content)
-            .to_owned();
-        self.push_reasoning(&suffix)
+        if content.is_empty() || !self.answer.is_empty() {
+            return Ok(());
+        }
+        if let Some(suffix) = content.strip_prefix(&self.reasoning) {
+            return self.push_reasoning(suffix);
+        }
+        Ok(())
     }
 
     fn reconcile_answer(&mut self, content: &str) -> Result<()> {
-        let suffix = content
-            .strip_prefix(&self.answer)
-            .unwrap_or(content)
-            .to_owned();
-        self.push_answer(&suffix)
+        if content.is_empty() {
+            return Ok(());
+        }
+        if let Some(suffix) = content.strip_prefix(&self.answer) {
+            return self.push_answer(suffix);
+        }
+        Ok(())
     }
 }
 
-fn indent_body(text: &str, first: bool) -> String {
+fn wrap_body(text: &str, start_col: usize, cols: usize) -> String {
+    let width = cols.saturating_sub(1).max(24);
     let mut out = String::new();
-    if first {
-        out.push_str("  ");
-    }
-    let chars: Vec<char> = text.chars().collect();
-    for (index, ch) in chars.iter().enumerate() {
-        out.push(*ch);
-        if *ch == '\n' && index + 1 < chars.len() {
+    let mut col = start_col;
+    let mut at_line_start = start_col == 0;
+    for ch in text.chars() {
+        if at_line_start {
             out.push_str("  ");
+            col = 2;
+            at_line_start = false;
         }
+        if ch == '\n' {
+            out.push('\n');
+            at_line_start = true;
+            col = 0;
+            continue;
+        }
+        if col >= width {
+            out.push('\n');
+            out.push_str("  ");
+            col = 2;
+        }
+        out.push(ch);
+        col += 1;
     }
     out
 }
