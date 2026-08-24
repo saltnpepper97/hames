@@ -3,6 +3,7 @@ mod view;
 
 use std::env;
 use std::io::{self, Stdout};
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -23,7 +24,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::api::{GatewayClient, LiveEnvelope, PROTOCOL_VERSION, PasteSpan, Session};
-use crate::local::LocalPaths;
+use crate::local::{LocalPaths, write_private_export};
 use crate::repl::ensure_gateway;
 
 const RECENT_SESSION_SECONDS: u64 = 7 * 24 * 60 * 60;
@@ -327,7 +328,7 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             }
             _ => None,
         },
-        Modal::Help | Modal::Session | Modal::Error(_) => {
+        Modal::Help | Modal::Session | Modal::Error(_) | Modal::Info { .. } => {
             if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
                 app.modal = None;
             }
@@ -425,12 +426,41 @@ fn parse_command(value: &str) -> Option<MenuAction> {
         "/sessions" => Some(MenuAction::OpenSessions),
         "/fork" => Some(MenuAction::ForkSession),
         "/model" | "/provider" => Some(MenuAction::OpenModels),
+        "/effort" | "/reasoning" => parts
+            .next()
+            .map(|effort| MenuAction::SetEffort(effort.to_owned()))
+            .or(Some(MenuAction::OpenEfforts)),
         "/agent" => Some(MenuAction::OpenAgents),
         "/mode" => parts
             .next()
             .map(|mode| MenuAction::SetMode(mode.to_owned()))
             .or(Some(MenuAction::OpenModes)),
         "/session" => Some(MenuAction::ShowSession),
+        "/project" | "/trust" => match parts.next() {
+            Some("revoke") => Some(MenuAction::RevokeTrust),
+            _ => Some(MenuAction::Trust),
+        },
+        "/status" => Some(MenuAction::Status),
+        "/usage" => Some(MenuAction::Usage),
+        "/events" => Some(MenuAction::Events),
+        "/inspect" => Some(MenuAction::Inspect),
+        "/context" => Some(MenuAction::Context),
+        "/memory" => Some(MenuAction::Memory),
+        "/skills" => Some(MenuAction::Skills),
+        "/evolution" | "/scars" => Some(MenuAction::Scars),
+        "/plugins" => Some(MenuAction::Plugins),
+        "/export" => parts.next().map(|path| MenuAction::Export {
+            path: path.to_owned(),
+            format: parts.next().unwrap_or("markdown").to_owned(),
+        }),
+        "/remember" => {
+            let content = parts.collect::<Vec<_>>().join(" ");
+            (!content.is_empty()).then_some(MenuAction::CaptureMemory(content))
+        }
+        "/correct" => {
+            let content = parts.collect::<Vec<_>>().join(" ");
+            (!content.is_empty()).then_some(MenuAction::Correct(content))
+        }
         "/resume" => parts.next().map(|id| MenuAction::Resume(id.to_owned())),
         "/cancel" => Some(MenuAction::CancelRun),
         "/help" => Some(MenuAction::Help),
@@ -543,7 +573,11 @@ async fn apply_menu_action(
         MenuAction::OpenModels => {
             app.notice = Some("Loading provider models…".to_owned());
             let profiles = client.providers().await?;
-            let mut options = Vec::new();
+            let mut options = vec![MenuOption {
+                label: "Reasoning effort…".to_owned(),
+                detail: format!("currently {}", effort_label(&app.session.reasoning_effort)),
+                action: MenuAction::OpenEfforts,
+            }];
             for profile in profiles {
                 match client.probe_provider(&profile.id).await {
                     Ok(probe) if probe.reachable => {
@@ -583,6 +617,53 @@ async fn apply_menu_action(
                 selected: 0,
             });
         }
+        MenuAction::OpenEfforts => {
+            app.notice = Some("Loading reasoning efforts…".to_owned());
+            let profiles = client.providers().await?;
+            let profile = profiles
+                .into_iter()
+                .find(|profile| profile.id == app.session.provider)
+                .with_context(|| format!("provider {} is not configured", app.session.provider))?;
+            let mut efforts = profile.supported_reasoning_efforts;
+            if let Ok(probe) = client.probe_provider(&app.session.provider).await
+                && let Some(model) = probe
+                    .models
+                    .into_iter()
+                    .find(|model| model.id == app.session.model)
+            {
+                for effort in model.reasoning_efforts {
+                    if !efforts.contains(&effort) {
+                        efforts.push(effort);
+                    }
+                }
+            }
+            if !app.session.reasoning_effort.is_empty()
+                && !efforts.contains(&app.session.reasoning_effort)
+            {
+                efforts.push(app.session.reasoning_effort.clone());
+            }
+            if !efforts.iter().any(|effort| effort == "default") {
+                efforts.insert(0, "default".to_owned());
+            }
+            app.notice = None;
+            app.sheet = Some(Sheet {
+                kind: SheetKind::Efforts,
+                title: format!("Reasoning effort · {}", app.session.model),
+                options: efforts
+                    .into_iter()
+                    .map(|effort| MenuOption {
+                        label: effort.clone(),
+                        detail: if effort_label(&app.session.reasoning_effort) == effort {
+                            "current".to_owned()
+                        } else {
+                            "".to_owned()
+                        },
+                        action: MenuAction::SetEffort(effort),
+                    })
+                    .collect(),
+                selected: 0,
+            });
+        }
         MenuAction::OpenAgents => {
             app.notice = Some("Loading agents…".to_owned());
             let agents = client.agents().await?;
@@ -612,6 +693,200 @@ async fn apply_menu_action(
                 app.notice = Some("No active work to cancel".to_owned());
             }
         }
+        MenuAction::Status => {
+            let health = client.health().await?;
+            app.modal = Some(info(
+                "Gateway status",
+                vec![
+                    format!("Status       {}", health.status),
+                    format!("Core         {}", health.version),
+                    format!("Protocol     {}", health.protocol_version),
+                    format!(
+                        "Database     {}",
+                        if health.database_ready {
+                            "ready"
+                        } else {
+                            "not ready"
+                        }
+                    ),
+                    format!("Active runs  {}", health.active_runs),
+                    format!("Provider     {}", health.default_provider),
+                ],
+            ));
+        }
+        MenuAction::Usage => {
+            let usage = client.usage(&app.session.id).await?;
+            app.modal = Some(info(
+                "Session usage",
+                vec![
+                    format!("Estimated input  {}", usage.estimated_input_tokens),
+                    format!("Provider input   {}", usage.input_tokens),
+                    format!("Output           {}", usage.output_tokens),
+                    format!("Reasoning        {}", usage.reasoning_tokens),
+                    format!("Cached input     {}", usage.cached_input_tokens),
+                    format!("Model requests   {}", usage.model_requests),
+                ],
+            ));
+        }
+        MenuAction::Events => {
+            let events = client.events(&app.session.id).await?;
+            let lines = events
+                .into_iter()
+                .rev()
+                .take(18)
+                .map(|event| {
+                    format!(
+                        "{:>6}  {:<26}  {}",
+                        event.sequence,
+                        event.event_type,
+                        short_id(&event.id)
+                    )
+                })
+                .collect();
+            app.modal = Some(info("Recent durable events", lines));
+        }
+        MenuAction::Inspect => {
+            let run = client
+                .runs(&app.session.id)
+                .await?
+                .into_iter()
+                .next()
+                .context("this session has no runs to inspect")?;
+            let inspection = client.inspect_run(&run.run_id).await?;
+            let mut lines = vec![
+                format!("Run     {}", inspection.run_id),
+                format!("Status  {}", inspection.status),
+                format!(
+                    "Model requests  {} · tool calls  {}",
+                    inspection.model_requests, inspection.tool_calls
+                ),
+                String::new(),
+            ];
+            lines.extend(inspection.timeline.into_iter().rev().take(14).map(|item| {
+                format!(
+                    "{:>6}  {:<10}  {}",
+                    item.sequence,
+                    item.channel,
+                    item.summary.replace('\n', " ")
+                )
+            }));
+            app.modal = Some(info("Latest run", lines));
+        }
+        MenuAction::Context => {
+            let event = client
+                .events(&app.session.id)
+                .await?
+                .into_iter()
+                .rev()
+                .find(|event| event.event_type == "context.compiled")
+                .context("this session has no compiled context yet")?;
+            let context = client.inspect_context(&event.id).await?;
+            let manifest = context.manifest;
+            app.modal = Some(info(
+                "Latest context",
+                vec![
+                    format!("Model       {} / {}", manifest.provider, manifest.model),
+                    format!("Effort      {}", effort_label(&manifest.reasoning_effort)),
+                    format!(
+                        "Window      {} ({})",
+                        manifest.context_window_tokens, manifest.context_window_source
+                    ),
+                    format!("Input       {} estimated", manifest.estimated_input_tokens),
+                    format!("Selected    {} sources", manifest.selected_sources.len()),
+                    format!("Omitted     {} sources", manifest.omitted_sources.len()),
+                    format!("Request     {}", manifest.request_hash),
+                ],
+            ));
+        }
+        MenuAction::Memory => {
+            let memories = client.memories(&app.session.id, "active", "").await?;
+            let mut lines = vec![format!("{} active records", memories.len()), String::new()];
+            lines.extend(memories.into_iter().take(16).map(|memory| {
+                format!(
+                    "{:<12} {:<12} {}",
+                    memory.layer, memory.visibility, memory.summary
+                )
+            }));
+            app.modal = Some(info("Memory", lines));
+        }
+        MenuAction::Skills => {
+            let skills = client.skills(&app.session.id, "").await?;
+            let mut lines = vec![format!("{} catalog entries", skills.len()), String::new()];
+            lines.extend(
+                skills.into_iter().take(16).map(|skill| {
+                    format!("{:<10} v{:<3} {}", skill.status, skill.version, skill.name)
+                }),
+            );
+            app.modal = Some(info("Skills", lines));
+        }
+        MenuAction::Scars => {
+            let scars = client.scars(&app.session.id).await?;
+            let mut lines = vec![format!("{} visible Scars", scars.len()), String::new()];
+            lines.extend(
+                scars
+                    .into_iter()
+                    .take(16)
+                    .map(|scar| format!("{:<10} {:<8} {}", scar.status, scar.severity, scar.title)),
+            );
+            app.modal = Some(info("Scars and evolution", lines));
+        }
+        MenuAction::Plugins => {
+            let plugins = client.plugins().await?;
+            let mut lines = vec![
+                format!("{} installed plugins", plugins.len()),
+                String::new(),
+            ];
+            lines.extend(plugins.into_iter().take(16).map(|plugin| {
+                format!(
+                    "{:<10} {:<10} {}",
+                    if plugin.enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    },
+                    if plugin.running { "running" } else { "stopped" },
+                    plugin.name
+                )
+            }));
+            app.modal = Some(info("Plugins", lines));
+        }
+        MenuAction::Trust => {
+            let trust = client.trust_status(&app.session.id).await?;
+            app.modal = Some(info(
+                "Project and trust",
+                vec![
+                    format!("Workspace  {}", compact_home(&trust.path)),
+                    format!("Trusted    {}", trust.trusted),
+                    format!(
+                        "Grant      {}",
+                        trust.grant_id.unwrap_or_else(|| "—".to_owned())
+                    ),
+                    String::new(),
+                    "Use /trust revoke to remove this exact canonical grant.".to_owned(),
+                ],
+            ));
+        }
+        MenuAction::RevokeTrust => {
+            client.revoke_trust(&app.session.id).await?;
+            app.trusted = false;
+            app.modal = Some(Modal::Trust);
+        }
+        MenuAction::Export { path, format } => {
+            if !matches!(format.as_str(), "markdown" | "jsonl") {
+                bail!("export format must be markdown or jsonl");
+            }
+            let transcript = client.transcript(&app.session.id, &format).await?;
+            write_private_export(Path::new(&path), &transcript, false)?;
+            app.notice = Some(format!("Exported {format} transcript to {path}"));
+        }
+        MenuAction::CaptureMemory(content) => {
+            let job = client.capture_memory(&app.session.id, &content).await?;
+            app.notice = Some(format!("Memory capture queued · {}", job.id));
+        }
+        MenuAction::Correct(content) => {
+            let scar = client.submit_correction(&app.session.id, &content).await?;
+            app.notice = Some(format!("Correction recorded · {}", scar.title));
+        }
         MenuAction::Quit => app.should_quit = true,
         MenuAction::Resume(id) => return Ok(Some(client.session(&id).await?)),
         MenuAction::SetModel {
@@ -639,6 +914,21 @@ async fn apply_menu_action(
                 "plan" => "Plan mode · inspect and test without code writes".to_owned(),
                 _ => "Auto mode · ask only for dangerous actions".to_owned(),
             });
+        }
+        MenuAction::SetEffort(effort) => {
+            let effort = if effort == "default" { "" } else { &effort };
+            app.session = client
+                .update_session(
+                    &app.session.id,
+                    &app.session.provider,
+                    &app.session.model,
+                    effort,
+                )
+                .await?;
+            app.notice = Some(format!(
+                "Reasoning effort · {}",
+                effort_label(&app.session.reasoning_effort)
+            ));
         }
     }
     Ok(None)
@@ -815,6 +1105,17 @@ fn compact_home(value: &str) -> String {
         .unwrap_or_else(|| value.to_owned())
 }
 
+fn effort_label(value: &str) -> &str {
+    if value.is_empty() { "default" } else { value }
+}
+
+fn info(title: &str, lines: Vec<String>) -> Modal {
+    Modal::Info {
+        title: title.to_owned(),
+        lines,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{SseDecoder, parse_command};
@@ -842,6 +1143,13 @@ mod tests {
         assert!(
             matches!(parse_command("/resume abc"), Some(MenuAction::Resume(id)) if id == "abc")
         );
-        assert!(parse_command("/memory list").is_none());
+        assert!(matches!(
+            parse_command("/memory list"),
+            Some(MenuAction::Memory)
+        ));
+        assert!(matches!(
+            parse_command("/effort xhigh"),
+            Some(MenuAction::SetEffort(effort)) if effort == "xhigh"
+        ));
     }
 }

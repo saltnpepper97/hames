@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import os
+import pty
 import socket
+import struct
+import termios
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 
@@ -49,6 +53,29 @@ async def run_hames(environment: Mapping[str, str], *args: str) -> tuple[int, st
     )
     stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10)
     return process.returncode or 0, stdout.decode(), stderr.decode()
+
+
+async def wait_for_pty_text(output: bytearray, expected: bytes) -> None:
+    for _ in range(250):
+        if expected in output:
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"PTY output did not contain {expected!r}: {bytes(output)[-2000:]!r}")
+
+
+async def collect_pty(fd: int, output: bytearray, done: asyncio.Event) -> None:
+    os.set_blocking(fd, False)
+    while not done.is_set():
+        try:
+            chunk = os.read(fd, 65_536)
+        except BlockingIOError:
+            await asyncio.sleep(0.01)
+            continue
+        except OSError:
+            return
+        if not chunk:
+            return
+        output.extend(chunk)
 
 
 @pytest.mark.asyncio
@@ -217,6 +244,104 @@ async def test_rust_repl_through_gateway_and_ledger(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="Ratatui smoke test requires a PTY")
+async def test_ratatui_chat_through_gateway_and_terminal_cleanup(tmp_path: Path) -> None:
+    build = await asyncio.create_subprocess_exec(
+        "cargo",
+        "build",
+        "--quiet",
+        "--locked",
+        "--bin",
+        "hames",
+        cwd=REPOSITORY,
+    )
+    assert await build.wait() == 0
+    provider = FakeProvider(
+        [
+            StreamEvent(kind=StreamEventKind.STARTED, provider_request_id="tui-request"),
+            StreamEvent(kind=StreamEventKind.REASONING_DELTA, text="checked in tui"),
+            StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="hello from tui fake"),
+            StreamEvent(kind=StreamEventKind.USAGE, usage=Usage(input_tokens=3, output_tokens=4)),
+            StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+        ]
+    )
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": provider})
+    port = available_port()
+    server = uvicorn.Server(
+        uvicorn.Config(create_app(state), host="127.0.0.1", port=port, log_level="error")
+    )
+    server_task = asyncio.create_task(server.serve())
+    master, slave = pty.openpty()
+    done = asyncio.Event()
+    output = bytearray()
+    reader: asyncio.Task[None] | None = None
+    process: asyncio.subprocess.Process | None = None
+    try:
+        await wait_for_server(port)
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "HAMES_HOME": str(paths.root),
+                "HAMES_GATEWAY__PORT": str(port),
+                "HAMES_RUNTIME__DEFAULT_PROVIDER": "fake",
+                "HAMES_PROVIDERS__FAKE__ADAPTER": "llama_cpp",
+                "HAMES_PROVIDERS__FAKE__BASE_URL": "http://127.0.0.1:1/v1",
+                "HAMES_PROVIDERS__FAKE__MODEL": "fixture",
+            }
+        )
+        process = await asyncio.create_subprocess_exec(
+            REPOSITORY / "target/debug/hames",
+            "tui",
+            cwd=REPOSITORY,
+            env=environment,
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            start_new_session=True,
+        )
+        os.close(slave)
+        slave = -1
+        reader = asyncio.create_task(collect_pty(master, output, done))
+        await wait_for_pty_text(output, b"Trust this workspace")
+        os.write(master, b"t")
+        await wait_for_pty_text(output, b"Message Hames")
+        os.write(master, b"hello\r")
+        await wait_for_pty_text(output, b"hello from tui fake")
+        durable = []
+        for _ in range(250):
+            sessions = state.ledger.list_sessions()
+            if sessions:
+                durable = state.ledger.list_events(sessions[0].id)
+                if any(event.type == "run.completed" for event in durable):
+                    break
+            await asyncio.sleep(0.02)
+        assert any(event.type == "assistant.reasoning" for event in durable)
+        assert any(event.type == "run.completed" for event in durable)
+        os.write(master, b"\x11")
+        assert await asyncio.wait_for(process.wait(), timeout=5) == 0
+        await wait_for_pty_text(output, b"Session saved")
+        assert b"use /resume" in output
+        assert b"\x1b[?1049h" in output
+        assert b"\x1b[?1049l" in output
+        assert provider.requests[0].messages[-1].content == "hello"
+    finally:
+        done.set()
+        if process is not None and process.returncode is None:
+            process.terminate()
+            await process.wait()
+        if reader is not None:
+            await reader
+        os.close(master)
+        if slave >= 0:
+            os.close(slave)
+        server.should_exit = True
+        await server_task
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
 async def test_repl_preserves_tool_preparation_through_completion(tmp_path: Path) -> None:
     build = await asyncio.create_subprocess_exec(
         "cargo",
@@ -360,9 +485,7 @@ async def test_repl_resolves_tilde_through_home_approval(
                         index=0,
                         provider_call_id="home-read-1",
                         name="read_file",
-                        arguments_delta=json.dumps(
-                            {"workspace": "home", "path": "~/.zshrc"}
-                        ),
+                        arguments_delta=json.dumps({"workspace": "home", "path": "~/.zshrc"}),
                     ),
                 ),
                 StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),

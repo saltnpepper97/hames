@@ -3,7 +3,9 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::prelude::Stylize;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 use unicode_width::UnicodeWidthStr;
 
 use super::app::{
@@ -46,17 +48,16 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         return;
     }
 
-    let compact_header = area.width < 88 || area.height < 16;
-    let header_height = if compact_header { 2 } else { 3 };
-    let composer_width = area.width.saturating_sub(2).max(1);
-    let composer_height = composer_rows(app, composer_width).clamp(1, 5) + 2;
+    let header_height = 2;
+    let composer_width = area.width.saturating_sub(3).max(1);
+    let composer_height = composer_rows(app, composer_width).clamp(1, 8) + 2;
     let notice_height = u16::from(app.notice.is_some());
     let sheet_height = app
         .sheet
         .as_ref()
         .map(|sheet| (sheet.options.len() as u16 + 2).clamp(3, 9))
         .unwrap_or(0);
-    let bottom = composer_height + notice_height + sheet_height;
+    let bottom = composer_height + notice_height + sheet_height + 1;
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -65,7 +66,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             Constraint::Length(bottom),
         ])
         .split(area);
-    render_header(frame, app, rows[0], compact_header);
+    render_header(frame, app, rows[0]);
     render_transcript(frame, app, rows[1]);
 
     let footer = Layout::default()
@@ -74,6 +75,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             Constraint::Length(sheet_height),
             Constraint::Length(notice_height),
             Constraint::Length(composer_height),
+            Constraint::Length(1),
         ])
         .split(rows[2]);
     if sheet_height > 0 {
@@ -89,10 +91,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         );
     }
     render_composer(frame, app, footer[2]);
+    render_status_bar(frame, app, footer[3]);
     render_modal(frame, app, area);
 }
 
-fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect, compact: bool) {
+fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let mode = app.session.interaction_mode.to_uppercase();
     let run = if app.active_run.is_some() {
         "RUNNING"
@@ -104,49 +107,43 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect, compact: bool
     } else {
         &app.session.reasoning_effort
     };
-    let first = Line::from(vec![
+    let left = Line::from(vec![
         Span::styled(" ◈ Hames", Style::default().fg(MINT).bold()),
-        Span::styled("  ", Style::default()),
+        Span::styled(
+            format!(" · {}", app.session.agent_id),
+            Style::default().fg(MUTED),
+        ),
+    ]);
+    let runtime = Line::from(vec![
         Span::styled(
             format!("{} / {}", app.session.provider, app.session.model),
             Style::default().fg(Color::White),
         ),
-        Span::styled(format!(" · {reasoning}"), Style::default().fg(MUTED)),
-        Span::styled(format!("   {mode}"), Style::default().fg(LILAC).bold()),
+        Span::styled(format!(" ({reasoning})"), Style::default().fg(MUTED)),
         Span::styled(
-            format!(" · {run}"),
-            Style::default().fg(if run == "RUNNING" { GOLD } else { MINT }),
+            format!("   {mode}"),
+            Style::default()
+                .fg(mode_color(&app.session.interaction_mode))
+                .bold(),
         ),
-    ]);
-    let mut lines = vec![first];
-    if !compact {
-        let short = short_id(&app.session.id);
-        let context = app
-            .context_tokens
-            .saturating_mul(100)
-            .checked_div(app.context_window)
-            .map(|percent| format!("context {percent}%"))
-            .unwrap_or_else(|| "context —".to_owned());
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("   {}", app.session.agent_id),
-                Style::default().fg(SKY),
-            ),
-            Span::styled(
-                format!(" · {}", compact_home(&app.session.working_directory)),
-                Style::default().fg(MUTED),
-            ),
-            Span::styled(format!(" · {short}"), Style::default().fg(MUTED)),
-            Span::styled(format!(" · {context}"), Style::default().fg(MUTED)),
-        ]));
-    }
+        Span::styled(
+            format!(" · {run}  "),
+            Style::default().fg(if run == "RUNNING" { GOLD } else { SKY }),
+        ),
+    ])
+    .right_aligned();
+    let block = Block::default()
+        .borders(Borders::BOTTOM)
+        .border_style(Style::default().fg(Color::Rgb(54, 63, 78)));
+    frame.render_widget(Paragraph::new(left).block(block.clone()), area);
     frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::BOTTOM)
-                .border_style(Style::default().fg(Color::Rgb(54, 63, 78))),
+        Paragraph::new(runtime),
+        Rect::new(
+            area.x + 20.min(area.width),
+            area.y,
+            area.width.saturating_sub(20),
+            1,
         ),
-        area,
     );
     app.hits.push(HitRegion {
         x: area.x.saturating_add(area.width.saturating_sub(24)),
@@ -157,9 +154,9 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect, compact: bool
     });
     app.hits.push(HitRegion {
         x: area.x,
-        y: area.y.saturating_add(1),
+        y: area.y,
         width: area.width,
-        height: u16::from(!compact),
+        height: 1,
         action: HitAction::ShowSession,
     });
 }
@@ -192,24 +189,18 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             });
         }
     }
-    if start > 0 || end < lines.len() {
-        let ratio = if lines.is_empty() {
-            0
-        } else {
-            (start * height.saturating_sub(1)) / lines.len()
-        };
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                "▐",
-                Style::default().fg(Color::Rgb(63, 73, 89)),
-            )),
-            Rect::new(
-                area.right().saturating_sub(1),
-                area.y + u16::try_from(ratio).unwrap_or(0),
-                1,
-                1,
-            ),
-        );
+    if lines.len() > height {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(Some("│"))
+            .thumb_symbol("┃")
+            .track_style(Style::default().fg(Color::Rgb(49, 56, 69)))
+            .thumb_style(Style::default().fg(LILAC));
+        let mut state = ScrollbarState::new(lines.len())
+            .position(start)
+            .viewport_content_length(height);
+        frame.render_stateful_widget(scrollbar, area, &mut state);
     }
 }
 
@@ -461,16 +452,37 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 }
 
 fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let mode = match app.session.interaction_mode.as_str() {
+        "manual" => "Manual",
+        "plan" => "Plan",
+        _ => "Auto",
+    };
+    let reasoning = if app.session.reasoning_effort.is_empty() {
+        "default"
+    } else {
+        &app.session.reasoning_effort
+    };
+    let accent = mode_color(&app.session.interaction_mode);
+    let title = Line::from(vec![
+        Span::styled("Model · ", Style::default().fg(MUTED)),
+        Span::styled(
+            format!("{} ({reasoning})", app.session.model),
+            Style::default().fg(Color::White).bold(),
+        ),
+        Span::styled(" · ", Style::default().fg(MUTED)),
+        Span::styled(mode, Style::default().fg(accent).bold()),
+        Span::raw("  "),
+    ])
+    .right_aligned();
     let block = Block::default()
-        .title(if app.active_run.is_some() {
-            " Working · Ctrl+C cancel "
-        } else {
-            " Enter send · Alt+Enter newline · Ctrl+K menu "
-        })
+        .title(title)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(if app.active_run.is_some() { GOLD } else { MINT }))
-        .style(Style::default().bg(PANEL));
+        .border_style(Style::default().fg(if app.active_run.is_some() {
+            GOLD
+        } else {
+            accent
+        }));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.hits.push(HitRegion {
@@ -480,10 +492,29 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         height: area.height,
         action: HitAction::FocusComposer,
     });
-    let (lines, cursor_x, cursor_y) = composer_lines(app, usize::from(inner.width.max(1)));
+    let content_width = inner.width.saturating_sub(1).max(1);
+    let content_area = Rect::new(inner.x, inner.y, content_width, inner.height);
+    let (lines, cursor_x, cursor_y) = composer_lines(app, usize::from(content_width));
     let available = usize::from(inner.height);
-    let start = lines.len().saturating_sub(available);
-    frame.render_widget(Paragraph::new(lines[start..].to_vec()), inner);
+    let start = cursor_y
+        .saturating_add(1)
+        .saturating_sub(available)
+        .min(lines.len().saturating_sub(available));
+    let end = (start + available).min(lines.len());
+    frame.render_widget(Paragraph::new(lines[start..end].to_vec()), content_area);
+    if lines.len() > available {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(Some("│"))
+            .thumb_symbol("┃")
+            .track_style(Style::default().fg(Color::Rgb(49, 56, 69)))
+            .thumb_style(Style::default().fg(SKY));
+        let mut state = ScrollbarState::new(lines.len())
+            .position(start)
+            .viewport_content_length(available);
+        frame.render_stateful_widget(scrollbar, inner, &mut state);
+    }
     if app.modal.is_none() {
         let adjusted_y = cursor_y.saturating_sub(start);
         if adjusted_y < available {
@@ -503,7 +534,7 @@ fn composer_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize)
         return (
             vec![Line::from(Span::styled(
                 "Message Hames…",
-                Style::default().fg(MUTED),
+                Style::default().fg(Color::White),
             ))],
             0,
             0,
@@ -549,6 +580,28 @@ fn composer_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize)
         cursor.0,
         cursor.1,
     )
+}
+
+fn render_status_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let state = if app.active_run.is_some() {
+        "working"
+    } else {
+        "connected"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("  session {}", short_id(&app.session.id)),
+                Style::default().fg(MUTED),
+            ),
+            Span::styled(" · ", Style::default().fg(Color::Rgb(64, 72, 87))),
+            Span::styled(
+                state,
+                Style::default().fg(mode_color(&app.session.interaction_mode)),
+            ),
+        ])),
+        area,
+    );
 }
 
 fn composer_rows(app: &App, width: u16) -> u16 {
@@ -717,6 +770,22 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             ],
             72,
             7,
+        ),
+        Modal::Info { title, lines } => (
+            title.as_str(),
+            lines
+                .iter()
+                .map(|line| {
+                    Line::from(Span::styled(
+                        line.clone(),
+                        Style::default().fg(Color::White),
+                    ))
+                })
+                .collect(),
+            82,
+            u16::try_from(lines.len().saturating_add(4))
+                .unwrap_or(20)
+                .clamp(7, 22),
         ),
     };
     let popup = centered(area, width, height);
@@ -948,6 +1017,14 @@ fn phase_color(phase: ActivityPhase) -> Color {
     }
 }
 
+fn mode_color(mode: &str) -> Color {
+    match mode {
+        "manual" => GOLD,
+        "plan" => LILAC,
+        _ => SKY,
+    }
+}
+
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width.saturating_sub(4)).max(1);
     let height = height.min(area.height.saturating_sub(2)).max(1);
@@ -1035,6 +1112,7 @@ mod tests {
         assert!(rendered.contains("◈ Hames"));
         assert!(rendered.contains("fake / fixture"));
         assert!(rendered.contains("Message Hames"));
+        assert!(rendered.contains("Model · fixture (medium) · Auto"));
         assert!(rendered.contains("A fresh canvas"));
     }
 
@@ -1052,6 +1130,28 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("Needs at least 56 × 10"));
+    }
+
+    #[test]
+    fn composer_expands_to_eight_rows_then_renders_a_scrollbar() {
+        let backend = TestBackend::new(100, 32);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.composer
+            .insert_text("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten");
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains('┃'));
+        assert!(app.hits.iter().any(|region| {
+            matches!(region.action, crate::tui::app::HitAction::FocusComposer)
+                && region.height == 10
+        }));
     }
 
     fn session() -> Session {

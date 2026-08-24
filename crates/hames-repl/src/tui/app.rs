@@ -319,6 +319,7 @@ pub enum Modal {
     Session,
     PastePreview(String),
     Error(String),
+    Info { title: String, lines: Vec<String> },
 }
 
 #[derive(Clone, Debug)]
@@ -327,11 +328,29 @@ pub enum MenuAction {
     OpenSessions,
     ForkSession,
     OpenModels,
+    OpenEfforts,
     OpenAgents,
     OpenModes,
     ShowSession,
     Help,
     CancelRun,
+    Status,
+    Usage,
+    Events,
+    Inspect,
+    Context,
+    Memory,
+    Skills,
+    Scars,
+    Plugins,
+    Trust,
+    RevokeTrust,
+    Export {
+        path: String,
+        format: String,
+    },
+    CaptureMemory(String),
+    Correct(String),
     Quit,
     Resume(String),
     SetModel {
@@ -341,6 +360,7 @@ pub enum MenuAction {
     },
     SetAgent(String),
     SetMode(String),
+    SetEffort(String),
 }
 
 #[derive(Clone, Debug)]
@@ -355,6 +375,7 @@ pub enum SheetKind {
     Commands,
     Sessions,
     Models,
+    Efforts,
     Agents,
     Modes,
 }
@@ -473,6 +494,11 @@ impl App {
                 "provider, model, and reasoning",
                 MenuAction::OpenModels,
             ),
+            option(
+                "Effort",
+                "change reasoning without changing model",
+                MenuAction::OpenEfforts,
+            ),
             option("Agent", "change the active capsule", MenuAction::OpenAgents),
             option("Mode", "manual, auto, or plan", MenuAction::OpenModes),
             option(
@@ -480,6 +506,16 @@ impl App {
                 "identity and continuity",
                 MenuAction::ShowSession,
             ),
+            option("Project & trust", "workspace authority", MenuAction::Trust),
+            option("Status", "gateway and active work", MenuAction::Status),
+            option("Usage", "tokens and model requests", MenuAction::Usage),
+            option("Events", "recent durable history", MenuAction::Events),
+            option("Inspect run", "latest run timeline", MenuAction::Inspect),
+            option("Context", "latest compiled context", MenuAction::Context),
+            option("Memory", "active durable memories", MenuAction::Memory),
+            option("Skills", "active procedural catalog", MenuAction::Skills),
+            option("Scars", "corrections and repair state", MenuAction::Scars),
+            option("Plugins", "installed capabilities", MenuAction::Plugins),
             option("Help", "keyboard and mouse guide", MenuAction::Help),
             option("Cancel run", "stop current work", MenuAction::CancelRun),
             option("Quit", "leave the gateway running", MenuAction::Quit),
