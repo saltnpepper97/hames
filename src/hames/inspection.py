@@ -238,6 +238,7 @@ def inspect_scar(
         if event.type
         in {
             "scar.recorded",
+            "scar.edited",
             "scar.opened",
             "scar.dismissed",
             "scar.repair_proposed",

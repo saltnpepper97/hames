@@ -178,6 +178,53 @@ def test_full_lifecycle_through_healing(
     assert healed.scar.status == "healed"
 
 
+def test_user_edit_updates_diagnosis_without_rewriting_evidence(
+    store: tuple[ScarStore, Ledger], tmp_path: Path
+):
+    scars, ledger = store
+    session = _session(ledger, tmp_path)
+    _, scar = _candidate(ledger, session, tmp_path)
+
+    edited = scars.edit(
+        session=session,
+        scar_id=scar.id,
+        title="Shell failures need a clearer diagnosis",
+        severity="high",
+        description="The failing shell command was retried without inspection.",
+        expected_behavior="Inspect the first failure before choosing a retry.",
+    )
+
+    assert edited.scar.title == "Shell failures need a clearer diagnosis"
+    assert edited.scar.severity == "high"
+    assert edited.scar.failure_signature == scar.failure_signature
+    assert edited.scar.evidence_event_ids == scar.evidence_event_ids
+    assert [event.type for event in edited.events] == ["scar.edited"]
+    changes_value = edited.events[0].payload["changes"]
+    assert isinstance(changes_value, dict)
+    changes = cast(dict[str, object], changes_value)
+    assert set(changes) == {"title", "severity", "description", "expected_behavior"}
+
+    unchanged = scars.edit(
+        session=session,
+        scar_id=scar.id,
+        title=edited.scar.title,
+        severity="high",
+        description=edited.scar.description,
+        expected_behavior=edited.scar.expected_behavior,
+    )
+    assert unchanged.events == ()
+
+    with pytest.raises(ValueError, match="description is required"):
+        scars.edit(
+            session=session,
+            scar_id=scar.id,
+            title=edited.scar.title,
+            severity="high",
+            description="  ",
+            expected_behavior=edited.scar.expected_behavior,
+        )
+
+
 def test_regression_reopens_with_second_repair_version(
     store: tuple[ScarStore, Ledger], tmp_path: Path
 ):

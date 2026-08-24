@@ -93,6 +93,12 @@ does not jump the transcript or composer before the pointer moves.
   full summary and value with independent detail scrolling. Ctrl+D arms a red-row
   confirmation and Ctrl+D again permanently deletes the record while leaving the
   browser open; deleted memories disappear immediately.
+- `/scars` mirrors that browser interaction while exposing a fuller diagnosis:
+  lifecycle state, detection, signature, problem, expected behavior, linked
+  repair, evidence count, guards, regressions, and last trigger. E opens a
+  structured editor for the human-facing diagnosis and Ctrl+S records the edit;
+  immutable evidence and repair lineage are never rewritten. Ctrl+D uses the
+  same two-step permanent-deletion gesture and leaves the browser open.
 - Status, usage, events, inspection, context, memory, Skills, Scars, plugins,
   export, correction, and explicit memory capture are reachable from the palette
   or slash commands.

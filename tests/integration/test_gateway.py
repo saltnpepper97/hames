@@ -55,7 +55,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 14
+            assert health_body["protocol_version"] == 15
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -1645,6 +1645,32 @@ async def test_correction_scar_and_rule_lifecycle_over_gateway(tmp_path: Path) -
             assert str(lineage["explanation"]).startswith("The user explicitly corrected")
             transitions = cast(list[dict[str, JsonValue]], lineage["transitions"])
             assert any(item.get("event_type") == "scar.recorded" for item in transitions)
+
+            edited = await client.patch(
+                f"/v1/sessions/{session_id}/scars/{scar_id}",
+                headers=headers,
+                json={
+                    "title": "Use the documented milestone file",
+                    "severity": "medium",
+                    "description": "The assistant named the wrong milestone source.",
+                    "expected_behavior": "Read docs/plan.md before answering.",
+                },
+            )
+            assert edited.status_code == 200
+            edited_scar = response_object(edited)
+            assert edited_scar["title"] == "Use the documented milestone file"
+            assert edited_scar["severity"] == "medium"
+            assert edited_scar["failure_signature"] == scar["failure_signature"]
+
+            deleted = await client.delete(
+                f"/v1/sessions/{session_id}/scars/{scar_id}", headers=headers
+            )
+            assert deleted.status_code == 200
+            assert response_object(deleted) == {"scar_id": scar_id, "deleted": True}
+            missing = await client.get(
+                f"/v1/sessions/{session_id}/scars/{scar_id}", headers=headers
+            )
+            assert missing.status_code == 404
 
             # context rule lifecycle: propose -> inactive until approved -> activate
             proposed = await client.post(

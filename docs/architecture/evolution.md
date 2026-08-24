@@ -20,6 +20,10 @@ failure or correction
 
 Every state change is an append-only `scar.*` ledger event; the SQLite rows in
 `scars`, `scar_repairs`, and `scar_evidence` are projections of those events.
+Direct user edits to a Scar's title, severity, description, or expected behavior
+append `scar.edited` and update that projection. They cannot rewrite the failure
+signature, trigger, evidence links, repair candidates, evaluations, or lifecycle
+history.
 
 ## Detection inputs
 
@@ -104,6 +108,8 @@ Chat runs use typed controller tools rather than generic state-file access:
 correction, and `scar_control` opens, dismisses, or permanently deletes a visible
 Scar. Dismissal preserves history; deletion also removes evidence links and repair
 projection rows and is reserved for explicit user control.
+The authenticated human control plane also exposes PATCH and DELETE on an
+individual visible Scar for the TUI's structured editor and confirmed removal.
 Dismissal is approval-gated. Healing, regression, repair promotion, rule
 activation, and plugin installation remain owned by evaluation or the human
 control plane; the model cannot declare those outcomes for itself.

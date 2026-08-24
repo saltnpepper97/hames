@@ -11,8 +11,9 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::{
-    ActivityCategory, ActivityPhase, App, ComposerUnit, HitAction, HitRegion, MemoryBrowser, Modal,
-    ScrollTarget, SheetKind, ThemeKind, TranscriptItem, TranscriptViewport,
+    ActivityCategory, ActivityPhase, App, Composer, ComposerUnit, HitAction, HitRegion,
+    MemoryBrowser, Modal, ScarBrowser, ScarEditField, ScarEditor, ScrollTarget, SheetKind,
+    ThemeKind, TranscriptItem, TranscriptViewport,
 };
 
 const MINT: Color = Color::Rgb(116, 226, 192);
@@ -1027,6 +1028,8 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             12,
         ),
         Modal::Memory(browser) => ("Memory", memory_browser_body(browser), 92, 23),
+        Modal::Scars(browser) => ("Scars and evolution", scar_browser_body(browser), 94, 25),
+        Modal::ScarEdit(editor) => ("Edit Scar", scar_editor_body(editor), 94, 25),
         Modal::PastePreview(value) => {
             let mut lines = vec![
                 Line::from(Span::styled(
@@ -1165,6 +1168,18 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                     width: popup.width.saturating_sub(2),
                     height: 1,
                     action: HitAction::SelectMemory(index),
+                });
+            }
+        }
+        Modal::Scars(browser) => {
+            let (start, end) = scar_window(browser);
+            for (row, index) in (start..end).enumerate() {
+                app.hits.push(HitRegion {
+                    x: popup.x + 1,
+                    y: popup.y + 3 + u16::try_from(row).unwrap_or(0),
+                    width: popup.width.saturating_sub(2),
+                    height: 1,
+                    action: HitAction::SelectScar(index),
                 });
             }
         }
@@ -1311,6 +1326,305 @@ fn memory_browser_body(browser: &MemoryBrowser) -> Vec<Line<'static>> {
         ])
     });
     lines
+}
+
+const SCAR_LIST_ROWS: usize = 5;
+const SCAR_DETAIL_ROWS: usize = 9;
+
+fn scar_window(browser: &ScarBrowser) -> (usize, usize) {
+    let selected = browser
+        .selected
+        .min(browser.records.len().saturating_sub(1));
+    let start = selected.saturating_add(1).saturating_sub(SCAR_LIST_ROWS);
+    (start, (start + SCAR_LIST_ROWS).min(browser.records.len()))
+}
+
+fn scar_browser_body(browser: &ScarBrowser) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                format!("{} visible Scars", browser.records.len()),
+                Style::default().fg(INPUT).bold(),
+            ),
+            Span::styled(" · focused Scar expands below", Style::default().fg(MUTED)),
+        ]),
+        Line::from(""),
+    ];
+    let (start, end) = scar_window(browser);
+    for index in start..end {
+        let scar = &browser.records[index];
+        let selected = index == browser.selected;
+        let pending_delete = browser.pending_delete == Some(index);
+        let row_style = if pending_delete {
+            Style::default().bg(DELETE_BG)
+        } else if selected {
+            Style::default().bg(PANEL_BRIGHT)
+        } else {
+            Style::default()
+        };
+        let label = if pending_delete {
+            fit("  Press Ctrl+D again to permanently delete this Scar", 86)
+        } else {
+            fit(
+                &format!(
+                    "{}  {:<10} · {:<6} · {}",
+                    if selected { "•" } else { " " },
+                    scar.status,
+                    scar.severity,
+                    scar.title
+                ),
+                86,
+            )
+        };
+        let used = UnicodeWidthStr::width(label.as_str());
+        lines.push(Line::from(vec![
+            Span::styled(
+                label,
+                Style::default()
+                    .fg(if pending_delete || selected {
+                        INPUT
+                    } else {
+                        MUTED
+                    })
+                    .add_modifier(if selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    })
+                    .patch(row_style),
+            ),
+            Span::styled(" ".repeat(86usize.saturating_sub(used)), row_style),
+        ]));
+    }
+    for _ in end - start..SCAR_LIST_ROWS {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(Span::styled(
+        "─".repeat(86),
+        Style::default().fg(RULE),
+    )));
+
+    if let Some(scar) = browser.records.get(browser.selected) {
+        let mut detail = vec![Line::from(vec![
+            Span::styled(scar.title.clone(), Style::default().fg(INPUT).bold()),
+            Span::styled(
+                format!("  {}", short_identifier(&scar.id)),
+                Style::default().fg(MUTED),
+            ),
+        ])];
+        push_memory_detail(
+            &mut detail,
+            "State",
+            &format!(
+                "{} · severity {} · scope {} · detected {}",
+                scar.status, scar.severity, scar.scope, scar.detection
+            ),
+        );
+        push_memory_detail(&mut detail, "Signature", &scar.failure_signature);
+        push_memory_detail(&mut detail, "Problem", &scar.description);
+        push_memory_detail(&mut detail, "Expected", &scar.expected_behavior);
+        push_memory_detail(
+            &mut detail,
+            "Repair",
+            &match (&scar.repair_layer, &scar.repair_reference) {
+                (Some(layer), Some(reference)) => {
+                    format!("{} · {}", layer, short_identifier(reference))
+                }
+                (Some(layer), None) => layer.clone(),
+                _ => "No repair attached".to_owned(),
+            },
+        );
+        push_memory_detail(
+            &mut detail,
+            "History",
+            &format!(
+                "{} evidence · {} clean guards · {} regressions · last triggered {}",
+                scar.evidence_event_ids.len(),
+                scar.successful_guard_count,
+                scar.regression_count,
+                scar.last_triggered_at
+            ),
+        );
+        let start = browser
+            .detail_scroll
+            .min(detail.len().saturating_sub(SCAR_DETAIL_ROWS));
+        lines.extend(detail.into_iter().skip(start).take(SCAR_DETAIL_ROWS));
+        while lines.len() < 2 + SCAR_LIST_ROWS + 1 + SCAR_DETAIL_ROWS {
+            lines.push(Line::from(""));
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            "No visible Scars. Corrections and recurring failures appear here.",
+            Style::default().fg(MUTED),
+        )));
+        for _ in 1..SCAR_DETAIL_ROWS {
+            lines.push(Line::from(""));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(if browser.pending_delete.is_some() {
+        Line::from(vec![
+            Span::styled("Ctrl+D", Style::default().fg(INPUT).bold()),
+            Span::styled(" confirm permanent deletion · ", Style::default().fg(MUTED)),
+            Span::styled("↑↓", Style::default().fg(INPUT).bold()),
+            Span::styled(" cancel · ", Style::default().fg(MUTED)),
+            Span::styled("Esc", Style::default().fg(INPUT).bold()),
+            Span::styled(" close", Style::default().fg(MUTED)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("↑↓", Style::default().fg(INPUT).bold()),
+            Span::styled(" Scars · ", Style::default().fg(MUTED)),
+            Span::styled("PgUp/PgDn", Style::default().fg(INPUT).bold()),
+            Span::styled(" details · ", Style::default().fg(MUTED)),
+            Span::styled("E", Style::default().fg(INPUT).bold()),
+            Span::styled(" edit · ", Style::default().fg(MUTED)),
+            Span::styled("Ctrl+D", Style::default().fg(INPUT).bold()),
+            Span::styled(" delete · ", Style::default().fg(MUTED)),
+            Span::styled("Esc", Style::default().fg(INPUT).bold()),
+            Span::styled(" close", Style::default().fg(MUTED)),
+        ])
+    });
+    lines
+}
+
+fn scar_editor_body(editor: &ScarEditor) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                format!("Scar {}", short_identifier(&editor.scar_id)),
+                Style::default().fg(INPUT).bold(),
+            ),
+            Span::styled(
+                " · evidence, trigger signature, and repair history remain immutable",
+                Style::default().fg(MUTED),
+            ),
+        ]),
+        Line::from(""),
+    ];
+    push_scar_editor_field(
+        &mut lines,
+        "Title",
+        &editor.title,
+        editor.field == ScarEditField::Title,
+        2,
+    );
+    let severity_selected = editor.field == ScarEditField::Severity;
+    lines.push(Line::from(vec![
+        Span::styled(
+            "Severity  ",
+            Style::default().fg(if severity_selected { INPUT } else { MUTED }),
+        ),
+        Span::styled(
+            format!("‹ {} ›", editor.severity),
+            Style::default()
+                .fg(if severity_selected { GOLD } else { INPUT })
+                .add_modifier(if severity_selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        ),
+    ]));
+    lines.push(Line::from(""));
+    push_scar_editor_field(
+        &mut lines,
+        "Problem",
+        &editor.description,
+        editor.field == ScarEditField::Description,
+        4,
+    );
+    push_scar_editor_field(
+        &mut lines,
+        "Expected",
+        &editor.expected_behavior,
+        editor.field == ScarEditField::ExpectedBehavior,
+        4,
+    );
+    while lines.len() < 20 {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(vec![
+        Span::styled("Tab", Style::default().fg(INPUT).bold()),
+        Span::styled(" next field · ", Style::default().fg(MUTED)),
+        Span::styled("Ctrl+S", Style::default().fg(INPUT).bold()),
+        Span::styled(" save · ", Style::default().fg(MUTED)),
+        Span::styled("Esc", Style::default().fg(INPUT).bold()),
+        Span::styled(" discard changes", Style::default().fg(MUTED)),
+    ]));
+    lines
+}
+
+fn push_scar_editor_field(
+    lines: &mut Vec<Line<'static>>,
+    label: &str,
+    input: &Composer,
+    selected: bool,
+    max_rows: usize,
+) {
+    lines.push(Line::from(Span::styled(
+        label.to_owned(),
+        Style::default()
+            .fg(if selected { INPUT } else { MUTED })
+            .add_modifier(if selected {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            }),
+    )));
+    let value = composer_edit_text(input, selected);
+    let mut wrapped = Vec::new();
+    for raw in value.lines().chain(value.is_empty().then_some("")) {
+        let mut remaining = raw;
+        loop {
+            let (part, rest) = split_width(remaining, 84);
+            wrapped.push(part.to_owned());
+            if rest.is_empty() {
+                break;
+            }
+            remaining = rest.trim_start_matches(' ');
+        }
+    }
+    let caret_row = wrapped
+        .iter()
+        .position(|row| row.contains('▏'))
+        .unwrap_or_default();
+    let start = caret_row
+        .saturating_add(1)
+        .saturating_sub(max_rows)
+        .min(wrapped.len().saturating_sub(max_rows));
+    let first_row = lines.len();
+    for row in wrapped.into_iter().skip(start).take(max_rows) {
+        lines.push(Line::from(Span::styled(
+            format!("  {row}"),
+            Style::default()
+                .fg(INPUT)
+                .bg(if selected { PANEL_BRIGHT } else { Color::Reset }),
+        )));
+    }
+    while lines.len() < first_row + max_rows {
+        lines.push(Line::from(""));
+    }
+}
+
+fn composer_edit_text(input: &Composer, caret: bool) -> String {
+    let mut value = String::new();
+    for (index, unit) in input.units.iter().enumerate() {
+        if caret && index == input.cursor {
+            value.push('▏');
+        }
+        match unit {
+            ComposerUnit::Text(text) | ComposerUnit::Paste(text) => value.push_str(text),
+        }
+    }
+    if caret && input.cursor == input.units.len() {
+        value.push('▏');
+    }
+    value
+}
+
+fn short_identifier(value: &str) -> &str {
+    value.get(..8).unwrap_or(value)
 }
 
 fn push_memory_detail(lines: &mut Vec<Line<'static>>, label: &str, value: &str) {
@@ -1605,12 +1919,14 @@ mod tests {
     use super::{
         DELETE_BG, GOLD, INPUT, MINT, MUTED, PANEL, PANEL_BRIGHT, SKY, draw, format_elapsed,
         line_text, memory_browser_body, mode_color, mode_outline, pasted_display,
-        scrollbar_position, sheen_spans, sheet_text_color, thought_label, transcript_lines,
+        scar_browser_body, scar_editor_body, scrollbar_position, sheen_spans, sheet_text_color,
+        thought_label, transcript_lines,
     };
-    use crate::api::{MemoryRecord, PasteSpan, Session};
+    use crate::api::{MemoryRecord, PasteSpan, Scar, Session};
     use crate::tui::app::{
         ActivityPhase, ActivityRow, App, ApprovalModal, HitAction, MemoryBrowser, MenuAction,
-        MenuOption, Modal, Sheet, SheetKind, TranscriptItem, TranscriptPoint,
+        MenuOption, Modal, ScarBrowser, ScarEditor, Sheet, SheetKind, TranscriptItem,
+        TranscriptPoint,
     };
 
     #[test]
@@ -2063,6 +2379,51 @@ mod tests {
     }
 
     #[test]
+    fn scar_browser_expands_diagnosis_and_uses_explicit_deletion_language() {
+        let mut browser = ScarBrowser {
+            records: vec![scar_record()],
+            selected: 0,
+            detail_scroll: 0,
+            pending_delete: None,
+        };
+        let rendered = scar_browser_body(&browser)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Retried without inspecting the failure"));
+        assert!(rendered.contains("Inspect the first failure before retrying"));
+        assert!(rendered.contains("2 clean guards · 1 regressions"));
+        assert!(rendered.contains("E edit · Ctrl+D delete"));
+
+        browser.pending_delete = Some(0);
+        let lines = scar_browser_body(&browser);
+        assert!(line_text(&lines[2]).contains("permanently delete this Scar"));
+        assert_eq!(lines[2].spans[0].style.bg, Some(DELETE_BG));
+    }
+
+    #[test]
+    fn scar_editor_keeps_a_visible_caret_and_immutable_boundary() {
+        let browser = ScarBrowser {
+            records: vec![scar_record()],
+            selected: 0,
+            detail_scroll: 0,
+            pending_delete: None,
+        };
+        let editor = ScarEditor::new(browser).unwrap();
+        let rendered = scar_editor_body(&editor)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Retry loop▏"));
+        assert!(
+            rendered.contains("evidence, trigger signature, and repair history remain immutable")
+        );
+        assert!(rendered.contains("Ctrl+S save"));
+    }
+
+    #[test]
     fn activity_rows_hide_phantoms_and_describe_memory_deletion_semantically() {
         let mut app = App::new(session(), Vec::new(), true);
         app.transcript.push(TranscriptItem::Activity {
@@ -2207,6 +2568,28 @@ mod tests {
             updated_at: "2026-08-24T00:00:00Z".to_owned(),
             anchors: Vec::new(),
             provenance_event_ids: Vec::new(),
+        }
+    }
+
+    fn scar_record() -> Scar {
+        Scar {
+            id: "scar-123456789".to_owned(),
+            title: "Retry loop".to_owned(),
+            scope: "workspace".to_owned(),
+            status: "open".to_owned(),
+            severity: "high".to_owned(),
+            failure_signature: "tool:shell:exit-42".to_owned(),
+            description: "Retried without inspecting the failure".to_owned(),
+            expected_behavior: "Inspect the first failure before retrying".to_owned(),
+            detection: "repeated_failure".to_owned(),
+            repair_layer: Some("skill".to_owned()),
+            repair_reference: Some("repair-123456789".to_owned()),
+            evidence_event_ids: vec!["event-1".to_owned()],
+            last_triggered_at: "2026-08-24T00:00:00Z".to_owned(),
+            successful_guard_count: 2,
+            regression_count: 1,
+            created_at: "2026-08-24T00:00:00Z".to_owned(),
+            updated_at: "2026-08-24T00:00:00Z".to_owned(),
         }
     }
 

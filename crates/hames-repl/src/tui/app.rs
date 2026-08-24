@@ -6,7 +6,7 @@ use serde_json::Value;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::api::{Event, MemoryRecord, PasteSpan, Session};
+use crate::api::{Event, MemoryRecord, PasteSpan, Scar, Session};
 
 pub const LARGE_PASTE_LINES: usize = 4;
 pub const LARGE_PASTE_BYTES: usize = 400;
@@ -17,7 +17,7 @@ pub enum ComposerUnit {
     Paste(String),
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Composer {
     pub units: Vec<ComposerUnit>,
     pub cursor: usize,
@@ -400,12 +400,102 @@ pub struct MemoryBrowser {
 }
 
 #[derive(Clone, Debug)]
+pub struct ScarBrowser {
+    pub records: Vec<Scar>,
+    pub selected: usize,
+    pub detail_scroll: usize,
+    pub pending_delete: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScarEditField {
+    Title,
+    Severity,
+    Description,
+    ExpectedBehavior,
+}
+
+impl ScarEditField {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Title => Self::Severity,
+            Self::Severity => Self::Description,
+            Self::Description => Self::ExpectedBehavior,
+            Self::ExpectedBehavior => Self::Title,
+        }
+    }
+
+    pub fn previous(self) -> Self {
+        match self {
+            Self::Title => Self::ExpectedBehavior,
+            Self::Severity => Self::Title,
+            Self::Description => Self::Severity,
+            Self::ExpectedBehavior => Self::Description,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ScarEditor {
+    pub browser: ScarBrowser,
+    pub scar_id: String,
+    pub field: ScarEditField,
+    pub title: Composer,
+    pub severity: String,
+    pub description: Composer,
+    pub expected_behavior: Composer,
+}
+
+impl ScarEditor {
+    pub fn new(browser: ScarBrowser) -> Option<Self> {
+        let scar = browser.records.get(browser.selected)?;
+        let mut title = Composer::default();
+        title.insert_text(&scar.title);
+        let mut description = Composer::default();
+        description.insert_text(&scar.description);
+        let mut expected_behavior = Composer::default();
+        expected_behavior.insert_text(&scar.expected_behavior);
+        Some(Self {
+            scar_id: scar.id.clone(),
+            severity: scar.severity.clone(),
+            browser,
+            field: ScarEditField::Title,
+            title,
+            description,
+            expected_behavior,
+        })
+    }
+
+    pub fn active_text_mut(&mut self) -> Option<&mut Composer> {
+        match self.field {
+            ScarEditField::Title => Some(&mut self.title),
+            ScarEditField::Description => Some(&mut self.description),
+            ScarEditField::ExpectedBehavior => Some(&mut self.expected_behavior),
+            ScarEditField::Severity => None,
+        }
+    }
+
+    pub fn cycle_severity(&mut self, backwards: bool) {
+        self.severity = match (self.severity.as_str(), backwards) {
+            ("low", false) | ("high", true) => "medium",
+            ("medium", false) => "high",
+            ("medium", true) => "low",
+            _ if backwards => "medium",
+            _ => "low",
+        }
+        .to_owned();
+    }
+}
+
+#[derive(Clone, Debug)]
 pub enum Modal {
     Trust,
     Approval(ApprovalModal),
     Help,
     Session,
     Memory(MemoryBrowser),
+    Scars(ScarBrowser),
+    ScarEdit(ScarEditor),
     PastePreview(String),
     Error(String),
     Info { title: String, lines: Vec<String> },
@@ -538,6 +628,7 @@ pub enum HitAction {
     ToggleThought(usize),
     SelectSheet(usize),
     SelectMemory(usize),
+    SelectScar(usize),
     Approval(usize),
     TrustWorkspace,
     Quit,

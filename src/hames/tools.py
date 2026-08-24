@@ -581,7 +581,10 @@ class ScarRecordTool(ToolBase):
 
 class ScarControlTool(ToolBase):
     name = "scar_control"
-    description = "Open a candidate scar or dismiss a visible scar with an explicit reason."
+    description = (
+        "Open a candidate scar, dismiss a visible scar, or permanently delete an erroneous Scar "
+        "with an explicit reason."
+    )
     side_effect_class = "scar_write"
     arguments_type: ClassVar[type[ToolArguments]] = ScarControlArguments
 

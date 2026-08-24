@@ -202,6 +202,11 @@ class MemoryDeleteResponse(ApiModel):
     deleted: bool
 
 
+class ScarDeleteResponse(ApiModel):
+    scar_id: str
+    deleted: bool
+
+
 class SkillAuthorRequest(ApiModel):
     goal: str = Field(min_length=1, max_length=4000)
     scope: Literal["workspace", "agent"] = "workspace"
@@ -219,6 +224,13 @@ class SkillControlRequest(ApiModel):
 class CorrectionRequest(ApiModel):
     content: str = Field(min_length=1, max_length=8000)
     target_event_id: str | None = None
+
+
+class ScarUpdateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=300)
+    severity: Literal["low", "medium", "high"]
+    description: str = Field(min_length=1, max_length=4000)
+    expected_behavior: str = Field(min_length=1, max_length=4000)
 
 
 class ContextRuleRequest(ApiModel):
@@ -1329,6 +1341,60 @@ def create_app(state: GatewayState) -> FastAPI:
             return await asyncio.to_thread(state.evolution.store.get_visible, session, scar_id)
         except KeyError as exc:
             raise ApiError(404, "scar_not_found", f"unknown visible Scar: {scar_id}") from exc
+
+    @app.patch(
+        "/v1/sessions/{session_id}/scars/{scar_id}",
+        dependencies=auth,
+        response_model=Scar,
+    )
+    async def update_scar(
+        session_id: str, scar_id: str, request: ScarUpdateRequest
+    ) -> Scar:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            mutation = await asyncio.to_thread(
+                state.evolution.store.edit,
+                session=session,
+                scar_id=scar_id,
+                title=request.title,
+                severity=request.severity,
+                description=request.description,
+                expected_behavior=request.expected_behavior,
+            )
+            for event in mutation.events:
+                await state.broker.publish(
+                    event.session_id,
+                    {"durable": True, "event": event.model_dump(mode="json")},
+                )
+            return mutation.scar
+        except KeyError as exc:
+            raise ApiError(404, "scar_not_found", f"unknown visible Scar: {scar_id}") from exc
+        except ValueError as exc:
+            raise ApiError(409, "invalid_scar_edit", str(exc)) from exc
+
+    @app.delete(
+        "/v1/sessions/{session_id}/scars/{scar_id}",
+        dependencies=auth,
+        response_model=ScarDeleteResponse,
+    )
+    async def delete_scar(session_id: str, scar_id: str) -> ScarDeleteResponse:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            event = await asyncio.to_thread(
+                state.evolution.store.delete,
+                session=session,
+                scar_id=scar_id,
+                reason="user_request",
+            )
+            await state.broker.publish(
+                event.session_id,
+                {"durable": True, "event": event.model_dump(mode="json")},
+            )
+            return ScarDeleteResponse(scar_id=scar_id, deleted=True)
+        except KeyError as exc:
+            raise ApiError(404, "scar_not_found", f"unknown visible Scar: {scar_id}") from exc
+        except ValueError as exc:
+            raise ApiError(409, "invalid_scar_deletion", str(exc)) from exc
 
     @app.get(
         "/v1/sessions/{session_id}/scars/{scar_id}/inspection",

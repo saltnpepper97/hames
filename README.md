@@ -161,6 +161,14 @@ scroll long details. Ctrl+D uses the same two-press, red-row confirmation as
 session removal, then permanently deletes the memory without closing the browser.
 Deleted memories never appear there.
 
+`/scars` uses the same focused-browser pattern. Each selected Scar expands its
+status, severity, scope, detection source, failure signature, diagnosis, expected
+behavior, repair reference, evidence count, guard successes, regressions, and
+last trigger. Press E to edit the human-facing title, severity, problem, and
+expected behavior; Tab moves between fields and Ctrl+S saves. Evidence, trigger
+signatures, and repair history remain immutable. Ctrl+D requires a second press
+before permanently deleting the Scar and keeps the browser open afterward.
+
 The top-right header shows the durable session title beside the current activity
 instead of repeating model controls. The model can set or revise that title with
 the safe `session_title_set` tool; `/title <name>` provides the equivalent direct

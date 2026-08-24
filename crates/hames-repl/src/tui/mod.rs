@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use app::{
-    App, HitAction, MemoryBrowser, MenuAction, MenuOption, Modal, ScrollDrag, ScrollTarget, Sheet,
-    SheetKind, ThemeKind,
+    App, HitAction, MemoryBrowser, MenuAction, MenuOption, Modal, ScarBrowser, ScarEditField,
+    ScarEditor, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind,
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -31,7 +31,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::api::{
-    GatewayClient, LiveEnvelope, PROTOCOL_VERSION, PasteSpan, ProviderModel, Session,
+    GatewayClient, LiveEnvelope, PROTOCOL_VERSION, PasteSpan, ProviderModel, ScarUpdate, Session,
 };
 use crate::local::{LocalPaths, write_private_export};
 use crate::repl::ensure_gateway;
@@ -274,6 +274,8 @@ enum Effect {
     Menu(MenuAction),
     DeleteSession(String),
     DeleteMemory(String),
+    DeleteScar(String),
+    UpdateScar(ScarUpdate),
 }
 
 fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
@@ -282,7 +284,11 @@ fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
             handle_key(app, key)
         }
         Event::Paste(value) => {
-            if app.modal.is_none() {
+            if let Some(Modal::ScarEdit(editor)) = &mut app.modal {
+                if let Some(input) = editor.active_text_mut() {
+                    input.insert_text(&value);
+                }
+            } else if app.modal.is_none() {
                 app.composer.insert_paste(value);
                 app.update_slash_sheet();
             }
@@ -516,6 +522,150 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             }
             _ => None,
         },
+        Modal::Scars(browser) => match key.code {
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if browser.records.is_empty() {
+                    return None;
+                }
+                let selected = browser
+                    .selected
+                    .min(browser.records.len().saturating_sub(1));
+                if browser.pending_delete == Some(selected) {
+                    browser.pending_delete = None;
+                    Some(Effect::DeleteScar(browser.records[selected].id.clone()))
+                } else {
+                    browser.pending_delete = Some(selected);
+                    None
+                }
+            }
+            KeyCode::Char('e') => {
+                if let Some(editor) = ScarEditor::new(browser.clone()) {
+                    app.modal = Some(Modal::ScarEdit(editor));
+                }
+                None
+            }
+            KeyCode::Up => {
+                browser.selected = if browser.records.is_empty() || browser.selected > 0 {
+                    browser.selected.saturating_sub(1)
+                } else {
+                    browser.records.len() - 1
+                };
+                browser.detail_scroll = 0;
+                browser.pending_delete = None;
+                None
+            }
+            KeyCode::Down => {
+                browser.selected = if browser.records.is_empty()
+                    || browser.selected + 1 >= browser.records.len()
+                {
+                    0
+                } else {
+                    browser.selected + 1
+                };
+                browser.detail_scroll = 0;
+                browser.pending_delete = None;
+                None
+            }
+            KeyCode::PageUp => {
+                browser.detail_scroll = browser.detail_scroll.saturating_sub(5);
+                None
+            }
+            KeyCode::PageDown => {
+                browser.detail_scroll = browser.detail_scroll.saturating_add(5);
+                None
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                app.modal = None;
+                None
+            }
+            _ => None,
+        },
+        Modal::ScarEdit(editor) => {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+                let update = ScarUpdate {
+                    title: editor.title.text().trim().to_owned(),
+                    severity: editor.severity.clone(),
+                    description: editor.description.text().trim().to_owned(),
+                    expected_behavior: editor.expected_behavior.text().trim().to_owned(),
+                };
+                if update.title.is_empty()
+                    || update.description.is_empty()
+                    || update.expected_behavior.is_empty()
+                {
+                    app.notice = Some(
+                        "Scar title, description, and expected behavior cannot be empty".to_owned(),
+                    );
+                    None
+                } else {
+                    Some(Effect::UpdateScar(update))
+                }
+            } else {
+                match key.code {
+                    KeyCode::Esc => {
+                        app.modal = Some(Modal::Scars(editor.browser.clone()));
+                    }
+                    KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        editor.field = editor.field.previous();
+                    }
+                    KeyCode::Tab => editor.field = editor.field.next(),
+                    KeyCode::BackTab => editor.field = editor.field.previous(),
+                    KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+                        if editor.field == ScarEditField::Severity =>
+                    {
+                        editor.cycle_severity(key.code == KeyCode::Left);
+                    }
+                    KeyCode::Enter if editor.field == ScarEditField::Title => {
+                        editor.field = editor.field.next();
+                    }
+                    KeyCode::Enter => {
+                        if let Some(input) = editor.active_text_mut() {
+                            input.insert_text("\n");
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        if let Some(input) = editor.active_text_mut() {
+                            input.backspace();
+                        }
+                    }
+                    KeyCode::Delete => {
+                        if let Some(input) = editor.active_text_mut() {
+                            input.delete();
+                        }
+                    }
+                    KeyCode::Left => {
+                        if let Some(input) = editor.active_text_mut() {
+                            input.move_left();
+                        }
+                    }
+                    KeyCode::Right => {
+                        if let Some(input) = editor.active_text_mut() {
+                            input.move_right();
+                        }
+                    }
+                    KeyCode::Home => {
+                        if let Some(input) = editor.active_text_mut() {
+                            input.move_home();
+                        }
+                    }
+                    KeyCode::End => {
+                        if let Some(input) = editor.active_text_mut() {
+                            input.move_end();
+                        }
+                    }
+                    KeyCode::Char(value)
+                        if !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    {
+                        if let Some(input) = editor.active_text_mut() {
+                            input.insert_text(&value.to_string());
+                        }
+                    }
+                    _ => {}
+                }
+                None
+            }
+        }
         Modal::PastePreview(_) => match key.code {
             KeyCode::Backspace | KeyCode::Delete => {
                 app.composer.remove_adjacent_paste();
@@ -619,6 +769,23 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                     app.clear_transcript_selection();
                     app.clear_modal_selection();
                     if let Some(Modal::Memory(browser)) = &mut app.modal
+                        && index < browser.records.len()
+                    {
+                        if browser.selected != index {
+                            browser.pending_delete = None;
+                        }
+                        browser.selected = index;
+                        browser.detail_scroll = 0;
+                    }
+                    if let Some(point) = app.modal_viewport.point(mouse.column, mouse.row) {
+                        app.begin_modal_selection(point);
+                    }
+                    None
+                }
+                Some(HitAction::SelectScar(index)) => {
+                    app.clear_transcript_selection();
+                    app.clear_modal_selection();
+                    if let Some(Modal::Scars(browser)) = &mut app.modal
                         && index < browser.records.len()
                     {
                         if browser.selected != index {
@@ -949,6 +1116,36 @@ async fn apply_effect(
             }
             app.notice = Some(format!("Memory {} deleted", short_id(&memory_id)));
         }
+        Effect::DeleteScar(scar_id) => {
+            client.delete_scar(&app.session.id, &scar_id).await?;
+            if let Some(Modal::Scars(browser)) = &mut app.modal {
+                browser.records.retain(|scar| scar.id != scar_id);
+                browser.selected = browser
+                    .selected
+                    .min(browser.records.len().saturating_sub(1));
+                browser.detail_scroll = 0;
+                browser.pending_delete = None;
+            }
+            app.notice = Some(format!("Scar {} deleted", short_id(&scar_id)));
+        }
+        Effect::UpdateScar(update) => {
+            let Some(Modal::ScarEdit(editor)) = app.modal.clone() else {
+                return Ok(None);
+            };
+            let updated = client
+                .update_scar(&app.session.id, &editor.scar_id, &update)
+                .await?;
+            let mut browser = editor.browser;
+            if let Some(record) = browser
+                .records
+                .iter_mut()
+                .find(|scar| scar.id == updated.id)
+            {
+                *record = updated;
+            }
+            app.modal = Some(Modal::Scars(browser));
+            app.notice = Some("Scar changes saved".to_owned());
+        }
     }
     Ok(None)
 }
@@ -1268,14 +1465,12 @@ async fn apply_menu_action(
         }
         MenuAction::Scars => {
             let scars = client.scars(&app.session.id).await?;
-            let mut lines = vec![format!("{} visible Scars", scars.len()), String::new()];
-            lines.extend(
-                scars
-                    .into_iter()
-                    .take(16)
-                    .map(|scar| format!("{:<10} {:<8} {}", scar.status, scar.severity, scar.title)),
-            );
-            app.modal = Some(info("Scars and evolution", lines));
+            app.modal = Some(Modal::Scars(ScarBrowser {
+                records: scars,
+                selected: 0,
+                detail_scroll: 0,
+                pending_delete: None,
+            }));
         }
         MenuAction::Plugins => {
             let plugins = client.plugins().await?;
@@ -1619,10 +1814,10 @@ mod tests {
         Effect, SseDecoder, handle_key, handle_mouse, model_efforts, next_mode, parse_command,
         pointer_top,
     };
-    use crate::api::{MemoryRecord, ProviderModel, Session};
+    use crate::api::{MemoryRecord, ProviderModel, Scar, Session};
     use crate::tui::app::{
-        App, HitAction, HitRegion, MemoryBrowser, MenuAction, MenuOption, Modal, ScrollDrag,
-        ScrollTarget, Sheet, SheetKind, ThemeKind, TranscriptViewport,
+        App, HitAction, HitRegion, MemoryBrowser, MenuAction, MenuOption, Modal, ScarBrowser,
+        ScarEditField, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind, TranscriptViewport,
     };
 
     #[test]
@@ -1843,6 +2038,58 @@ mod tests {
     }
 
     #[test]
+    fn scar_browser_supports_confirmed_deletion_and_structured_editing() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.modal = Some(Modal::Scars(ScarBrowser {
+            records: vec![scar_record("scar-first")],
+            selected: 0,
+            detail_scroll: 0,
+            pending_delete: None,
+        }));
+        let ctrl_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert!(handle_key(&mut app, ctrl_d).is_none());
+        assert!(matches!(
+            &app.modal,
+            Some(Modal::Scars(browser)) if browser.pending_delete == Some(0)
+        ));
+        assert!(matches!(
+            handle_key(&mut app, ctrl_d),
+            Some(Effect::DeleteScar(scar_id)) if scar_id == "scar-first"
+        ));
+
+        app.modal = Some(Modal::Scars(ScarBrowser {
+            records: vec![scar_record("scar-first")],
+            selected: 0,
+            detail_scroll: 0,
+            pending_delete: None,
+        }));
+        assert!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE)
+            )
+            .is_none()
+        );
+        let Some(Modal::ScarEdit(editor)) = &app.modal else {
+            panic!("E should open the structured Scar editor");
+        };
+        assert_eq!(editor.field, ScarEditField::Title);
+        assert_eq!(editor.title.text(), "Retry loop");
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(matches!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)
+            ),
+            Some(Effect::UpdateScar(update))
+                if update.severity == "low"
+                    && update.description == "Retried without inspecting the failure"
+        ));
+    }
+
+    #[test]
     fn escape_interrupts_an_active_run() {
         let mut app = App::new(session(), Vec::new(), true);
         app.active_run = Some("run-1".to_owned());
@@ -2027,6 +2274,28 @@ mod tests {
             updated_at: "2026-08-24T00:00:00Z".to_owned(),
             anchors: Vec::new(),
             provenance_event_ids: Vec::new(),
+        }
+    }
+
+    fn scar_record(id: &str) -> Scar {
+        Scar {
+            id: id.to_owned(),
+            title: "Retry loop".to_owned(),
+            scope: "workspace".to_owned(),
+            status: "open".to_owned(),
+            severity: "high".to_owned(),
+            failure_signature: "tool:shell:exit-42".to_owned(),
+            description: "Retried without inspecting the failure".to_owned(),
+            expected_behavior: "Inspect the first failure before retrying".to_owned(),
+            detection: "repeated_failure".to_owned(),
+            repair_layer: Some("skill".to_owned()),
+            repair_reference: Some("repair-123456789".to_owned()),
+            evidence_event_ids: vec!["event-1".to_owned()],
+            last_triggered_at: "2026-08-24T00:00:00Z".to_owned(),
+            successful_guard_count: 2,
+            regression_count: 1,
+            created_at: "2026-08-24T00:00:00Z".to_owned(),
+            updated_at: "2026-08-24T00:00:00Z".to_owned(),
         }
     }
 }

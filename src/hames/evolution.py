@@ -513,6 +513,83 @@ class ScarStore:
     def dismiss(self, *, session: Session, scar_id: str, reason: str) -> ScarMutation:
         return self._transition(session, scar_id, "dismissed", reason)
 
+    def edit(
+        self,
+        *,
+        session: Session,
+        scar_id: str,
+        title: str,
+        severity: ScarSeverity,
+        description: str,
+        expected_behavior: str,
+    ) -> ScarMutation:
+        """Edit the human-facing diagnosis while preserving immutable evidence."""
+
+        values = {
+            "title": title.strip(),
+            "severity": severity,
+            "description": description.strip(),
+            "expected_behavior": expected_behavior.strip(),
+        }
+        if severity not in {"low", "medium", "high"}:
+            raise ValueError(f"unknown scar severity: {severity}")
+        if not values["title"]:
+            raise ValueError("scar title is required")
+        if not values["description"]:
+            raise ValueError("scar description is required")
+        if not values["expected_behavior"]:
+            raise ValueError("scar expected_behavior is required")
+        scar = self.get_visible(session, scar_id)
+        previous = {
+            "title": scar.title,
+            "severity": scar.severity,
+            "description": scar.description,
+            "expected_behavior": scar.expected_behavior,
+        }
+        changes = {
+            key: {"previous": previous[key], "value": value}
+            for key, value in values.items()
+            if previous[key] != value
+        }
+        if not changes:
+            return ScarMutation(scar, ())
+
+        now = utc_now()
+        with self.ledger.transaction_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            updated = connection.execute(
+                """
+                UPDATE scars
+                SET title = ?, severity = ?, description = ?, expected_behavior = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    values["title"],
+                    values["severity"],
+                    values["description"],
+                    values["expected_behavior"],
+                    now,
+                    scar_id,
+                ),
+            )
+            if updated.rowcount != 1:
+                connection.execute("ROLLBACK")
+                raise ValueError("scar edit target changed")
+            event = self.ledger.append_in_transaction(
+                connection,
+                session_id=session.id,
+                agent_id=session.agent_id,
+                event_type="scar.edited",
+                payload={
+                    "scar_id": scar_id,
+                    "status": scar.status,
+                    "changes": changes,
+                },
+                correlation_id=scar_id,
+            )
+            connection.commit()
+        return ScarMutation(self.get(scar_id), (event,))
+
     def delete(self, *, session: Session, scar_id: str, reason: str) -> Event:
         """Permanently remove one visible scar and its repair projections."""
 

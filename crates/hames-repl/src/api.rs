@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 
 #[derive(Clone)]
 pub struct GatewayClient {
@@ -311,11 +311,25 @@ pub struct Scar {
     pub description: String,
     pub expected_behavior: String,
     pub detection: String,
+    #[serde(default)]
+    pub repair_layer: Option<String>,
+    #[serde(default)]
+    pub repair_reference: Option<String>,
+    #[serde(default)]
+    pub evidence_event_ids: Vec<String>,
     pub last_triggered_at: String,
     pub successful_guard_count: i64,
     pub regression_count: i64,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ScarUpdate {
+    pub title: String,
+    pub severity: String,
+    pub description: String,
+    pub expected_behavior: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1048,6 +1062,41 @@ impl GatewayClient {
                 .await?,
         )
         .await
+    }
+
+    pub async fn update_scar(
+        &self,
+        session_id: &str,
+        scar_id: &str,
+        update: &ScarUpdate,
+    ) -> Result<Scar> {
+        decode(
+            self.http
+                .patch(format!(
+                    "{}/v1/sessions/{session_id}/scars/{scar_id}",
+                    self.base_url
+                ))
+                .bearer_auth(&self.token)
+                .json(update)
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn delete_scar(&self, session_id: &str, scar_id: &str) -> Result<()> {
+        let _: Value = decode(
+            self.http
+                .delete(format!(
+                    "{}/v1/sessions/{session_id}/scars/{scar_id}",
+                    self.base_url
+                ))
+                .bearer_auth(&self.token)
+                .send()
+                .await?,
+        )
+        .await?;
+        Ok(())
     }
 
     pub async fn transition_memory(

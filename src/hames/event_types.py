@@ -508,6 +508,17 @@ class ScarTransitionPayload(EventPayload):
     repair_id: str | None = None
 
 
+class ScarEditChangePayload(EventPayload):
+    previous: JsonValue
+    value: JsonValue
+
+
+class ScarEditedPayload(EventPayload):
+    scar_id: str
+    status: str
+    changes: dict[str, ScarEditChangePayload]
+
+
 class ScarTriggerPayload(EventPayload):
     scar_id: str
     run_id: str
@@ -694,6 +705,7 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "scar.opened": ScarTransitionPayload,
     "scar.dismissed": ScarTransitionPayload,
     "scar.deleted": ScarTransitionPayload,
+    "scar.edited": ScarEditedPayload,
     "scar.repair_proposed": ScarTransitionPayload,
     "scar.guarded": ScarTransitionPayload,
     "scar.triggered": ScarTriggerPayload,
