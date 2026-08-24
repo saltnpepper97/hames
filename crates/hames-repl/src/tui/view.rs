@@ -16,8 +16,8 @@ use unicode_width::UnicodeWidthStr;
 use super::app::{
     ActivityCategory, ActivityPhase, AgentChoice, AgentEditField, AgentEditor, AgentEditorPage,
     App, ApprovalModal, Composer, ComposerUnit, DreamPhase, HitAction, HitRegion, MemoryBrowser,
-    Modal, ScarBrowser, ScarEditField, ScarEditor, ScrollTarget, SheetKind, ThemeKind,
-    TranscriptItem, TranscriptViewport,
+    MenuAction, Modal, ScarBrowser, ScarEditField, ScarEditor, ScrollTarget, Sheet, SheetKind,
+    ThemeKind, TranscriptItem, TranscriptViewport,
 };
 
 const MINT: Color = Color::Rgb(116, 226, 192);
@@ -101,7 +101,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
                         editor.kind == crate::tui::app::InlineEditorKind::PlanExecutionNote
                     }),
             );
-            (sheet.options.len() as u16 + note_row + 2).clamp(3, 9)
+            (sheet.options.len() as u16 + model_section_count(sheet) as u16 + note_row + 2)
+                .clamp(3, 9)
         })
         .unwrap_or(0);
     let plan_note_in_sheet = app
@@ -906,15 +907,67 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
     lines
 }
 
+#[derive(Clone, Copy)]
+enum SheetDisplayRow<'a> {
+    Section(&'a str),
+    Option(usize),
+}
+
+fn model_provider_label(option: &super::app::MenuOption) -> Option<&str> {
+    match &option.action {
+        MenuAction::ChooseModel { provider_label, .. } => Some(provider_label),
+        _ => None,
+    }
+}
+
+fn sheet_display_rows(sheet: &Sheet) -> Vec<SheetDisplayRow<'_>> {
+    if sheet.kind != SheetKind::Models {
+        return (0..sheet.options.len())
+            .map(SheetDisplayRow::Option)
+            .collect();
+    }
+    let mut rows = Vec::with_capacity(sheet.options.len() + model_section_count(sheet));
+    let mut previous = None;
+    for (index, option) in sheet.options.iter().enumerate() {
+        let provider = model_provider_label(option);
+        if provider != previous {
+            if let Some(provider) = provider {
+                rows.push(SheetDisplayRow::Section(provider));
+            }
+            previous = provider;
+        }
+        rows.push(SheetDisplayRow::Option(index));
+    }
+    rows
+}
+
+fn model_section_count(sheet: &Sheet) -> usize {
+    if sheet.kind != SheetKind::Models {
+        return 0;
+    }
+    let mut count = 0;
+    let mut previous = None;
+    for option in &sheet.options {
+        let provider = model_provider_label(option);
+        if provider != previous {
+            count += usize::from(provider.is_some());
+            previous = provider;
+        }
+    }
+    count
+}
+
 fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let Some(sheet) = &app.sheet else {
         return;
     };
     let inner_height = usize::from(area.height.saturating_sub(2));
-    let start = sheet
-        .selected
-        .saturating_add(1)
-        .saturating_sub(inner_height);
+    let display_rows = sheet_display_rows(sheet);
+    let selected_row = display_rows
+        .iter()
+        .position(|row| matches!(row, SheetDisplayRow::Option(index) if *index == sheet.selected))
+        .unwrap_or(0);
+    let start = selected_row.saturating_add(1).saturating_sub(inner_height);
     let command_tray = sheet.kind == crate::tui::app::SheetKind::Commands;
     let command_query = app
         .composer
@@ -923,13 +976,24 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .unwrap_or_default()
         .to_ascii_lowercase();
     let mut lines = Vec::new();
-    for (offset, option) in sheet
-        .options
+    for (visual_offset, row) in display_rows
         .iter()
         .enumerate()
         .skip(start)
         .take(inner_height)
     {
+        let SheetDisplayRow::Option(offset) = row else {
+            let SheetDisplayRow::Section(provider) = row else {
+                unreachable!();
+            };
+            lines.push(Line::from(Span::styled(
+                format!("  {provider}"),
+                Style::default().fg(MUTED_LIGHT).bold(),
+            )));
+            continue;
+        };
+        let offset = *offset;
+        let option = &sheet.options[offset];
         let selected = offset == sheet.selected;
         let deleting = sheet.pending_delete == Some(offset);
         let row_style = if deleting {
@@ -971,7 +1035,7 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             lines.push(Line::from(spans));
             app.hits.push(HitRegion {
                 x: area.x,
-                y: area.y + 1 + u16::try_from(offset - start).unwrap_or(0),
+                y: area.y + 1 + u16::try_from(visual_offset - start).unwrap_or(0),
                 width: area.width,
                 height: 1,
                 action: HitAction::SelectSheet(offset),
@@ -1013,7 +1077,7 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         lines.push(Line::from(spans));
         app.hits.push(HitRegion {
             x: area.x,
-            y: area.y + 1 + u16::try_from(offset - start).unwrap_or(0),
+            y: area.y + 1 + u16::try_from(visual_offset - start).unwrap_or(0),
             width: area.width,
             height: 1,
             action: HitAction::SelectSheet(offset),
@@ -4498,6 +4562,59 @@ mod tests {
         assert_eq!(buffer.cell((4, 24)).unwrap().symbol(), "P");
         assert_eq!(buffer.cell((10, 24)).unwrap().symbol(), "C");
         assert_eq!(buffer.cell((50, 24)).unwrap().bg, DELETE_BG);
+    }
+
+    #[test]
+    fn model_sheet_groups_selectable_models_under_provider_headers() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.sheet = Some(Sheet {
+            kind: SheetKind::Models,
+            title: "Models".to_owned(),
+            options: vec![
+                MenuOption {
+                    label: "qwen3.8-27b".to_owned(),
+                    detail: "27B".to_owned(),
+                    action: MenuAction::ChooseModel {
+                        provider: "llama_cpp".to_owned(),
+                        provider_label: "llama.cpp".to_owned(),
+                        model: "qwen3.8-27b".to_owned(),
+                    },
+                },
+                MenuOption {
+                    label: "gpt-5.6-sol".to_owned(),
+                    detail: "available".to_owned(),
+                    action: MenuAction::ChooseModel {
+                        provider: "codex".to_owned(),
+                        provider_label: "Codex / ChatGPT".to_owned(),
+                        model: "gpt-5.6-sol".to_owned(),
+                    },
+                },
+            ],
+            selected: 0,
+            pending_delete: None,
+        });
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("llama.cpp"));
+        assert!(rendered.contains("qwen3.8-27b"));
+        assert!(rendered.contains("Codex / ChatGPT"));
+        assert!(rendered.contains("gpt-5.6-sol"));
+        assert_eq!(
+            app.hits
+                .iter()
+                .filter(|hit| matches!(hit.action, HitAction::SelectSheet(_)))
+                .count(),
+            2
+        );
     }
 
     #[test]

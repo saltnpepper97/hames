@@ -799,6 +799,7 @@ pub enum MenuAction {
     SetTitle(String),
     ChooseModel {
         provider: String,
+        provider_label: String,
         model: String,
     },
     SetTheme(ThemeKind),

@@ -1958,16 +1958,16 @@ async fn apply_menu_action(
             for profile in profiles {
                 match client.probe_provider(&profile.id).await {
                     Ok(probe) if probe.reachable => {
+                        let provider_label = provider_menu_label(&profile);
                         for model in probe.models {
                             options.push(MenuOption {
                                 label: model.id.clone(),
-                                detail: format!(
-                                    "{} · {}",
-                                    profile.id,
-                                    model.parameter_size.unwrap_or_else(|| model.status.clone())
-                                ),
+                                detail: model
+                                    .parameter_size
+                                    .unwrap_or_else(|| model.status.clone()),
                                 action: MenuAction::ChooseModel {
                                     provider: profile.id.clone(),
+                                    provider_label: provider_label.clone(),
                                     model: model.id,
                                 },
                             });
@@ -1983,14 +1983,18 @@ async fn apply_menu_action(
                 app.notice = None;
                 app.sheet = Some(Sheet {
                     kind: SheetKind::Models,
-                    title: "Provider and model".to_owned(),
+                    title: "Models".to_owned(),
                     options,
                     selected: 0,
                     pending_delete: None,
                 });
             }
         }
-        MenuAction::ChooseModel { provider, model } => {
+        MenuAction::ChooseModel {
+            provider,
+            provider_label: _,
+            model,
+        } => {
             app.notice = Some("Checking model capabilities…".to_owned());
             let probe = client.probe_provider(&provider).await?;
             let selected = probe
@@ -2678,6 +2682,16 @@ fn model_efforts(model: &ProviderModel) -> Vec<String> {
         efforts.insert(1, "off".to_owned());
     }
     efforts
+}
+
+fn provider_menu_label(profile: &crate::api::ProviderProfile) -> String {
+    match profile.adapter.as_str() {
+        "llama_cpp" => "llama.cpp".to_owned(),
+        "ollama" => "Ollama".to_owned(),
+        "openai" => "OpenAI API".to_owned(),
+        "codex" => "Codex / ChatGPT".to_owned(),
+        _ => profile.id.clone(),
+    }
 }
 
 fn next_mode(mode: &str) -> &str {
