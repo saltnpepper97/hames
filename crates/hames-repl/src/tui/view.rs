@@ -253,6 +253,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
             TranscriptItem::Thought {
                 content,
                 duration_seconds,
+                interrupted,
                 live,
                 collapsed,
                 ..
@@ -265,6 +266,10 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                         Span::styled(
                             thought_label(*duration_seconds),
                             Style::default().fg(LILAC).bold(),
+                        ),
+                        Span::styled(
+                            if *interrupted { " · interrupted" } else { "" },
+                            Style::default().fg(if *interrupted { GOLD } else { MUTED }),
                         ),
                         Span::styled(
                             if *collapsed { "  ▸" } else { "  ▾" },
@@ -648,31 +653,17 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn activity_bar(app: &App) -> Line<'static> {
-    const TRACK_WIDTH: usize = 16;
-    let cycle = (TRACK_WIDTH - 1) * 2;
-    let step = usize::try_from(app.tick / 2).unwrap_or(0) % cycle;
-    let head = if step < TRACK_WIDTH {
-        step
-    } else {
-        cycle - step
-    };
-    let pulse = match (app.tick / 2) % 4 {
-        0 => "◇",
-        1 | 3 => "◈",
-        _ => "◆",
-    };
-    let mut spans = vec![Span::styled(
-        format!("  {pulse} "),
-        Style::default().fg(LILAC).bold(),
-    )];
-    for index in 0..TRACK_WIDTH {
-        let distance = index.abs_diff(head);
-        spans.push(match distance {
-            0 => Span::styled("◆", Style::default().fg(GOLD).bold()),
-            1 => Span::styled("━", Style::default().fg(LILAC).bold()),
-            2 => Span::styled("━", Style::default().fg(SKY)),
-            _ => Span::styled("·", Style::default().fg(MUTED)),
-        });
+    const BARS: [&str; 6] = ["▁", "▂", "▄", "▆", "█", "▆"];
+    let phase = usize::try_from(app.tick / 2).unwrap_or(0) % BARS.len();
+    let mut spans = vec![Span::raw("  ")];
+    for index in 0..BARS.len() {
+        let level = (index + phase) % BARS.len();
+        let color = match level {
+            3..=4 => LILAC,
+            2 | 5 => SKY,
+            _ => MUTED,
+        };
+        spans.push(Span::styled(BARS[level], Style::default().fg(color).bold()));
     }
     spans.push(Span::styled(
         format!("  {}", current_activity(app)),
@@ -1285,7 +1276,7 @@ mod tests {
     }
 
     #[test]
-    fn active_run_replaces_shortcuts_with_diamond_interrupt_bar() {
+    fn active_run_replaces_shortcuts_with_compact_interrupt_meter() {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(session(), Vec::new(), true);
@@ -1299,7 +1290,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(rendered.contains("◆"));
+        assert!(rendered.contains("▁▂▄▆█▆"));
         assert!(rendered.contains("Working · 12s · Esc interrupt"));
         assert!(rendered.contains("[connected]"));
         assert!(!rendered.contains("Shift+Tab mode"));

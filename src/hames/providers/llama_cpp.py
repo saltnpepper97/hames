@@ -30,11 +30,13 @@ class LlamaCppProvider:
         *,
         profile_id: str = "llama_cpp",
         timeout_seconds: float = 120.0,
+        default_model: str = "",
         supported_reasoning_efforts: list[str] | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.profile_id = profile_id
         self.base_url = base_url.rstrip("/")
+        self.default_model = default_model
         self.supported_reasoning_efforts = supported_reasoning_efforts or []
         self._owned_client = client is None
         self.client = client or httpx.AsyncClient(timeout=timeout_seconds)
@@ -64,18 +66,31 @@ class LlamaCppProvider:
             model_id = str(raw.get("id", ""))
             if not model_id:
                 continue
-            status_value = raw.get("status", "unknown")
-            if isinstance(status_value, dict):
-                status_value = status_value.get("value", "unknown")
+            status_object = raw.get("status")
+            status_args: list[str] = []
+            if isinstance(status_object, dict):
+                status_args = _string_list(status_object.get("args"))
+                status_value = status_object.get("value", "unknown")
+            else:
+                status_value = status_object or "unknown"
             status = str(status_value)
             props = await self._model_props(model_id) if status in {"loaded", "sleeping"} else {}
             caps = props.get("chat_template_caps", {})
             if not isinstance(caps, dict):
                 caps = {}
-            reasoning = bool(caps.get("supports_reasoning_effort", False)) if props else None
-            if reasoning is None and self.supported_reasoning_efforts:
+            supports_effort = bool(caps.get("supports_reasoning_effort", False))
+            reasoning = True if supports_effort or _has_reasoning_option(status_args) else None
+            if (
+                reasoning is None
+                and model_id == self.default_model
+                and self.supported_reasoning_efforts
+            ):
                 reasoning = True
-            efforts = _reasoning_efforts(model_id, reasoning, self.supported_reasoning_efforts)
+            efforts = _reasoning_efforts(
+                model_id,
+                reasoning,
+                self.supported_reasoning_efforts if model_id == self.default_model else [],
+            )
             if reasoning is None and efforts:
                 reasoning = True
             meta = raw.get("meta", {})
@@ -313,6 +328,10 @@ def _reasoning_efforts(model_id: str, supported: bool | None, configured: list[s
     if "qwen3.8" in model_id.lower():
         return ["low", "medium", "xhigh"]
     return ["on"] if supported is True else []
+
+
+def _has_reasoning_option(arguments: list[str]) -> bool:
+    return any(argument in {"--reasoning", "--reasoning-budget"} for argument in arguments)
 
 
 def _nested_optional_int(value: dict[str, JsonValue], outer: str, inner: str) -> int | None:

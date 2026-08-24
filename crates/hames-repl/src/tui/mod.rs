@@ -27,7 +27,9 @@ use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::api::{GatewayClient, LiveEnvelope, PROTOCOL_VERSION, PasteSpan, Session};
+use crate::api::{
+    GatewayClient, LiveEnvelope, PROTOCOL_VERSION, PasteSpan, ProviderModel, Session,
+};
 use crate::local::{LocalPaths, write_private_export};
 use crate::repl::ensure_gateway;
 
@@ -726,24 +728,22 @@ async fn apply_menu_action(
             }
         }
         MenuAction::ChooseModel { provider, model } => {
-            app.notice = Some("Loading reasoning efforts…".to_owned());
-            let profiles = client.providers().await?;
-            let profile = profiles
+            app.notice = Some("Checking model capabilities…".to_owned());
+            let probe = client.probe_provider(&provider).await?;
+            let selected = probe
+                .models
                 .into_iter()
-                .find(|profile| profile.id == provider)
-                .with_context(|| format!("provider {provider} is not configured"))?;
-            let mut efforts = profile.supported_reasoning_efforts;
-            if let Ok(probe) = client.probe_provider(&provider).await
-                && let Some(selected) = probe.models.into_iter().find(|item| item.id == model)
-            {
-                for effort in selected.reasoning_efforts {
-                    if !efforts.contains(&effort) {
-                        efforts.push(effort);
-                    }
-                }
-            }
-            if !efforts.iter().any(|effort| effort == "default") {
-                efforts.insert(0, "default".to_owned());
+                .find(|item| item.id == model)
+                .with_context(|| format!("model {model} is no longer available"))?;
+            let efforts = model_efforts(&selected);
+            if efforts.is_empty() {
+                app.session = client
+                    .update_session(&app.session.id, &provider, &model, "off")
+                    .await?;
+                app.context_window = app.session.context_window_tokens;
+                app.sheet = None;
+                app.notice = Some(format!("Using {provider} / {model} · reasoning off"));
+                return Ok(None);
             }
             app.notice = None;
             app.sheet = Some(Sheet {
@@ -769,32 +769,21 @@ async fn apply_menu_action(
             });
         }
         MenuAction::OpenEfforts => {
-            app.notice = Some("Loading reasoning efforts…".to_owned());
-            let profiles = client.providers().await?;
-            let profile = profiles
+            app.notice = Some("Checking model capabilities…".to_owned());
+            let probe = client.probe_provider(&app.session.provider).await?;
+            let selected = probe
+                .models
                 .into_iter()
-                .find(|profile| profile.id == app.session.provider)
-                .with_context(|| format!("provider {} is not configured", app.session.provider))?;
-            let mut efforts = profile.supported_reasoning_efforts;
-            if let Ok(probe) = client.probe_provider(&app.session.provider).await
-                && let Some(model) = probe
-                    .models
-                    .into_iter()
-                    .find(|model| model.id == app.session.model)
-            {
-                for effort in model.reasoning_efforts {
-                    if !efforts.contains(&effort) {
-                        efforts.push(effort);
-                    }
-                }
-            }
-            if !app.session.reasoning_effort.is_empty()
-                && !efforts.contains(&app.session.reasoning_effort)
-            {
-                efforts.push(app.session.reasoning_effort.clone());
-            }
-            if !efforts.iter().any(|effort| effort == "default") {
-                efforts.insert(0, "default".to_owned());
+                .find(|model| model.id == app.session.model)
+                .with_context(|| format!("model {} is no longer available", app.session.model))?;
+            let efforts = model_efforts(&selected);
+            if efforts.is_empty() {
+                app.sheet = None;
+                app.notice = Some(format!(
+                    "{} does not offer reasoning levels",
+                    app.session.model
+                ));
+                return Ok(None);
             }
             app.notice = None;
             app.sheet = Some(Sheet {
@@ -1275,6 +1264,23 @@ fn effort_label(value: &str) -> &str {
     if value.is_empty() { "default" } else { value }
 }
 
+fn model_efforts(model: &ProviderModel) -> Vec<String> {
+    if model.reasoning_supported != Some(true) {
+        return Vec::new();
+    }
+    if model.reasoning_efforts.is_empty() || model.reasoning_efforts == ["on"] {
+        return vec!["on".to_owned(), "off".to_owned()];
+    }
+    let mut efforts = model.reasoning_efforts.clone();
+    if !efforts.iter().any(|effort| effort == "default") {
+        efforts.insert(0, "default".to_owned());
+    }
+    if !efforts.iter().any(|effort| effort == "off") {
+        efforts.insert(1, "off".to_owned());
+    }
+    efforts
+}
+
 fn next_mode(mode: &str) -> &str {
     match mode {
         "manual" => "auto",
@@ -1294,8 +1300,10 @@ fn info(title: &str, lines: Vec<String>) -> Modal {
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    use super::{Effect, SseDecoder, handle_key, next_mode, parse_command, pointer_top};
-    use crate::api::Session;
+    use super::{
+        Effect, SseDecoder, handle_key, model_efforts, next_mode, parse_command, pointer_top,
+    };
+    use crate::api::{ProviderModel, Session};
     use crate::tui::app::{App, MenuAction, ScrollDrag, ScrollTarget, ThemeKind};
 
     #[test]
@@ -1366,6 +1374,34 @@ mod tests {
             handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
             Some(Effect::Cancel)
         ));
+    }
+
+    #[test]
+    fn effort_options_follow_model_capabilities() {
+        let gemma = ProviderModel {
+            id: "gemma-4-26b-a4b-it".to_owned(),
+            status: "unloaded".to_owned(),
+            context_length: None,
+            parameter_size: None,
+            quantization: None,
+            reasoning_supported: Some(false),
+            reasoning_efforts: Vec::new(),
+        };
+        assert!(model_efforts(&gemma).is_empty());
+
+        let gemma = ProviderModel {
+            reasoning_supported: Some(true),
+            reasoning_efforts: vec!["on".to_owned()],
+            ..gemma
+        };
+        assert_eq!(model_efforts(&gemma), ["on", "off"]);
+
+        let qwen = ProviderModel {
+            reasoning_supported: Some(true),
+            reasoning_efforts: vec!["low".to_owned(), "medium".to_owned()],
+            ..gemma
+        };
+        assert_eq!(model_efforts(&qwen), ["default", "off", "low", "medium"]);
     }
 
     fn session() -> Session {

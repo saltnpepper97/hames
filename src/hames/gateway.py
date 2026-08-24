@@ -540,11 +540,14 @@ def create_app(state: GatewayState) -> FastAPI:
         selected = next((item for item in models if item.id == selected_model_id), None)
         if selected is None:
             raise ApiError(400, "unknown_model", f"unknown model: {selected_model_id}")
-        efforts = (
-            configured.supported_reasoning_efforts
-            if configured and configured.supported_reasoning_efforts
-            else selected.reasoning_efforts
-        )
+        efforts = selected.reasoning_efforts
+        if (
+            not efforts
+            and configured
+            and selected.id == configured.model
+            and configured.supported_reasoning_efforts
+        ):
+            efforts = configured.supported_reasoning_efforts
         if selected_effort and selected_effort != "off":
             if selected.reasoning_supported is False:
                 raise ApiError(400, "reasoning_not_supported", "model does not advertise reasoning")

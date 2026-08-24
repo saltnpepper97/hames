@@ -88,6 +88,12 @@ Reasoning is represented as a separate capability and channel. `off` disables it
 model or profile declares them. Unknown values are rejected instead of silently
 clamped.
 
+For llama.cpp router entries, Hames also recognizes model-specific reasoning
+options reported in `/v1/models`. Profile-declared effort names apply only to the
+profile's configured model; another router model that advertises reasoning does
+not inherit that scale and is exposed as boolean `on`/`off` unless its own scale
+is known.
+
 M02 includes the known Qwen3.8 effort set `low`, `medium`, and `xhigh`. Ollama
 thinking models default to boolean `on` unless a profile or known model family
 declares levels; GPT-OSS uses `low`, `medium`, and `high`. A profile declaration

@@ -283,6 +283,7 @@ pub enum TranscriptItem {
         run_id: String,
         content: String,
         duration_seconds: f64,
+        interrupted: bool,
         live: bool,
         collapsed: bool,
     },
@@ -767,6 +768,7 @@ impl App {
                 if let TranscriptItem::Thought {
                     content,
                     duration_seconds,
+                    interrupted,
                     live,
                     ..
                 } = &mut self.transcript[index]
@@ -777,6 +779,8 @@ impl App {
                         .get("duration_seconds")
                         .and_then(Value::as_f64)
                         .unwrap_or_default();
+                    *interrupted =
+                        event.payload.get("status").and_then(Value::as_str) == Some("interrupted");
                     *live = false;
                 }
             }
@@ -861,11 +865,18 @@ impl App {
                 }
             }
             "run.completed" | "run.cancelled" => {
+                let cancelled = event.event_type == "run.cancelled";
                 if self.active_run.as_deref() == Some(run_id.as_str()) {
                     self.active_run = None;
                     self.run_started_at = None;
                 }
-                self.finish_run(&run_id, event.event_type == "run.cancelled");
+                self.finish_run(&run_id, cancelled);
+                if cancelled {
+                    self.transcript.push(TranscriptItem::Status {
+                        text: "Turn interrupted".to_owned(),
+                        error: false,
+                    });
+                }
             }
             _ => {}
         }
@@ -913,6 +924,7 @@ impl App {
             run_id: run_id.to_owned(),
             content: String::new(),
             duration_seconds: 0.0,
+            interrupted: false,
             live,
             collapsed: false,
         });
@@ -1048,9 +1060,18 @@ impl App {
         for item in &mut self.transcript {
             match item {
                 TranscriptItem::Thought {
-                    run_id: id, live, ..
+                    run_id: id,
+                    live,
+                    interrupted,
+                    ..
+                } if id == run_id => {
+                    let was_live = *live;
+                    *live = false;
+                    if cancelled && was_live {
+                        *interrupted = true;
+                    }
                 }
-                | TranscriptItem::Assistant {
+                TranscriptItem::Assistant {
                     run_id: id, live, ..
                 } if id == run_id => *live = false,
                 TranscriptItem::Activity { run_id: id, rows } if id == run_id => {
@@ -1266,6 +1287,29 @@ mod tests {
                 live: false,
                 ..
             } if *duration_seconds == 12.0
+        )));
+    }
+
+    #[test]
+    fn cancellation_finalizes_and_marks_live_thought() {
+        let run_id = "run-cancelled";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_durable(event(1, "run.started", run_id, json!({})), true);
+        app.ingest_durable(event(2, "model.requested", run_id, json!({})), true);
+        app.ingest_durable(event(3, "run.cancelled", run_id, json!({})), true);
+
+        assert!(app.active_run.is_none());
+        assert!(app.transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Thought {
+                interrupted: true,
+                live: false,
+                ..
+            }
+        )));
+        assert!(app.transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Status { text, error: false } if text == "Turn interrupted"
         )));
     }
 

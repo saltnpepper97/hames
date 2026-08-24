@@ -112,14 +112,17 @@ thumbs support clicking and dragging. `/themes` switches between the default
 custom Hames palette and terminal-native colors.
 
 The bottom row keeps a right-aligned `[connected]` badge. While idle it shows the
-shortcut hints on the left; during work those hints become an animated diamond
-activity bar with elapsed time and `Esc interrupt`.
+shortcut hints on the left; during work those hints become a compact animated
+waveform with elapsed time and `Esc interrupt`. Interrupted reasoning settles as
+a completed `Thought` marked `interrupted` in the transcript.
 
 The top-right header shows the durable session title beside the current activity
 instead of repeating model controls. The model can set or revise that title with
 the safe `session_title_set` tool; `/title <name>` provides the equivalent direct
 control. `/model` lists only reachable configured providers, then asks for the
-model's reasoning effort on a second sheet before applying the change.
+model's supported reasoning setting on a second sheet before applying the change.
+Boolean reasoning models get `on`/`off`; models with a declared effort scale get
+their named levels plus `default` and `off`.
 
 Hames defaults to the `llama_cpp` profile at `http://127.0.0.1:8080`. Model
 selection prefers the request, then the profile default, then a sole discovered

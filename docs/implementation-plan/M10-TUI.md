@@ -52,8 +52,10 @@ viewport. Their tracks support mouse clicks and dragging.
   code-writing operations.
 - Ctrl+K opens the command palette. Runtime model, reasoning effort, agent, and
   mode controls appear as native sheets above the composer.
-- `/model` shows reachable configured providers only. Model choice leads to a
-  second reasoning-effort sheet, and both selections apply atomically at the end.
+- `/model` shows reachable configured providers only. Reasoning-capable model
+  choice leads to a capability-specific second sheet: `on`/`off` for boolean
+  reasoning or the advertised named effort scale. Both selections apply
+  atomically at the end.
 - `/themes` switches between the custom Hames RGB palette and terminal-native
   ANSI colors. The selection survives session changes within the running client.
 - Trust and approval decisions use focused modals. Approvals preserve the

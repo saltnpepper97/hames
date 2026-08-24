@@ -91,6 +91,44 @@ async def test_llama_cpp_discovers_reasoning_and_streams_separate_channels() -> 
 
 
 @pytest.mark.asyncio
+async def test_llama_cpp_keeps_router_reasoning_levels_model_specific() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "gemma-4-26b-a4b-it",
+                            "status": {
+                                "value": "unloaded",
+                                "args": ["llama-server", "--reasoning-budget", "6144"],
+                            },
+                        },
+                        {"id": "qwen3.8-27b", "status": {"value": "unloaded"}},
+                    ]
+                },
+            )
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = LlamaCppProvider(
+        "http://llama",
+        default_model="qwen3.8-27b",
+        supported_reasoning_efforts=["low", "medium", "xhigh"],
+        client=client,
+    )
+
+    gemma, qwen = await provider.list_models()
+
+    assert gemma.reasoning_supported is True
+    assert gemma.reasoning_efforts == ["on"]
+    assert qwen.reasoning_supported is True
+    assert qwen.reasoning_efforts == ["low", "medium", "xhigh"]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_ollama_discovers_capabilities_and_streams_usage() -> None:
     seen_request: dict[str, object] = {}
 

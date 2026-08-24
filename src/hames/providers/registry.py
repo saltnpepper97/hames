@@ -16,6 +16,7 @@ def configured_providers(config: HamesConfig) -> dict[str, Provider]:
                 profile.base_url,
                 profile_id=profile_id,
                 timeout_seconds=profile.timeout_seconds,
+                default_model=profile.model,
                 supported_reasoning_efforts=profile.supported_reasoning_efforts,
             )
         elif profile.adapter == "ollama":
