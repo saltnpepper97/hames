@@ -390,10 +390,17 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
             } => {
                 let interactive = !(*interrupted && !*live && content.is_empty());
                 let label = if *live {
-                    Line::from(Span::styled(
+                    let mut spans = vec![Span::styled(
                         "◈ Thinking",
                         Style::default().fg(INPUT).bold(),
-                    ))
+                    )];
+                    if interactive {
+                        spans.push(Span::styled(
+                            if *collapsed { "  ▸" } else { "  ▾" },
+                            Style::default().fg(MUTED),
+                        ));
+                    }
+                    Line::from(spans)
                 } else {
                     let mut spans = vec![
                         Span::styled("◈ ", Style::default().fg(MUTED)),
@@ -2959,6 +2966,37 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("Thinking"));
         assert!(!rendered.contains("Working…"));
+    }
+
+    #[test]
+    fn live_reasoning_stays_collapsed_until_explicitly_opened() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-thinking".to_owned());
+        app.transcript.push(TranscriptItem::Thought {
+            run_id: "run-thinking".to_owned(),
+            content: "partial private reasoning".to_owned(),
+            duration_seconds: 0.0,
+            interrupted: false,
+            live: true,
+            collapsed: true,
+        });
+
+        let collapsed = transcript_lines(&app, 80)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(collapsed.contains("Thinking  ▸"));
+        assert!(!collapsed.contains("partial private reasoning"));
+
+        app.toggle_thought(0);
+        let expanded = transcript_lines(&app, 80)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(expanded.contains("Thinking  ▾"));
+        assert!(expanded.contains("partial private reasoning"));
     }
 
     #[test]

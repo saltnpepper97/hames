@@ -1639,7 +1639,7 @@ impl App {
             duration_seconds: 0.0,
             interrupted: false,
             live,
-            collapsed: false,
+            collapsed: true,
         });
         self.transcript.len() - 1
     }
@@ -2145,7 +2145,11 @@ mod tests {
         assert_eq!(app.active_run.as_deref(), Some(run_id));
         assert!(matches!(
             app.transcript.last(),
-            Some(TranscriptItem::Thought { live: true, .. })
+            Some(TranscriptItem::Thought {
+                live: true,
+                collapsed: true,
+                ..
+            })
         ));
 
         app.ingest_durable(
