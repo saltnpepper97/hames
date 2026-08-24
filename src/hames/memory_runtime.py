@@ -175,9 +175,7 @@ class MemoryManager:
             await self._publish(completed)
         except (ProviderError, ValueError, KeyError) as exc:
             if isinstance(exc, ProviderError) and exc.code == "maintenance_preempted":
-                _, paused = await asyncio.to_thread(
-                    self.store.pause_job, job.id, reason=str(exc)
-                )
+                _, paused = await asyncio.to_thread(self.store.pause_job, job.id, reason=str(exc))
                 await self._publish(paused)
                 self._queue.put_nowait(job.id)
                 return

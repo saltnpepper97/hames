@@ -182,7 +182,7 @@ class MessageQueueStore:
         return QueueMutation(state=self.state(session_id), event=event, item=item)
 
     def clear(self, session_id: str, *, reason: str = "cleared") -> tuple[QueueMutation, ...]:
-        mutations = []
+        mutations: list[QueueMutation] = []
         for item in list(self.state(session_id).items):
             mutations.append(self.take(session_id, item.id, reason=reason))
         return tuple(mutations)

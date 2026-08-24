@@ -35,6 +35,18 @@ def response_object(response: httpx.Response) -> dict[str, JsonValue]:
     return JSON_OBJECT.validate_python(cast(object, response.json()))
 
 
+def _user_contents(events: list[dict[str, JsonValue]]) -> list[str]:
+    contents: list[str] = []
+    for event in events:
+        if event["type"] != "user.message":
+            continue
+        payload = JSON_OBJECT.validate_python(event["payload"])
+        content = payload["content"]
+        assert isinstance(content, str)
+        contents.append(content)
+    return contents
+
+
 class ForegroundOverlapProvider:
     profile_id = "fake"
     adapter = "fake"
@@ -164,11 +176,7 @@ async def test_gateway_queues_two_messages_and_promotes_them_fifo(tmp_path: Path
             events = await _wait_for_event(
                 client, headers, session_id, "run.completed", occurrences=3
             )
-            users = [
-                event["payload"]["content"]  # type: ignore[index]
-                for event in events
-                if event["type"] == "user.message"
-            ]
+            users = _user_contents(events)
             assert users == ["one", "two", "three"]
             queue = await client.get(f"/v1/sessions/{session_id}/queue", headers=headers)
             assert response_object(queue)["items"] == []
@@ -223,11 +231,7 @@ async def test_send_now_interrupts_and_runs_a_priority_turn_without_dropping_que
             events = await _wait_for_event(
                 client, headers, session_id, "run.completed", occurrences=2
             )
-            users = [
-                event["payload"]["content"]  # type: ignore[index]
-                for event in events
-                if event["type"] == "user.message"
-            ]
+            users = _user_contents(events)
             assert users == ["active", "send now", "older queued"]
             assert len(provider.requests) == 3
     finally:
@@ -269,9 +273,7 @@ async def test_paused_queue_survives_cancellation_until_explicit_resume(tmp_path
             )
             queue_id = str(response_object(queued)["queued"]["id"])  # type: ignore[index]
 
-            paused = await client.post(
-                f"/v1/sessions/{session_id}/queue/pause", headers=headers
-            )
+            paused = await client.post(f"/v1/sessions/{session_id}/queue/pause", headers=headers)
             assert response_object(paused)["paused"] is True
             assert (
                 await client.post(f"/v1/runs/{run_id}/cancel", headers=headers)
@@ -286,16 +288,10 @@ async def test_paused_queue_survives_cancellation_until_explicit_resume(tmp_path
             assert still_queued["items"][0]["id"] == queue_id  # type: ignore[index]
             assert len(provider.requests) == 1
 
-            resumed = await client.post(
-                f"/v1/sessions/{session_id}/queue/resume", headers=headers
-            )
+            resumed = await client.post(f"/v1/sessions/{session_id}/queue/resume", headers=headers)
             assert response_object(resumed)["paused"] is False
             events = await _wait_for_event(client, headers, session_id, "run.completed")
-            users = [
-                event["payload"]["content"]  # type: ignore[index]
-                for event in events
-                if event["type"] == "user.message"
-            ]
+            users = _user_contents(events)
             assert users == ["active", "keep me"]
             assert len(provider.requests) == 2
     finally:

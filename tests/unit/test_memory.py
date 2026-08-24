@@ -172,18 +172,27 @@ def test_memory_delete_removes_record_and_retrieval_metadata(
     with pytest.raises(KeyError):
         store.get(mutation.record.id)
     with ledger.database.connect() as connection:
-        assert connection.execute(
-            "SELECT count(*) FROM memory_anchors WHERE memory_id = ?",
-            (mutation.record.id,),
-        ).fetchone()[0] == 0
-        assert connection.execute(
-            "SELECT count(*) FROM memory_provenance WHERE memory_id = ?",
-            (mutation.record.id,),
-        ).fetchone()[0] == 0
-        assert connection.execute(
-            "SELECT count(*) FROM memory_fts WHERE memory_id = ?",
-            (mutation.record.id,),
-        ).fetchone()[0] == 0
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM memory_anchors WHERE memory_id = ?",
+                (mutation.record.id,),
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM memory_provenance WHERE memory_id = ?",
+                (mutation.record.id,),
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM memory_fts WHERE memory_id = ?",
+                (mutation.record.id,),
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_workspace_visibility_and_supersession(hames_paths: HamesPaths, tmp_path: Path) -> None:

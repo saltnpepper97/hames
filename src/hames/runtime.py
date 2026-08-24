@@ -468,13 +468,9 @@ class RunManager:
         if state.paused or not state.items:
             return None
         session = await asyncio.to_thread(self.ledger.get_session, session_id)
-        trust = await asyncio.to_thread(
-            self.controls.get_trust, Path(session.working_directory)
-        )
+        trust = await asyncio.to_thread(self.controls.get_trust, Path(session.working_directory))
         if session.status != "open" or session.provider not in self.providers or trust is None:
-            mutation = await asyncio.to_thread(
-                self.message_queue.set_paused, session_id, True
-            )
+            mutation = await asyncio.to_thread(self.message_queue.set_paused, session_id, True)
             await self._publish_durable(mutation.event)
             return None
         mutation = await asyncio.to_thread(

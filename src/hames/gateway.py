@@ -1156,9 +1156,7 @@ def create_app(state: GatewayState) -> FastAPI:
         """List workspace-visible Skills before applying the active agent's policy."""
         try:
             session = await asyncio.to_thread(state.ledger.get_session, session_id)
-            return await asyncio.to_thread(
-                state.runs.skills.visible, session, query="", limit=200
-            )
+            return await asyncio.to_thread(state.runs.skills.visible, session, query="", limit=200)
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
 
@@ -1373,9 +1371,7 @@ def create_app(state: GatewayState) -> FastAPI:
         dependencies=auth,
         response_model=Scar,
     )
-    async def update_scar(
-        session_id: str, scar_id: str, request: ScarUpdateRequest
-    ) -> Scar:
+    async def update_scar(session_id: str, scar_id: str, request: ScarUpdateRequest) -> Scar:
         try:
             session = await asyncio.to_thread(state.ledger.get_session, session_id)
             mutation = await asyncio.to_thread(
@@ -1690,9 +1686,7 @@ def create_app(state: GatewayState) -> FastAPI:
         except PermissionError as exc:
             raise ApiError(409, "working_directory_untrusted", str(exc)) from exc
 
-    @app.get(
-        "/v1/sessions/{session_id}/queue", dependencies=auth, response_model=QueueState
-    )
+    @app.get("/v1/sessions/{session_id}/queue", dependencies=auth, response_model=QueueState)
     async def queue_state(session_id: str) -> QueueState:
         try:
             return await state.runs.queue_state(session_id)
@@ -1736,18 +1730,14 @@ def create_app(state: GatewayState) -> FastAPI:
                 404, "queued_message_not_found", f"unknown queue item: {queue_id}"
             ) from exc
 
-    @app.delete(
-        "/v1/sessions/{session_id}/queue", dependencies=auth, response_model=QueueState
-    )
+    @app.delete("/v1/sessions/{session_id}/queue", dependencies=auth, response_model=QueueState)
     async def clear_queue(session_id: str) -> QueueState:
         try:
             return await state.runs.clear_queue(session_id)
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
 
-    @app.post(
-        "/v1/sessions/{session_id}/queue/pause", dependencies=auth, response_model=QueueState
-    )
+    @app.post("/v1/sessions/{session_id}/queue/pause", dependencies=auth, response_model=QueueState)
     async def pause_queue(session_id: str) -> QueueState:
         try:
             return await state.runs.pause_queue(session_id)
