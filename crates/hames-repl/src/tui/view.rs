@@ -12,7 +12,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::app::{
     ActivityCategory, ActivityPhase, App, ComposerUnit, HitAction, HitRegion, Modal, ScrollTarget,
-    ThemeKind, TranscriptItem, TranscriptViewport,
+    SheetKind, ThemeKind, TranscriptItem, TranscriptViewport,
 };
 
 const MINT: Color = Color::Rgb(116, 226, 192);
@@ -23,6 +23,7 @@ const GOLD: Color = Color::Rgb(240, 190, 92);
 const MUTED: Color = Color::Rgb(86, 94, 108);
 const INPUT: Color = Color::Rgb(156, 164, 178);
 const RULE: Color = Color::Rgb(49, 56, 69);
+const DELETE_BG: Color = Color::Rgb(78, 31, 39);
 const PANEL: Color = Color::Rgb(19, 23, 31);
 const PANEL_BRIGHT: Color = Color::Rgb(29, 35, 46);
 
@@ -462,7 +463,10 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .take(inner_height)
     {
         let selected = offset == sheet.selected;
-        let row_style = if selected {
+        let deleting = sheet.pending_delete == Some(offset);
+        let row_style = if deleting {
+            Style::default().bg(DELETE_BG)
+        } else if selected {
             Style::default().bg(PANEL_BRIGHT)
         } else {
             Style::default()
@@ -470,9 +474,37 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         let mut spans = vec![Span::styled(
             if selected { "  •" } else { "   " },
             Style::default()
-                .fg(if selected { INPUT } else { MUTED })
+                .fg(if deleting {
+                    CORAL
+                } else if selected {
+                    INPUT
+                } else {
+                    MUTED
+                })
                 .patch(row_style),
         )];
+        if deleting {
+            let lead = " Press";
+            let prompt = "Ctrl+D again to delete this entry  ";
+            let used = 3 + UnicodeWidthStr::width(lead) + UnicodeWidthStr::width(prompt);
+            spans.extend([
+                Span::styled(lead, Style::default().fg(INPUT).patch(row_style)),
+                Span::styled(
+                    " ".repeat(usize::from(area.width).saturating_sub(used)),
+                    row_style,
+                ),
+                Span::styled(prompt, Style::default().fg(CORAL).bold().patch(row_style)),
+            ]);
+            lines.push(Line::from(spans));
+            app.hits.push(HitRegion {
+                x: area.x,
+                y: area.y + 1 + u16::try_from(offset - start).unwrap_or(0),
+                width: area.width,
+                height: 1,
+                action: HitAction::SelectSheet(offset),
+            });
+            continue;
+        }
         let label_field = format!(" {:<20}", option.label);
         if command_tray {
             spans.extend(command_label_spans(
@@ -722,7 +754,9 @@ fn scrollbar_position(top: usize, content_len: usize, viewport_len: usize) -> us
 }
 
 fn render_status_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let left = if app.active_run.is_some() {
+    let left = if app.sheet.is_some() {
+        sheet_shortcuts(app)
+    } else if app.active_run.is_some() {
         activity_bar(app)
     } else {
         Line::from(Span::styled(
@@ -740,6 +774,42 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .alignment(Alignment::Right),
         area,
     );
+}
+
+fn sheet_shortcuts(app: &App) -> Line<'static> {
+    let Some(sheet) = &app.sheet else {
+        return Line::default();
+    };
+    if sheet.kind == SheetKind::Sessions && sheet.pending_delete.is_some() {
+        return Line::from(vec![
+            Span::styled("  ↑↓", Style::default().fg(INPUT).bold()),
+            Span::styled(" cancel · ", Style::default().fg(MUTED)),
+            Span::styled("Esc", Style::default().fg(INPUT).bold()),
+            Span::styled(" close", Style::default().fg(MUTED)),
+        ]);
+    }
+    let action = match sheet.kind {
+        SheetKind::Commands => "open",
+        SheetKind::Sessions => "resume",
+        _ => "select",
+    };
+    let mut spans = vec![
+        Span::styled("  ↑↓", Style::default().fg(INPUT).bold()),
+        Span::styled(" navigate · ", Style::default().fg(MUTED)),
+        Span::styled("Enter", Style::default().fg(INPUT).bold()),
+        Span::styled(format!(" {action} · "), Style::default().fg(MUTED)),
+    ];
+    if sheet.kind == SheetKind::Sessions {
+        spans.extend([
+            Span::styled("Ctrl+D", Style::default().fg(INPUT).bold()),
+            Span::styled(" remove · ", Style::default().fg(MUTED)),
+        ]);
+    }
+    spans.extend([
+        Span::styled("Esc", Style::default().fg(INPUT).bold()),
+        Span::styled(" close", Style::default().fg(MUTED)),
+    ]);
+    Line::from(spans)
 }
 
 fn activity_bar(app: &App) -> Line<'static> {
@@ -1265,6 +1335,7 @@ fn terminal_color(color: Color) -> Color {
         INPUT => Color::Gray,
         PANEL => Color::Black,
         PANEL_BRIGHT => Color::DarkGray,
+        DELETE_BG => Color::Red,
         Color::White => Color::Reset,
         Color::Rgb(_, _, _) => Color::Reset,
         value => value,
@@ -1312,11 +1383,15 @@ mod tests {
     use ratatui::style::Color;
 
     use super::{
-        GOLD, INPUT, MINT, MUTED, PANEL_BRIGHT, RULE, SKY, draw, format_elapsed, mode_color,
-        mode_outline, pasted_display, scrollbar_position, sheet_text_color, thought_label,
+        DELETE_BG, GOLD, INPUT, MINT, MUTED, PANEL_BRIGHT, RULE, SKY, draw, format_elapsed,
+        mode_color, mode_outline, pasted_display, scrollbar_position, sheet_text_color,
+        thought_label,
     };
     use crate::api::{PasteSpan, Session};
-    use crate::tui::app::{App, HitAction, Modal, TranscriptItem, TranscriptPoint};
+    use crate::tui::app::{
+        App, HitAction, MenuAction, MenuOption, Modal, Sheet, SheetKind, TranscriptItem,
+        TranscriptPoint,
+    };
 
     #[test]
     fn thought_duration_uses_significance_threshold_and_readable_units() {
@@ -1595,6 +1670,54 @@ mod tests {
         assert_eq!(buffer.cell((99, tray_bottom)).unwrap().symbol(), "─");
         assert_eq!(buffer.cell((2, tray_top + 2)).unwrap().symbol(), "•");
         assert_eq!(buffer.cell((50, tray_top + 2)).unwrap().bg, PANEL_BRIGHT);
+        let rendered = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("↑↓ navigate · Enter select · Esc close"));
+    }
+
+    #[test]
+    fn armed_session_deletion_uses_a_red_row_and_confirmation_shortcut() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.sheet = Some(Sheet {
+            kind: SheetKind::Sessions,
+            title: "Open sessions".to_owned(),
+            options: vec![MenuOption {
+                label: "Design pass".to_owned(),
+                detail: "~/hames · fixture · auto".to_owned(),
+                action: MenuAction::Resume("old-session".to_owned()),
+            }],
+            selected: 0,
+            pending_delete: None,
+        });
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let idle = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(idle.contains("Enter resume · Ctrl+D remove · Esc close"));
+
+        app.sheet.as_mut().unwrap().pending_delete = Some(0);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let rendered = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Press"));
+        assert!(rendered.contains("Ctrl+D again to delete this entry"));
+        assert!(rendered.contains("↑↓ cancel · Esc close"));
+        assert!(!rendered.contains("Design pass"));
+        assert_eq!(buffer.cell((50, 24)).unwrap().bg, DELETE_BG);
     }
 
     #[test]

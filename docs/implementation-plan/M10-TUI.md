@@ -57,6 +57,10 @@ viewport. Their tracks support mouse clicks and dragging.
   gray band marks the active row and green marks only the query-matching text.
   All other above-composer selection sheets reuse those open rules and subdued
   rows, adding only an inset title to the top rule.
+  The bottom-left shortcut strip becomes sheet-specific while any tray is open.
+  `/sessions` uses a reversible two-press Ctrl+D removal gesture: the first
+  press marks only the selected row red, navigation or Esc disarms it, and the
+  second press retires the session from resumable history.
   Rows use their literal slash names. `/new` preserves the current conversation
   and starts another; `/clear` retires it before starting fresh. Bare `/resume`
   aliases the `/sessions` picker and `/resume <id>` remains the direct path.

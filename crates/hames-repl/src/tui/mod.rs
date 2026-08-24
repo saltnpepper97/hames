@@ -180,6 +180,19 @@ async fn create_session(
     Ok(created)
 }
 
+async fn replace_session(
+    client: &GatewayClient,
+    paths: &LocalPaths,
+    previous: &Session,
+) -> Result<Session> {
+    let created = create_session(client, paths, Some(previous)).await?;
+    if let Err(error) = client.close_session(&previous.id).await {
+        let _ = client.close_session(&created.id).await;
+        return Err(error);
+    }
+    Ok(created)
+}
+
 async fn load_app(client: &GatewayClient, session: Session) -> Result<App> {
     let (events, trust) = tokio::try_join!(
         client.history(&session.id),
@@ -197,6 +210,7 @@ enum Effect {
     Cancel,
     Copy(String),
     Menu(MenuAction),
+    DeleteSession(String),
 }
 
 fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
@@ -240,6 +254,24 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         }
         return None;
     }
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('d') {
+        let Some(sheet) = &mut app.sheet else {
+            return None;
+        };
+        if sheet.kind != SheetKind::Sessions || sheet.options.is_empty() {
+            return None;
+        }
+        let selected = sheet.selected.min(sheet.options.len().saturating_sub(1));
+        if sheet.pending_delete == Some(selected) {
+            sheet.pending_delete = None;
+            return match &sheet.options[selected].action {
+                MenuAction::Resume(session_id) => Some(Effect::DeleteSession(session_id.clone())),
+                _ => None,
+            };
+        }
+        sheet.pending_delete = Some(selected);
+        return None;
+    }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         if app.active_run.is_some() {
             app.notice = Some("Cancelling current work…".to_owned());
@@ -254,11 +286,14 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     }
     match key.code {
         KeyCode::Esc => {
+            if app.sheet.is_some() {
+                app.sheet = None;
+                return None;
+            }
             if app.active_run.is_some() {
                 app.notice = Some("Interrupting current work…".to_owned());
                 return Some(Effect::Cancel);
             }
-            app.sheet = None;
             app.focused_thought = None;
             None
         }
@@ -273,12 +308,14 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         KeyCode::Up if app.sheet.is_some() => {
             if let Some(sheet) = &mut app.sheet {
                 sheet.selected = sheet.selected.saturating_sub(1);
+                sheet.pending_delete = None;
             }
             None
         }
         KeyCode::Down if app.sheet.is_some() => {
             if let Some(sheet) = &mut app.sheet {
                 sheet.selected = (sheet.selected + 1).min(sheet.options.len().saturating_sub(1));
+                sheet.pending_delete = None;
             }
             None
         }
@@ -702,6 +739,25 @@ async fn apply_effect(
             app.show_copy_notice(text.chars().count());
         }
         Effect::Menu(action) => return apply_menu_action(client, paths, app, action).await,
+        Effect::DeleteSession(session_id) => {
+            if session_id == app.session.id {
+                app.notice = Some("Removing this session and starting fresh…".to_owned());
+                let previous = app.session.clone();
+                return Ok(Some(replace_session(client, paths, &previous).await?));
+            }
+            app.notice = Some("Removing session from history…".to_owned());
+            client.close_session(&session_id).await?;
+            if let Some(sheet) = &mut app.sheet
+                && sheet.kind == SheetKind::Sessions
+            {
+                sheet.options.retain(
+                    |option| !matches!(&option.action, MenuAction::Resume(id) if id == &session_id),
+                );
+                sheet.selected = sheet.selected.min(sheet.options.len().saturating_sub(1));
+                sheet.pending_delete = None;
+            }
+            app.notice = Some("Session removed from resumable history".to_owned());
+        }
     }
     Ok(None)
 }
@@ -730,12 +786,7 @@ async fn apply_menu_action(
         MenuAction::ClearSession => {
             app.notice = Some("Clearing this conversation…".to_owned());
             let previous = app.session.clone();
-            let created = create_session(client, paths, Some(&previous)).await?;
-            if let Err(error) = client.close_session(&previous.id).await {
-                let _ = client.close_session(&created.id).await;
-                return Err(error);
-            }
-            return Ok(Some(created));
+            return Ok(Some(replace_session(client, paths, &previous).await?));
         }
         MenuAction::OpenSessions => {
             app.notice = Some("Loading sessions…".to_owned());
@@ -762,6 +813,7 @@ async fn apply_menu_action(
                     })
                     .collect(),
                 selected: 0,
+                pending_delete: None,
             });
         }
         MenuAction::ForkSession => {
@@ -805,6 +857,7 @@ async fn apply_menu_action(
                     title: "Provider and model".to_owned(),
                     options,
                     selected: 0,
+                    pending_delete: None,
                 });
             }
         }
@@ -847,6 +900,7 @@ async fn apply_menu_action(
                     })
                     .collect(),
                 selected: 0,
+                pending_delete: None,
             });
         }
         MenuAction::OpenEfforts => {
@@ -883,6 +937,7 @@ async fn apply_menu_action(
                     })
                     .collect(),
                 selected: 0,
+                pending_delete: None,
             });
         }
         MenuAction::OpenAgents => {
@@ -901,6 +956,7 @@ async fn apply_menu_action(
                     })
                     .collect(),
                 selected: 0,
+                pending_delete: None,
             });
         }
         MenuAction::OpenModes => app.open_modes(),
@@ -1389,7 +1445,8 @@ mod tests {
     };
     use crate::api::{ProviderModel, Session};
     use crate::tui::app::{
-        App, MenuAction, ScrollDrag, ScrollTarget, ThemeKind, TranscriptViewport,
+        App, MenuAction, MenuOption, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind,
+        TranscriptViewport,
     };
 
     #[test]
@@ -1453,6 +1510,44 @@ mod tests {
         assert_eq!(next_mode("manual"), "auto");
         assert_eq!(next_mode("auto"), "plan");
         assert_eq!(next_mode("plan"), "manual");
+    }
+
+    #[test]
+    fn session_deletion_requires_two_ctrl_d_presses_and_navigation_cancels_it() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.sheet = Some(Sheet {
+            kind: SheetKind::Sessions,
+            title: "Open sessions".to_owned(),
+            options: vec![
+                MenuOption {
+                    label: "First".to_owned(),
+                    detail: "fixture".to_owned(),
+                    action: MenuAction::Resume("session-first".to_owned()),
+                },
+                MenuOption {
+                    label: "Second".to_owned(),
+                    detail: "fixture".to_owned(),
+                    action: MenuAction::Resume("session-second".to_owned()),
+                },
+            ],
+            selected: 0,
+            pending_delete: None,
+        });
+        let ctrl_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+
+        assert!(handle_key(&mut app, ctrl_d).is_none());
+        assert_eq!(app.sheet.as_ref().unwrap().pending_delete, Some(0));
+
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)).is_none());
+        let sheet = app.sheet.as_ref().unwrap();
+        assert_eq!(sheet.selected, 1);
+        assert_eq!(sheet.pending_delete, None);
+
+        assert!(handle_key(&mut app, ctrl_d).is_none());
+        assert!(matches!(
+            handle_key(&mut app, ctrl_d),
+            Some(Effect::DeleteSession(session_id)) if session_id == "session-second"
+        ));
     }
 
     #[test]

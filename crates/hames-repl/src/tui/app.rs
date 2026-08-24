@@ -427,6 +427,7 @@ pub struct Sheet {
     pub title: String,
     pub options: Vec<MenuOption>,
     pub selected: usize,
+    pub pending_delete: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -738,6 +739,7 @@ impl App {
             title: "Command palette".to_owned(),
             options: self.command_options(),
             selected: 0,
+            pending_delete: None,
         });
         self.modal = None;
     }
@@ -768,6 +770,7 @@ impl App {
                 "plan" => 2,
                 _ => 1,
             },
+            pending_delete: None,
         });
         self.modal = None;
     }
@@ -789,6 +792,7 @@ impl App {
                 ),
             ],
             selected: usize::from(self.theme == ThemeKind::Terminal),
+            pending_delete: None,
         });
         self.modal = None;
     }
@@ -813,6 +817,7 @@ impl App {
             title: "Slash commands".to_owned(),
             options,
             selected: 0,
+            pending_delete: None,
         });
     }
 
