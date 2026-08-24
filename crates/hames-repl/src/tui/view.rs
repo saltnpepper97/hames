@@ -86,8 +86,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let composer_height = composer_rows(app, composer_width).clamp(1, 8) + 2;
     let notice = app
         .copy_notice()
-        .map(str::to_owned)
-        .or_else(|| app.notice.clone());
+        .map(|message| (message.to_owned(), false))
+        .or_else(|| app.error_notice.clone().map(|message| (message, true)))
+        .or_else(|| app.notice.clone().map(|message| (message, false)));
     let notice_height = u16::from(notice.is_some());
     let queue_height = u16::try_from(app.queued_messages.len()).unwrap_or(2).min(2);
     let sheet_height = app
@@ -135,11 +136,17 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     } else if sheet_height > 0 {
         render_sheet(frame, app, footer[0]);
     }
-    if let Some(notice) = notice {
+    if let Some((notice, error)) = notice {
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled("  ◆ ", Style::default().fg(GOLD)),
-                Span::styled(notice, Style::default().fg(MUTED)),
+                Span::styled(
+                    "  ◆ ",
+                    Style::default().fg(if error { CORAL } else { GOLD }),
+                ),
+                Span::styled(
+                    notice,
+                    Style::default().fg(if error { CORAL } else { MUTED }),
+                ),
             ])),
             footer[1],
         );
@@ -1159,7 +1166,7 @@ fn activity_bar(app: &App) -> Line<'static> {
     let queue_hint = if app.queued_messages.len() >= 2 {
         "Queue full 2/2"
     } else {
-        "Enter queue · ↑ edit newest"
+        "Enter queue · Alt+↑ now · ↑ edit"
     };
     spans.push(Span::styled(
         format!(" · {elapsed} · {queue_hint} · Esc interrupt"),
@@ -3571,6 +3578,32 @@ mod tests {
     }
 
     #[test]
+    fn action_errors_render_on_the_notice_line_instead_of_a_modal() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.error_notice = Some("cannot clear a session during an active run".to_owned());
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("cannot clear a session during an active run"));
+        assert!(!rendered.contains("Something went wrong"));
+        let error_cell = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == "c" && cell.fg == CORAL);
+        assert!(error_cell.is_some());
+    }
+
+    #[test]
     fn active_run_replaces_shortcuts_with_compact_interrupt_meter() {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -3586,7 +3619,9 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("──────"));
-        assert!(rendered.contains("Working · 12s · Enter queue · ↑ edit newest · Esc interrupt"));
+        assert!(
+            rendered.contains("Working · 12s · Enter queue · Alt+↑ now · ↑ edit · Esc interrupt")
+        );
         assert!(rendered.contains("[connected]"));
         assert!(!rendered.contains("Shift+Tab mode"));
         let footer_y = terminal.size().unwrap().height - 1;

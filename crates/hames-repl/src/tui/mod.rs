@@ -92,7 +92,10 @@ pub async fn run() -> Result<()> {
         let effect = tokio::select! {
             event = input.next() => {
                 match event {
-                    Some(Ok(event)) => handle_terminal_event(&mut app, event),
+                    Some(Ok(event)) => {
+                        app.error_notice = None;
+                        handle_terminal_event(&mut app, event)
+                    }
                     Some(Err(error)) => {
                         app.modal = Some(Modal::Error(format!("terminal input failed: {error}")));
                         None
@@ -144,7 +147,7 @@ pub async fn run() -> Result<()> {
             }
             Ok(None) => {}
             Err(error) => {
-                app.modal = Some(Modal::Error(format!("{error:#}")));
+                app.error_notice = Some(action_error_message(&error));
                 app.notice = None;
             }
         }
@@ -365,6 +368,7 @@ enum Effect {
     Trust,
     ResolveApproval(usize),
     Send(String, Vec<PasteSpan>),
+    SendNow(String, Vec<PasteSpan>),
     TakeQueued(String),
     TakeLatestQueued,
     Cancel,
@@ -480,6 +484,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
         return Some(Effect::Quit);
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Up {
+        return send_now(app);
     }
     match key.code {
         KeyCode::Esc => {
@@ -1211,6 +1218,41 @@ fn send_or_command(app: &mut App) -> Option<Effect> {
     Some(Effect::Send(content, pastes))
 }
 
+fn send_now(app: &mut App) -> Option<Effect> {
+    if app.active_run.is_none() {
+        app.notice = Some("Nothing to interrupt · Enter sends normally".to_owned());
+        return None;
+    }
+    let (content, pastes) = app.composer.message();
+    if content.trim().is_empty() {
+        app.notice = Some("Type a message before using Alt+↑ send now".to_owned());
+        return None;
+    }
+    if app.queued_messages.len() >= 2 {
+        app.notice = Some("Queue full · edit or remove a queued message first".to_owned());
+        return None;
+    }
+    app.sheet = None;
+    app.scroll = 0;
+    app.notice = Some("Interrupting · this message will run next…".to_owned());
+    Some(Effect::SendNow(content, pastes))
+}
+
+fn action_error_message(error: &anyhow::Error) -> String {
+    let message = format!("{error:#}");
+    if let Some(body) = message.strip_prefix("gateway returned ")
+        && let Some((_, json)) = body.split_once(": ")
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(json)
+        && let Some(detail) = value
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(serde_json::Value::as_str)
+    {
+        return detail.to_owned();
+    }
+    message.lines().next().unwrap_or("Action failed").to_owned()
+}
+
 fn parse_command(value: &str) -> Option<MenuAction> {
     let mut parts = value.split_whitespace();
     match parts.next()? {
@@ -1328,15 +1370,30 @@ async fn apply_effect(
             if accepted.disposition == "started" {
                 app.active_run = accepted.run_id;
                 app.run_started_at = Some(std::time::Instant::now());
-            } else if let Some(item) = accepted.queued
-                && !app
-                    .queued_messages
-                    .iter()
-                    .any(|queued| queued.id == item.id)
-            {
-                app.queued_messages.push(item);
+            } else if let Some(item) = accepted.queued {
+                app.insert_queued_message(item);
             }
             app.notice = None;
+        }
+        Effect::SendNow(content, pastes) => {
+            let accepted = client
+                .send_message_now_with_pastes(&app.session.id, &content, false, &pastes)
+                .await?;
+            let started_immediately = accepted.disposition == "started";
+            app.composer.clear();
+            app.history_index = None;
+            app.history_draft = None;
+            if accepted.disposition == "started" {
+                app.active_run = accepted.run_id;
+                app.run_started_at = Some(std::time::Instant::now());
+            } else if let Some(item) = accepted.queued {
+                app.insert_queued_message(item);
+            }
+            app.notice = Some(if started_immediately {
+                "Priority turn started".to_owned()
+            } else {
+                "Current work interrupted · priority turn queued".to_owned()
+            });
         }
         Effect::TakeQueued(queue_id) => {
             let item = client.take_queued(&app.session.id, &queue_id).await?;
@@ -2240,8 +2297,8 @@ mod tests {
     };
 
     use super::{
-        Effect, SseDecoder, agent_source, handle_key, handle_mouse, model_efforts, next_mode,
-        parse_command, pointer_top, terminal_tab_title,
+        Effect, SseDecoder, action_error_message, agent_source, handle_key, handle_mouse,
+        model_efforts, next_mode, parse_command, pointer_top, terminal_tab_title,
     };
     use crate::api::{MemoryRecord, ProviderModel, QueuedMessage, Scar, Session};
     use crate::tui::app::{
@@ -2331,6 +2388,31 @@ mod tests {
             handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
             Some(Effect::TakeLatestQueued)
         ));
+    }
+
+    #[test]
+    fn alt_up_sends_the_composer_next_without_losing_its_text_early() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-active".to_owned());
+        app.composer.insert_text("urgent correction");
+
+        assert!(matches!(
+            handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::ALT)),
+            Some(Effect::SendNow(content, _)) if content == "urgent correction"
+        ));
+        assert_eq!(app.composer.text(), "urgent correction");
+        assert!(app.notice.as_deref().unwrap().contains("will run next"));
+    }
+
+    #[test]
+    fn gateway_conflict_errors_are_reduced_to_notice_text() {
+        let error = anyhow::Error::msg(
+            r#"gateway returned 409 Conflict: {"error":{"code":"session_run_active","message":"cannot clear a session during an active run"}}"#,
+        );
+        assert_eq!(
+            action_error_message(&error),
+            "cannot clear a session during an active run"
+        );
     }
 
     #[test]

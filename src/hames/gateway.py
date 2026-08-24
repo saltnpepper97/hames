@@ -108,6 +108,7 @@ def _empty_paste_spans() -> list[PasteSpan]:
 class MessageRequest(ApiModel):
     content: str = Field(min_length=1)
     remember: bool = False
+    send_now: bool = False
     paste_spans: list[PasteSpan] = Field(default_factory=_empty_paste_spans, max_length=64)
 
     @model_validator(mode="after")
@@ -1673,6 +1674,7 @@ def create_app(state: GatewayState) -> FastAPI:
                 request.content,
                 remember=request.remember,
                 paste_spans=[span.model_dump(mode="json") for span in request.paste_spans],
+                send_now=request.send_now,
             )
             return MessageAccepted(
                 disposition=cast(Literal["started", "queued"], result.disposition),

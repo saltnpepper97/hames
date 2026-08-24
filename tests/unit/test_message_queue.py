@@ -66,3 +66,24 @@ def test_queue_pause_state_survives_store_recreation(
     reopened = MessageQueueStore(Ledger.open(hames_paths.database))
     assert reopened.state(session.id).paused is True
     assert reopened.recoverable_sessions() == []
+
+
+def test_priority_enqueue_preserves_existing_turns_and_moves_to_front(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    session = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    store = MessageQueueStore(ledger)
+    older = store.enqueue(session.id, "older", remember=False, paste_spans=[]).item
+    priority = store.enqueue(
+        session.id, "send now", remember=False, paste_spans=[], priority=True
+    ).item
+
+    assert older is not None and priority is not None
+    assert priority.position == 1
+    assert [item.content for item in store.state(session.id).items] == ["send now", "older"]

@@ -355,20 +355,41 @@ class RunManager:
         *,
         remember: bool = False,
         paste_spans: list[dict[str, int]] | None = None,
+        send_now: bool = False,
     ) -> SubmissionResult:
         async with self._submission_lock(session_id):
+            stale_run = self._session_runs.get(session_id)
+            stale_task = self._tasks.get(stale_run) if stale_run is not None else None
+            if stale_run is not None and stale_task is not None and stale_task.done():
+                self._mark_post_terminal(stale_run, session_id)
             if self.is_session_active(session_id):
+                active_run = self._session_runs[session_id]
                 mutation = await asyncio.to_thread(
                     self.message_queue.enqueue,
                     session_id,
                     content,
                     remember=remember,
                     paste_spans=paste_spans or [],
+                    priority=send_now,
                 )
                 await self._publish_durable(mutation.event)
+                if send_now:
+                    await self.cancel(active_run)
                 return SubmissionResult(disposition="queued", queued=mutation.item)
             queue = await self.queue_state(session_id)
             if queue.items:
+                if send_now and not queue.paused:
+                    mutation = await asyncio.to_thread(
+                        self.message_queue.enqueue,
+                        session_id,
+                        content,
+                        remember=remember,
+                        paste_spans=paste_spans or [],
+                        priority=True,
+                    )
+                    await self._publish_durable(mutation.event)
+                    run_id = await self._promote_next_locked(session_id)
+                    return SubmissionResult(disposition="started", run_id=run_id)
                 if not queue.paused:
                     await self._promote_next_locked(session_id)
                 mutation = await asyncio.to_thread(

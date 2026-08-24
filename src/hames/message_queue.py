@@ -71,6 +71,7 @@ class MessageQueueStore:
         *,
         remember: bool,
         paste_spans: list[dict[str, int]],
+        priority: bool = False,
     ) -> QueueMutation:
         session = self.ledger.get_session(session_id)
         if session.status != "open":
@@ -87,12 +88,16 @@ class MessageQueueStore:
             if count >= self.MAX_PENDING:
                 connection.rollback()
                 raise QueueFullError("session queue already contains two messages")
+            boundary = "MIN" if priority else "MAX"
+            step = -1 if priority else 1
             ordinal = int(
                 connection.execute(
-                    "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM session_queue WHERE session_id = ?",
-                    (session_id,),
+                    f"SELECT COALESCE({boundary}(ordinal), 0) + ? "
+                    "FROM session_queue WHERE session_id = ?",
+                    (step, session_id),
                 ).fetchone()[0]
             )
+            position = 1 if priority else count + 1
             connection.execute(
                 "INSERT INTO session_queue(id, session_id, ordinal, content, remember, "
                 "paste_spans_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -113,7 +118,7 @@ class MessageQueueStore:
                 event_type="queue.enqueued",
                 payload={
                     "queue_id": queue_id,
-                    "position": count + 1,
+                    "position": position,
                     "content": content,
                     "remember": remember,
                     "paste_spans": paste_spans,
@@ -122,7 +127,8 @@ class MessageQueueStore:
             )
             connection.commit()
         state = self.state(session_id)
-        return QueueMutation(state=state, event=event, item=state.items[-1])
+        item = next(item for item in state.items if item.id == queue_id)
+        return QueueMutation(state=state, event=event, item=item)
 
     def take(self, session_id: str, queue_id: str, *, reason: str) -> QueueMutation:
         return self._take(session_id, queue_id=queue_id, newest=False, reason=reason)

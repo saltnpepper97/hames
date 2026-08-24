@@ -177,6 +177,64 @@ async def test_gateway_queues_two_messages_and_promotes_them_fifo(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_send_now_interrupts_and_runs_a_priority_turn_without_dropping_queue(
+    tmp_path: Path,
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    provider = QueueProvider()
+    state = GatewayState.create(paths, providers={"fake": provider})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "active"},
+            )
+            await asyncio.wait_for(provider.first_started.wait(), timeout=1)
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "older queued"},
+            )
+
+            priority = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "send now", "send_now": True},
+            )
+            priority_body = response_object(priority)
+            assert priority_body["disposition"] == "queued"
+            assert priority_body["queued"]["position"] == 1  # type: ignore[index]
+
+            await _wait_for_event(client, headers, session_id, "run.cancelled")
+            events = await _wait_for_event(
+                client, headers, session_id, "run.completed", occurrences=2
+            )
+            users = [
+                event["payload"]["content"]  # type: ignore[index]
+                for event in events
+                if event["type"] == "user.message"
+            ]
+            assert users == ["active", "send now", "older queued"]
+            assert len(provider.requests) == 3
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
 async def test_paused_queue_survives_cancellation_until_explicit_resume(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     provider = QueueProvider()

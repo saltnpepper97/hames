@@ -917,6 +917,7 @@ pub struct App {
     pub modal: Option<Modal>,
     pub sheet: Option<Sheet>,
     pub notice: Option<String>,
+    pub error_notice: Option<String>,
     pub scroll: usize,
     pub composer_scroll: Option<usize>,
     pub scroll_drag: Option<ScrollDrag>,
@@ -979,6 +980,7 @@ impl App {
             modal: (!trusted).then_some(Modal::Trust),
             sheet: None,
             notice: None,
+            error_notice: None,
             scroll: 0,
             composer_scroll: None,
             scroll_drag: None,
@@ -1027,6 +1029,24 @@ impl App {
     pub fn set_queue(&mut self, state: QueueState) {
         self.queue_paused = state.paused;
         self.queued_messages = state.items;
+    }
+
+    pub fn insert_queued_message(&mut self, item: QueuedMessage) {
+        if self
+            .queued_messages
+            .iter()
+            .any(|queued| queued.id == item.id)
+        {
+            return;
+        }
+        let index = item
+            .position
+            .saturating_sub(1)
+            .min(self.queued_messages.len());
+        self.queued_messages.insert(index, item);
+        for (position, queued) in self.queued_messages.iter_mut().enumerate() {
+            queued.position = position + 1;
+        }
     }
 
     pub fn load_queued_message(&mut self, item: QueuedMessage) {
@@ -1468,7 +1488,13 @@ impl App {
                         .cloned()
                         .and_then(|value| serde_json::from_value(value).ok())
                         .unwrap_or_default();
-                    self.queued_messages.push(QueuedMessage {
+                    let position = event
+                        .payload
+                        .get("position")
+                        .and_then(Value::as_u64)
+                        .and_then(|value| usize::try_from(value).ok())
+                        .unwrap_or(self.queued_messages.len() + 1);
+                    self.insert_queued_message(QueuedMessage {
                         id: queue_id,
                         session_id: self.session.id.clone(),
                         content: string(&event.payload, "content"),
@@ -1479,7 +1505,7 @@ impl App {
                             .unwrap_or(false),
                         paste_spans,
                         created_at: event.created_at.clone(),
-                        position: self.queued_messages.len() + 1,
+                        position,
                     });
                 }
             }

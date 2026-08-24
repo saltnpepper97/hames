@@ -998,12 +998,36 @@ impl GatewayClient {
         remember: bool,
         paste_spans: &[PasteSpan],
     ) -> Result<MessageAccepted> {
+        self.send_message_request(session_id, content, remember, paste_spans, false)
+            .await
+    }
+
+    pub async fn send_message_now_with_pastes(
+        &self,
+        session_id: &str,
+        content: &str,
+        remember: bool,
+        paste_spans: &[PasteSpan],
+    ) -> Result<MessageAccepted> {
+        self.send_message_request(session_id, content, remember, paste_spans, true)
+            .await
+    }
+
+    async fn send_message_request(
+        &self,
+        session_id: &str,
+        content: &str,
+        remember: bool,
+        paste_spans: &[PasteSpan],
+        send_now: bool,
+    ) -> Result<MessageAccepted> {
         decode(
             self.post(&format!("/v1/sessions/{session_id}/messages"))
                 .json(&serde_json::json!({
                     "content": content,
                     "remember": remember,
                     "paste_spans": paste_spans,
+                    "send_now": send_now,
                 }))
                 .send()
                 .await?,
