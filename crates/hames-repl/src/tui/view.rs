@@ -576,10 +576,12 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     thought: Some(TranscriptDisclosure::Activity(index)),
                     sheen: None,
                 });
-                if *collapsed {
-                    continue;
-                }
-                for row in visible_rows {
+                let first_visible_row = if *collapsed {
+                    visible_rows.len().saturating_sub(1)
+                } else {
+                    0
+                };
+                for row in visible_rows.into_iter().skip(first_visible_row) {
                     let glyph = match row.phase {
                         ActivityPhase::Preparing => "·",
                         ActivityPhase::Checking | ActivityPhase::Approval => "○",
@@ -637,7 +639,8 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                         sheen: active
                             .then_some((4, u16::try_from(row.verb().width()).unwrap_or(0))),
                     });
-                    if row.phase == ActivityPhase::Completed
+                    if !*collapsed
+                        && row.phase == ActivityPhase::Completed
                         && !row.content.is_empty()
                         && (matches!(row.name.as_str(), "edit_file" | "write_file")
                             || looks_like_unified_diff(&row.content))
@@ -4448,7 +4451,63 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(collapsed.contains("◆ Work · 1 action · Completed  ▸"));
-        assert!(!collapsed.contains("✓ Forgot"));
+        assert!(collapsed.contains("✓ Forgot  memory 8f9b40f1"));
+    }
+
+    #[test]
+    fn collapsed_work_previews_only_the_latest_tool_result() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::Activity {
+            run_id: "run-preview".to_owned(),
+            collapsed: true,
+            rows: vec![
+                ActivityRow {
+                    index: 0,
+                    tool_call_id: Some("read-1".to_owned()),
+                    name: "read_file".to_owned(),
+                    arguments: json!({"path": "src/old.rs"}),
+                    argument_parts: String::new(),
+                    phase: ActivityPhase::Completed,
+                    summary: "read old source".to_owned(),
+                    content: String::new(),
+                    structured_data: json!(null),
+                    truncated: false,
+                    duration_seconds: 0.01,
+                },
+                ActivityRow {
+                    index: 1,
+                    tool_call_id: Some("check-1".to_owned()),
+                    name: "shell".to_owned(),
+                    arguments: json!({"command": "cargo test"}),
+                    argument_parts: String::new(),
+                    phase: ActivityPhase::Completed,
+                    summary: "108 tests passed".to_owned(),
+                    content: String::new(),
+                    structured_data: json!(null),
+                    truncated: false,
+                    duration_seconds: 1.2,
+                },
+            ],
+        });
+
+        let collapsed = transcript_lines(&app, 90)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(collapsed.contains("◆ Work · 2 actions · Completed  ▸"));
+        assert!(collapsed.contains("✓ Completed  cargo test · 108 tests passed"));
+        assert!(!collapsed.contains("src/old.rs"));
+
+        app.toggle_activity(0);
+        let expanded = transcript_lines(&app, 90)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(expanded.contains("◆ Work · 2 actions · Completed  ▾"));
+        assert!(expanded.contains("src/old.rs"));
+        assert!(expanded.contains("✓ Completed  cargo test · 108 tests passed"));
     }
 
     #[test]
