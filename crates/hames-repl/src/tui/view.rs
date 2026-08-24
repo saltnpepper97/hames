@@ -160,12 +160,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
 
 fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let activity = current_activity(app);
+    let workspace = compact_home(&app.workspace_name);
     let mut left_spans = vec![
         Span::styled(" ◈ Hames", Style::default().fg(MINT).bold()),
-        Span::styled(
-            format!(" · {}", app.workspace_name),
-            Style::default().fg(MUTED),
-        ),
+        Span::styled(format!(" · {workspace}"), Style::default().fg(MUTED)),
     ];
     if let Some(reference) = &app.git_ref {
         left_spans.push(Span::styled(
@@ -194,7 +192,7 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .borders(Borders::BOTTOM)
         .border_style(Style::default().fg(Color::Rgb(54, 63, 78)));
     let desired_left = u16::try_from(
-        11 + app.workspace_name.chars().count()
+        11 + workspace.chars().count()
             + app
                 .git_ref
                 .as_ref()
@@ -3154,7 +3152,11 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 fn compact_home(value: &str) -> String {
     std::env::var("HOME")
         .ok()
-        .and_then(|home| value.strip_prefix(&home).map(|suffix| format!("~{suffix}")))
+        .and_then(|home| {
+            value.strip_prefix(&home).and_then(|suffix| {
+                (suffix.is_empty() || suffix.starts_with('/')).then(|| format!("~{suffix}"))
+            })
+        })
         .unwrap_or_else(|| value.to_owned())
 }
 
@@ -3187,16 +3189,30 @@ mod tests {
     use super::{
         ADDITION_BG, CORAL, CYAN, DELETE_BG, GOLD, INPUT, INPUT_LIGHT, MINT, MINT_LIGHT, MUTED,
         PANEL_BRIGHT, REMOVAL_BG, SKY, agent_access_body, agent_identity_body,
-        approval_detail_lines, compact_diff_lines, draw, format_elapsed, line_text,
+        approval_detail_lines, compact_diff_lines, compact_home, draw, format_elapsed, line_text,
         memory_browser_body, mode_color, mode_outline, scar_browser_body, scar_editor_body,
         scrollbar_position, sheet_text_color, thought_label, transcript_lines, traveling_sheen,
     };
+
     use crate::api::{MemoryRecord, QueuedMessage, Scar, Session};
     use crate::tui::app::{
         ActivityPhase, ActivityRow, AgentEditor, AgentEditorPage, App, ApprovalModal, DreamPhase,
         HitAction, MemoryBrowser, MenuAction, MenuOption, Modal, ScarBrowser, ScarEditor, Sheet,
         SheetKind, TranscriptItem, TranscriptPoint,
     };
+
+    #[test]
+    fn workspace_header_compacts_only_the_exact_home_prefix() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(
+            compact_home(&format!("{home}/projects/hames")),
+            "~/projects/hames"
+        );
+        assert_eq!(
+            compact_home(&format!("{home}-archive/projects/hames")),
+            format!("{home}-archive/projects/hames")
+        );
+    }
 
     #[test]
     fn thought_duration_uses_significance_threshold_and_readable_units() {
