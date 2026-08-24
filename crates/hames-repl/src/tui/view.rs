@@ -1929,7 +1929,7 @@ fn markdown_spans(value: &str, base_style: Style) -> Vec<Span<'static>> {
         {
             spans.push(Span::styled(
                 rest[..end].to_owned(),
-                Style::default().fg(INPUT).bg(PANEL_BRIGHT),
+                Style::default().fg(SKY).bg(PANEL_BRIGHT),
             ));
             remaining = &rest[end + 1..];
             continue;
@@ -2671,7 +2671,15 @@ mod tests {
             live: false,
             durable: true,
         });
-        let rendered = transcript_lines(&app, 80)
+        let lines = transcript_lines(&app, 80);
+        let code = lines
+            .iter()
+            .flat_map(|item| &item.line.spans)
+            .find(|span| span.content == "code")
+            .unwrap();
+        assert_eq!(code.style.fg, Some(SKY));
+        assert_eq!(code.style.bg, Some(PANEL_BRIGHT));
+        let rendered = lines
             .iter()
             .map(|item| line_text(&item.line))
             .collect::<Vec<_>>()
