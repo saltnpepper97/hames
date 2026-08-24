@@ -42,13 +42,23 @@ static INTERACTIVE: AtomicBool = AtomicBool::new(false);
 static SHEEN_TICK: AtomicU32 = AtomicU32::new(0);
 
 pub fn init() {
-    let terminal =
-        io::stdout().is_terminal() && std::env::var("TERM").map_or(true, |value| value != "dumb");
-    INTERACTIVE.store(terminal, Ordering::Relaxed);
-    COLOR.store(
-        terminal && std::env::var_os("NO_COLOR").is_none(),
-        Ordering::Relaxed,
+    let term = std::env::var("TERM").ok();
+    let (interactive, color) = terminal_capabilities(
+        io::stdout().is_terminal(),
+        term.as_deref(),
+        std::env::var_os("NO_COLOR").is_some(),
     );
+    INTERACTIVE.store(interactive, Ordering::Relaxed);
+    COLOR.store(color, Ordering::Relaxed);
+}
+
+fn terminal_capabilities(
+    stdout_is_terminal: bool,
+    term: Option<&str>,
+    no_color: bool,
+) -> (bool, bool) {
+    let interactive = stdout_is_terminal && term != Some("dumb");
+    (interactive, interactive && !no_color)
 }
 
 pub fn color_enabled() -> bool {
@@ -353,7 +363,7 @@ pub fn warning(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Badge, MARK, badge, key_value, paint};
+    use super::{Badge, MARK, badge, key_value, paint, terminal_capabilities};
 
     #[test]
     fn badges_are_plain_when_color_is_off() {
@@ -363,5 +373,22 @@ mod tests {
         assert_eq!(paint("31", "boom"), "boom");
         assert_eq!(key_value("Model", "fixture"), "  Model            fixture");
         assert_eq!(MARK, "⬢");
+    }
+
+    #[test]
+    fn terminal_capabilities_separate_interactivity_from_color() {
+        assert_eq!(
+            terminal_capabilities(true, Some("xterm-256color"), false),
+            (true, true)
+        );
+        assert_eq!(
+            terminal_capabilities(true, Some("xterm-256color"), true),
+            (true, false)
+        );
+        assert_eq!(
+            terminal_capabilities(true, Some("dumb"), false),
+            (false, false)
+        );
+        assert_eq!(terminal_capabilities(false, None, false), (false, false));
     }
 }

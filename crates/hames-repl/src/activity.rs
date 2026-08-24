@@ -514,6 +514,7 @@ fn fit_visible(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use unicode_width::UnicodeWidthStr;
 
     use super::ActivityBoard;
 
@@ -653,8 +654,11 @@ mod tests {
             "name": "shell",
             "arguments_delta": "{\"command\":\"cargo test --locked --all-targets --a-very-long-flag\"}"
         }));
-        let line = board.row_line(0, 32).unwrap();
-        assert!(!line.contains('\n'));
-        assert!(line.ends_with('…'));
+        for width in [32, 40, 80, 120] {
+            let line = board.row_line(0, width).unwrap();
+            assert!(!line.contains('\n'));
+            assert!(UnicodeWidthStr::width(line.as_str()) < width);
+        }
+        assert!(board.row_line(0, 32).unwrap().ends_with('…'));
     }
 }

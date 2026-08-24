@@ -13,7 +13,7 @@ import uvicorn
 
 from hames.gateway import GatewayState, create_app
 from hames.paths import HamesPaths
-from hames.providers import ModelRequest, StreamEvent, StreamEventKind, Usage
+from hames.providers import ModelRequest, StreamEvent, StreamEventKind, ToolCallDelta, Usage
 from hames.providers.fake import FakeProvider
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -118,12 +118,12 @@ async def test_rust_repl_through_gateway_and_ledger(tmp_path: Path) -> None:
         assert "check" in output
         assert "Hames" in output
         assert "hello from fake" in output
-        assert "forked session" in output
-        assert "fork event:" in output
-        assert "estimated input:" in output
-        assert "selected sources:" in output
-        assert "request hash:" in output
-        assert "exported markdown audit transcript" in output
+        assert "Forked session" in output
+        assert "Fork event" in output
+        assert "Estimated input" in output
+        assert "Selected sources" in output
+        assert "Request hash" in output
+        assert "Exported markdown audit transcript" in output
         assert "Derived view only" in repl_export.read_text(encoding="utf-8")
         assert repl_export.stat().st_mode & 0o777 == 0o600
 
@@ -199,6 +199,117 @@ async def test_rust_repl_through_gateway_and_ledger(tmp_path: Path) -> None:
             "--force",
         )
         assert code == 0, error
+    finally:
+        server.should_exit = True
+        await server_task
+
+
+@pytest.mark.asyncio
+async def test_repl_preserves_tool_preparation_through_completion(tmp_path: Path) -> None:
+    build = await asyncio.create_subprocess_exec(
+        "cargo",
+        "build",
+        "--quiet",
+        "--locked",
+        "--bin",
+        "hames",
+        cwd=REPOSITORY,
+    )
+    assert await build.wait() == 0
+
+    provider = FakeProvider(
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED, provider_request_id="tools-1"),
+                StreamEvent(kind=StreamEventKind.REASONING_DELTA, text="I will write and read."),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="write-1",
+                        name="write_file",
+                        arguments_delta=json.dumps(
+                            {
+                                "workspace": "scratch",
+                                "path": "activity.txt",
+                                "content": "hello from activity",
+                                "create_parents": False,
+                            }
+                        ),
+                    ),
+                ),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=1,
+                        provider_call_id="read-1",
+                        name="read_file",
+                        arguments_delta=json.dumps(
+                            {"workspace": "scratch", "path": "activity.txt"}
+                        ),
+                    ),
+                ),
+                StreamEvent(
+                    kind=StreamEventKind.USAGE, usage=Usage(input_tokens=4, output_tokens=3)
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED, provider_request_id="tools-2"),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="Tool continuity complete."),
+                StreamEvent(
+                    kind=StreamEventKind.USAGE, usage=Usage(input_tokens=5, output_tokens=2)
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
+    )
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": provider})
+    port = available_port()
+    server = uvicorn.Server(
+        uvicorn.Config(create_app(state), host="127.0.0.1", port=port, log_level="error")
+    )
+    server_task = asyncio.create_task(server.serve())
+    try:
+        await wait_for_server(port)
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "HAMES_HOME": str(paths.root),
+                "HAMES_GATEWAY__PORT": str(port),
+                "HAMES_RUNTIME__DEFAULT_PROVIDER": "fake",
+                "HAMES_PROVIDERS__FAKE__ADAPTER": "llama_cpp",
+                "HAMES_PROVIDERS__FAKE__BASE_URL": "http://127.0.0.1:1/v1",
+                "HAMES_PROVIDERS__FAKE__MODEL": "fixture",
+            }
+        )
+        process = await asyncio.create_subprocess_exec(
+            REPOSITORY / "target/debug/hames",
+            cwd=REPOSITORY,
+            env=environment,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(b"y\nexercise tools\n/quit\n"), timeout=10
+        )
+        output = stdout.decode()
+        assert process.returncode == 0, stderr.decode()
+        assert "⬢ Change" in output
+        assert "Preparing write" in output
+        assert "Checking policy" in output
+        assert "Writing" in output
+        assert "Wrote" in output
+        assert "⬢ Explore" in output
+        assert "Preparing read" in output
+        assert "Reading" in output
+        assert "Read" in output
+        assert "Tool continuity complete." in output
+        assert "requested write_file" not in output
+        assert "running write_file" not in output
     finally:
         server.should_exit = True
         await server_task
