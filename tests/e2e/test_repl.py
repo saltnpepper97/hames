@@ -139,6 +139,9 @@ async def test_rust_repl_through_gateway_and_ledger(tmp_path: Path) -> None:
         assert len(sessions) == 2
         root = next(session for session in sessions if session.parent_session_id is None)
         branch = next(session for session in sessions if session.parent_session_id is not None)
+        assert "Session saved" in output
+        assert "Continue where you left off with" in output
+        assert f"/resume {branch.id}" in output
         events = state.ledger.list_events(root.id)
         event_types = [event.type for event in events]
         assert "assistant.reasoning" in event_types

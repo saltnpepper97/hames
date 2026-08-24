@@ -137,7 +137,18 @@ pub async fn run() -> Result<()> {
     fs::create_dir_all(&paths.root).ok();
     editor.save_history(&paths.history)?;
     make_history_private(&paths.history)?;
+    print_exit_handoff(&session);
     Ok(())
+}
+
+fn print_exit_handoff(session: &Session) {
+    println!();
+    println!("{}", style::section("Session saved"));
+    println!(
+        "  {} {}",
+        style::dim("Continue where you left off with"),
+        style::paint("1", &format!("/resume {}", session.id))
+    );
 }
 
 #[cfg(unix)]
