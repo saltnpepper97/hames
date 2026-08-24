@@ -1,5 +1,9 @@
 # M10 — Rich Control Surfaces: Ratatui and Web
 
+The first terminal slice is implemented and documented in
+[M10-TUI.md](M10-TUI.md). This document remains the plan for the broader web
+control surface and the remaining rich-management views.
+
 ## Goal
 
 Design rich interfaces only after the Rust REPL and gateway semantics have proven

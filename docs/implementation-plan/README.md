@@ -1,7 +1,8 @@
 # Hames Rewrite — Working Implementation Plan
 
-This directory is the authoritative build plan for Hames. M0 through M9 are
-implemented; M10 is the next execution phase. Later milestones preserve the design
+This directory is the authoritative build plan for Hames. M0 through M9 and the
+[M10 Ratatui slice](M10-TUI.md) are implemented; the M10 web control surface is
+the next execution phase. Later milestones preserve the design
 inventory but remain subject to refinement as the harness proves its concepts.
 
 Hames is a proper local agent harness built around a small trusted Python kernel,
@@ -13,10 +14,10 @@ observability.
 
 1. **Python owns the harness.** The gateway, agent loop, policy, providers,
    persistence, context construction, tools, memory, and evolution live in Python.
-2. **Clients use one gateway.** The Rust REPL, later Ratatui interface, web UI, and
+2. **Clients use one gateway.** The Rust REPL, Ratatui interface, web UI, and
    possible desktop application use the same versioned HTTP/SSE boundary.
-3. **The REPL comes first.** Near-term work proves the internals through a capable
-   plain Rust REPL. Ratatui and graphical clients do not gate the core concepts.
+3. **The REPL came first.** The plain Rust REPL proved the internals. Ratatui now
+   presents those same gateway concepts without becoming a second runtime.
 4. **Local models come first.** llama.cpp and Ollama are first-class M0 providers.
    Hosted OpenAI API, Codex/ChatGPT, and other services come later.
 5. **One historical truth.** Material model input, provider activity, tools,
@@ -43,8 +44,8 @@ observability.
 - SQLite in WAL mode plus content-addressed files for large immutable payloads.
 - pytest, pytest-asyncio, Ruff, Pyright, rustfmt, Clippy, and Cargo tests.
 - Linux as the initial host target.
-- Ratatui later, heavily customized for Hames; web and desktop stacks are not yet
-  selected.
+- A heavily customized Ratatui client for the terminal; web and desktop stacks
+  are not yet selected.
 
 Do not substitute a large orchestration framework for the runtime. Hames owns its
 loop and its invariants.
@@ -93,7 +94,7 @@ Directories are created lazily and user files are never silently overwritten.
 | [M7](M07-SKILLS.md) | Portable Skills gain autonomous evidence-backed authoring, evaluation, versioning, progressive disclosure, and rollback. |
 | [M8](M08-SCARS-EVOLUTION.md) | Scars provide evidence-backed repair routing and regression protection. |
 | [M9](M09-PLUGINS.md) | Optional isolated plugins add genuine capabilities without bypassing policy. |
-| [M10](M10-WEB-CONTROL.md) | Rich interfaces are designed from proven gateway behavior; Ratatui precedes or accompanies web work. |
+| [M10](M10-WEB-CONTROL.md) | The [Ratatui slice](M10-TUI.md) presents the proven gateway behavior; the web control surface remains next. |
 | [M11](M11-HARDENING-RELEASE.md) | Security, recovery, packaging, documentation, and release gates produce v0.1.0. |
 
 ## Mandatory execution rule

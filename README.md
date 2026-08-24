@@ -1,7 +1,8 @@
 # Hames
 
 Hames is a local agent harness under active development. A trusted Python
-backend owns the harness and gateway; a Rust REPL is the first client. The current
+backend owns the harness and gateway; customized Ratatui and classic Rust clients
+share that boundary. The current
 milestones provide a bounded coding-agent loop while keeping every side effect
 behind deterministic policy and durable provenance.
 
@@ -10,7 +11,8 @@ for the milestone plan.
 
 ## Status
 
-M8 is implemented. In addition to the local conversation and branching slices, Hames provides
+M0 through M9 and the M10 Ratatui slice are implemented. In addition to the local
+conversation and branching slices, Hames provides
 immutable session branching, ancestry-aware replay, typed and integrity-checked
 events, irreversible secret redaction, and content-addressed payload blobs. Hames
 also has named local-provider profiles, explicit health probes, strict normalized
@@ -86,9 +88,25 @@ target/debug/hames doctor
 target/debug/hames
 ```
 
-The REPL starts the Python gateway on demand. Exiting the REPL leaves it running;
-use `target/debug/hames gateway status` or `target/debug/hames gateway stop` to
-inspect or stop it.
+In a terminal, `hames` opens the transcript-first Ratatui interface. Use
+`target/debug/hames tui` to request it explicitly, or `target/debug/hames repl`
+and `target/debug/hames --repl` for the classic line-oriented client. Piped and
+redirected invocations retain the classic interface automatically.
+
+Both clients start the Python gateway on demand. Exiting either client leaves it
+running; use `target/debug/hames gateway status` or
+`target/debug/hames gateway stop` to inspect or stop it. A terminal exit also
+prints the exact `/resume <session-id>` command needed to continue the
+conversation.
+
+The TUI keeps the transcript, activity continuity, and an expanding composer on
+one screen. The composer grows through eight visible content rows and then
+scrolls. Enter sends; Alt+Enter or Ctrl+J inserts a new line. Shift+Tab cycles
+Manual, Auto, and Plan modes, with a distinct composer border for each. Ctrl+K
+opens the command palette, Page Up/Page Down and the mouse wheel scroll the
+transcript, and Enter or Space expands a selected Thought. Large pastes become
+compact capsules without losing their exact durable content. Recent sessions for
+the current directory are offered when the TUI opens.
 
 Hames defaults to the `llama_cpp` profile at `http://127.0.0.1:8080`. Model
 selection prefers the request, then the profile default, then a sole discovered
