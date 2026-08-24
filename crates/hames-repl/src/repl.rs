@@ -1439,7 +1439,9 @@ impl SseDecoder {
 fn print_help() {
     println!(
         "/help\n/new\n/clear\n/session\n/sessions\n/resume <id>\n/events [count]\n\
-         /fork [event-id-or-sequence]\n/agent [agent-id]\n/project\n/trust [status|revoke]\n\
+         /fork [event-id-or-sequence]\n/agent [agent-id]\n\
+         (create agents with: hames agent create --name Researcher)\n\
+         /project\n/trust [status|revoke]\n\
          /provider [provider] [model]\n/model\n/reasoning [default|off|on|level]\n\
          /remember [durable fact]\n/memory [list|all|search <query>|show <id>]\n\
          /memory proposals|accept <id>|reject <id>|forget <id>\n\

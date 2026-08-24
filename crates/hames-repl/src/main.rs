@@ -34,7 +34,7 @@ enum Command {
         #[command(subcommand)]
         action: SessionAction,
     },
-    /// Manage portable agent capsules.
+    /// List, create, or retire portable agent capsules under ~/.hames/agents.
     Agent {
         #[command(subcommand)]
         action: AgentAction,
@@ -69,11 +69,15 @@ enum AgentAction {
         #[arg(long)]
         json: bool,
     },
+    /// Create a capsule. Pass --name; the directory id is slugged from it.
     Create {
+        /// Display name (Researcher -> id researcher). Omit for hames-1, hames-2, ...
         #[arg(long)]
         name: Option<String>,
+        /// Preset: standard (default) or read_only. Does not grant tools.
         #[arg(long, value_enum, default_value_t = AgentAuthority::Standard)]
         authority: AgentAuthority,
+        /// Seed from an AGENT.md file instead of the default body.
         #[arg(long = "from")]
         from_path: Option<PathBuf>,
         #[arg(long)]
