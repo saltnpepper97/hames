@@ -257,7 +257,7 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
     } else {
         let effect = app
             .transcript_sheen_effect
-            .get_or_insert_with(|| traveling_sheen(TEXT_IDLE, TEXT_SWEEP));
+            .get_or_insert_with(|| traveling_sheen(TEXT_IDLE, TEXT_SWEEP, None));
         for (index, region) in sheen_regions.into_iter().enumerate() {
             frame.render_effect(
                 effect,
@@ -303,12 +303,12 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
     }
 }
 
-fn traveling_sheen(idle: Duration, sweep: Duration) -> Effect {
+fn traveling_sheen(idle: Duration, sweep: Duration, highlight_color: Option<Color>) -> Effect {
     let sweep_ms = u32::try_from(sweep.as_millis()).unwrap_or(u32::MAX);
     let highlight = fx::effect_fn(
         (),
         EffectTimer::from_ms(sweep_ms, Interpolation::SineInOut),
-        |_, context, cells| {
+        move |_, context, cells| {
             let travel = f32::from(
                 context
                     .area
@@ -325,7 +325,7 @@ fn traveling_sheen(idle: Duration, sweep: Duration) -> Effect {
                     + f32::from(position.y.saturating_sub(context.area.y)) / 3.0;
                 let distance = (coordinate - center).abs();
                 if distance < 1.35 {
-                    cell.set_fg(lighter_color(cell.fg));
+                    cell.set_fg(highlight_color.unwrap_or_else(|| lighter_color(cell.fg)));
                 }
             }
         },
@@ -867,7 +867,7 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
     if app.sheet.is_none() && app.active_run.is_some() {
         let effect = app
             .activity_bar_effect
-            .get_or_insert_with(|| traveling_sheen(ACTIVITY_IDLE, ACTIVITY_SWEEP));
+            .get_or_insert_with(|| traveling_sheen(ACTIVITY_IDLE, ACTIVITY_SWEEP, Some(MINT)));
         frame.render_effect(
             effect,
             Rect::new(area.x.saturating_add(2), area.y, 6.min(area.width), 1),
@@ -2006,7 +2006,7 @@ mod tests {
             for x in 0..8 {
                 buffer[(x, 0)].set_fg(base);
             }
-            let mut effect = traveling_sheen(Duration::ZERO, Duration::from_millis(1_000));
+            let mut effect = traveling_sheen(Duration::ZERO, Duration::from_millis(1_000), None);
             effect.process(Duration::from_millis(500), &mut buffer, area);
             assert!((0..8).any(|x| buffer[(x, 0)].fg == lighter));
             assert!(
@@ -2015,6 +2015,16 @@ mod tests {
                 )
             );
         }
+
+        let area = Rect::new(0, 0, 6, 1);
+        let mut rail = Buffer::with_lines(["──────"]);
+        for x in 0..6 {
+            rail[(x, 0)].set_fg(MUTED);
+        }
+        let mut effect = traveling_sheen(Duration::ZERO, Duration::from_millis(1_000), Some(MINT));
+        effect.process(Duration::from_millis(500), &mut rail, area);
+        assert!((0..6).any(|x| rail[(x, 0)].fg == MINT));
+        assert!((0..6).all(|x| matches!(rail[(x, 0)].fg, MUTED | MINT)));
     }
 
     #[test]
