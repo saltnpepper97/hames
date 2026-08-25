@@ -3913,7 +3913,7 @@ fn usage_body(modal: &UsageModal, wide: bool) -> Vec<Line<'static>> {
     if wide {
         for pair in metrics.chunks(2) {
             lines.push(usage_metric_pair(
-                (&pair[0].0, &pair[0].1),
+                (pair[0].0, &pair[0].1),
                 pair.get(1).map(|item| (item.0, item.1.as_str())),
             ));
         }

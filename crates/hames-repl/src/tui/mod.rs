@@ -1603,8 +1603,7 @@ async fn apply_effect(
             app.history_index = None;
             app.history_draft = None;
             if accepted.disposition == "started" {
-                app.active_run = accepted.run_id;
-                app.run_started_at = Some(std::time::Instant::now());
+                app.begin_foreground_run(accepted.run_id);
             } else if let Some(item) = accepted.queued {
                 app.insert_queued_message(item);
             }
@@ -1620,8 +1619,7 @@ async fn apply_effect(
             app.history_index = None;
             app.history_draft = None;
             if accepted.disposition == "started" {
-                app.active_run = accepted.run_id;
-                app.run_started_at = Some(std::time::Instant::now());
+                app.begin_foreground_run(accepted.run_id);
             } else if let Some(item) = accepted.queued {
                 app.insert_queued_message(item);
             }
@@ -1634,8 +1632,7 @@ async fn apply_effect(
             app.set_plan(accepted.plan);
             app.set_tasks(accepted.tasks);
             app.session.interaction_mode = "auto".to_owned();
-            app.active_run = Some(accepted.run_id);
-            app.run_started_at = Some(Instant::now());
+            app.begin_foreground_run(Some(accepted.run_id));
             app.composer.clear();
             app.inline_editor = None;
             app.sheet = None;
@@ -1650,8 +1647,7 @@ async fn apply_effect(
             app.history_index = None;
             app.history_draft = None;
             if accepted.disposition == "started" {
-                app.active_run = accepted.run_id;
-                app.run_started_at = Some(std::time::Instant::now());
+                app.begin_foreground_run(accepted.run_id);
             } else if let Some(item) = accepted.queued {
                 app.insert_queued_message(item);
             }
@@ -1859,8 +1855,7 @@ async fn apply_menu_action(
             app.set_plan(accepted.plan);
             app.set_tasks(accepted.tasks);
             app.session.interaction_mode = "auto".to_owned();
-            app.active_run = Some(accepted.run_id);
-            app.run_started_at = Some(Instant::now());
+            app.begin_foreground_run(Some(accepted.run_id));
             app.sheet = None;
             app.inline_editor = None;
         }
@@ -1871,8 +1866,7 @@ async fn apply_menu_action(
             app.set_plan(accepted.plan);
             app.set_tasks(accepted.tasks);
             app.session.interaction_mode = "auto".to_owned();
-            app.active_run = Some(accepted.run_id);
-            app.run_started_at = Some(Instant::now());
+            app.begin_foreground_run(Some(accepted.run_id));
             app.sheet = None;
             app.inline_editor = None;
         }

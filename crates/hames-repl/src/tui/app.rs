@@ -1198,12 +1198,20 @@ impl App {
         self.focused_thought = None;
         self.pending_thought_toggle = None;
         for item in &mut self.transcript {
-            match item {
-                TranscriptItem::Plan { collapsed, .. }
-                | TranscriptItem::Thought { collapsed, .. } => *collapsed = true,
-                _ => {}
+            if let TranscriptItem::Plan { collapsed, .. } = item {
+                *collapsed = true;
             }
         }
+    }
+
+    pub fn begin_foreground_run(&mut self, run_id: Option<String>) {
+        let Some(run_id) = run_id else {
+            return;
+        };
+        self.active_run = Some(run_id.clone());
+        self.run_started_at = Some(Instant::now());
+        self.scroll = 0;
+        self.ensure_thought(&run_id, true);
     }
 
     pub fn plan_ready(&self) -> bool {
@@ -2060,8 +2068,12 @@ impl App {
                 }
             }
             "run.started" => {
-                self.active_run = Some(run_id);
-                self.run_started_at.get_or_insert_with(Instant::now);
+                if self.active_run.as_deref() == Some(run_id.as_str()) {
+                    self.ensure_thought(&run_id, true);
+                    self.run_started_at.get_or_insert_with(Instant::now);
+                } else {
+                    self.begin_foreground_run(Some(run_id));
+                }
             }
             "queue.enqueued" => {
                 let queue_id = string(&event.payload, "queue_id");
@@ -2472,7 +2484,6 @@ impl App {
             }
             return index;
         }
-        self.collapse_completed_thoughts();
         self.transcript.push(TranscriptItem::Thought {
             run_id: run_id.to_owned(),
             content: String::new(),
@@ -3424,8 +3435,14 @@ mod tests {
     }
 
     #[test]
-    fn plan_approval_collapses_plan_and_clears_stale_thought_focus() {
+    fn plan_handoff_preserves_history_and_immediately_shows_execution_activity() {
         let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::Assistant {
+            run_id: "run-plan".to_owned(),
+            content: "# Build it\n\n## Tasks\n- [ ] Implement it".to_owned(),
+            live: false,
+            durable: true,
+        });
         app.ingest_durable(
             event(
                 1,
@@ -3464,11 +3481,51 @@ mod tests {
         );
 
         assert!(app.focused_thought.is_none());
-        assert!(app.transcript.iter().all(|item| match item {
-            TranscriptItem::Plan { collapsed, .. } | TranscriptItem::Thought { collapsed, .. } =>
-                *collapsed,
-            _ => true,
-        }));
+        assert!(app.transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Plan {
+                collapsed: true,
+                ..
+            }
+        )));
+        assert!(app.transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Thought {
+                run_id,
+                collapsed: false,
+                live: false,
+                ..
+            } if run_id == "run-plan"
+        )));
+
+        app.ingest_durable(event(3, "run.started", "run-execution", json!({})), true);
+        app.ingest_durable(
+            event(
+                4,
+                "model.requested",
+                "run-execution",
+                json!({"purpose": "agent_turn"}),
+            ),
+            true,
+        );
+        let execution_thoughts = app
+            .transcript
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    TranscriptItem::Thought {
+                        run_id,
+                        live: true,
+                        collapsed: true,
+                        ..
+                    } if run_id == "run-execution"
+                )
+            })
+            .count();
+        assert_eq!(execution_thoughts, 1);
+        assert_eq!(app.active_run.as_deref(), Some("run-execution"));
+        assert_eq!(app.scroll, 0);
     }
 
     #[test]
