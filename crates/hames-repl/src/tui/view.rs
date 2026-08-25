@@ -336,7 +336,13 @@ enum TranscriptDisclosure {
 }
 
 fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta: Duration) {
-    let width = usize::from(area.width.saturating_sub(3).max(20));
+    let content_area = Rect::new(
+        area.x.saturating_add(1),
+        area.y,
+        area.width.saturating_sub(1),
+        area.height,
+    );
+    let width = usize::from(content_area.width.saturating_sub(2).max(20));
     let lines = transcript_lines(app, width);
     let height = usize::from(area.height);
     let bottom_start = lines.len().saturating_sub(height);
@@ -344,9 +350,9 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
     let start = bottom_start.saturating_sub(app.scroll);
     let end = (start + height).min(lines.len());
     app.transcript_viewport = TranscriptViewport {
-        x: area.x,
+        x: content_area.x,
         y: area.y,
-        width: area.width.saturating_sub(1),
+        width: content_area.width.saturating_sub(1),
         height: area.height,
         line_offset: start,
         lines: lines.iter().map(|item| line_text(&item.line)).collect(),
@@ -374,24 +380,24 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
             frame.render_widget(
                 Block::default().style(Style::default().bg(PANEL_BRIGHT)),
                 Rect::new(
-                    area.x,
+                    content_area.x,
                     area.y.saturating_add(u16::try_from(row).unwrap_or(0)),
-                    area.width.saturating_sub(1),
+                    content_area.width.saturating_sub(1),
                     1,
                 ),
             );
         }
     }
-    frame.render_widget(Paragraph::new(visible), area);
+    frame.render_widget(Paragraph::new(visible), content_area);
     let sheen_regions = lines[start..end]
         .iter()
         .enumerate()
         .filter_map(|(row, item)| {
             item.sheen.map(|(x, width)| {
                 Rect::new(
-                    area.x.saturating_add(x),
+                    content_area.x.saturating_add(x),
                     area.y.saturating_add(u16::try_from(row).unwrap_or(0)),
-                    width.min(area.width.saturating_sub(x)),
+                    width.min(content_area.width.saturating_sub(x)),
                     1,
                 )
             })
@@ -420,9 +426,9 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
                 TranscriptDisclosure::Compaction(index) => HitAction::ToggleActivity(index),
             };
             app.hits.push(HitRegion {
-                x: area.x,
+                x: content_area.x,
                 y: area.y + u16::try_from(offset).unwrap_or(0),
-                width: area.width.saturating_sub(1),
+                width: content_area.width.saturating_sub(1),
                 height: 1,
                 action,
             });
@@ -4469,6 +4475,29 @@ mod tests {
     }
 
     #[test]
+    fn transcript_content_has_one_column_of_left_padding() {
+        let backend = TestBackend::new(80, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::User {
+            content: "hello".to_owned(),
+        });
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let user_row = (0..buffer.area.height)
+            .find(|y| {
+                buffer
+                    .cell((1, *y))
+                    .is_some_and(|cell| cell.symbol() == "Y")
+            })
+            .expect("user heading should be rendered in the transcript");
+        assert_eq!(buffer.cell((0, user_row)).unwrap().symbol(), " ");
+        assert_eq!(buffer.cell((1, user_row)).unwrap().symbol(), "Y");
+    }
+
+    #[test]
     fn sent_paste_expands_to_full_markdown_in_the_transcript() {
         let mut app = App::new(session(), Vec::new(), true);
         let content = "before\n```rust\nfn main() {}\n```\nafter";
@@ -5083,7 +5112,13 @@ mod tests {
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer.cell((2, transcript_y)).unwrap().bg, PANEL_BRIGHT);
+        assert_eq!(
+            buffer
+                .cell((app.transcript_viewport.x + 2, transcript_y))
+                .unwrap()
+                .bg,
+            PANEL_BRIGHT
+        );
         let rendered = buffer
             .content()
             .iter()

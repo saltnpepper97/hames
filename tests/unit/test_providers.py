@@ -313,9 +313,13 @@ async def test_llama_cpp_normalizes_streamed_tool_calls() -> None:
     ]
 
     tool_events = [event for event in events if event.kind is StreamEventKind.TOOL_CALL_DELTA]
-    assert len(tool_events) == 1
+    assert len(tool_events) == 2
     assert tool_events[0].tool_call is not None
     assert tool_events[0].tool_call.name == "read_file"
+    assert tool_events[0].tool_call.arguments_delta == ""
+    assert tool_events[1].tool_call is not None
+    assert tool_events[1].tool_call.name is None
+    assert tool_events[1].tool_call.arguments_delta == '{"path":"README.md"}'
     assert "tools" in seen_request
     assert seen_request["parallel_tool_calls"] is True
     sent_input = seen_request["input"]

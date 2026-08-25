@@ -173,6 +173,7 @@ class LlamaCppProvider:
                 provider_request_id: str | None = None
                 next_tool_index = 0
                 tool_indices: dict[str, int] = {}
+                announced_tool_items: set[str] = set()
                 finalized_tool_items: dict[str, dict[str, JsonValue]] = {}
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
@@ -208,6 +209,17 @@ class LlamaCppProvider:
                         if item_id is not None and item_id not in tool_indices:
                             tool_indices[item_id] = next_tool_index
                             next_tool_index += 1
+                        name = _optional_str(item.get("name"))
+                        if item_id is not None and name:
+                            announced_tool_items.add(item_id)
+                            yield StreamEvent(
+                                kind=StreamEventKind.TOOL_CALL_DELTA,
+                                tool_call=ToolCallDelta(
+                                    index=tool_indices[item_id],
+                                    provider_call_id=_optional_str(item.get("call_id")),
+                                    name=name,
+                                ),
+                            )
                     elif event_type in {
                         "response.reasoning_summary_text.delta",
                         "response.reasoning_text.delta",
@@ -257,7 +269,10 @@ class LlamaCppProvider:
                                     tool_indices[item_id] = index
                                 finalized_tool_items[item_id] = value
                         for item_id, value in list(finalized_tool_items.items()):
-                            yield _final_tool_call_event(value, tool_indices[item_id])
+                            if item_id in announced_tool_items:
+                                yield _tool_arguments_event(value, tool_indices[item_id])
+                            else:
+                                yield _final_tool_call_event(value, tool_indices[item_id])
                         usage = _usage_from_responses(response_object.get("usage"))
                         if usage is not None:
                             yield StreamEvent(kind=StreamEventKind.USAGE, usage=usage)
@@ -401,6 +416,22 @@ def _final_tool_call_event(item: dict[str, JsonValue], index: int) -> StreamEven
             index=index,
             provider_call_id=_optional_str(item.get("call_id")) or _optional_str(item.get("id")),
             name=_optional_str(item.get("name")),
+            arguments_delta=(
+                arguments
+                if isinstance(arguments, str)
+                else json.dumps(arguments, separators=(",", ":"))
+            ),
+        ),
+    )
+
+
+def _tool_arguments_event(item: dict[str, JsonValue], index: int) -> StreamEvent:
+    arguments = item.get("arguments", "")
+    return StreamEvent(
+        kind=StreamEventKind.TOOL_CALL_DELTA,
+        tool_call=ToolCallDelta(
+            index=index,
+            provider_call_id=_optional_str(item.get("call_id")),
             arguments_delta=(
                 arguments
                 if isinstance(arguments, str)

@@ -3258,7 +3258,7 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        App, Composer, ComposerUnit, DreamPhase, TranscriptItem, TranscriptPoint,
+        ActivityPhase, App, Composer, ComposerUnit, DreamPhase, TranscriptItem, TranscriptPoint,
         TranscriptViewport, task_checkbox,
     };
     use crate::api::{Event, PasteSpan, Session, SessionTask};
@@ -4303,6 +4303,37 @@ mod tests {
                 TranscriptItem::Activity { .. },
                 TranscriptItem::Assistant { content: after, .. }
             ] if before == "I will create it." && after == "It is ready."
+        ));
+    }
+
+    #[test]
+    fn announced_tool_intent_finishes_thought_and_shows_preparation() {
+        let run_id = "run-tool-build";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_transient(
+            run_id,
+            "response.reasoning_delta",
+            &json!({"text": "I should create the file."}),
+        );
+        app.ingest_transient(
+            run_id,
+            "response.tool_call_delta",
+            &json!({"index": 0, "name": "write_file", "arguments_delta": ""}),
+        );
+
+        assert!(matches!(
+            &app.transcript[..],
+            [
+                TranscriptItem::Thought {
+                    live: false,
+                    collapsed: true,
+                    ..
+                },
+                TranscriptItem::Activity { rows, .. }
+            ] if rows.len() == 1
+                && rows[0].name == "write_file"
+                && rows[0].phase == ActivityPhase::Preparing
+                && rows[0].argument_parts.is_empty()
         ));
     }
 
