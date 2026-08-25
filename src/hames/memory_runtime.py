@@ -103,6 +103,10 @@ class MemoryManager:
         )
         if terminal is None:
             return None
+        # A provider or runtime failure is not a completed conversational turn.
+        # Do not create a blank Wrap-up phase for an error-only run.
+        if terminal.type != "run.completed":
+            return None
         session = await asyncio.to_thread(self.ledger.get_session, session_id)
         try:
             job, event = await asyncio.to_thread(

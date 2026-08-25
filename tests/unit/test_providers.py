@@ -279,7 +279,7 @@ async def test_llama_cpp_normalizes_streamed_tool_calls() -> None:
                     ProviderMessage(role="user", content="inspect"),
                     ProviderMessage(
                         role="assistant",
-                        content="",
+                        content="I'll inspect it.",
                         reasoning_content="I should inspect it.",
                         tool_calls=[
                             ToolCall(
@@ -319,6 +319,16 @@ async def test_llama_cpp_normalizes_streamed_tool_calls() -> None:
     assert seen_request["parallel_tool_calls"] is False
     sent_input = seen_request["input"]
     assert isinstance(sent_input, list)
+    assert sent_input[0] == {
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": "inspect"}],
+    }
+    assert sent_input[1] == {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "I'll inspect it."}],
+    }
     assert sent_input[-2]["type"] == "function_call"
     assert sent_input[-2]["call_id"] == "hames-call-1"
     assert sent_input[-1]["type"] == "function_call_output"
@@ -429,6 +439,39 @@ async def test_llama_cpp_timeout_is_typed() -> None:
         ]
     assert raised.value.code == "provider_timeout"
     assert raised.value.retryable is True
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_llama_cpp_surfaces_responses_error_message() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            request=request,
+            json={
+                "error": {
+                    "code": 400,
+                    "message": "Cannot determine type of 'item'",
+                    "type": "invalid_request_error",
+                }
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = LlamaCppProvider("http://llama", client=client)
+    with pytest.raises(ProviderError, match="Cannot determine type of 'item'") as raised:
+        _ = [
+            event
+            async for event in provider.stream(
+                ModelRequest(
+                    model="fixture",
+                    messages=[ProviderMessage(role="user", content="hello")],
+                    system="",
+                )
+            )
+        ]
+    assert raised.value.code == "provider_http_error"
+    assert raised.value.retryable is False
     await client.aclose()
 
 

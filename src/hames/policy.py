@@ -292,6 +292,9 @@ class PolicyGate:
 
 
 def _plan_shell_allowed(command: str) -> bool:
+    heredoc_command = _normalize_plan_python_heredoc(command)
+    if heredoc_command is not None:
+        return _plan_shell_allowed(heredoc_command)
     command = re.sub(
         r"\s+(?:[012]?>\s*/dev/null|[012]?>&[012])(?=\s*(?:$|&&|\|\||[;|]))",
         "",
@@ -303,6 +306,24 @@ def _plan_shell_allowed(command: str) -> bool:
     if not clauses or any(not clause for clause in clauses):
         return False
     return all(_plan_clause_allowed(clause) for clause in clauses)
+
+
+def _normalize_plan_python_heredoc(command: str) -> str | None:
+    """Turn a strict Python stdin probe into the equivalent validated ``-c`` probe."""
+    match = re.fullmatch(
+        r"(?s)(?P<launch>(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S+)\s+)*"
+        r"(?:\S*/)?python(?:3)?)\s+-\s+"
+        r"<<(?P<quote>['\"]?)(?P<delimiter>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)"
+        r"(?P<suffix>[^\n]*)\n(?P<source>.*?)\n(?P=delimiter)\s*",
+        command,
+    )
+    if match is None:
+        return None
+    source = match.group("source")
+    return (
+        f"{match.group('launch')} -c {shlex.quote(source)}"
+        f"{match.group('suffix')}"
+    )
 
 
 def _plan_shell_clauses(command: str) -> list[str]:
@@ -357,6 +378,8 @@ def _plan_clause_allowed(clause: str) -> bool:
         return len(args) <= 1 and not any(arg.startswith("-") for arg in args)
     if command in {"pwd", "ls", "rg", "grep", "find", "head", "tail", "wc"}:
         return not any(arg in {"--delete", "-delete"} for arg in args)
+    if command in {"env", "true"}:
+        return not args
     if command in {"file", "readlink", "realpath", "stat", "test", "which"}:
         return True
     if command == "command":
@@ -441,6 +464,11 @@ _PLAN_PYTHON_SAFE_METHODS = {
     "endswith",
     "format",
     "get",
+    "get_bitsize",
+    "get_flags",
+    "get_height",
+    "get_size",
+    "get_width",
     "index",
     "items",
     "join",

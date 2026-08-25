@@ -304,9 +304,7 @@ class LlamaCppProvider:
         except httpx.TimeoutException as exc:
             raise ProviderError("provider_timeout", str(exc), retryable=True) from exc
         except httpx.HTTPStatusError as exc:
-            raise ProviderError(
-                "provider_http_error", str(exc), retryable=exc.response.status_code >= 500
-            ) from exc
+            raise _http_error(exc) from exc
         except httpx.HTTPError as exc:
             raise ProviderError("provider_transport_error", str(exc), retryable=True) from exc
 
@@ -346,7 +344,23 @@ def _response_input(messages: Sequence[object]) -> list[dict[str, object]]:
                 )
             continue
         if value.content:
-            result.append({"role": value.role, "content": value.content})
+            # llama.cpp cannot infer an assistant message item's type from the
+            # Responses shorthand accepted for user input. Emit the canonical
+            # message/content shape so continued turns remain valid.
+            result.append(
+                {
+                    "type": "message",
+                    "role": value.role,
+                    "content": [
+                        {
+                            "type": (
+                                "output_text" if value.role == "assistant" else "input_text"
+                            ),
+                            "text": value.content,
+                        }
+                    ],
+                }
+            )
         for call in value.tool_calls:
             result.append(
                 {
@@ -357,6 +371,23 @@ def _response_input(messages: Sequence[object]) -> list[dict[str, object]]:
                 }
             )
     return result
+
+
+def _http_error(exc: httpx.HTTPStatusError) -> ProviderError:
+    status = exc.response.status_code
+    message = str(exc)
+    try:
+        body = JSON_OBJECT.validate_python(cast(object, exc.response.json()))
+        error_value = body.get("error")
+        if isinstance(error_value, dict):
+            message = str(error_value.get("message", message))
+    except ValueError:
+        pass
+    return ProviderError(
+        "provider_http_error",
+        message,
+        retryable=status == 429 or status >= 500,
+    )
 
 
 def _final_tool_call_event(item: dict[str, JsonValue], index: int) -> StreamEvent:

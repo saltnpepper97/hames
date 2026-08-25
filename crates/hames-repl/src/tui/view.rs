@@ -435,7 +435,7 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
             .track_symbol(Some("█"))
             .thumb_symbol("█")
             .track_style(Style::default().fg(RULE))
-            .thumb_style(Style::default().fg(INPUT));
+            .thumb_style(Style::default().fg(MUTED_LIGHT));
         let mut state = ScrollbarState::new(lines.len())
             .position(scrollbar_position(start, lines.len(), height))
             .viewport_content_length(height);
@@ -1302,7 +1302,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             .track_symbol(Some("█"))
             .thumb_symbol("█")
             .track_style(Style::default().fg(RULE))
-            .thumb_style(Style::default().fg(INPUT));
+            .thumb_style(Style::default().fg(MUTED_LIGHT));
         let mut state = ScrollbarState::new(lines.len())
             .position(scrollbar_position(start, lines.len(), available))
             .viewport_content_length(available);
@@ -1884,7 +1884,7 @@ fn render_approval_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             .track_symbol(Some("█"))
             .thumb_symbol("█")
             .track_style(Style::default().fg(RULE))
-            .thumb_style(Style::default().fg(INPUT));
+            .thumb_style(Style::default().fg(MUTED_LIGHT));
         let mut state = ScrollbarState::new(detail_lines.len())
             .position(top)
             .viewport_content_length(detail_height);

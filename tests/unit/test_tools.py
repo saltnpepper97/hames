@@ -291,6 +291,16 @@ def test_execution_modes_are_gateway_policy_not_client_convention(tmp_path: Path
         "python3 -c \"import numpy; print('numpy', numpy.__version__)\" 2>&1; "
         'echo "---"; ls ~ | head -30',
         "python3 -m pip show numpy | head -3",
+        'SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python3 -c "\n'
+        "import pygame\npygame.init()\ns = pygame.display.set_mode((320,240))\n"
+        "print('dummy display OK', s.get_size())\npygame.quit()\n"
+        '" 2>&1 | grep -v avx2',
+        "SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python3 - <<'EOF' "
+        "2>&1 | grep -vi avx2\nimport pygame\nok = pygame.display.init()\n"
+        'print("display init:", ok)\ns = pygame.display.set_mode((320, 240))\n'
+        'print("surface:", s.get_size())\npygame.quit()\nEOF',
+        "env | grep -E '^(DISPLAY|WAYLAND_DISPLAY|XDG_SESSION_TYPE)='; "
+        "ls /tmp/.X11-unix 2>/dev/null; true",
     ):
         assert (
             gate.decide(

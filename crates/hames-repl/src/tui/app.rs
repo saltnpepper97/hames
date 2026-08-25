@@ -109,12 +109,100 @@ impl Composer {
         self.cursor = (self.cursor + 1).min(self.units.len());
     }
 
-    pub fn move_home(&mut self) {
+    pub fn move_buffer_home(&mut self) {
         self.cursor = 0;
     }
 
-    pub fn move_end(&mut self) {
+    pub fn move_buffer_end(&mut self) {
         self.cursor = self.units.len();
+    }
+
+    pub fn move_home(&mut self) {
+        self.cursor = self.line_start(self.cursor);
+    }
+
+    pub fn move_end(&mut self) {
+        self.cursor = self.line_end(self.cursor);
+    }
+
+    pub fn move_up(&mut self) {
+        let start = self.line_start(self.cursor);
+        if start == 0 {
+            return;
+        }
+        let column = self.cursor - start;
+        let previous_end = start - 1;
+        let previous_start = self.line_start(previous_end);
+        self.cursor = (previous_start + column).min(previous_end);
+    }
+
+    pub fn move_down(&mut self) {
+        let end = self.line_end(self.cursor);
+        if end >= self.units.len() {
+            return;
+        }
+        let column = self.cursor - self.line_start(self.cursor);
+        let next_start = end + 1;
+        let next_end = self.line_end(next_start);
+        self.cursor = (next_start + column).min(next_end);
+    }
+
+    pub fn move_word_left(&mut self) {
+        while self.cursor > 0 && self.unit_is_whitespace(self.cursor - 1) {
+            self.cursor -= 1;
+        }
+        while self.cursor > 0 && !self.unit_is_whitespace(self.cursor - 1) {
+            self.cursor -= 1;
+        }
+    }
+
+    pub fn move_word_right(&mut self) {
+        while self.cursor < self.units.len() && self.unit_is_whitespace(self.cursor) {
+            self.cursor += 1;
+        }
+        while self.cursor < self.units.len() && !self.unit_is_whitespace(self.cursor) {
+            self.cursor += 1;
+        }
+    }
+
+    pub fn delete_to_line_start(&mut self) {
+        let start = self.line_start(self.cursor);
+        self.units.drain(start..self.cursor);
+        self.cursor = start;
+    }
+
+    pub fn delete_to_line_end(&mut self) {
+        let end = self.line_end(self.cursor);
+        self.units.drain(self.cursor..end);
+    }
+
+    pub fn delete_previous_word(&mut self) {
+        let end = self.cursor;
+        self.move_word_left();
+        self.units.drain(self.cursor..end);
+    }
+
+    fn line_start(&self, cursor: usize) -> usize {
+        self.units[..cursor.min(self.units.len())]
+            .iter()
+            .rposition(is_newline)
+            .map_or(0, |index| index + 1)
+    }
+
+    fn line_end(&self, cursor: usize) -> usize {
+        self.units[cursor.min(self.units.len())..]
+            .iter()
+            .position(is_newline)
+            .map_or(self.units.len(), |offset| {
+                cursor.min(self.units.len()) + offset
+            })
+    }
+
+    fn unit_is_whitespace(&self, index: usize) -> bool {
+        match self.units.get(index) {
+            Some(ComposerUnit::Text(value)) => value.chars().all(char::is_whitespace),
+            Some(ComposerUnit::Paste(_)) | None => false,
+        }
     }
 
     pub fn message(&self) -> (String, Vec<PasteSpan>) {
@@ -1663,17 +1751,44 @@ impl App {
             KeyCode::Delete => {
                 self.composer.delete();
             }
-            KeyCode::Left => {
-                self.composer.move_left();
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.composer.move_word_left();
             }
-            KeyCode::Right => {
-                self.composer.move_right();
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.composer.move_word_right();
             }
-            KeyCode::Home => {
+            KeyCode::Left => self.composer.move_left(),
+            KeyCode::Right => self.composer.move_right(),
+            KeyCode::Up => self.composer.move_up(),
+            KeyCode::Down => self.composer.move_down(),
+            KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.composer.move_buffer_home();
+            }
+            KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.composer.move_buffer_end();
+            }
+            KeyCode::Home => self.composer.move_home(),
+            KeyCode::End => self.composer.move_end(),
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.composer.move_home();
             }
-            KeyCode::End => {
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.composer.move_end();
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.composer.delete_to_line_start();
+            }
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.composer.delete_to_line_end();
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.composer.delete_previous_word();
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.composer.move_word_left();
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.composer.move_word_right();
             }
             KeyCode::Enter
                 if key
@@ -2334,6 +2449,12 @@ impl App {
                         .get("retryable")
                         .and_then(Value::as_bool)
                         .unwrap_or(false);
+                // The terminal run.failed event carries the same unrecoverable
+                // provider error. Render that authoritative event once instead
+                // of showing duplicate failures for one request.
+                if event.event_type == "model.response.failed" && !recoverable {
+                    return;
+                }
                 let code = string(&event.payload, "code");
                 let message = if recoverable && code == "malformed_tool_call" {
                     "Tool call could not be parsed · retrying automatically".to_owned()
@@ -2913,6 +3034,10 @@ impl App {
     }
 }
 
+fn is_newline(unit: &ComposerUnit) -> bool {
+    matches!(unit, ComposerUnit::Text(value) if value == "\n")
+}
+
 fn selected_transcript_text(lines: &[String], selection: TranscriptSelection) -> Option<String> {
     let (start, end) = selection.bounds();
     if start.row >= lines.len() {
@@ -3182,6 +3307,41 @@ mod tests {
         assert!(app.handle_composer_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)));
         assert!(app.handle_composer_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)));
         assert_eq!(app.composer.text(), "\n\n");
+    }
+
+    #[test]
+    fn composer_navigation_respects_logical_lines_and_buffer_edges() {
+        let mut composer = Composer::default();
+        composer.insert_text("alpha\nbeta line\ngamma");
+
+        composer.move_home();
+        assert_eq!(composer.cursor, 16);
+        composer.move_up();
+        assert_eq!(composer.cursor, 6);
+        composer.move_down();
+        assert_eq!(composer.cursor, 16);
+        composer.move_buffer_home();
+        assert_eq!(composer.cursor, 0);
+        composer.move_buffer_end();
+        assert_eq!(composer.cursor, composer.units.len());
+    }
+
+    #[test]
+    fn composer_readline_editing_keys_apply_at_the_cursor() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.composer.insert_text("alpha beta\ngamma delta");
+        for _ in 0..6 {
+            app.handle_composer_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        }
+        assert!(app.handle_composer_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL,)));
+        assert_eq!(app.composer.text(), "alpha beta\n delta");
+
+        assert!(app.handle_composer_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL,)));
+        assert_eq!(app.composer.text(), "alpha beta\n");
+        assert!(app.handle_composer_key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL,)));
+        assert_eq!(app.composer.cursor, 0);
+        assert!(app.handle_composer_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL,)));
+        assert_eq!(app.composer.cursor, app.composer.units.len());
     }
 
     #[test]
@@ -4273,6 +4433,37 @@ mod tests {
         ));
         assert!(app.modal.is_none());
         assert_eq!(app.active_run.as_deref(), Some(run_id));
+    }
+
+    #[test]
+    fn unrecoverable_model_and_run_failure_render_one_error() {
+        let run_id = "run-failed";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.begin_foreground_run(Some(run_id.to_owned()));
+        let payload = json!({
+            "code": "provider_http_error",
+            "message": "Cannot determine type of 'item'",
+            "retryable": false,
+            "details": {}
+        });
+        app.ingest_durable(
+            event(1, "model.response.failed", run_id, payload.clone()),
+            true,
+        );
+        app.ingest_durable(event(2, "run.failed", run_id, payload), true);
+
+        assert_eq!(
+            app.transcript
+                .iter()
+                .filter(|item| matches!(
+                    item,
+                    TranscriptItem::Status { text, error: true }
+                        if text == "Cannot determine type of 'item'"
+                ))
+                .count(),
+            1
+        );
+        assert!(app.active_run.is_none());
     }
 
     fn session() -> Session {

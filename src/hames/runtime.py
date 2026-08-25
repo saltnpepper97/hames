@@ -153,8 +153,15 @@ MODE_POLICY_SUMMARIES = {
         "dangerous or out-of-workspace actions still require approval."
     ),
     "plan": (
-        "Execution mode is plan: inspect and run safe tests, but do not write code, delegate, "
-        "or mutate durable agent state. Develop a decision-complete implementation plan. A plan "
+        "Execution mode is plan. You may read, list, and search files; inspect git status, diffs, "
+        "logs, and history; probe environment variables, versions, installed dependencies, and "
+        "runtime availability; initialize libraries with non-persistent or headless settings; and "
+        "run non-mutating tests, checks, and linters. Safe command chaining, environment-variable "
+        "prefixes, and Python inspection probes are supported. Do not write, edit, delete, "
+        "install, change packages, control processes or services, access the network, delegate, or "
+        "mutate durable agent state. If a command is rejected, do not retry equivalent spellings "
+        "of it; "
+        "continue with available evidence. Develop a decision-complete implementation plan. A plan "
         "that is ready for approval must contain a '## Tasks' section whose actionable steps use "
         "Markdown '- [ ]' checkboxes, then end with the exact marker "
         f"{PLAN_READY_MARKER}. Use that marker only when the plan is complete; omit it when asking "

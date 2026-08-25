@@ -80,6 +80,54 @@ def test_extraction_tool_schema_is_llama_cpp_compatible() -> None:
 
 
 @pytest.mark.asyncio
+async def test_failed_run_does_not_queue_blank_wrap_up(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    session = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    user = ledger.append(
+        session_id=session.id,
+        agent_id=session.agent_id,
+        event_type="user.message",
+        payload={"content": "Start the approved plan."},
+    )
+    started = ledger.append(
+        session_id=session.id,
+        run_id="failed-run",
+        agent_id=session.agent_id,
+        event_type="run.started",
+        payload={"max_model_turns": 1, "max_tool_calls": 1, "max_active_seconds": 30.0},
+        causation_id=user.id,
+    )
+    ledger.append(
+        session_id=session.id,
+        run_id="failed-run",
+        agent_id=session.agent_id,
+        event_type="run.failed",
+        payload={"code": "provider_http_error", "message": "bad request", "retryable": False},
+        causation_id=started.id,
+    )
+    manager = MemoryManager(
+        ledger=ledger,
+        config=HamesConfig(),
+        providers={"fake": ExtractingProvider()},
+        broker=EventBroker(),
+    )
+    try:
+        assert await manager.enqueue_run(session.id, "failed-run") is None
+        assert not any(
+            event.type == "memory.job.queued" for event in ledger.list_events(session.id)
+        )
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_background_extraction_activates_important_user_memory(
     hames_paths: HamesPaths, tmp_path: Path
 ) -> None:
