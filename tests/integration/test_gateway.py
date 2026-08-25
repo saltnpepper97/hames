@@ -3344,6 +3344,14 @@ async def test_gateway_exposes_skill_inspection_and_lifecycle_controls(tmp_path:
             )
             assert listed.status_code == 200
             assert listed.json()[0]["slug"] == "inspect-files"
+            complete_catalog = await client.get(
+                f"/v1/sessions/{session_id}/skills", headers=headers
+            )
+            assert {
+                "linux-gui-testing",
+                "visual-verification",
+                "web-app-debugging",
+            } <= {item["slug"] for item in complete_catalog.json()}
             shown = await client.get(
                 f"/v1/sessions/{session_id}/skills/inspect-files", headers=headers
             )
@@ -3378,6 +3386,66 @@ async def test_gateway_exposes_skill_inspection_and_lifecycle_controls(tmp_path:
             jobs = await client.get(f"/v1/sessions/{session_id}/skill-jobs", headers=headers)
             assert jobs.status_code == 200
             assert jobs.json() == []
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_user_invoked_portable_skill_is_loaded_before_the_first_model_request(
+    tmp_path: Path,
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    skill_dir = paths.portable_global_skills / "teach"
+    skill_dir.mkdir(parents=True)
+    skill_dir.joinpath("SKILL.md").write_text(
+        """---
+name: teach
+description: Teach a requested topic.
+metadata:
+  hames/invocation: user
+  hames/argument-hint: "[topic]"
+---
+Teach $ARGUMENTS with one example.
+""",
+        encoding="utf-8",
+    )
+    fake = FakeProvider(
+        [
+            StreamEvent(kind=StreamEventKind.STARTED),
+            StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="lesson"),
+            StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+        ]
+    )
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            catalog = await client.get(f"/v1/sessions/{session_id}/skills", headers=headers)
+            teach = next(item for item in catalog.json() if item["slug"] == "teach")
+            assert teach["invocation"] == "user"
+            assert teach["argument_hint"] == "[topic]"
+            accepted = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "/teach finite state machines"},
+            )
+            assert accepted.status_code == 202
+            events = await _wait_for_event(client, headers, session_id, "run.completed")
+            loaded = next(event for event in events if event["type"] == "skill.loaded")
+            assert loaded["payload"]["reason"] == "user_selected"  # type: ignore[index]
+            assert "Teach finite state machines with one example." in fake.requests[0].system
     finally:
         await state.runs.close()
 

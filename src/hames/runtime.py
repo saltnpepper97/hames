@@ -61,7 +61,7 @@ from hames.providers import (
 from hames.providers.base import JSON_OBJECT, JsonValue
 from hames.rules import ContextRuleStore, PolicyRuleStore
 from hames.search_runtime import SearchMcpManager
-from hames.skills import SkillRegistry, SkillSummary, SkillVersion
+from hames.skills import SkillRegistry, SkillSummary, SkillVersion, render_skill_invocation
 from hames.tasks import SessionTaskList, TaskStore
 from hames.tools import (
     GoalReportArguments,
@@ -308,6 +308,7 @@ class RunManager:
             paths.skills,
             ledger,
             available_tools=self.tools.names(),
+            portable_global_roots=(paths.portable_global_skills,),
             max_package_bytes=config.skills.max_package_bytes,
             max_package_files=config.skills.max_package_files,
         )
@@ -405,6 +406,13 @@ class RunManager:
         trust = await asyncio.to_thread(self.controls.get_trust, Path(session.working_directory))
         if trust is None:
             raise PermissionError("working directory is not trusted")
+        user_skill = await asyncio.to_thread(self.skills.user_invocation, session, content)
+        if user_skill is not None:
+            capsule = await asyncio.to_thread(
+                load_agent, self.paths.agents / session.agent_id / "AGENT.md"
+            )
+            if not skill_permitted(capsule, user_skill[0].slug):
+                raise ValueError(f"Skill is unavailable to agent {session.agent_id}")
         await self._yield_dream(session_id)
         user_event = await self._append(
             session_id=session_id,
@@ -1881,6 +1889,48 @@ class RunManager:
         )
         self._skill_catalogs[run_id] = catalog
         self._loaded_skills[run_id] = {}
+        user_skill = await asyncio.to_thread(
+            self.skills.user_invocation,
+            session,
+            str(user_event.payload.get("content", "")),
+        )
+        if user_skill is not None:
+            skill, arguments = user_skill
+            capsule = await asyncio.to_thread(
+                load_agent, self.paths.agents / session.agent_id / "AGENT.md"
+            )
+            if not skill_permitted(capsule, skill.slug):
+                raise RunFailure(
+                    "skill_unavailable", f"Skill is unavailable to agent {session.agent_id}"
+                )
+            loaded = skill.model_copy(
+                update={"instructions": render_skill_invocation(skill.instructions, arguments)}
+            )
+            self._loaded_skills[run_id][skill.slug] = loaded
+            await asyncio.to_thread(
+                self.skills.record_usage,
+                version_id=skill.id,
+                run_id=run_id,
+                session_id=session.id,
+                stage="loaded",
+            )
+            await self._append(
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                event_type="skill.loaded",
+                payload={
+                    "skill_id": skill.skill_id,
+                    "version_id": skill.id,
+                    "slug": skill.slug,
+                    "version": skill.version,
+                    "content_hash": skill.content_hash,
+                    "reason": "user_selected",
+                    "score": 1.0,
+                },
+                causation_id=skill_event.id if skill_event is not None else run_started.id,
+                correlation_id=run_id,
+            )
         user_requested_memory_maintenance = _explicit_memory_maintenance_request(
             str(user_event.payload.get("content", ""))
         )
@@ -2605,9 +2655,11 @@ class RunManager:
         if not self.config.skills.enabled:
             return [], None
         pool_limit = max(self.config.skills.max_catalog_entries * 4, 64)
-        scoped = await asyncio.to_thread(self.skills.visible, session, query="", limit=pool_limit)
+        scoped = await asyncio.to_thread(
+            self.skills.model_visible, session, query="", limit=pool_limit
+        )
         ranked = await asyncio.to_thread(
-            self.skills.visible, session, query=query, limit=pool_limit
+            self.skills.model_visible, session, query=query, limit=pool_limit
         )
         by_slug = {item.slug: item for item in scoped}
         by_slug.update({item.slug: item for item in ranked})
@@ -3324,6 +3376,8 @@ class RunManager:
                 )
                 if not skill_permitted(capsule, skill.slug):
                     raise KeyError(arguments.id)
+                if skill.metadata.invocation == "user":
+                    raise ValueError("Skill is user-invocable only")
             except (KeyError, ValueError) as exc:
                 return ToolResult(status="rejected", summary=f"Skill cannot be loaded: {exc}")
             self._loaded_skills.setdefault(run_id, {})[skill.slug] = skill

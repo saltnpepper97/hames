@@ -54,6 +54,49 @@ Loaded procedures remain subordinate to the core contract and policy.
 Every catalog decision, load, execution, and outcome is attributable in the event
 ledger and context manifest.
 
+## Portable discovery and user invocation
+
+In addition to learned and bundled packages, Hames discovers portable Agent
+Skills without importing or rewriting them:
+
+- project: `<workspace>/.agents/skills/<slug>/SKILL.md`;
+- global: `~/.agents/skills/<slug>/SKILL.md` for the normal Hames home;
+- isolated/custom `HAMES_HOME`: `$HAMES_HOME/portable-skills/<slug>/SKILL.md`.
+
+Project Skills override a global or bundled Skill with the same slug. Discovered
+packages are read-only in Hames, must use the standard `name` and `description`
+frontmatter, and must keep `name` equal to the package directory. Invalid,
+escaping, or symlinked packages are ignored rather than partially loaded.
+
+Skills are model-invoked by default, so installing a procedure does not flood the
+slash-command palette. A Skill can opt into explicit user invocation with
+namespaced metadata:
+
+```yaml
+---
+name: teach
+description: Explain a requested topic with examples.
+metadata:
+  hames/invocation: user # model, user, or both
+  hames/argument-hint: "[topic]"
+---
+Teach $ARGUMENTS and verify understanding.
+```
+
+`user` appears as `/teach` but is not advertised for autonomous `skill_load`;
+`both` supports both paths. `$ARGUMENTS`, `$0`, `$1`, and
+`$ARGUMENTS[0]` substitutions are resolved before the procedure enters context.
+Hames also reads the compatible Claude `user-invocable` and
+`disable-model-invocation` flags and OpenCode `slash`/`autoinvoke` metadata.
+Namespaced Hames metadata is preferred when present.
+
+Invoking `/teach topic` is a normal durable user turn: it obeys the current
+agent's Skill allow/deny policy, queue limits, trust, tool policy, and approvals.
+It does not grant authority. Core Hames commands are reserved and cannot be
+shadowed by a user-invocable Skill. `/skills` always lists all visible Skills,
+including bundled and model-only procedures; only explicitly user-invocable
+ones appear in the `/` palette.
+
 ## Bundled Skills
 
 Hames ships a small read-only global set under `src/hames/builtin_skills`. These

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
+import shlex
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePath
@@ -21,6 +24,49 @@ from hames.providers.base import JSON_OBJECT, JsonValue
 SKILL_ID = re.compile(r"[a-z][a-z0-9-]{0,62}")
 TOKEN = re.compile(r"[a-z0-9][a-z0-9_-]+")
 SkillScope = Literal["global", "workspace", "agent"]
+SkillInvocation = Literal["model", "user", "both"]
+RESERVED_COMMANDS = {
+    "agent",
+    "cancel",
+    "clear",
+    "compact",
+    "context",
+    "correct",
+    "effort",
+    "events",
+    "evolution",
+    "exit",
+    "export",
+    "fork",
+    "gateway",
+    "goal",
+    "heal",
+    "help",
+    "inspect",
+    "memory",
+    "mode",
+    "model",
+    "new",
+    "plugins",
+    "project",
+    "provider",
+    "queue",
+    "quit",
+    "reasoning",
+    "remember",
+    "resume",
+    "scars",
+    "session",
+    "sessions",
+    "skills",
+    "status",
+    "tasks",
+    "theme",
+    "themes",
+    "title",
+    "trust",
+    "usage",
+}
 SkillStatus = Literal[
     "draft",
     "verified",
@@ -69,6 +115,8 @@ class SkillMetadata(SkillModel):
     triggers: list[str] = Field(default_factory=list, max_length=20)
     requires: list[str] = Field(default_factory=list, max_length=20)
     scripts: list[SkillScript] = Field(default_factory=_empty_scripts, max_length=16)
+    invocation: SkillInvocation = "model"
+    argument_hint: str = Field(default="", max_length=160)
 
     @field_validator("id")
     @classmethod
@@ -88,6 +136,8 @@ class SkillMetadata(SkillModel):
 
     @model_validator(mode="after")
     def unique_lists(self) -> SkillMetadata:
+        if self.invocation in {"user", "both"} and self.id in RESERVED_COMMANDS:
+            raise ValueError(f"User-invocable Skill conflicts with /{self.id}")
         if len(self.tools) != len(set(self.tools)):
             raise ValueError("Skill tools must be unique")
         if len(self.triggers) != len(set(self.triggers)):
@@ -111,6 +161,8 @@ class SkillDraft(SkillModel):
     scripts: list[SkillScript] = Field(default_factory=_empty_scripts)
     files: dict[str, str] = Field(default_factory=dict)
     rationale: str = ""
+    invocation: SkillInvocation = "model"
+    argument_hint: str = Field(default="", max_length=160)
 
 
 class SkillVersion(SkillModel):
@@ -153,6 +205,8 @@ class SkillSummary(SkillModel):
     scripts: list[SkillScript]
     score: float = 0.0
     pinned: bool = False
+    invocation: SkillInvocation = "model"
+    argument_hint: str = ""
 
 
 class SkillJob(SkillModel):
@@ -207,6 +261,116 @@ def render_skill(metadata: SkillMetadata, instructions: str) -> str:
     return f"---\n{header}\n---\n{instructions.strip()}\n"
 
 
+def parse_portable_skill(
+    raw: str, *, slug: str, scope: Literal["global", "workspace"]
+) -> tuple[SkillMetadata, str]:
+    """Parse the portable Agent Skills subset plus namespaced Hames invocation hints."""
+
+    lines = raw.splitlines()
+    if not lines or lines[0] != "---":
+        raise ValueError("SKILL.md must begin with YAML frontmatter")
+    try:
+        boundary = lines[1:].index("---") + 1
+    except ValueError as exc:
+        raise ValueError("SKILL.md has unterminated YAML frontmatter") from exc
+    value: object = yaml.safe_load("\n".join(lines[1:boundary]))
+    if not isinstance(value, dict):
+        raise ValueError("SKILL.md frontmatter must be an object")
+    payload = JSON_OBJECT.validate_python(value)
+    declared_name = payload.get("name")
+    if not isinstance(declared_name, str) or not declared_name:
+        raise ValueError("Portable Skill requires a name")
+    if declared_name != slug:
+        raise ValueError("Portable Skill name must match its directory")
+    description = payload.get("description")
+    if not isinstance(description, str) or not description.strip():
+        raise ValueError("Portable Skill requires a description")
+    instructions = "\n".join(lines[boundary + 1 :]).strip()
+    if not instructions:
+        raise ValueError("Skill instructions cannot be empty")
+    extension = payload.get("metadata")
+    metadata = JSON_OBJECT.validate_python(extension) if isinstance(extension, dict) else {}
+    invocation = _portable_invocation(payload, metadata)
+    argument_hint = payload.get("argument-hint", metadata.get("hames/argument-hint", ""))
+    if not isinstance(argument_hint, str):
+        raise ValueError("Skill argument hint must be text")
+    raw_version = metadata.get("hames/version", metadata.get("version", "1"))
+    try:
+        version = int(str(raw_version))
+    except ValueError as exc:
+        raise ValueError("Skill version must be an integer") from exc
+    return (
+        SkillMetadata(
+            id=slug,
+            name=slug.replace("-", " ").title(),
+            description=description.strip(),
+            version=version,
+            scope=scope,
+            invocation=invocation,
+            argument_hint=argument_hint.strip(),
+        ),
+        instructions,
+    )
+
+
+def _portable_invocation(
+    payload: Mapping[str, object], metadata: Mapping[str, object]
+) -> SkillInvocation:
+    explicit = payload.get("invocation", metadata.get("hames/invocation"))
+    if explicit is not None:
+        if explicit not in {"model", "user", "both"}:
+            raise ValueError("Skill invocation must be model, user, or both")
+        return cast(SkillInvocation, explicit)
+
+    user_invocable = _optional_bool(payload.get("user-invocable"), "user-invocable")
+    model_disabled = _optional_bool(
+        payload.get("disable-model-invocation"), "disable-model-invocation"
+    )
+    slash = _optional_bool(payload.get("slash", metadata.get("opencode/slash")), "slash")
+    autoinvoke = _optional_bool(metadata.get("opencode/autoinvoke"), "autoinvoke")
+    user = user_invocable is True or slash is True or model_disabled is True
+    model = user_invocable is not False and model_disabled is not True and autoinvoke is not False
+    if slash is False:
+        user = False
+    if not user and not model:
+        raise ValueError("Skill disables both user and model invocation")
+    if user and model:
+        return "both"
+    return "user" if user else "model"
+
+
+def _optional_bool(value: object, field: str) -> bool | None:
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.casefold() in {"true", "false"}:
+        return value.casefold() == "true"
+    raise ValueError(f"Skill {field} must be true or false")
+
+
+def render_skill_invocation(instructions: str, arguments: str) -> str:
+    try:
+        values = shlex.split(arguments)
+    except ValueError:
+        values = arguments.split()
+    rendered = re.sub(
+        r"\$(?:ARGUMENTS\[([0-9]+)\]|([0-9]+))",
+        lambda match: (
+            values[int(match.group(1) or match.group(2))]
+            if int(match.group(1) or match.group(2)) < len(values)
+            else ""
+        ),
+        instructions,
+    )
+    rendered = rendered.replace("$ARGUMENTS", arguments)
+    if (
+        arguments
+        and "$ARGUMENTS" not in instructions
+        and re.search(r"\$(?:ARGUMENTS\[)?[0-9]", instructions) is None
+    ):
+        rendered = f"{rendered}\n\nUser arguments:\n{arguments}"
+    return rendered
+
+
 class SkillRegistry:
     def __init__(
         self,
@@ -214,6 +378,7 @@ class SkillRegistry:
         ledger: Ledger,
         *,
         available_tools: set[str],
+        portable_global_roots: tuple[Path, ...] = (),
         max_package_bytes: int = 262_144,
         max_package_files: int = 64,
     ) -> None:
@@ -223,7 +388,9 @@ class SkillRegistry:
         self.available_tools = available_tools | {"skill_load", "skill_run", "skill_author"}
         self.max_package_bytes = max_package_bytes
         self.max_package_files = max_package_files
+        self.portable_global_roots = tuple(dict.fromkeys(portable_global_roots))
         self._builtin_by_slug, self._builtin_by_version = self._load_builtins()
+        self._external_by_version: dict[str, SkillVersion] = {}
 
     def create_draft(
         self,
@@ -247,6 +414,8 @@ class SkillRegistry:
             triggers=draft.triggers,
             requires=draft.requires,
             scripts=draft.scripts,
+            invocation=draft.invocation,
+            argument_hint=draft.argument_hint,
         )
         self._validate_metadata(metadata, draft.files)
         visible = {event.id for event in self.ledger.replay(session.id)}
@@ -783,7 +952,7 @@ class SkillRegistry:
         session_id: str,
         stage: Literal["catalogued", "loaded", "executed"],
     ) -> None:
-        if version_id in self._builtin_by_version:
+        if version_id in self._builtin_by_version or version_id in self._external_by_version:
             return
         now = utc_now()
         with self.database.connect() as connection:
@@ -940,13 +1109,25 @@ class SkillRegistry:
                 ORDER BY v.activated_at DESC, s.slug
                 """
             ).fetchall()
-        values = list(self._builtin_by_slug.values())
-        values.extend(
-            self._version_from_row(row)
-            for row in rows
-            if str(row["slug"]) not in self._builtin_by_slug
-        )
-        values = [item for item in values if self._visible(session, item)]
+        database_values = [self._version_from_row(row) for row in rows]
+        external_values = self._discover_external(session)
+        resolved = dict(self._builtin_by_slug)
+        for item in database_values:
+            if item.scope == "global":
+                resolved[item.slug] = item
+        for item in external_values:
+            if item.scope == "global":
+                resolved[item.slug] = item
+        for item in database_values:
+            if item.scope == "workspace":
+                resolved[item.slug] = item
+        for item in external_values:
+            if item.scope == "workspace":
+                resolved[item.slug] = item
+        for item in database_values:
+            if item.scope == "agent":
+                resolved[item.slug] = item
+        values = [item for item in resolved.values() if self._visible(session, item)]
         query_tokens = set(_tokens(query))
         summaries: list[SkillSummary] = []
         for item in values:
@@ -966,8 +1147,37 @@ class SkillRegistry:
             raise KeyError(slug)
         return self.get(matches[0].version_id)
 
+    def model_visible(
+        self, session: Session, *, query: str = "", limit: int = 50
+    ) -> list[SkillSummary]:
+        return [
+            item
+            for item in self.visible(session, query=query, limit=200)
+            if item.invocation in {"model", "both"}
+        ][:limit]
+
+    def user_invocation(self, session: Session, content: str) -> tuple[SkillVersion, str] | None:
+        parts = content.strip().split(maxsplit=1)
+        if not parts:
+            return None
+        command = parts[0]
+        if not command.startswith("/") or len(command) == 1:
+            return None
+        slug = command[1:]
+        try:
+            skill = self.get_visible(session, slug)
+        except KeyError:
+            return None
+        if skill.metadata.invocation not in {"user", "both"}:
+            raise ValueError(f"Skill is not user-invocable: {slug}")
+        return skill, parts[1].strip() if len(parts) == 2 else ""
+
     def get_visible_version(self, session: Session, version_id: str) -> SkillVersion:
         value = self.get(version_id)
+        if version_id in self._external_by_version:
+            if not any(item.id == version_id for item in self._discover_external(session)):
+                raise KeyError(version_id)
+            return value
         if not self._visible(session, value):
             raise KeyError(version_id)
         return value
@@ -978,6 +1188,11 @@ class SkillRegistry:
             if _hash_directory(Path(builtin.package_path)) != builtin.content_hash:
                 raise ValueError(f"Skill package hash mismatch: {version_id}")
             return builtin
+        external = self._external_by_version.get(version_id)
+        if external is not None:
+            if _hash_directory(Path(external.package_path)) != external.content_hash:
+                raise ValueError(f"Skill package hash mismatch: {version_id}")
+            return external
         with self.database.connect() as connection:
             row = connection.execute(
                 "SELECT v.*, s.slug, s.scope, s.scope_key, s.pinned_version_id "
@@ -997,6 +1212,11 @@ class SkillRegistry:
         )
         if builtin is not None:
             return builtin
+        external = next(
+            (item for item in self._external_by_version.values() if item.skill_id == skill_id), None
+        )
+        if external is not None:
+            return external
         entity = self._entity(skill_id)
         version_id = entity["active_version_id"]
         return None if version_id is None else self.get(str(version_id))
@@ -1007,6 +1227,11 @@ class SkillRegistry:
         )
         if builtin is not None:
             return [builtin]
+        external = next(
+            (item for item in self._external_by_version.values() if item.skill_id == skill_id), None
+        )
+        if external is not None:
+            return [external]
         with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT v.*, s.slug, s.scope, s.scope_key, s.pinned_version_id "
@@ -1033,6 +1258,8 @@ class SkillRegistry:
             scripts=version.metadata.scripts,
             score=score,
             pinned=version.pinned,
+            invocation=version.metadata.invocation,
+            argument_hint=version.metadata.argument_hint,
         )
 
     def set_pinned(self, session: Session, slug: str, *, pinned: bool) -> SkillVersion:
@@ -1058,7 +1285,7 @@ class SkillRegistry:
         return self.get(version.id)
 
     def evidence(self, version_id: str) -> list[str]:
-        if version_id in self._builtin_by_version:
+        if version_id in self._builtin_by_version or version_id in self._external_by_version:
             return []
         with self.database.connect() as connection:
             rows = connection.execute(
@@ -1068,9 +1295,11 @@ class SkillRegistry:
         return [str(row["event_id"]) for row in rows]
 
     def _latest_visible(self, session: Session, slug: str) -> SkillVersion:
-        builtin = self._builtin_by_slug.get(slug)
-        if builtin is not None:
-            return builtin
+        visible = next(
+            (item for item in self.visible(session, limit=200) if item.slug == slug), None
+        )
+        if visible is not None:
+            return self.get(visible.version_id)
         with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT v.*, s.slug, s.scope, s.scope_key, s.pinned_version_id "
@@ -1124,6 +1353,8 @@ class SkillRegistry:
     ) -> str:
         if slug in self._builtin_by_slug:
             raise ValueError(f"Built-in Skill is read-only: {slug}")
+        if any(item.slug == slug for item in self._discover_external(session)):
+            raise ValueError(f"Discovered Skill is read-only: {slug}")
         with self.database.connect() as connection:
             rows = connection.execute("SELECT * FROM skills WHERE slug = ?", (slug,)).fetchall()
         for row in rows:
@@ -1170,6 +1401,8 @@ class SkillRegistry:
     def _entity(self, skill_id: str) -> dict[str, object]:
         if any(item.skill_id == skill_id for item in self._builtin_by_slug.values()):
             raise ValueError(f"Built-in Skill is read-only: {skill_id.removeprefix('builtin:')}")
+        if any(item.skill_id == skill_id for item in self._external_by_version.values()):
+            raise ValueError("Discovered Skill is read-only")
         with self.database.connect() as connection:
             row = connection.execute("SELECT * FROM skills WHERE id = ?", (skill_id,)).fetchone()
         if row is None:
@@ -1225,9 +1458,78 @@ class SkillRegistry:
             by_version[version_id] = value
         return by_slug, by_version
 
+    def _discover_external(self, session: Session) -> list[SkillVersion]:
+        sources: list[tuple[Path, SkillScope, str | None]] = [
+            (root, "global", None) for root in self.portable_global_roots
+        ]
+        workspace = Path(session.working_directory).resolve(strict=False)
+        sources.append((workspace / ".agents" / "skills", "workspace", str(workspace)))
+        discovered: dict[str, SkillVersion] = {}
+        for source_root, scope, scope_key in sources:
+            if not source_root.is_dir():
+                continue
+            root = source_root.resolve(strict=True)
+            for skill_file in sorted(root.glob("*/SKILL.md")):
+                try:
+                    package_root = skill_file.parent.resolve(strict=True)
+                    if not package_root.is_relative_to(root):
+                        raise ValueError("Skill package escapes its discovery root")
+                    if any(path.is_symlink() for path in package_root.rglob("*")):
+                        raise ValueError("Skill package cannot contain symbolic links")
+                    package_files = [path for path in package_root.rglob("*") if path.is_file()]
+                    if len(package_files) > self.max_package_files:
+                        raise ValueError("Skill package exceeds configured file limit")
+                    if sum(path.stat().st_size for path in package_files) > self.max_package_bytes:
+                        raise ValueError("Skill package exceeds configured size limit")
+                    raw = skill_file.read_text(encoding="utf-8")
+                    metadata, instructions = parse_portable_skill(
+                        raw,
+                        slug=package_root.name,
+                        scope="global" if scope == "global" else "workspace",
+                    )
+                    if metadata.invocation in {"user", "both"} and metadata.id in RESERVED_COMMANDS:
+                        raise ValueError(f"User-invocable Skill conflicts with /{metadata.id}")
+                    self._validate_metadata(metadata, {})
+                    content_hash = _hash_directory(package_root)
+                    source_hash = hashlib.sha256(str(package_root).encode()).hexdigest()[:12]
+                    skill_id = f"external:{scope}:{metadata.id}:{source_hash}"
+                    version_id = f"{skill_id}:v{metadata.version}:{content_hash[:12]}"
+                    value = SkillVersion(
+                        id=version_id,
+                        skill_id=skill_id,
+                        slug=metadata.id,
+                        version=metadata.version,
+                        content_hash=content_hash,
+                        status="active",
+                        scope=scope,
+                        scope_key=scope_key,
+                        name=metadata.name,
+                        description=metadata.description,
+                        instructions=instructions,
+                        metadata=metadata,
+                        package_path=str(package_root),
+                        base_version_id=None,
+                        created_by="external",
+                        source_session_id="external",
+                        source_run_id=None,
+                        created_at="1970-01-01T00:00:00+00:00",
+                        activated_at="1970-01-01T00:00:00+00:00",
+                        last_used_at=None,
+                        pinned=False,
+                    )
+                    discovered[metadata.id] = value
+                    self._external_by_version[version_id] = value
+                except (OSError, UnicodeError, ValueError) as exc:
+                    logging.getLogger(__name__).warning(
+                        "ignoring invalid discovered Skill %s: %s", skill_file, exc
+                    )
+        return list(discovered.values())
+
     def _require_mutable(self, version: SkillVersion) -> None:
         if version.id in self._builtin_by_version:
             raise ValueError(f"Built-in Skill is read-only: {version.slug}")
+        if version.id in self._external_by_version:
+            raise ValueError(f"Discovered Skill is read-only: {version.slug}")
 
     @staticmethod
     def _version_from_row(row: sqlite3.Row) -> SkillVersion:
@@ -1283,9 +1585,12 @@ def _package_hash(files: dict[str, str]) -> str:
 
 
 def _hash_directory(root: Path) -> str:
-    files = {
-        str(path.relative_to(root)): path.read_text(encoding="utf-8")
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
-    return _package_hash(files)
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        digest.update(str(path.relative_to(root)).encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()

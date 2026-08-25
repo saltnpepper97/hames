@@ -488,6 +488,10 @@ pub struct SkillMetadata {
     pub triggers: Vec<String>,
     pub requires: Vec<String>,
     pub scripts: Vec<SkillScript>,
+    #[serde(default = "default_skill_invocation")]
+    pub invocation: String,
+    #[serde(default)]
+    pub argument_hint: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -507,6 +511,14 @@ pub struct SkillSummary {
     pub scripts: Vec<SkillScript>,
     pub score: f64,
     pub pinned: bool,
+    #[serde(default = "default_skill_invocation")]
+    pub invocation: String,
+    #[serde(default)]
+    pub argument_hint: String,
+}
+
+fn default_skill_invocation() -> String {
+    "model".to_owned()
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

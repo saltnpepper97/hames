@@ -9,7 +9,8 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::api::{
     ContextUsageProjection, Event, Goal, MemoryRecord, PasteSpan, PlanRevision, PlanState,
-    QueueState, QueuedMessage, Scar, Session, SessionTask, SessionTaskList, UsageProjection,
+    QueueState, QueuedMessage, Scar, Session, SessionTask, SessionTaskList, SkillSummary,
+    UsageProjection,
 };
 
 pub const LARGE_PASTE_LINES: usize = 4;
@@ -841,6 +842,10 @@ pub struct GoalModal {
 
 #[derive(Clone, Debug)]
 pub enum MenuAction {
+    PrepareSkill {
+        slug: String,
+        argument_hint: String,
+    },
     NewSession,
     ClearSession,
     OpenSessions,
@@ -1105,6 +1110,7 @@ pub struct App {
     pub goal: Option<Goal>,
     pub plan: PlanState,
     pub tasks: SessionTaskList,
+    pub skill_commands: Vec<SkillSummary>,
     pub trusted: bool,
     pub modal: Option<Modal>,
     pub sheet: Option<Sheet>,
@@ -1185,6 +1191,7 @@ impl App {
                 items: Vec::new(),
                 updated_at: String::new(),
             },
+            skill_commands: Vec::new(),
             trusted,
             modal: (!trusted).then_some(Modal::Trust),
             sheet: None,
@@ -1591,7 +1598,7 @@ impl App {
     }
 
     pub fn command_options(&self) -> Vec<MenuOption> {
-        vec![
+        let mut options = vec![
             option(
                 "/new",
                 "start fresh and keep this conversation",
@@ -1660,7 +1667,21 @@ impl App {
             option("/help", "keyboard and mouse guide", MenuAction::Help),
             option("/cancel", "stop current work", MenuAction::CancelRun),
             option("/quit", "leave the gateway running", MenuAction::Quit),
-        ]
+        ];
+        options.extend(
+            self.skill_commands
+                .iter()
+                .filter(|skill| matches!(skill.invocation.as_str(), "user" | "both"))
+                .map(|skill| MenuOption {
+                    label: format!("/{}", skill.slug),
+                    detail: format!("Skill · {}", skill.description),
+                    action: MenuAction::PrepareSkill {
+                        slug: skill.slug.clone(),
+                        argument_hint: skill.argument_hint.clone(),
+                    },
+                }),
+        );
+        options
     }
 
     pub fn open_commands(&mut self) {

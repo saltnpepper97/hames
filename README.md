@@ -348,7 +348,10 @@ same autonomous pipeline explicitly. `pin`, `unpin`, `archive`, `restore`, and
 networking disabled, no real home, a read-only project, and only disposable run
 scratch writable. Hames also bundles the composable `web-app-debugging`,
 `visual-verification`, and `linux-gui-testing` procedures through the same catalog
-and progressive-load path. See
+and progressive-load path. Portable packages are auto-discovered from project
+`.agents/skills` and global `~/.agents/skills`; model-only Skills remain visible
+in `/skills`, while Skills opting into Hames user invocation also appear as
+`/slug` commands. See
 [`docs/architecture/skills.md`](docs/architecture/skills.md).
 
 Corrections become tests. `/correct <explanation>` records an explicit correction

@@ -383,13 +383,14 @@ async fn refresh_agents_sheet(client: &GatewayClient, app: &mut App) -> Result<(
 
 async fn load_app(client: &GatewayClient, session: Session) -> Result<App> {
     let agent_id = session.agent_id.clone();
-    let (events, trust, queue, goals, plan, tasks) = tokio::try_join!(
+    let (events, trust, queue, goals, plan, tasks, skills) = tokio::try_join!(
         client.history(&session.id),
         client.trust_status(&session.id),
         client.queue_state(&session.id),
         client.goals(&session.id),
         client.current_plan(&session.id),
-        client.tasks(&session.id)
+        client.tasks(&session.id),
+        client.skills(&session.id, "")
     )?;
     let agent = client.agent(&agent_id).await.ok();
     let mut app = App::new(session, events, trust.trusted);
@@ -400,10 +401,24 @@ async fn load_app(client: &GatewayClient, session: Session) -> Result<App> {
     app.goal = goals.last().cloned();
     app.set_plan(plan);
     app.set_tasks(tasks);
+    app.skill_commands = skills
+        .into_iter()
+        .filter(|skill| matches!(skill.invocation.as_str(), "user" | "both"))
+        .collect();
     if let Some(agent) = agent {
         app.agent_name = agent.agent.name;
     }
     Ok(app)
+}
+
+async fn refresh_skill_commands(client: &GatewayClient, app: &mut App) -> Result<()> {
+    app.skill_commands = client
+        .skills(&app.session.id, "")
+        .await?
+        .into_iter()
+        .filter(|skill| matches!(skill.invocation.as_str(), "user" | "both"))
+        .collect();
+    Ok(())
 }
 
 fn workspace_identity(working_directory: &str) -> (String, Option<String>) {
@@ -446,6 +461,7 @@ enum Effect {
     Cancel,
     PauseGoal,
     Copy(String),
+    OpenCommands,
     Menu(MenuAction),
     DeleteSession(String),
     DeleteQueued(String),
@@ -515,8 +531,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         )));
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('k') {
-        app.open_commands();
-        return None;
+        return Some(Effect::OpenCommands);
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p') {
         if let Some(paste) = app.composer.paste_at_cursor() {
@@ -1415,13 +1430,30 @@ fn send_or_command(app: &mut App) -> Option<Effect> {
         app.sheet = None;
         return Some(Effect::Menu(action));
     }
+    let user_skill = trimmed
+        .split_whitespace()
+        .next()
+        .and_then(|command| command.strip_prefix('/'))
+        .is_some_and(|slug| app.skill_commands.iter().any(|skill| skill.slug == slug));
     if trimmed.starts_with('/') {
+        if user_skill {
+            return send_message(app, content, pastes, true);
+        }
         app.notice = Some(
             "That advanced command remains in `hames repl`; press Ctrl+K for TUI actions"
                 .to_owned(),
         );
         return None;
     }
+    send_message(app, content, pastes, false)
+}
+
+fn send_message(
+    app: &mut App,
+    content: String,
+    pastes: Vec<PasteSpan>,
+    force_turn: bool,
+) -> Option<Effect> {
     if app.active_run.is_some() && app.queued_messages.len() >= 2 {
         app.notice = Some("Queue full · edit or remove a queued message first".to_owned());
         return None;
@@ -1447,7 +1479,7 @@ fn send_or_command(app: &mut App) -> Option<Effect> {
             .current
             .as_ref()
             .is_some_and(|plan| matches!(plan.status.as_str(), "ready" | "failed"));
-    if app.session.interaction_mode == "plan" && revising_plan {
+    if app.session.interaction_mode == "plan" && revising_plan && !force_turn {
         Some(Effect::SendPlanNote(content, pastes))
     } else {
         Some(Effect::Send(content, pastes))
@@ -1719,6 +1751,10 @@ async fn apply_effect(
             copy_to_clipboard(&text)?;
             app.show_copy_notice(text.chars().count());
         }
+        Effect::OpenCommands => {
+            refresh_skill_commands(client, app).await?;
+            app.open_commands();
+        }
         Effect::Menu(action) => return apply_menu_action(client, paths, app, action).await,
         Effect::DeleteSession(session_id) => {
             if session_id == app.session.id {
@@ -1838,6 +1874,16 @@ async fn apply_menu_action(
     action: MenuAction,
 ) -> Result<Option<Session>> {
     match action {
+        MenuAction::PrepareSkill {
+            slug,
+            argument_hint,
+        } => {
+            app.composer.clear();
+            app.composer.insert_text(&format!("/{slug} "));
+            app.sheet = None;
+            app.notice =
+                (!argument_hint.is_empty()).then(|| format!("Arguments · {argument_hint}"));
+        }
         MenuAction::NewSession => {
             app.notice = Some("Starting a new session…".to_owned());
             let previous = app.session.clone();
@@ -2363,6 +2409,7 @@ async fn apply_menu_action(
             app.session = client.update_session_agent(&app.session.id, &agent).await?;
             app.context_usage = None;
             app.agent_name = client.agent(&agent).await?.agent.name;
+            refresh_skill_commands(client, app).await?;
             app.notice = Some(format!("Agent changed to {agent}"));
         }
         MenuAction::SetMode(mode) => {
@@ -2756,7 +2803,7 @@ mod tests {
     };
     use crate::api::{
         Goal, MemoryRecord, PlanRevision, PlanState, ProviderModel, QueuedMessage, Scar, Session,
-        SessionTask, SessionTaskList,
+        SessionTask, SessionTaskList, SkillSummary,
     };
     use crate::tui::app::{
         AgentEditor, App, HitAction, HitRegion, InlineEditor, InlineEditorKind, MemoryBrowser,
@@ -2868,6 +2915,41 @@ mod tests {
         assert!(matches!(
             parse_command("/title Refine the TUI"),
             Some(MenuAction::SetTitle(title)) if title == "Refine the TUI"
+        ));
+    }
+
+    #[test]
+    fn user_invocable_skills_join_the_palette_and_send_as_turns_in_plan_mode() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.session.interaction_mode = "plan".to_owned();
+        app.skill_commands = vec![SkillSummary {
+            id: "external:user:teach".to_owned(),
+            slug: "teach".to_owned(),
+            version_id: "teach-v1".to_owned(),
+            version: 1,
+            name: "Teach".to_owned(),
+            description: "Teach a topic".to_owned(),
+            scope: "global".to_owned(),
+            scope_key: None,
+            status: "active".to_owned(),
+            content_hash: "hash".to_owned(),
+            triggers: Vec::new(),
+            tools: Vec::new(),
+            scripts: Vec::new(),
+            score: 0.0,
+            pinned: false,
+            invocation: "user".to_owned(),
+            argument_hint: "[topic]".to_owned(),
+        }];
+        assert!(
+            app.command_options()
+                .iter()
+                .any(|option| option.label == "/teach")
+        );
+        app.composer.insert_text("/teach state machines");
+        assert!(matches!(
+            handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Effect::Send(content, _)) if content == "/teach state machines"
         ));
     }
 

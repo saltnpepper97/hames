@@ -7,7 +7,14 @@ import pytest
 from hames.database import MIGRATIONS, Database
 from hames.ledger import Ledger
 from hames.paths import HamesPaths
-from hames.skills import SkillDraft, SkillRegistry, parse_skill, task_similarity
+from hames.skills import (
+    SkillDraft,
+    SkillRegistry,
+    parse_portable_skill,
+    parse_skill,
+    render_skill_invocation,
+    task_similarity,
+)
 
 
 def _registry(paths: HamesPaths, ledger: Ledger) -> SkillRegistry:
@@ -108,6 +115,80 @@ def test_builtin_skills_are_discovered_loadable_and_read_only(
             created_by="user",
             run_id=None,
             causation_id="fixture",
+        )
+
+
+def test_portable_project_and_global_skills_are_discovered_with_invocation_metadata(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    global_root = tmp_path / "global-skills"
+    global_skill = global_root / "teach"
+    global_skill.mkdir(parents=True)
+    global_skill.joinpath("SKILL.md").write_text(
+        """---
+name: teach
+description: Explain a topic carefully.
+metadata:
+  hames/invocation: user
+  hames/argument-hint: "[topic]"
+---
+Teach $ARGUMENTS using a concrete example.
+""",
+        encoding="utf-8",
+    )
+    project_skill = workspace / ".agents" / "skills" / "verify"
+    project_skill.mkdir(parents=True)
+    project_skill.joinpath("SKILL.md").write_text(
+        """---
+name: verify
+description: Verify the requested behavior.
+user-invocable: true
+---
+Verify $0 and report evidence.
+""",
+        encoding="utf-8",
+    )
+    session = ledger.create_session(
+        working_directory=workspace,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    registry = SkillRegistry(
+        hames_paths.skills,
+        ledger,
+        available_tools={"read_file", "list_dir", "write_file", "edit_file", "shell"},
+        portable_global_roots=(global_root,),
+    )
+
+    catalog = {item.slug: item for item in registry.visible(session)}
+    assert catalog["teach"].invocation == "user"
+    assert catalog["teach"].argument_hint == "[topic]"
+    assert catalog["verify"].invocation == "both"
+    assert "teach" not in {item.slug for item in registry.model_visible(session)}
+    skill, arguments = registry.user_invocation(session, "/teach state machines") or (None, "")
+    assert skill is not None
+    assert arguments == "state machines"
+    assert render_skill_invocation(skill.instructions, arguments) == (
+        "Teach state machines using a concrete example."
+    )
+
+
+def test_portable_skill_defaults_to_model_only_and_rejects_command_collisions() -> None:
+    metadata, _ = parse_portable_skill(
+        "---\nname: inspect\ndescription: Inspect carefully.\n---\nRead first.\n",
+        slug="inspect",
+        scope="workspace",
+    )
+    assert metadata.invocation == "model"
+    with pytest.raises(ValueError, match="conflicts with /help"):
+        parse_portable_skill(
+            "---\nname: help\ndescription: Replace help.\ninvocation: user\n---\nNo.\n",
+            slug="help",
+            scope="workspace",
         )
 
 

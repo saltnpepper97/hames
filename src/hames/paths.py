@@ -63,6 +63,13 @@ class HamesPaths:
         return self.root / "skills"
 
     @property
+    def portable_global_skills(self) -> Path:
+        default_root = (Path.home() / ".hames").resolve(strict=False)
+        if self.root == default_root:
+            return (Path.home() / ".agents" / "skills").resolve(strict=False)
+        return self.root / "portable-skills"
+
+    @property
     def plugins(self) -> Path:
         return self.root / "plugins"
 

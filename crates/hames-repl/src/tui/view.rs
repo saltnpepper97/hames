@@ -1141,7 +1141,7 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 .fg(if deleting {
                     CORAL
                 } else if selected {
-                    INPUT
+                    sheet_text_color(app.theme)
                 } else {
                     MUTED
                 })
@@ -1174,6 +1174,7 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 &command_query,
                 selected,
                 row_style,
+                app.theme,
             ));
         } else {
             spans.push(Span::styled(
@@ -1190,7 +1191,13 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         }
         spans.push(Span::styled(
             format!(" {}", option.detail),
-            Style::default().fg(MUTED).patch(row_style),
+            Style::default()
+                .fg(if selected {
+                    sheet_text_color(app.theme)
+                } else {
+                    MUTED
+                })
+                .patch(row_style),
         ));
         let used = 4
             + UnicodeWidthStr::width(label_field.as_str())
@@ -1280,10 +1287,11 @@ fn command_label_spans(
     query: &str,
     selected: bool,
     row_style: Style,
+    theme: ThemeKind,
 ) -> Vec<Span<'static>> {
     let field = format!(" {label:<20}");
     let base = Style::default()
-        .fg(INPUT)
+        .fg(sheet_text_color(theme))
         .add_modifier(if selected {
             Modifier::BOLD
         } else {
@@ -3721,7 +3729,7 @@ fn composer_caret_color(mode: &str) -> Color {
 fn sheet_text_color(theme: ThemeKind) -> Color {
     match theme {
         ThemeKind::Hames => INPUT,
-        ThemeKind::Terminal => Color::DarkGray,
+        ThemeKind::Terminal => Color::White,
     }
 }
 
@@ -4434,7 +4442,7 @@ mod tests {
         assert_eq!(sheet_text_color(crate::tui::app::ThemeKind::Hames), INPUT);
         assert_eq!(
             sheet_text_color(crate::tui::app::ThemeKind::Terminal),
-            Color::DarkGray
+            Color::White
         );
     }
 
@@ -5189,6 +5197,22 @@ mod tests {
         assert_eq!(buffer.cell((5, narrowed_top + 1)).unwrap().fg, MINT);
         assert_eq!(buffer.cell((6, narrowed_top + 1)).unwrap().fg, MINT);
         assert_eq!(buffer.cell((7, narrowed_top + 1)).unwrap().fg, INPUT);
+    }
+
+    #[test]
+    fn terminal_theme_keeps_selected_command_text_distinct_from_its_background() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.theme = crate::tui::app::ThemeKind::Terminal;
+        app.composer.insert_text("/");
+        app.update_slash_sheet();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let selected = terminal.backend().buffer().cell((5, 18)).unwrap();
+        assert_eq!(selected.fg, Color::Reset);
+        assert_eq!(selected.bg, Color::DarkGray);
+        assert_ne!(selected.fg, selected.bg);
     }
 
     #[test]

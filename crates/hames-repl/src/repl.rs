@@ -102,7 +102,7 @@ pub async fn run() -> Result<()> {
             continue;
         }
         let _ = editor.add_history_entry(input.as_str());
-        if input.starts_with('/') {
+        if input.starts_with('/') && !is_user_skill_command(&client, &session, &input).await? {
             match handle_command(
                 &client,
                 &mut editor,
@@ -145,6 +145,25 @@ pub async fn run() -> Result<()> {
         client.close_session(&session.id).await?;
     }
     Ok(())
+}
+
+async fn is_user_skill_command(
+    client: &GatewayClient,
+    session: &Session,
+    input: &str,
+) -> Result<bool> {
+    let Some(slug) = input
+        .split_whitespace()
+        .next()
+        .and_then(|command| command.strip_prefix('/'))
+    else {
+        return Ok(false);
+    };
+    Ok(client
+        .skills(&session.id, "")
+        .await?
+        .iter()
+        .any(|skill| skill.slug == slug && matches!(skill.invocation.as_str(), "user" | "both")))
 }
 
 fn exit_resume_command(session_id: &str, has_conversation: bool) -> Option<String> {
