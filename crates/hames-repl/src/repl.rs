@@ -8,7 +8,8 @@ use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::activity::{ActivityBoard, ActivityCategory};
 use crate::api::{
@@ -2511,26 +2512,26 @@ fn wrap_body(text: &str, start_col: usize, cols: usize) -> String {
     let mut out = String::new();
     let mut col = start_col;
     let mut at_line_start = start_col == 0;
-    for ch in text.chars() {
+    for grapheme in text.graphemes(true) {
         if at_line_start {
             out.push_str("  ");
             col = 2;
             at_line_start = false;
         }
-        if ch == '\n' {
+        if grapheme == "\n" {
             out.push('\n');
             at_line_start = true;
             col = 0;
             continue;
         }
-        let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if col + char_width > width {
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if col + grapheme_width > width {
             out.push('\n');
             out.push_str("  ");
             col = 2;
         }
-        out.push(ch);
-        col += char_width;
+        out.push_str(grapheme);
+        col += grapheme_width;
     }
     out
 }
@@ -2659,6 +2660,9 @@ mod tests {
                 .all(|line| UnicodeWidthStr::width(line) <= 24)
         );
         assert!(wrapped.starts_with("  "));
+
+        let combining = wrap_body("e\u{301}x", 24, 24);
+        assert!(!combining.contains("e\n\u{301}"));
     }
 
     #[test]

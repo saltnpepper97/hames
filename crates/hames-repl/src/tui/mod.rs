@@ -5,6 +5,8 @@ use std::env;
 use std::io::{self, IsTerminal, Stdout, Write};
 use std::path::Path;
 use std::process::Command;
+use std::sync::Once;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -43,6 +45,8 @@ use crate::local::{LocalPaths, write_private_export};
 use crate::repl::ensure_gateway;
 
 const RECENT_SESSION_SECONDS: u64 = 7 * 24 * 60 * 60;
+static TERMINAL_ACTIVE: AtomicBool = AtomicBool::new(false);
+static TERMINAL_PANIC_HOOK: Once = Once::new();
 
 pub async fn run() -> Result<()> {
     crate::style::init();
@@ -91,6 +95,7 @@ pub async fn run() -> Result<()> {
     let queue_state = client.resume_queue(&app.session.id).await?;
     app.set_queue(queue_state);
     let mut terminal = TerminalGuard::enter()?;
+    let mut shutdown_signals = ShutdownSignals::new()?;
     let mut input = EventStream::new();
     let mut dirty = true;
     let mut last_hover_repaint = Instant::now() - Duration::from_millis(20);
@@ -125,6 +130,7 @@ pub async fn run() -> Result<()> {
                     None => Some(Effect::Quit),
                 }
             }
+            _ = shutdown_signals.recv() => Some(Effect::Quit),
             message = stream_rx.recv() => {
                 if let Some(message) = message
                     && message.session_id == app.session.id
@@ -186,6 +192,10 @@ pub async fn run() -> Result<()> {
             break;
         }
     }
+    stream_task.abort();
+    drop(input);
+    drop(terminal);
+
     let goal_continues = app.goal_keeps_session_alive();
     let queue_pause = if goal_continues {
         None
@@ -206,11 +216,9 @@ pub async fn run() -> Result<()> {
     } else {
         None
     };
-    stream_task.abort();
     let session_id = app.session.id.clone();
     let discard_empty =
         app.conversation_is_empty() && app.active_run.is_none() && !app.goal_keeps_session_alive();
-    drop(terminal);
     let exit_notice = session_exit_notice(&session_id, discard_empty);
     let has_exit_notice = queue_pause.as_ref().is_some_and(Result::is_err)
         || exit_cancellation.is_some()
@@ -273,7 +281,10 @@ fn read_workspace_trust_choice() -> Result<bool> {
         else {
             continue;
         };
-        if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        if key.kind != KeyEventKind::Press
+            && !(key.kind == KeyEventKind::Repeat
+                && matches!(key.code, KeyCode::Up | KeyCode::Down))
+        {
             continue;
         }
         match key.code {
@@ -587,7 +598,8 @@ enum Effect {
 
 fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
     match event {
-        Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
+        Event::Key(key) if key.kind == KeyEventKind::Press => handle_key(app, key),
+        Event::Key(key) if key.kind == KeyEventKind::Repeat && repeat_safe_key(app, key) => {
             handle_key(app, key)
         }
         Event::Paste(value) => {
@@ -633,6 +645,39 @@ fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
         }
         _ => None,
     }
+}
+
+fn repeat_safe_key(app: &App, key: KeyEvent) -> bool {
+    let navigation = matches!(
+        key.code,
+        KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Home
+            | KeyCode::End
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+    );
+    if navigation {
+        return true;
+    }
+    let text_input = match &app.modal {
+        Some(Modal::ScarEdit(_) | Modal::AgentEdit(_)) => true,
+        Some(_) => false,
+        None if app.question.is_some() => app
+            .question
+            .as_ref()
+            .is_some_and(|question| question.input_kind.is_some()),
+        None if app.inline_editor.is_some() => true,
+        None => app.sheet.is_none() && (app.focused_thought.is_none() || !app.composer.is_empty()),
+    };
+    text_input
+        && (matches!(key.code, KeyCode::Backspace | KeyCode::Delete)
+            || matches!(key.code, KeyCode::Char(_))
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER))
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
@@ -2927,8 +2972,136 @@ async fn send_reconnecting(
     .is_ok()
 }
 
+#[cfg(unix)]
+struct ShutdownSignals {
+    terminate: tokio::signal::unix::Signal,
+    hangup: tokio::signal::unix::Signal,
+}
+
+#[cfg(unix)]
+impl ShutdownSignals {
+    fn new() -> Result<Self> {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        Ok(Self {
+            terminate: signal(SignalKind::terminate())?,
+            hangup: signal(SignalKind::hangup())?,
+        })
+    }
+
+    async fn recv(&mut self) {
+        tokio::select! {
+            _ = self.terminate.recv() => {}
+            _ = self.hangup.recv() => {}
+        }
+    }
+}
+
+#[cfg(not(unix))]
+struct ShutdownSignals;
+
+#[cfg(not(unix))]
+impl ShutdownSignals {
+    fn new() -> Result<Self> {
+        Ok(Self)
+    }
+
+    async fn recv(&mut self) {
+        std::future::pending::<()>().await;
+    }
+}
+
+#[derive(Default)]
+struct TerminalModes {
+    raw: bool,
+    alternate_screen: bool,
+    mouse_capture: bool,
+    focus_change: bool,
+    bracketed_paste: bool,
+    keyboard_enhancement: bool,
+}
+
+impl TerminalModes {
+    fn enter() -> Result<Self> {
+        let mut modes = Self::default();
+        enable_raw_mode()?;
+        modes.raw = true;
+        TERMINAL_ACTIVE.store(true, Ordering::SeqCst);
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen)?;
+        modes.alternate_screen = true;
+        execute!(stdout, EnableMouseCapture)?;
+        modes.mouse_capture = true;
+        execute!(stdout, EnableFocusChange)?;
+        modes.focus_change = true;
+        execute!(stdout, EnableBracketedPaste)?;
+        modes.bracketed_paste = true;
+        execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+        modes.keyboard_enhancement = true;
+        Ok(modes)
+    }
+
+    fn restore<W: Write>(&mut self, output: &mut W) {
+        if self.keyboard_enhancement {
+            let _ = execute!(output, PopKeyboardEnhancementFlags);
+            self.keyboard_enhancement = false;
+        }
+        if self.bracketed_paste {
+            let _ = execute!(output, DisableBracketedPaste);
+            self.bracketed_paste = false;
+        }
+        if self.focus_change {
+            let _ = execute!(output, DisableFocusChange);
+            self.focus_change = false;
+        }
+        if self.mouse_capture {
+            let _ = execute!(output, DisableMouseCapture);
+            self.mouse_capture = false;
+        }
+        if self.alternate_screen {
+            let _ = execute!(output, LeaveAlternateScreen);
+            self.alternate_screen = false;
+        }
+        let _ = execute!(output, Show);
+        if self.raw {
+            let _ = disable_raw_mode();
+            self.raw = false;
+        }
+        TERMINAL_ACTIVE.store(false, Ordering::SeqCst);
+    }
+}
+
+impl Drop for TerminalModes {
+    fn drop(&mut self) {
+        self.restore(&mut io::stdout());
+    }
+}
+
+fn install_terminal_panic_hook() {
+    TERMINAL_PANIC_HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if TERMINAL_ACTIVE.swap(false, Ordering::SeqCst) {
+                let mut stdout = io::stdout();
+                let _ = execute!(stdout, PopKeyboardEnhancementFlags);
+                let _ = execute!(stdout, DisableBracketedPaste);
+                let _ = execute!(stdout, DisableFocusChange);
+                let _ = execute!(stdout, DisableMouseCapture);
+                let _ = execute!(stdout, LeaveAlternateScreen);
+                let _ = execute!(stdout, Show);
+                let _ = disable_raw_mode();
+            }
+            previous(info);
+        }));
+    });
+}
+
 struct TerminalGuard {
     terminal: Terminal<CrosstermBackend<Stdout>>,
+    modes: TerminalModes,
     last_title: String,
     title_frame: usize,
     title_frame_at: Instant,
@@ -2937,23 +3110,13 @@ struct TerminalGuard {
 
 impl TerminalGuard {
     fn enter() -> Result<Self> {
-        enable_raw_mode()?;
-        let mut stdout = io::stdout();
-        if let Err(error) = execute!(
-            stdout,
-            EnterAlternateScreen,
-            EnableMouseCapture,
-            EnableFocusChange,
-            EnableBracketedPaste,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        ) {
-            let _ = disable_raw_mode();
-            return Err(error.into());
-        }
-        let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+        install_terminal_panic_hook();
+        let modes = TerminalModes::enter()?;
+        let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
         terminal.clear()?;
         Ok(Self {
             terminal,
+            modes,
             last_title: String::new(),
             title_frame: 0,
             title_frame_at: Instant::now(),
@@ -2983,16 +3146,8 @@ impl TerminalGuard {
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(
-            self.terminal.backend_mut(),
-            DisableBracketedPaste,
-            DisableFocusChange,
-            DisableMouseCapture,
-            PopKeyboardEnhancementFlags,
-            LeaveAlternateScreen
-        );
         let _ = self.terminal.show_cursor();
+        self.modes.restore(self.terminal.backend_mut());
     }
 }
 
@@ -3138,13 +3293,15 @@ fn info(title: &str, lines: Vec<String>) -> Modal {
 #[cfg(test)]
 mod tests {
     use crossterm::event::{
-        Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+        MouseEventKind,
     };
 
     use super::{
         Effect, action_error_message, agent_source, handle_key, handle_mouse,
         handle_terminal_event, model_efforts, next_mode, next_workspace_trust_choice,
-        parse_command, pointer_top, session_exit_notice, terminal_tab_title, workspace_identity,
+        parse_command, pointer_top, repeat_safe_key, session_exit_notice, terminal_tab_title,
+        workspace_identity,
     };
     use crate::api::{
         Goal, MemoryRecord, PlanRevision, PlanState, ProviderModel, QueuedMessage, Scar, Session,
@@ -3165,6 +3322,61 @@ mod tests {
             decoder.push(b"able\":true}\n\n").unwrap(),
             vec!["{\"durable\":true}"]
         );
+    }
+
+    #[test]
+    fn key_repeat_is_limited_to_editing_and_navigation() {
+        let mut app = App::new(session(), Vec::new(), true);
+        let repeated =
+            |code, modifiers| KeyEvent::new_with_kind(code, modifiers, KeyEventKind::Repeat);
+        assert!(repeat_safe_key(
+            &app,
+            repeated(KeyCode::Char('a'), KeyModifiers::NONE)
+        ));
+        assert!(repeat_safe_key(
+            &app,
+            repeated(KeyCode::Backspace, KeyModifiers::NONE)
+        ));
+        assert!(repeat_safe_key(
+            &app,
+            repeated(KeyCode::Down, KeyModifiers::NONE)
+        ));
+        assert!(!repeat_safe_key(
+            &app,
+            repeated(KeyCode::Enter, KeyModifiers::NONE)
+        ));
+        assert!(!repeat_safe_key(
+            &app,
+            repeated(KeyCode::Esc, KeyModifiers::NONE)
+        ));
+        assert!(!repeat_safe_key(
+            &app,
+            repeated(KeyCode::Tab, KeyModifiers::NONE)
+        ));
+        assert!(!repeat_safe_key(
+            &app,
+            repeated(KeyCode::Char('k'), KeyModifiers::CONTROL)
+        ));
+        app.composer.insert_text("do not submit twice");
+        assert!(
+            handle_terminal_event(
+                &mut app,
+                Event::Key(repeated(KeyCode::Enter, KeyModifiers::NONE))
+            )
+            .is_none()
+        );
+        assert_eq!(app.composer.text(), "do not submit twice");
+        app.sheet = Some(Sheet {
+            kind: SheetKind::Modes,
+            title: "Mode".to_owned(),
+            options: Vec::new(),
+            selected: 0,
+            pending_delete: None,
+        });
+        assert!(!repeat_safe_key(
+            &app,
+            repeated(KeyCode::Char('q'), KeyModifiers::NONE)
+        ));
     }
 
     #[test]

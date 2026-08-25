@@ -3957,17 +3957,23 @@ fn split_width(value: &str, width: usize) -> (&str, &str) {
     }
     let mut last_space = None;
     let mut end = 0;
-    for (index, character) in value.char_indices() {
-        let next = index + character.len_utf8();
-        if UnicodeWidthStr::width(&value[..next]) > width {
+    let mut used = 0;
+    for (index, grapheme) in value.grapheme_indices(true) {
+        let next = index + grapheme.len();
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if used + grapheme_width > width && end > 0 {
             break;
         }
         end = next;
-        if character.is_whitespace() {
+        used += grapheme_width;
+        if grapheme.chars().all(char::is_whitespace) {
             last_space = Some(index);
         }
+        if used > width {
+            break;
+        }
     }
-    let split = last_space.filter(|index| *index > 0).unwrap_or(end.max(1));
+    let split = last_space.filter(|index| *index > 0).unwrap_or(end);
     (&value[..split], &value[split..])
 }
 
@@ -4514,8 +4520,8 @@ mod tests {
         approval_detail_lines, compact_diff_lines, compact_home, composer_caret_color,
         context_footer, context_percent, draw, format_elapsed, format_token_count, goal_elapsed,
         help_body, line_text, memory_browser_body, mode_color, mode_outline, scar_browser_body,
-        scar_editor_body, scrollbar_position, sheet_text_color, single_line_editor, thought_label,
-        transcript_lines, traveling_sheen, usage_body,
+        scar_editor_body, scrollbar_position, sheet_text_color, single_line_editor, split_width,
+        thought_label, transcript_lines, traveling_sheen, usage_body,
     };
 
     use crate::api::{
@@ -5798,6 +5804,15 @@ mod tests {
         assert_eq!(format_token_count(28_500), "28.5k");
         assert_eq!(format_token_count(1_250_000), "1.2m");
         assert_eq!(context_percent(28_500, 114_000), 25);
+    }
+
+    #[test]
+    fn width_splitting_never_breaks_a_grapheme_cluster() {
+        let combining = "e\u{301}x";
+        assert_eq!(split_width(combining, 1), ("e\u{301}", "x"));
+
+        let family = "👨‍👩‍👧‍👦x";
+        assert_eq!(split_width(family, 1), ("👨‍👩‍👧‍👦", "x"));
     }
 
     #[test]

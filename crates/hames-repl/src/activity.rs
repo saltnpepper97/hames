@@ -1,5 +1,6 @@
 use serde_json::{Map, Value};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::style::{self, Badge};
 
@@ -592,13 +593,13 @@ fn fit_visible(text: &str, width: usize) -> String {
     let target = width.saturating_sub(1);
     let mut out = String::new();
     let mut used = 0;
-    for ch in text.chars() {
-        let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + char_width > target {
+    for grapheme in text.graphemes(true) {
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if used + grapheme_width > target {
             break;
         }
-        out.push(ch);
-        used += char_width;
+        out.push_str(grapheme);
+        used += grapheme_width;
     }
     out.push('…');
     out
