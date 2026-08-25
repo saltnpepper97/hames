@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import cast
@@ -80,6 +81,77 @@ class ForegroundOverlapProvider:
 
     async def aclose(self) -> None:
         return None
+
+
+class PlanExecutionProvider:
+    profile_id = "fake"
+    adapter = "fake"
+    base_url = ""
+
+    def __init__(self, plan_markdown: str, *, truncate_first_execution: bool = False) -> None:
+        self.plan_markdown = plan_markdown
+        self.truncate_first_execution = truncate_first_execution
+        self.requests: list[ModelRequest] = []
+
+    async def list_models(self) -> list[ProviderModel]:
+        return [ProviderModel(id="fixture", provider="fake", status="available")]
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+        self.requests.append(request)
+        index = len(self.requests) - 1
+        yield StreamEvent(kind=StreamEventKind.STARTED)
+        if index == 0:
+            yield StreamEvent(
+                kind=StreamEventKind.TEXT_DELTA,
+                text=f"{self.plan_markdown}\n\n{PLAN_READY_MARKER}",
+            )
+            yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
+            return
+        if self.truncate_first_execution and index == 1:
+            yield StreamEvent(
+                kind=StreamEventKind.REASONING_DELTA,
+                text="I will begin with the first implementation task, then verify it.",
+            )
+            yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="length")
+            return
+        tool_request_index = 2 if self.truncate_first_execution else 1
+        if index == tool_request_index:
+            task_ids = re.findall(r"- \[([^\]]+)\] pending:", request.system)
+            assert task_ids
+            for call_index, task_id in enumerate(task_ids):
+                yield StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=call_index,
+                        provider_call_id=f"task-{call_index}",
+                        name="task_update",
+                        arguments_delta=json.dumps(
+                            {"action": "update", "task_id": task_id, "status": "completed"}
+                        ),
+                    ),
+                )
+            yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls")
+            return
+        yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="Implemented and verified.")
+        yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
+
+    async def aclose(self) -> None:
+        return None
+
+
+class StalledPlanExecutionProvider(PlanExecutionProvider):
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+        self.requests.append(request)
+        yield StreamEvent(kind=StreamEventKind.STARTED)
+        if len(self.requests) == 1:
+            yield StreamEvent(
+                kind=StreamEventKind.TEXT_DELTA,
+                text=f"{self.plan_markdown}\n\n{PLAN_READY_MARKER}",
+            )
+            yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
+            return
+        yield StreamEvent(kind=StreamEventKind.REASONING_DELTA, text="Still planning the work.")
+        yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="length")
 
 
 class BlockingPostRunObserver:
@@ -651,25 +723,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
 async def test_plan_review_execution_and_session_tasks_lifecycle(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     plan_markdown = "# Ship it\n\n## Tasks\n- [ ] Implement lifecycle\n- [ ] Verify behavior"
-    fake = FakeProvider(
-        [],
-        turns=[
-            [
-                StreamEvent(kind=StreamEventKind.STARTED),
-                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text=plan_markdown[:19]),
-                StreamEvent(
-                    kind=StreamEventKind.TEXT_DELTA,
-                    text=f"{plan_markdown[19:]}\n\n{PLAN_READY_MARKER}",
-                ),
-                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
-            ],
-            [
-                StreamEvent(kind=StreamEventKind.STARTED),
-                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="Implemented."),
-                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
-            ],
-        ],
-    )
+    fake = PlanExecutionProvider(plan_markdown)
     state = GatewayState.create(paths, providers={"fake": fake})
     headers = {"Authorization": f"Bearer {state.token}"}
     transport = httpx.ASGITransport(app=create_app(state))
@@ -763,6 +817,112 @@ async def test_plan_review_execution_and_session_tasks_lifecycle(tmp_path: Path)
                 item["id"] != task_id
                 for item in response_object(removed)["items"]  # type: ignore[union-attr]
             )
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_truncated_plan_execution_continues_with_reasoning_and_tasks(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    plan_markdown = "# Continue it\n\n## Tasks\n- [ ] Implement change\n- [ ] Verify change"
+    fake = PlanExecutionProvider(plan_markdown, truncate_first_execution=True)
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.put(
+                f"/v1/sessions/{session_id}/mode", headers=headers, json={"mode": "plan"}
+            )
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Plan this change"},
+            )
+            await _wait_for_event(client, headers, session_id, "plan.proposed")
+            executed = await client.post(
+                f"/v1/sessions/{session_id}/plans/current/execute",
+                headers=headers,
+                json={"strategy": "keep", "note": "Preserve continuity"},
+            )
+            assert executed.status_code == 202
+            events = await _wait_for_event(
+                client, headers, session_id, "plan.execution.completed"
+            )
+            execution_run_id = str(response_object(executed)["run_id"])
+            run_events = [event for event in events if event.get("run_id") == execution_run_id]
+            event_types = [str(event["type"]) for event in run_events]
+            assert "run.continuation.requested" in event_types
+            assert event_types.index("run.continuation.requested") < event_types.index(
+                "run.completed"
+            )
+            first_reasoning = next(
+                event for event in run_events if event["type"] == "assistant.reasoning"
+            )
+            assert first_reasoning["payload"]["status"] == "interrupted"  # type: ignore[index]
+            continuation_request = fake.requests[2]
+            assert "reached its output limit" in continuation_request.system
+            assert any(
+                message.reasoning_content
+                == "I will begin with the first implementation task, then verify it."
+                for message in continuation_request.messages
+            )
+            tasks = response_object(
+                await client.get(f"/v1/sessions/{session_id}/tasks", headers=headers)
+            )
+            assert all(item["status"] == "completed" for item in tasks["items"])  # type: ignore[union-attr,index]
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_plan_execution_stall_fails_visibly_after_three_no_progress_turns(
+    tmp_path: Path,
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    provider = StalledPlanExecutionProvider("# Stalled\n\n## Tasks\n- [ ] Do the work")
+    state = GatewayState.create(paths, providers={"fake": provider})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.put(
+                f"/v1/sessions/{session_id}/mode", headers=headers, json={"mode": "plan"}
+            )
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Plan it"},
+            )
+            await _wait_for_event(client, headers, session_id, "plan.proposed")
+            executed = await client.post(
+                f"/v1/sessions/{session_id}/plans/current/execute",
+                headers=headers,
+                json={"strategy": "keep"},
+            )
+            events = await _wait_for_event(client, headers, session_id, "plan.execution.failed")
+            run_id = str(response_object(executed)["run_id"])
+            run_events = [event for event in events if event.get("run_id") == run_id]
+            failure = next(event for event in run_events if event["type"] == "run.failed")
+            assert failure["payload"]["code"] == "run_stalled"  # type: ignore[index]
+            assert sum(
+                event["type"] == "run.continuation.requested" for event in run_events
+            ) == 2
+            assert not any(event["type"] == "run.completed" for event in run_events)
     finally:
         await state.runs.close()
 

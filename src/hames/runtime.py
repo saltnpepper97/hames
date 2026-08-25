@@ -241,6 +241,7 @@ class ModelTurn:
     tool_calls: list[ToolInvocation]
     allowed_tools: frozenset[str]
     capsule: AgentCapsule
+    answer_text: str = ""
     plan_ready: bool = False
     plan_markdown: str = ""
 
@@ -1694,6 +1695,7 @@ class RunManager:
         )
         tool_count = 0
         model_turns = 0
+        consecutive_no_progress = 0
         while True:
             if model_turns >= limits.max_model_turns_per_user_message:
                 raise RunFailure("model_turn_limit", "run model-turn limit was exhausted")
@@ -1713,12 +1715,62 @@ class RunManager:
                 )
             )
             if not turn.tool_calls:
+                tasks = await asyncio.to_thread(self.session_tasks.current, session.id)
+                plan_state = await asyncio.to_thread(self.plans.current, session.id)
+                executing_plan = (
+                    plan_state.current is not None
+                    and plan_state.current.status == "executing"
+                    and plan_state.current.execution_run_id == run_id
+                )
+                unfinished = [item for item in tasks.items if item.status != "completed"]
+                blocked = [item for item in unfinished if item.status == "blocked"]
+                continuation_reason: Literal["output_limit", "unfinished_execution"] | None = None
+                if turn.finish_reason == "length":
+                    continuation_reason = "output_limit"
+                elif executing_plan and blocked:
+                    raise RunFailure(
+                        "plan_execution_blocked",
+                        "approved plan needs attention because checklist work is blocked",
+                        details={"blocked_task_ids": [item.id for item in blocked]},
+                    )
+                elif executing_plan and (unfinished or not turn.answer_text.strip()):
+                    continuation_reason = "unfinished_execution"
+
+                if continuation_reason is not None:
+                    consecutive_no_progress += 1
+                    if consecutive_no_progress >= 3:
+                        raise RunFailure(
+                            "run_stalled",
+                            "run made no concrete progress across three continuation attempts",
+                            details={
+                                "reason": continuation_reason,
+                                "unfinished_task_count": len(unfinished),
+                            },
+                        )
+                    await self._append(
+                        session_id=session.id,
+                        run_id=run_id,
+                        agent_id=session.agent_id,
+                        event_type="run.continuation.requested",
+                        payload={
+                            "reason": continuation_reason,
+                            "attempt": consecutive_no_progress,
+                            "task_revision": tasks.revision,
+                            "unfinished_task_count": len(unfinished),
+                        },
+                        causation_id=turn.request_event_id,
+                        correlation_id=run_id,
+                    )
+                    continue
                 if turn.plan_ready:
+                    plan_markdown = await asyncio.to_thread(
+                        self._assembled_plan_markdown, run_id, turn.plan_markdown
+                    )
                     _, proposed = await asyncio.to_thread(
                         self.plans.propose,
                         session,
                         run_id=run_id,
-                        markdown=turn.plan_markdown,
+                        markdown=plan_markdown,
                         causation_id=turn.request_event_id,
                     )
                     await self._publish_store_events((proposed,))
@@ -1736,6 +1788,7 @@ class RunManager:
                     correlation_id=run_id,
                 )
                 return
+            consecutive_no_progress = 0
             context = ToolContext(
                 project_root=Path(session.working_directory),
                 scratch_root=scratch_root,
@@ -1756,6 +1809,17 @@ class RunManager:
                     turn.capsule,
                     user_requested_memory_maintenance,
                 )
+
+    def _assembled_plan_markdown(self, run_id: str, current: str) -> str:
+        parts = [
+            str(event.payload.get("content", "")).strip()
+            for event in self.ledger.list_run_events(run_id)
+            if event.type == "assistant.message"
+            and str(event.payload.get("content", "")).strip()
+        ]
+        if current.strip() and (not parts or parts[-1] != current.strip()):
+            parts.append(current.strip())
+        return "\n\n".join(parts)
 
     async def _model_turn(
         self,
@@ -2062,14 +2126,15 @@ class RunManager:
                         text=visible_answer[published_answer_length:],
                     ),
                 )
+            output_interrupted = bool(invocations) or finish_reason == "length"
             await self._persist_output(
                 session,
                 run_id,
                 "".join(reasoning_parts),
                 visible_answer,
-                "interrupted" if invocations else "completed",
+                "interrupted" if output_interrupted else "completed",
                 request_event.id,
-                force_message=bool(invocations),
+                force_message=output_interrupted,
                 reasoning_duration_seconds=reasoning_duration(),
             )
             if provider_items:
@@ -2114,6 +2179,7 @@ class RunManager:
                 invocations,
                 allowed_tools,
                 capsule,
+                answer_text=visible_answer,
                 plan_ready=plan_ready,
                 plan_markdown=visible_answer if plan_ready else "",
             )

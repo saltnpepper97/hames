@@ -300,6 +300,13 @@ class RunCompletedPayload(EventPayload):
     active_seconds: float
 
 
+class RunContinuationPayload(EventPayload):
+    reason: Literal["output_limit", "unfinished_execution"]
+    attempt: int = Field(ge=1)
+    task_revision: int = Field(ge=0)
+    unfinished_task_count: int = Field(ge=0)
+
+
 class ToolRequestedPayload(EventPayload):
     tool_call_id: str
     provider_call_id: str | None
@@ -792,6 +799,7 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "model.response.failed": FailurePayload,
     "model.response.preempted": FailurePayload,
     "run.started": RunStartedPayload,
+    "run.continuation.requested": RunContinuationPayload,
     "run.completed": RunCompletedPayload,
     "run.failed": FailurePayload,
     "run.cancelled": EmptyPayload,

@@ -190,6 +190,35 @@ def compile_context(
         ("policy.summary", f"Policy summary: {policy_summary}"),
     ]
     session_events = [event for event in events if event.session_id == session.id]
+    run_events = [event for event in session_events if event.run_id == run_id]
+    latest_request_sequence = max(
+        (event.sequence for event in run_events if event.type == "model.requested"),
+        default=0,
+    )
+    continuation = next(
+        (
+            event
+            for event in reversed(run_events)
+            if event.type == "run.continuation.requested"
+            and event.sequence > latest_request_sequence
+        ),
+        None,
+    )
+    if continuation is not None:
+        reason = str(continuation.payload.get("reason", "unfinished_execution"))
+        if reason == "output_limit":
+            directive = (
+                "The previous model response reached its output limit before completing this "
+                "run. Continue from its exact unfinished state. Do not restart, recap, or "
+                "rewrite the plan; take the next concrete action now."
+            )
+        else:
+            directive = (
+                "The approved execution is still unfinished. Continue with the next incomplete "
+                "checklist item now. Do not recap or rewrite the plan, and keep task statuses "
+                "current as work progresses."
+            )
+        stable_parts.append((f"run.continuation.{continuation.id}", directive))
     plan_state = project_plans(session.id, session_events)
     approved_plan = (
         plan_state.current
