@@ -550,7 +550,10 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
             }
             TranscriptItem::Assistant { content, live, .. } if !content.trim().is_empty() => {
                 lines.push(RenderLine {
-                    line: Line::from(Span::styled("✦ Hames", Style::default().fg(MINT).bold())),
+                    line: Line::from(Span::styled(
+                        app.agent_name.clone(),
+                        Style::default().fg(MINT).bold(),
+                    )),
                     thought: None,
                     sheen: live.then_some((0, 7)),
                 });
@@ -3838,6 +3841,72 @@ fn context_gauge(used: u64, window: u64, cells: usize) -> Line<'static> {
     ])
 }
 
+fn rate_limit_line(label: &str, window: &serde_json::Value, cells: usize) -> Line<'static> {
+    let used = window
+        .get("used")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0)
+        .min(100);
+    let filled = usize::try_from((used * u64::try_from(cells).unwrap_or(0) + 50) / 100)
+        .unwrap_or(0)
+        .min(cells);
+    let reset = window
+        .get("reset_at")
+        .and_then(serde_json::Value::as_u64)
+        .map(|reset_at| format!(" · {}", reset_label(reset_at)))
+        .unwrap_or_default();
+    Line::from(vec![
+        Span::styled(format!("  {label:<9}"), Style::default().fg(MUTED)),
+        Span::styled("█".repeat(filled), Style::default().fg(INPUT_LIGHT)),
+        Span::styled(
+            "░".repeat(cells.saturating_sub(filled)),
+            Style::default().fg(RULE_LIGHT),
+        ),
+        Span::styled(
+            format!("  {used:>3}% used{reset}"),
+            Style::default().fg(INPUT_LIGHT),
+        ),
+    ])
+}
+
+fn reset_label(reset_at: u64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let remaining = reset_at.saturating_sub(now);
+    if remaining >= 86_400 {
+        format!(
+            "resets in {}d {}h",
+            remaining / 86_400,
+            (remaining % 86_400) / 3_600
+        )
+    } else if remaining >= 3_600 {
+        format!(
+            "resets in {}h {}m",
+            remaining / 3_600,
+            (remaining % 3_600) / 60
+        )
+    } else {
+        format!("resets in {}m", remaining.div_ceil(60))
+    }
+}
+
+fn account_plan_label(value: &str) -> &str {
+    match value {
+        "free" => "Free",
+        "go" => "Go",
+        "plus" => "Plus",
+        "pro" => "Pro",
+        "prolite" | "self_serve_business_prolite" => "Pro (Lite)",
+        "promax" => "Pro (Max)",
+        "team" => "Team",
+        "business" | "self_serve_business" | "self_serve_business_usage_based" => "Business",
+        "enterprise" | "enterprise_cbp" | "enterprise_cbp_usage_based" => "Enterprise",
+        "edu" => "Education",
+        _ => value,
+    }
+}
+
 fn usage_body(modal: &UsageModal, wide: bool) -> Vec<Line<'static>> {
     let usage = &modal.usage;
     let mut lines = vec![usage_section("Context")];
@@ -3887,6 +3956,33 @@ fn usage_body(modal: &UsageModal, wide: bool) -> Vec<Line<'static>> {
         lines.push(Line::from(Span::styled(
             "  No compiled context yet",
             Style::default().fg(MUTED),
+        )));
+    }
+    if let Some(account) = &usage.account_rate_limits {
+        lines.push(Line::from(""));
+        let plan = account
+            .get("plan_type")
+            .and_then(serde_json::Value::as_str)
+            .map(account_plan_label)
+            .unwrap_or("Subscription");
+        lines.push(usage_section(&format!("ChatGPT usage · {plan}")));
+        let cells = if wide { 28 } else { 18 };
+        for (key, label) in [
+            ("sliding_window_5h", "5-hour"),
+            ("weekly_window", "Weekly"),
+            ("primary", "Primary"),
+            ("secondary", "Secondary"),
+        ] {
+            if let Some(window) = account.get(key).filter(|value| value.is_object()) {
+                lines.push(rate_limit_line(label, window, cells));
+            }
+        }
+    } else if !usage.account_rate_limits_error.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(usage_section("ChatGPT usage"));
+        lines.push(Line::from(Span::styled(
+            format!("  {}", usage.account_rate_limits_error),
+            Style::default().fg(GOLD),
         )));
     }
     lines.push(Line::from(""));
@@ -3980,6 +4076,12 @@ mod tests {
                 output_reserve_tokens: 14_000,
                 context_window_source: "provider".to_owned(),
             }),
+            account_rate_limits: Some(json!({
+                "plan_type": "plus",
+                "sliding_window_5h": {"used": 25, "remaining": 75, "reset_at": null, "window_minutes": 300},
+                "weekly_window": {"used": 60, "remaining": 40, "reset_at": null, "window_minutes": 10080}
+            })),
+            account_rate_limits_error: String::new(),
         }
     }
 
@@ -4231,6 +4333,7 @@ mod tests {
     #[test]
     fn assistant_markdown_renders_structure_instead_of_source_markers() {
         let mut app = App::new(session(), Vec::new(), true);
+        app.agent_name = "Careful Reviewer".to_owned();
         app.transcript.push(TranscriptItem::Assistant {
             run_id: "run-markdown".to_owned(),
             content: "# Result\n\n- **Bold** and `code`\n> quoted\n1. [Docs](https://example.test)"
@@ -4251,6 +4354,8 @@ mod tests {
             .map(|item| line_text(&item.line))
             .collect::<Vec<_>>()
             .join("\n");
+        assert!(rendered.contains("Careful Reviewer"));
+        assert!(!rendered.contains("✦ Careful Reviewer"));
         assert!(rendered.contains("  Result"));
         assert!(rendered.contains("  • Bold and code"));
         assert!(rendered.contains("  │ quoted"));
@@ -5038,6 +5143,14 @@ mod tests {
         assert!(wide.iter().any(|line| line.contains('█')));
         assert!(wide.iter().any(|line| line.contains('░')));
         assert!(wide.iter().any(|line| line.contains("SESSION TOTALS")));
+        assert!(
+            wide.iter()
+                .any(|line| line.contains("CHATGPT USAGE · PLUS"))
+        );
+        assert!(wide.iter().any(|line| line.contains("5-hour")));
+        assert!(wide.iter().any(|line| line.contains("25% used")));
+        assert!(wide.iter().any(|line| line.contains("Weekly")));
+        assert!(wide.iter().any(|line| line.contains("60% used")));
         assert!(wide.iter().any(|line| line.contains("Provider input")));
         assert!(wide.iter().any(|line| line.contains("Cached input")));
         assert!(!wide.iter().any(|line| line.contains("Reported cost")));
@@ -5291,7 +5404,7 @@ mod tests {
         assert!(rendered.contains("1 action · Completed  ▾"));
         assert!(rendered.contains("✓ Forgot  memory 8f9b40f1"));
         assert!(!rendered.contains("◆ Run"));
-        assert!(!rendered.contains("✦ Hames"));
+        assert!(!rendered.contains("Hames"));
         assert!(!rendered.contains("ec06-4706"));
 
         app.toggle_activity(0);

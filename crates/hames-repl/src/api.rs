@@ -343,6 +343,10 @@ pub struct UsageProjection {
     pub model_requests: u64,
     #[serde(default)]
     pub latest_context: Option<ContextUsageProjection>,
+    #[serde(default)]
+    pub account_rate_limits: Option<Value>,
+    #[serde(default)]
+    pub account_rate_limits_error: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

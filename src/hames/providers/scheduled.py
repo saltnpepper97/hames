@@ -5,7 +5,14 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
-from hames.providers.base import ModelRequest, Provider, ProviderError, ProviderModel, StreamEvent
+from hames.providers.base import (
+    JsonValue,
+    ModelRequest,
+    Provider,
+    ProviderError,
+    ProviderModel,
+    StreamEvent,
+)
 
 MAINTENANCE_PURPOSES = {
     "memory_extraction",
@@ -34,6 +41,16 @@ class SerializedProvider:
         await self._acquire(maintenance=False)
         try:
             return await self.inner.list_models()
+        finally:
+            await self._release()
+
+    async def account_rate_limits(self) -> dict[str, JsonValue] | None:
+        reader = getattr(self.inner, "account_rate_limits", None)
+        if reader is None:
+            return None
+        await self._acquire(maintenance=False)
+        try:
+            return await reader()
         finally:
             await self._release()
 

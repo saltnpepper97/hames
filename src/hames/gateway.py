@@ -1633,7 +1633,18 @@ def create_app(state: GatewayState) -> FastAPI:
     )
     async def inspect_session_usage(session_id: str) -> UsageProjection:
         try:
-            return await asyncio.to_thread(session_usage, state.ledger, session_id)
+            usage = await asyncio.to_thread(session_usage, state.ledger, session_id)
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            provider = state.providers.get(session.provider)
+            if provider is not None and provider.adapter == "codex":
+                try:
+                    reader = getattr(provider, "account_rate_limits", None)
+                    if reader is not None:
+                        usage.account_rate_limits = await reader()
+                # Optional account metrics must never make the local session totals unavailable.
+                except Exception as exc:
+                    usage.account_rate_limits_error = f"Codex account usage unavailable: {exc}"
+            return usage
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
 

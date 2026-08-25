@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
 from typing import cast
@@ -71,10 +72,15 @@ class _CodexConnection:
     async def notify(self, method: str, params: Mapping[str, object]) -> None:
         await self._write({"method": method, "params": dict(params)})
 
-    async def request(self, method: str, params: Mapping[str, object]) -> dict[str, JsonValue]:
+    async def request(
+        self, method: str, params: Mapping[str, object] | None
+    ) -> dict[str, JsonValue]:
         request_id = self.next_id
         self.next_id += 1
-        await self._write({"id": request_id, "method": method, "params": dict(params)})
+        request: dict[str, object] = {"id": request_id, "method": method}
+        if params is not None:
+            request["params"] = dict(params)
+        await self._write(request)
         while True:
             message = await self.read()
             if message.get("id") != request_id:
@@ -159,6 +165,9 @@ class CodexProvider:
         self.timeout_seconds = timeout_seconds
         self.default_model = default_model
         self.environ = os.environ if environ is None else environ
+        self._rate_limits_cache: dict[str, JsonValue] | None = None
+        self._rate_limits_cached_at = 0.0
+        self._rate_limits_lock = asyncio.Lock()
 
     async def aclose(self) -> None:
         return None
@@ -229,6 +238,24 @@ class CodexProvider:
             return result
         finally:
             await connection.close()
+
+    async def account_rate_limits(self) -> dict[str, JsonValue]:
+        async with self._rate_limits_lock:
+            if (
+                self._rate_limits_cache is not None
+                and time.monotonic() - self._rate_limits_cached_at < 60
+            ):
+                return dict(self._rate_limits_cache)
+            connection = self._connection()
+            try:
+                await connection.open()
+                response = await connection.request("account/rateLimits/read", None)
+            finally:
+                await connection.close()
+            normalized = _normalize_rate_limits(response)
+            self._rate_limits_cache = normalized
+            self._rate_limits_cached_at = time.monotonic()
+            return dict(normalized)
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
         connection = self._connection()
@@ -373,6 +400,40 @@ def _codex_instructions(system: str) -> str:
         "root. Treat the serialized transcript in the user input as authoritative conversation "
         "history.\n\n" + system
     )
+
+
+def _normalize_rate_limits(response: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    raw_snapshot = response.get("rateLimits")
+    snapshot = cast(dict[str, JsonValue], raw_snapshot) if isinstance(raw_snapshot, dict) else {}
+    raw_by_limit = response.get("rateLimitsByLimitId")
+    if isinstance(raw_by_limit, dict) and isinstance(raw_by_limit.get("codex"), dict):
+        snapshot = cast(dict[str, JsonValue], raw_by_limit["codex"])
+    normalized: dict[str, JsonValue] = {
+        "plan_type": snapshot.get("planType"),
+        "limit_id": snapshot.get("limitId"),
+        "observed_at": time.time(),
+    }
+    for fallback, key in (("primary", "primary"), ("secondary", "secondary")):
+        raw_window = snapshot.get(key)
+        if not isinstance(raw_window, dict):
+            continue
+        minutes = raw_window.get("windowDurationMins")
+        label = (
+            "sliding_window_5h"
+            if minutes == 300
+            else "weekly_window"
+            if minutes == 10_080
+            else fallback
+        )
+        raw_used = raw_window.get("usedPercent")
+        used = max(0, min(100, raw_used if isinstance(raw_used, int) else 0))
+        normalized[label] = {
+            "used": used,
+            "remaining": 100 - used,
+            "reset_at": raw_window.get("resetsAt"),
+            "window_minutes": minutes,
+        }
+    return normalized
 
 
 def _codex_input(messages: list[ProviderMessage]) -> str:

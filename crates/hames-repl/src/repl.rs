@@ -1054,6 +1054,36 @@ async fn print_usage(client: &GatewayClient, session: &Session) -> Result<()> {
         "{}",
         style::key_value("Cost", format!("{:.6}", usage.provider_reported_cost))
     );
+    if let Some(account) = &usage.account_rate_limits {
+        println!("{}", style::section("ChatGPT usage"));
+        for (key, label) in [
+            ("sliding_window_5h", "5-hour"),
+            ("weekly_window", "Weekly"),
+            ("primary", "Primary"),
+            ("secondary", "Secondary"),
+        ] {
+            let Some(window) = account.get(key) else {
+                continue;
+            };
+            let used = window
+                .get("used")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let remaining = window
+                .get("remaining")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_else(|| 100_u64.saturating_sub(used));
+            println!(
+                "{}",
+                style::key_value(label, format!("{used}% used · {remaining}% remaining"))
+            );
+        }
+    } else if !usage.account_rate_limits_error.is_empty() {
+        println!(
+            "{}",
+            style::key_value("ChatGPT usage", &usage.account_rate_limits_error)
+        );
+    }
     Ok(())
 }
 

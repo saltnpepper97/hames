@@ -37,6 +37,8 @@ class UsageProjection(InspectionModel):
     provider_reported_cost: float = 0.0
     model_requests: int = 0
     latest_context: ContextUsageProjection | None = None
+    account_rate_limits: dict[str, JsonValue] | None = None
+    account_rate_limits_error: str = ""
 
 
 class AgentUsageProjection(InspectionModel):

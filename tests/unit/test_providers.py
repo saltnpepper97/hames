@@ -513,6 +513,14 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
                             {"reasoningEffort": "high", "description": "deep"},
                         ],
                     }], "nextCursor": None}
+                elif method == "account/rateLimits/read":
+                    result = {"rateLimitsByLimitId": {"codex": {
+                        "planType": "plus", "limitId": "codex",
+                        "primary": {"usedPercent": 25, "windowDurationMins": 300,
+                                    "resetsAt": 2000000000},
+                        "secondary": {"usedPercent": 60, "windowDurationMins": 10080,
+                                      "resetsAt": 2000100000}
+                    }}, "rateLimits": {}}
                 elif method == "thread/start":
                     if not params.get("dynamicTools"):
                         print(json.dumps({"id": request_id, "error": {
@@ -600,6 +608,15 @@ async def test_codex_subscription_discovers_models_and_normalizes_app_server_str
     ]
     assert events[-2].usage is not None
     assert events[-2].usage.cached_input_tokens == 2
+
+    limits = await provider.account_rate_limits()
+    assert limits["plan_type"] == "plus"
+    five_hour = limits["sliding_window_5h"]
+    weekly = limits["weekly_window"]
+    assert isinstance(five_hour, dict)
+    assert isinstance(weekly, dict)
+    assert five_hour["used"] == 25
+    assert weekly["remaining"] == 40
 
 
 @pytest.mark.asyncio

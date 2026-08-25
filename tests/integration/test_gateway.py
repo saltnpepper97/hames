@@ -20,6 +20,7 @@ from hames.paths import HamesPaths
 from hames.plans import PLAN_READY_MARKER
 from hames.providers import (
     ModelRequest,
+    Provider,
     ProviderModel,
     StreamEvent,
     StreamEventKind,
@@ -76,6 +77,35 @@ class ForegroundOverlapProvider:
         if len(self.requests) == 2:
             self.second_started.set()
             await self.release_second.wait()
+        yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="done")
+        yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
+
+    async def aclose(self) -> None:
+        return None
+
+
+class AccountUsageProvider:
+    profile_id = "codex-fixture"
+    adapter = "codex"
+    base_url = "app-server://codex"
+
+    async def list_models(self) -> list[ProviderModel]:
+        return [ProviderModel(id="fixture", provider=self.profile_id, status="available")]
+
+    async def account_rate_limits(self) -> dict[str, JsonValue]:
+        return {
+            "plan_type": "prolite",
+            "weekly_window": {
+                "used": 58,
+                "remaining": 42,
+                "reset_at": 2_000_000_000,
+                "window_minutes": 10_080,
+            },
+        }
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+        del request
+        yield StreamEvent(kind=StreamEventKind.STARTED)
         yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="done")
         yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
 
@@ -458,6 +488,39 @@ async def test_paused_queue_survives_cancellation_until_explicit_resume(tmp_path
             users = _user_contents(events)
             assert users == ["active", "keep me"]
             assert len(provider.requests) == 2
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_usage_includes_codex_account_progress_when_available(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    providers: dict[str, Provider] = {"codex-fixture": AccountUsageProvider()}
+    state = GatewayState.create(paths, providers=providers)
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "codex-fixture",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            usage = response_object(
+                await client.get(f"/v1/sessions/{session_id}/usage", headers=headers)
+            )
+            account = usage["account_rate_limits"]
+            assert isinstance(account, dict)
+            assert account["plan_type"] == "prolite"
+            weekly = account["weekly_window"]
+            assert isinstance(weekly, dict)
+            assert weekly["used"] == 58
+            assert weekly["remaining"] == 42
     finally:
         await state.runs.close()
 
