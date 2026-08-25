@@ -1,21 +1,55 @@
+use std::fmt;
 use std::fs;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
+use uuid::Uuid;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 27;
+pub const PROTOCOL_VERSION: u32 = 28;
 pub const HEAL_SCARS_PROMPT: &str = "Heal behavioral scars now.";
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
+const PROVIDER_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+const SUBMISSION_TIMEOUT: Duration = Duration::from_secs(10);
+const SUBMISSION_RETRY_DELAYS: [Duration; 2] =
+    [Duration::from_millis(250), Duration::from_millis(750)];
+
+pub fn new_submission_id() -> String {
+    Uuid::new_v4().to_string()
+}
 
 #[derive(Clone)]
 pub struct GatewayClient {
     base_url: String,
     token: String,
     http: Client,
+    stream_http: Client,
 }
+
+#[derive(Debug)]
+struct GatewayStatusError {
+    status: StatusCode,
+    body: String,
+}
+
+impl fmt::Display for GatewayStatusError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.status == StatusCode::UNAUTHORIZED {
+            formatter.write_str(
+                "gateway rejected this Hames home's token; another gateway may be using the port",
+            )
+        } else {
+            write!(formatter, "gateway returned {}: {}", self.status, self.body)
+        }
+    }
+}
+
+impl std::error::Error for GatewayStatusError {}
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Health {
@@ -202,6 +236,9 @@ pub struct IntegrityResult {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct MessageAccepted {
+    pub submission_id: String,
+    #[serde(default)]
+    pub replayed: bool,
     pub disposition: String,
     pub run_id: Option<String>,
     pub queued: Option<QueuedMessage>,
@@ -728,12 +765,19 @@ impl GatewayClient {
         Ok(Self {
             base_url: paths.gateway_url()?,
             token: token.trim().to_owned(),
-            http: Client::builder().build()?,
+            http: Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .timeout(CONTROL_TIMEOUT)
+                .build()?,
+            stream_http: Client::builder().connect_timeout(CONNECT_TIMEOUT).build()?,
         })
     }
 
     pub async fn health_unauthenticated(base_url: &str) -> Result<Health> {
-        let response = Client::new()
+        let response = Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(CONTROL_TIMEOUT)
+            .build()?
             .get(format!("{base_url}/v1/health"))
             .send()
             .await?;
@@ -760,6 +804,7 @@ impl GatewayClient {
     pub async fn probe_provider(&self, profile_id: &str) -> Result<ProviderProbe> {
         decode(
             self.post(&format!("/v1/providers/{profile_id}/probe"))
+                .timeout(PROVIDER_PROBE_TIMEOUT)
                 .send()
                 .await?,
         )
@@ -1135,8 +1180,28 @@ impl GatewayClient {
         remember: bool,
         paste_spans: &[PasteSpan],
     ) -> Result<MessageAccepted> {
-        self.send_message_request(session_id, content, remember, paste_spans, false)
+        let submission_id = new_submission_id();
+        self.send_message_with_pastes_id(session_id, &submission_id, content, remember, paste_spans)
             .await
+    }
+
+    pub async fn send_message_with_pastes_id(
+        &self,
+        session_id: &str,
+        submission_id: &str,
+        content: &str,
+        remember: bool,
+        paste_spans: &[PasteSpan],
+    ) -> Result<MessageAccepted> {
+        self.send_message_request(
+            session_id,
+            submission_id,
+            content,
+            remember,
+            paste_spans,
+            false,
+        )
+        .await
     }
 
     pub async fn send_message_now_with_pastes(
@@ -1146,22 +1211,59 @@ impl GatewayClient {
         remember: bool,
         paste_spans: &[PasteSpan],
     ) -> Result<MessageAccepted> {
-        self.send_message_request(session_id, content, remember, paste_spans, true)
-            .await
+        let submission_id = new_submission_id();
+        self.send_message_now_with_pastes_id(
+            session_id,
+            &submission_id,
+            content,
+            remember,
+            paste_spans,
+        )
+        .await
+    }
+
+    pub async fn send_message_now_with_pastes_id(
+        &self,
+        session_id: &str,
+        submission_id: &str,
+        content: &str,
+        remember: bool,
+        paste_spans: &[PasteSpan],
+    ) -> Result<MessageAccepted> {
+        self.send_message_request(
+            session_id,
+            submission_id,
+            content,
+            remember,
+            paste_spans,
+            true,
+        )
+        .await
     }
 
     pub async fn heal_scars(&self, session_id: &str, content: &str) -> Result<MessageAccepted> {
-        decode(
-            self.post(&format!("/v1/sessions/{session_id}/messages"))
-                .json(&serde_json::json!({
-                    "content": content,
-                    "remember": false,
-                    "paste_spans": [],
-                    "send_now": false,
-                    "purpose": "heal",
-                }))
-                .send()
-                .await?,
+        let submission_id = new_submission_id();
+        self.heal_scars_with_id(session_id, &submission_id, content)
+            .await
+    }
+
+    pub async fn heal_scars_with_id(
+        &self,
+        session_id: &str,
+        submission_id: &str,
+        content: &str,
+    ) -> Result<MessageAccepted> {
+        self.submit_request(
+            &format!("/v1/sessions/{session_id}/messages"),
+            submission_id,
+            &serde_json::json!({
+                "submission_id": submission_id,
+                "content": content,
+                "remember": false,
+                "paste_spans": [],
+                "send_now": false,
+                "purpose": "heal",
+            }),
         )
         .await
     }
@@ -1169,22 +1271,23 @@ impl GatewayClient {
     async fn send_message_request(
         &self,
         session_id: &str,
+        submission_id: &str,
         content: &str,
         remember: bool,
         paste_spans: &[PasteSpan],
         send_now: bool,
     ) -> Result<MessageAccepted> {
-        decode(
-            self.post(&format!("/v1/sessions/{session_id}/messages"))
-                .json(&serde_json::json!({
-                    "content": content,
-                    "remember": remember,
-                    "paste_spans": paste_spans,
-                    "send_now": send_now,
-                    "purpose": "turn",
-                }))
-                .send()
-                .await?,
+        self.submit_request(
+            &format!("/v1/sessions/{session_id}/messages"),
+            submission_id,
+            &serde_json::json!({
+                "submission_id": submission_id,
+                "content": content,
+                "remember": remember,
+                "paste_spans": paste_spans,
+                "send_now": send_now,
+                "purpose": "turn",
+            }),
         )
         .await
     }
@@ -1204,16 +1307,63 @@ impl GatewayClient {
         content: &str,
         paste_spans: &[PasteSpan],
     ) -> Result<MessageAccepted> {
-        decode(
-            self.post(&format!("/v1/sessions/{session_id}/plans/current/notes"))
-                .json(&serde_json::json!({
-                    "content": content,
-                    "paste_spans": paste_spans,
-                }))
-                .send()
-                .await?,
+        let submission_id = new_submission_id();
+        self.send_plan_note_with_id(session_id, &submission_id, content, paste_spans)
+            .await
+    }
+
+    pub async fn send_plan_note_with_id(
+        &self,
+        session_id: &str,
+        submission_id: &str,
+        content: &str,
+        paste_spans: &[PasteSpan],
+    ) -> Result<MessageAccepted> {
+        self.submit_request(
+            &format!("/v1/sessions/{session_id}/plans/current/notes"),
+            submission_id,
+            &serde_json::json!({
+                "submission_id": submission_id,
+                "content": content,
+                "paste_spans": paste_spans,
+            }),
         )
         .await
+    }
+
+    async fn submit_request(
+        &self,
+        path: &str,
+        submission_id: &str,
+        body: &Value,
+    ) -> Result<MessageAccepted> {
+        for attempt in 0..=SUBMISSION_RETRY_DELAYS.len() {
+            let result = async {
+                let response = self
+                    .post(path)
+                    .timeout(SUBMISSION_TIMEOUT)
+                    .json(body)
+                    .send()
+                    .await?;
+                decode_submission(response, submission_id).await
+            }
+            .await;
+            match result {
+                Ok(accepted) => return Ok(accepted),
+                Err(error)
+                    if attempt < SUBMISSION_RETRY_DELAYS.len()
+                        && submission_error_is_retryable(&error) =>
+                {
+                    tokio::time::sleep(SUBMISSION_RETRY_DELAYS[attempt]).await;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("message submission {submission_id} was not confirmed")
+                    });
+                }
+            }
+        }
+        bail!("message submission retry loop exhausted")
     }
 
     pub async fn execute_plan(
@@ -1714,7 +1864,9 @@ impl GatewayClient {
     pub async fn event_stream(&self, session_id: &str, after: u64) -> Result<Response> {
         let after_text = after.to_string();
         let response = self
-            .get("/v1/events")
+            .stream_http
+            .get(format!("{}/v1/events", self.base_url))
+            .bearer_auth(&self.token)
             .query(&[("session_id", session_id)])
             .header("Last-Event-ID", after_text)
             .send()
@@ -1752,14 +1904,35 @@ async fn decode<T: DeserializeOwned>(response: Response) -> Result<T> {
         .context("gateway returned invalid JSON")
 }
 
+async fn decode_submission(response: Response, expected_id: &str) -> Result<MessageAccepted> {
+    let accepted: MessageAccepted = decode(response).await?;
+    if accepted.submission_id != expected_id {
+        bail!(
+            "gateway confirmed submission {} while waiting for {expected_id}",
+            accepted.submission_id
+        );
+    }
+    Ok(accepted)
+}
+
+fn submission_error_is_retryable(error: &anyhow::Error) -> bool {
+    if let Some(status_error) = error.downcast_ref::<GatewayStatusError>() {
+        return status_error.status.is_server_error()
+            || matches!(
+                status_error.status,
+                StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
+            );
+    }
+    error
+        .chain()
+        .any(|cause| cause.downcast_ref::<reqwest::Error>().is_some())
+}
+
 async fn ensure_success(response: Response) -> Result<Response> {
     if response.status().is_success() {
         return Ok(response);
     }
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
-    if status == StatusCode::UNAUTHORIZED {
-        bail!("gateway rejected this Hames home's token; another gateway may be using the port")
-    }
-    bail!("gateway returned {status}: {body}")
+    Err(GatewayStatusError { status, body }.into())
 }

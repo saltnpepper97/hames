@@ -72,6 +72,7 @@ class MessagePayload(EventPayload):
     remember: bool = False
     purpose: Literal["turn", "plan_note", "plan_execution", "heal"] = "turn"
     paste_spans: list[PasteSpanPayload] = Field(default_factory=_empty_paste_spans, max_length=64)
+    submission_id: str | None = None
 
 
 class ModelProviderStatePayload(EventPayload):

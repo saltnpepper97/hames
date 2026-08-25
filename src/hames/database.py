@@ -688,6 +688,28 @@ MIGRATIONS = (
             CHECK (purpose IN ('turn', 'plan_note'));
         """,
     ),
+    Migration(
+        17,
+        "idempotent message submissions",
+        """
+        CREATE TABLE message_submissions (
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            submission_id TEXT NOT NULL,
+            request_hash TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('pending', 'accepted')),
+            result_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (session_id, submission_id),
+            CHECK (
+                (status = 'pending' AND result_json IS NULL)
+                OR (status = 'accepted' AND result_json IS NOT NULL)
+            )
+        );
+        CREATE INDEX message_submissions_updated_idx
+            ON message_submissions(updated_at);
+        """,
+    ),
 )
 
 

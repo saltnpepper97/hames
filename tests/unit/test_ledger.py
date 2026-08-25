@@ -21,7 +21,28 @@ def test_migrations_are_idempotent_and_private(hames_paths: HamesPaths) -> None:
     with database.connect() as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
-        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 16
+        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 17
+
+
+def test_message_submission_receipts_migrate_from_queue_schema(tmp_path: Path) -> None:
+    path = tmp_path / "submission-receipts.db"
+    Database(path, migrations=MIGRATIONS[:16]).migrate()
+    Database(path).migrate()
+    with Database(path).connect() as connection:
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(message_submissions)").fetchall()
+        }
+        assert columns == {
+            "session_id",
+            "submission_id",
+            "request_hash",
+            "status",
+            "result_json",
+            "created_at",
+            "updated_at",
+        }
+        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 17
 
 
 def test_failed_migration_does_not_advance_schema(tmp_path: Path) -> None:

@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal, cast
+from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -58,7 +59,12 @@ from hames.memory import (
     contains_secret,
 )
 from hames.memory_runtime import MemoryManager
-from hames.message_queue import QueuedMessage, QueueFullError, QueueState
+from hames.message_queue import (
+    QueuedMessage,
+    QueueFullError,
+    QueueState,
+    SubmissionIdReuseError,
+)
 from hames.paths import HamesPaths
 from hames.plans import PlanState
 from hames.plugin_protocol import PluginProtocolError
@@ -110,6 +116,7 @@ def _empty_paste_spans() -> list[PasteSpan]:
 
 
 class MessageRequest(ApiModel):
+    submission_id: UUID = Field(default_factory=uuid4)
     content: str = Field(min_length=1)
     remember: bool = False
     send_now: bool = False
@@ -157,6 +164,8 @@ class UpdateSessionTitleRequest(ApiModel):
 
 
 class MessageAccepted(ApiModel):
+    submission_id: str
+    replayed: bool = False
     disposition: Literal["started", "queued"]
     run_id: str | None = None
     queued: QueuedMessage | None = None
@@ -1788,12 +1797,17 @@ def create_app(state: GatewayState) -> FastAPI:
                 paste_spans=[span.model_dump(mode="json") for span in request.paste_spans],
                 send_now=request.send_now,
                 purpose=request.purpose,
+                submission_id=str(request.submission_id),
             )
             return MessageAccepted(
+                submission_id=str(request.submission_id),
+                replayed=result.replayed,
                 disposition=cast(Literal["started", "queued"], result.disposition),
                 run_id=result.run_id,
                 queued=result.queued,
             )
+        except SubmissionIdReuseError as exc:
+            raise ApiError(409, "submission_id_reused", str(exc)) from exc
         except QueueFullError as exc:
             raise ApiError(409, "session_queue_full", str(exc)) from exc
         except KeyError as exc:
@@ -1828,12 +1842,17 @@ def create_app(state: GatewayState) -> FastAPI:
                 remember=False,
                 paste_spans=[span.model_dump(mode="json") for span in request.paste_spans],
                 purpose="plan_note",
+                submission_id=str(request.submission_id),
             )
             return MessageAccepted(
+                submission_id=str(request.submission_id),
+                replayed=result.replayed,
                 disposition=cast(Literal["started", "queued"], result.disposition),
                 run_id=result.run_id,
                 queued=result.queued,
             )
+        except SubmissionIdReuseError as exc:
+            raise ApiError(409, "submission_id_reused", str(exc)) from exc
         except QueueFullError as exc:
             raise ApiError(409, "session_queue_full", str(exc)) from exc
         except KeyError as exc:
@@ -2046,6 +2065,7 @@ def create_app(state: GatewayState) -> FastAPI:
         try:
             result = await state.runs.send_queued_now(session_id, queue_id)
             return MessageAccepted(
+                submission_id=queue_id,
                 disposition=cast(Literal["started", "queued"], result.disposition),
                 run_id=result.run_id,
                 queued=result.queued,

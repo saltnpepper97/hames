@@ -44,7 +44,12 @@ from hames.memory import (
     RetrievedMemory,
     retrieval_query_hash,
 )
-from hames.message_queue import MessageQueueStore, QueuedMessage, QueueState
+from hames.message_queue import (
+    MessageQueueStore,
+    QueuedMessage,
+    QueueState,
+    SubmissionReceiptStore,
+)
 from hames.paths import HamesPaths
 from hames.plans import PLAN_READY_MARKER, PlanState, PlanStore, visible_plan_output
 from hames.plugin_runtime import PluginToolArguments
@@ -283,6 +288,50 @@ class SubmissionResult:
     disposition: str
     run_id: str | None = None
     queued: QueuedMessage | None = None
+    submission_id: str | None = None
+    replayed: bool = False
+
+
+def _submission_request_hash(
+    content: str,
+    remember: bool,
+    paste_spans: list[dict[str, int]],
+    send_now: bool,
+    purpose: str,
+) -> str:
+    encoded = json.dumps(
+        {
+            "content": content,
+            "paste_spans": paste_spans,
+            "purpose": purpose,
+            "remember": remember,
+            "send_now": send_now,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _submission_result_json(result: SubmissionResult) -> dict[str, object]:
+    return {
+        "disposition": result.disposition,
+        "run_id": result.run_id,
+        "queued": result.queued.model_dump(mode="json") if result.queued is not None else None,
+    }
+
+
+def _submission_result(
+    value: dict[str, Any], *, submission_id: str, replayed: bool
+) -> SubmissionResult:
+    queued_value = value.get("queued")
+    return SubmissionResult(
+        disposition=str(value["disposition"]),
+        run_id=str(value["run_id"]) if value.get("run_id") is not None else None,
+        queued=QueuedMessage.model_validate(queued_value) if queued_value is not None else None,
+        submission_id=submission_id,
+        replayed=replayed,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,6 +374,7 @@ class RunManager:
         self.agents = AgentRegistry(paths.agents)
         self.memory = MemoryStore(ledger)
         self.message_queue = MessageQueueStore(ledger)
+        self.submissions = SubmissionReceiptStore(ledger)
         self.goals = GoalStore(ledger)
         self.plans = PlanStore(ledger)
         self.session_tasks = TaskStore(ledger)
@@ -399,6 +449,8 @@ class RunManager:
         remember: bool = False,
         paste_spans: list[dict[str, int]] | None = None,
         purpose: str = "turn",
+        submission_id: str | None = None,
+        run_id: str | None = None,
     ) -> str:
         session = await asyncio.to_thread(self.ledger.get_session, session_id)
         if session.status != "open":
@@ -435,6 +487,7 @@ class RunManager:
                 "remember": remember,
                 "paste_spans": paste_spans or [],
                 "purpose": purpose,
+                "submission_id": submission_id,
             },
             agent_id=session.agent_id,
         )
@@ -452,7 +505,7 @@ class RunManager:
                 causation_id=user_event.id,
                 correlation_id=state.current.id if state.current else session_id,
             )
-        return self._launch(session_id, user_event)
+        return self._launch(session_id, user_event, run_id=run_id)
 
     async def submit(
         self,
@@ -463,97 +516,194 @@ class RunManager:
         paste_spans: list[dict[str, int]] | None = None,
         send_now: bool = False,
         purpose: str = "turn",
+        submission_id: str | None = None,
     ) -> SubmissionResult:
         async with self._submission_lock(session_id):
-            session = await asyncio.to_thread(self.ledger.get_session, session_id)
-            if purpose not in {"turn", "plan_note", "heal"}:
-                raise ValueError("message purpose must be turn, plan_note, or heal")
-            if purpose == "plan_note":
-                if session.interaction_mode != "plan":
-                    raise ValueError("plan notes require plan mode")
-                send_now = False
-            stale_run = self._session_runs.get(session_id)
-            stale_task = self._tasks.get(stale_run) if stale_run is not None else None
-            if stale_run is not None and stale_task is not None and stale_task.done():
-                self._mark_post_terminal(stale_run, session_id)
-            if self.is_session_active(session_id):
-                active_run = self._session_runs[session_id]
-                goal = await asyncio.to_thread(self.goals.current, session_id)
-                if goal is not None and goal.current_run_id == active_run:
-                    mutation = await asyncio.to_thread(
-                        self.message_queue.enqueue,
-                        session_id,
-                        content,
-                        remember=remember,
-                        paste_spans=paste_spans or [],
-                        priority=True,
-                        purpose=purpose,
+            request_hash = _submission_request_hash(
+                content, remember, paste_spans or [], send_now, purpose
+            )
+            if submission_id is not None:
+                reservation = await asyncio.to_thread(
+                    self.submissions.reserve, session_id, submission_id, request_hash
+                )
+                if reservation.result is not None:
+                    return _submission_result(
+                        reservation.result, submission_id=submission_id, replayed=True
                     )
-                    await self._publish_durable(mutation.event)
-                    await self._record_plan_note_queued(session, mutation.item)
-                    _, yielded_event = await asyncio.to_thread(
-                        self.goals.transition,
-                        await asyncio.to_thread(self.ledger.get_session, session_id),
-                        goal.id,
-                        "goal.yielded",
-                        run_id=active_run,
-                        summary="Yielded to a foreground request",
-                        reason="foreground_request",
-                    )
-                    await self._publish_durable(yielded_event)
-                    await self.cancel(active_run)
-                    return SubmissionResult(disposition="queued", queued=mutation.item)
-                mutation = await asyncio.to_thread(
-                    self.message_queue.enqueue,
+                if reservation.existing:
+                    recovered = await self._recover_pending_submission(session_id, submission_id)
+                    if recovered is not None:
+                        await asyncio.to_thread(
+                            self.submissions.complete,
+                            session_id,
+                            submission_id,
+                            request_hash,
+                            _submission_result_json(recovered),
+                        )
+                        return SubmissionResult(
+                            disposition=recovered.disposition,
+                            run_id=recovered.run_id,
+                            queued=recovered.queued,
+                            submission_id=submission_id,
+                            replayed=True,
+                        )
+            try:
+                result = await self._submit_locked(
                     session_id,
                     content,
                     remember=remember,
-                    paste_spans=paste_spans or [],
-                    priority=send_now,
+                    paste_spans=paste_spans,
+                    send_now=send_now,
                     purpose=purpose,
+                    submission_id=submission_id,
                 )
-                await self._publish_durable(mutation.event)
-                await self._record_plan_note_queued(session, mutation.item)
-                if send_now:
-                    await self.cancel(active_run)
-                return SubmissionResult(disposition="queued", queued=mutation.item)
-            queue = await self.queue_state(session_id)
-            if queue.items:
-                if send_now and not queue.paused:
-                    mutation = await asyncio.to_thread(
-                        self.message_queue.enqueue,
-                        session_id,
-                        content,
-                        remember=remember,
-                        paste_spans=paste_spans or [],
-                        priority=True,
-                        purpose=purpose,
-                    )
-                    await self._publish_durable(mutation.event)
-                    await self._record_plan_note_queued(session, mutation.item)
-                    run_id = await self._promote_next_locked(session_id)
-                    return SubmissionResult(disposition="started", run_id=run_id)
-                if not queue.paused:
-                    await self._promote_next_locked(session_id)
-                mutation = await asyncio.to_thread(
-                    self.message_queue.enqueue,
+            except Exception:
+                if submission_id is not None:
+                    recovered = await self._recover_pending_submission(session_id, submission_id)
+                    if recovered is not None:
+                        await asyncio.to_thread(
+                            self.submissions.complete,
+                            session_id,
+                            submission_id,
+                            request_hash,
+                            _submission_result_json(recovered),
+                        )
+                    else:
+                        await asyncio.to_thread(
+                            self.submissions.discard_pending,
+                            session_id,
+                            submission_id,
+                            request_hash,
+                        )
+                raise
+            if submission_id is not None:
+                await asyncio.to_thread(
+                    self.submissions.complete,
                     session_id,
-                    content,
-                    remember=remember,
-                    paste_spans=paste_spans or [],
-                    purpose=purpose,
+                    submission_id,
+                    request_hash,
+                    _submission_result_json(result),
                 )
-                await self._publish_durable(mutation.event)
-                await self._record_plan_note_queued(session, mutation.item)
-                return SubmissionResult(disposition="queued", queued=mutation.item)
-            run_id = await self.start(
+            return SubmissionResult(
+                disposition=result.disposition,
+                run_id=result.run_id,
+                queued=result.queued,
+                submission_id=submission_id,
+            )
+
+    async def _submit_locked(
+        self,
+        session_id: str,
+        content: str,
+        *,
+        remember: bool,
+        paste_spans: list[dict[str, int]] | None,
+        send_now: bool,
+        purpose: str,
+        submission_id: str | None,
+    ) -> SubmissionResult:
+        session = await asyncio.to_thread(self.ledger.get_session, session_id)
+        if purpose not in {"turn", "plan_note", "heal"}:
+            raise ValueError("message purpose must be turn, plan_note, or heal")
+        if purpose == "plan_note":
+            if session.interaction_mode != "plan":
+                raise ValueError("plan notes require plan mode")
+            send_now = False
+        stale_run = self._session_runs.get(session_id)
+        stale_task = self._tasks.get(stale_run) if stale_run is not None else None
+        if stale_run is not None and stale_task is not None and stale_task.done():
+            self._mark_post_terminal(stale_run, session_id)
+        if self.is_session_active(session_id):
+            active_run = self._session_runs[session_id]
+            goal = await asyncio.to_thread(self.goals.current, session_id)
+            mutation = await asyncio.to_thread(
+                self.message_queue.enqueue,
                 session_id,
                 content,
                 remember=remember,
-                paste_spans=paste_spans,
+                paste_spans=paste_spans or [],
+                priority=True
+                if goal is not None and goal.current_run_id == active_run
+                else send_now,
                 purpose=purpose,
+                queue_id=submission_id,
+                submission_id=submission_id,
             )
-            return SubmissionResult(disposition="started", run_id=run_id)
+            await self._publish_durable(mutation.event)
+            await self._record_plan_note_queued(session, mutation.item)
+            if goal is not None and goal.current_run_id == active_run:
+                _, yielded_event = await asyncio.to_thread(
+                    self.goals.transition,
+                    await asyncio.to_thread(self.ledger.get_session, session_id),
+                    goal.id,
+                    "goal.yielded",
+                    run_id=active_run,
+                    summary="Yielded to a foreground request",
+                    reason="foreground_request",
+                )
+                await self._publish_durable(yielded_event)
+                await self.cancel(active_run)
+            elif send_now:
+                await self.cancel(active_run)
+            return SubmissionResult(disposition="queued", queued=mutation.item)
+        queue = await self.queue_state(session_id)
+        if queue.items:
+            if send_now and not queue.paused:
+                mutation = await asyncio.to_thread(
+                    self.message_queue.enqueue,
+                    session_id,
+                    content,
+                    remember=remember,
+                    paste_spans=paste_spans or [],
+                    priority=True,
+                    purpose=purpose,
+                    queue_id=submission_id,
+                    submission_id=submission_id,
+                )
+                await self._publish_durable(mutation.event)
+                await self._record_plan_note_queued(session, mutation.item)
+                run_id = await self._promote_next_locked(session_id)
+                return SubmissionResult(disposition="started", run_id=run_id)
+            if not queue.paused:
+                await self._promote_next_locked(session_id)
+            mutation = await asyncio.to_thread(
+                self.message_queue.enqueue,
+                session_id,
+                content,
+                remember=remember,
+                paste_spans=paste_spans or [],
+                purpose=purpose,
+                queue_id=submission_id,
+                submission_id=submission_id,
+            )
+            await self._publish_durable(mutation.event)
+            await self._record_plan_note_queued(session, mutation.item)
+            return SubmissionResult(disposition="queued", queued=mutation.item)
+        run_id = await self.start(
+            session_id,
+            content,
+            remember=remember,
+            paste_spans=paste_spans,
+            purpose=purpose,
+            submission_id=submission_id,
+            run_id=submission_id,
+        )
+        return SubmissionResult(disposition="started", run_id=run_id)
+
+    async def _recover_pending_submission(
+        self, session_id: str, submission_id: str
+    ) -> SubmissionResult | None:
+        queue = await self.queue_state(session_id)
+        queued = next((item for item in queue.items if item.id == submission_id), None)
+        if queued is not None:
+            return SubmissionResult(disposition="queued", queued=queued)
+        events = await asyncio.to_thread(self.ledger.list_events, session_id)
+        if any(
+            event.type == "user.message" and event.payload.get("submission_id") == submission_id
+            for event in events
+        ):
+            return SubmissionResult(disposition="started", run_id=submission_id)
+        return None
 
     async def _record_plan_note_queued(self, session: Session, item: QueuedMessage | None) -> None:
         if item is None or item.purpose != "plan_note":
@@ -1109,6 +1259,7 @@ class RunManager:
                     "remember": False,
                     "paste_spans": [],
                     "purpose": "plan_note",
+                    "submission_id": notes[0].id,
                 },
                 agent_id=session.agent_id,
                 correlation_id=notes[0].id,
@@ -1126,7 +1277,7 @@ class RunManager:
                 causation_id=user_event.id,
                 correlation_id=plan_state.current.id if plan_state.current else session_id,
             )
-            return self._launch(session_id, user_event)
+            return self._launch(session_id, user_event, run_id=notes[0].id)
         mutation = await asyncio.to_thread(
             self.message_queue.take_oldest, session_id, reason="promoted"
         )
@@ -1141,11 +1292,12 @@ class RunManager:
                 "remember": item.remember,
                 "paste_spans": item.paste_spans,
                 "purpose": item.purpose,
+                "submission_id": item.id,
             },
             agent_id=session.agent_id,
             correlation_id=item.id,
         )
-        return self._launch(session_id, user_event)
+        return self._launch(session_id, user_event, run_id=item.id)
 
     async def _publish_durable(self, event: Event) -> None:
         await self.broker.publish(

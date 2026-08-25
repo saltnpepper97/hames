@@ -43,6 +43,88 @@ class QueueFullError(ValueError):
     pass
 
 
+class SubmissionIdReuseError(ValueError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class SubmissionReservation:
+    existing: bool
+    result: dict[str, Any] | None
+
+
+class SubmissionReceiptStore:
+    """Durable receipts for retry-safe client message admission."""
+
+    def __init__(self, ledger: Ledger) -> None:
+        self.ledger = ledger
+        self.database = ledger.database
+
+    def reserve(
+        self, session_id: str, submission_id: str, request_hash: str
+    ) -> SubmissionReservation:
+        now = utc_now()
+        with self.ledger.transaction_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT request_hash, status, result_json FROM message_submissions "
+                "WHERE session_id = ? AND submission_id = ?",
+                (session_id, submission_id),
+            ).fetchone()
+            if row is None:
+                connection.execute(
+                    "INSERT INTO message_submissions(session_id, submission_id, request_hash, "
+                    "status, result_json, created_at, updated_at) "
+                    "VALUES (?, ?, ?, 'pending', NULL, ?, ?)",
+                    (session_id, submission_id, request_hash, now, now),
+                )
+                connection.commit()
+                return SubmissionReservation(existing=False, result=None)
+            if str(row["request_hash"]) != request_hash:
+                connection.rollback()
+                raise SubmissionIdReuseError(
+                    "submission ID was already used with a different message"
+                )
+            result = (
+                dict(json.loads(str(row["result_json"])))
+                if row["status"] == "accepted" and row["result_json"] is not None
+                else None
+            )
+            connection.commit()
+            return SubmissionReservation(existing=True, result=result)
+
+    def complete(
+        self,
+        session_id: str,
+        submission_id: str,
+        request_hash: str,
+        result: dict[str, Any],
+    ) -> None:
+        encoded = json.dumps(result, separators=(",", ":"), sort_keys=True)
+        with self.ledger.transaction_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "UPDATE message_submissions SET status = 'accepted', result_json = ?, "
+                "updated_at = ? WHERE session_id = ? AND submission_id = ? "
+                "AND request_hash = ?",
+                (encoded, utc_now(), session_id, submission_id, request_hash),
+            )
+            if cursor.rowcount != 1:
+                connection.rollback()
+                raise SubmissionIdReuseError("submission receipt changed before acceptance")
+            connection.commit()
+
+    def discard_pending(self, session_id: str, submission_id: str, request_hash: str) -> None:
+        with self.ledger.transaction_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "DELETE FROM message_submissions WHERE session_id = ? AND submission_id = ? "
+                "AND request_hash = ? AND status = 'pending'",
+                (session_id, submission_id, request_hash),
+            )
+            connection.commit()
+
+
 class MessageQueueStore:
     MAX_PENDING = 2
 
@@ -74,11 +156,13 @@ class MessageQueueStore:
         paste_spans: list[dict[str, int]],
         priority: bool = False,
         purpose: str = "turn",
+        queue_id: str | None = None,
+        submission_id: str | None = None,
     ) -> QueueMutation:
         session = self.ledger.get_session(session_id)
         if session.status != "open":
             raise ValueError("session is not open")
-        queue_id = new_id()
+        queue_id = queue_id or new_id()
         if purpose not in {"turn", "plan_note"}:
             raise ValueError("queue purpose must be turn or plan_note")
         created_at = utc_now()
@@ -128,6 +212,7 @@ class MessageQueueStore:
                     "remember": remember,
                     "paste_spans": paste_spans,
                     "purpose": purpose,
+                    "submission_id": submission_id,
                 },
                 correlation_id=queue_id,
             )

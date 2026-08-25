@@ -84,6 +84,94 @@ class ForegroundOverlapProvider:
         return None
 
 
+@pytest.mark.asyncio
+async def test_message_submission_ids_replay_without_duplicate_runs_or_queue_entries(
+    tmp_path: Path,
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    provider = QueueProvider()
+    state = GatewayState.create(paths, providers={"fake": provider})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+
+            started_id = "11111111-1111-4111-8111-111111111111"
+            payload = {"submission_id": started_id, "content": "only once"}
+            first, duplicate = await asyncio.gather(
+                client.post(f"/v1/sessions/{session_id}/messages", headers=headers, json=payload),
+                client.post(f"/v1/sessions/{session_id}/messages", headers=headers, json=payload),
+            )
+            first_body = response_object(first)
+            duplicate_body = response_object(duplicate)
+            assert {bool(first_body["replayed"]), bool(duplicate_body["replayed"])} == {
+                False,
+                True,
+            }
+            assert first_body["submission_id"] == started_id
+            assert duplicate_body["run_id"] == first_body["run_id"] == started_id
+            assert (
+                len(
+                    [
+                        event
+                        for event in state.ledger.list_events(session_id)
+                        if event.type == "user.message"
+                        and event.payload.get("submission_id") == started_id
+                    ]
+                )
+                == 1
+            )
+
+            conflict = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"submission_id": started_id, "content": "different"},
+            )
+            assert conflict.status_code == 409
+            assert response_object(conflict)["error"]["code"] == "submission_id_reused"  # type: ignore[index]
+
+            await asyncio.wait_for(provider.first_started.wait(), timeout=1)
+            queued_id = "22222222-2222-4222-8222-222222222222"
+            queued_payload = {"submission_id": queued_id, "content": "queued once"}
+            queued = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json=queued_payload,
+            )
+            queued_replay = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json=queued_payload,
+            )
+            assert response_object(queued)["replayed"] is False
+            assert response_object(queued_replay)["replayed"] is True
+            queue = response_object(
+                await client.get(f"/v1/sessions/{session_id}/queue", headers=headers)
+            )
+            assert [item["id"] for item in queue["items"]] == [queued_id]  # type: ignore[index]
+
+            provider.release_first.set()
+            await _wait_for_event(client, headers, session_id, "run.completed", occurrences=2)
+            assert _user_contents(
+                EVENT_LIST.validate_python(
+                    (await client.get(f"/v1/sessions/{session_id}/events", headers=headers)).json()
+                )
+            ) == ["only once", "queued once"]
+    finally:
+        await state.runs.close()
+
+
 class AccountUsageProvider:
     profile_id = "codex-fixture"
     adapter = "codex"
@@ -726,7 +814,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 27
+            assert health_body["protocol_version"] == 28
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
