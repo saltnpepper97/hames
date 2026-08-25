@@ -307,16 +307,16 @@ fn render_workspace_trust_choices(
         let row = if index == selected && index == 0 {
             crate::style::paint("1;30;42", &row)
         } else if index == selected {
-            crate::style::paint("1;37;41", &row)
+            crate::style::paint("1;30;41", &row)
         } else {
             row
         };
-        writeln!(output, "    {row}")?;
+        write!(output, "    {row}\r\n")?;
     }
     execute!(output, Clear(ClearType::CurrentLine))?;
-    writeln!(
+    write!(
         output,
-        "    {}",
+        "    {}\r\n",
         crate::style::dim("↑↓ choose · Enter confirm · Esc quit")
     )?;
     output.flush()?;
