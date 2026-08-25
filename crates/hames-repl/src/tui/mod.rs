@@ -3043,6 +3043,10 @@ impl TerminalGuard {
     }
 
     fn draw(&mut self, app: &mut App) -> Result<()> {
+        let area = self.terminal.size()?;
+        if area.width == 0 || area.height == 0 {
+            return Ok(());
+        }
         let working = app.active_run.is_some();
         if working != self.title_working {
             self.title_working = working;
