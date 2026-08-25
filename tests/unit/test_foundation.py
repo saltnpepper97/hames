@@ -152,6 +152,11 @@ def test_agent_runtime_limits_are_configurable(hames_paths: HamesPaths) -> None:
 def test_agent_runtime_defaults_allow_ninety_nine_sequential_tools() -> None:
     config = RuntimeConfig()
 
+    assert config.default_agent == "default"
+    assert config.default_provider == "llama_cpp"
+    assert config.default_model == ""
+    assert config.default_reasoning_effort == "medium"
+    assert config.default_interaction_mode == "auto"
     assert config.max_tool_calls_per_run == 99
     assert config.max_model_turns_per_user_message == 100
 

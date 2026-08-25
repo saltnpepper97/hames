@@ -1922,6 +1922,90 @@ class CountingProvider(FakeProvider):
 
 
 @pytest.mark.asyncio
+async def test_fresh_session_uses_config_defaults_while_inherited_session_keeps_settings(
+    tmp_path: Path,
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    reviewer = paths.agents / "reviewer"
+    reviewer.mkdir()
+    (reviewer / "AGENT.md").write_text(
+        '---\nid: reviewer\nname: Reviewer\nprovider: inherit\nmodel: ""\n---\nReview carefully.\n',
+        encoding="utf-8",
+    )
+    paths.config_file.write_text(
+        """\
+[runtime]
+default_agent = "reviewer"
+default_provider = "fake"
+default_model = "fixture"
+default_reasoning_effort = "medium"
+default_interaction_mode = "auto"
+
+[providers.fake]
+adapter = "llama_cpp"
+base_url = "http://127.0.0.1:8080"
+""",
+        encoding="utf-8",
+    )
+    state = GatewayState.create(paths, providers={"fake": TwoModelProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            fresh = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path)},
+            )
+            assert fresh.status_code == 201, fresh.text
+            fresh_body = response_object(fresh)
+            assert fresh_body["agent_id"] == "reviewer"
+            assert fresh_body["provider"] == "fake"
+            assert fresh_body["model"] == "fixture"
+            assert fresh_body["reasoning_effort"] == "medium"
+            assert fresh_body["interaction_mode"] == "auto"
+            session_id = str(fresh_body["id"])
+
+            changed_model = await client.patch(
+                f"/v1/sessions/{session_id}",
+                headers=headers,
+                json={"provider": "fake", "model": "other", "reasoning_effort": "xhigh"},
+            )
+            assert changed_model.status_code == 200
+            changed_agent = await client.put(
+                f"/v1/sessions/{session_id}/agent",
+                headers=headers,
+                json={"agent_id": "default"},
+            )
+            assert changed_agent.status_code == 200
+            changed_mode = await client.put(
+                f"/v1/sessions/{session_id}/mode",
+                headers=headers,
+                json={"mode": "plan"},
+            )
+            assert changed_mode.status_code == 200
+
+            inherited = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "inherit_session_id": session_id,
+                },
+            )
+            assert inherited.status_code == 201, inherited.text
+            inherited_body = response_object(inherited)
+            assert inherited_body["agent_id"] == "default"
+            assert inherited_body["provider"] == "fake"
+            assert inherited_body["model"] == "other"
+            assert inherited_body["reasoning_effort"] == "xhigh"
+            assert inherited_body["interaction_mode"] == "plan"
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
 async def test_provider_listing_is_offline_and_probe_is_explicit(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     fake = CountingProvider()

@@ -90,7 +90,7 @@ class ApiModel(BaseModel):
 
 class CreateSessionRequest(ApiModel):
     working_directory: str
-    agent_id: str = "default"
+    agent_id: str = ""
     provider: str = ""
     model: str = ""
     reasoning_effort: str = ""
@@ -612,14 +612,22 @@ def create_app(state: GatewayState) -> FastAPI:
         return await _probe(profile_id, provider)
 
     async def resolve_selection(
-        profile_id: str, requested_model: str, requested_effort: str
+        profile_id: str,
+        requested_model: str,
+        requested_effort: str,
+        *,
+        default_model: str = "",
+        default_effort: str = "",
+        conditional_default_effort: bool = False,
     ) -> tuple[str, str, int, str]:
         provider = state.providers.get(profile_id)
         if provider is None:
             raise ApiError(400, "unknown_provider", f"unknown provider: {profile_id}")
         configured = state.provider_profile(profile_id)
-        selected_model_id = requested_model or (configured.model if configured else "")
-        selected_effort = requested_effort or (configured.reasoning_effort if configured else "")
+        selected_model_id = (
+            requested_model or default_model or (configured.model if configured else "")
+        )
+        selected_effort = requested_effort
         try:
             models = await provider.list_models()
         except ProviderError as exc:
@@ -650,6 +658,15 @@ def create_app(state: GatewayState) -> FastAPI:
             and configured.supported_reasoning_efforts
         ):
             efforts = configured.supported_reasoning_efforts
+        if not selected_effort:
+            selected_effort = default_effort or (configured.reasoning_effort if configured else "")
+            if conditional_default_effort:
+                if selected_effort == "off" or selected.reasoning_supported is False:
+                    selected_effort = "off"
+                elif selected.reasoning_supported is None and not efforts:
+                    selected_effort = "off"
+                elif efforts == ["on"]:
+                    selected_effort = "on"
         if selected_effort and selected_effort != "off":
             if selected.reasoning_supported is False:
                 raise ApiError(400, "reasoning_not_supported", "model does not advertise reasoning")
@@ -691,7 +708,11 @@ def create_app(state: GatewayState) -> FastAPI:
                     "session_not_found",
                     f"unknown session: {request.inherit_session_id}",
                 ) from exc
-        agent_id = inherited.agent_id if inherited is not None else request.agent_id
+        agent_id = (
+            inherited.agent_id
+            if inherited is not None
+            else request.agent_id or state.config.runtime.default_agent
+        )
         try:
             await asyncio.to_thread(state.agents.load, agent_id)
         except (FileNotFoundError, ValueError) as exc:
@@ -699,10 +720,15 @@ def create_app(state: GatewayState) -> FastAPI:
         if inherited is None:
             provider_name = request.provider or state.config.runtime.default_provider
             selection = await resolve_selection(
-                provider_name, request.model, request.reasoning_effort
+                provider_name,
+                request.model,
+                request.reasoning_effort,
+                default_model=state.config.runtime.default_model,
+                default_effort=state.config.runtime.default_reasoning_effort,
+                conditional_default_effort=True,
             )
             model, reasoning_effort, context_window_tokens, context_window_source = selection
-            interaction_mode = "auto"
+            interaction_mode = state.config.runtime.default_interaction_mode
         else:
             provider_name = inherited.provider
             model = inherited.model
