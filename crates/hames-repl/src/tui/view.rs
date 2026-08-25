@@ -1697,11 +1697,15 @@ fn activity_bar(app: &App) -> Line<'static> {
                 Style::default().fg(MUTED),
             ));
             spans.push(Span::styled("Alt+↑", Style::default().fg(INPUT).bold()));
-            spans.push(Span::styled(" now", Style::default().fg(MUTED)));
+            spans.push(Span::styled(" send now", Style::default().fg(MUTED)));
         }
     }
     if !app.queued_messages.is_empty() {
         spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
+        if app.composer.is_empty() {
+            spans.push(Span::styled("Alt+↑", Style::default().fg(INPUT).bold()));
+            spans.push(Span::styled(" send now · ", Style::default().fg(MUTED)));
+        }
         spans.push(Span::styled("↑", Style::default().fg(INPUT).bold()));
         spans.push(Span::styled(" edit", Style::default().fg(MUTED)));
     }
@@ -5038,7 +5042,7 @@ mod tests {
         assert!(rendered.contains("──────"));
         assert!(rendered.contains("Working · 12s · Esc interrupt"));
         assert!(!rendered.contains("Enter queue"));
-        assert!(!rendered.contains("Alt+↑ now"));
+        assert!(!rendered.contains("Alt+↑ send now"));
         assert!(rendered.contains("[connected]"));
         assert!(!rendered.contains("Shift+Tab mode"));
         let footer_y = terminal.size().unwrap().height - 1;
@@ -5062,7 +5066,7 @@ mod tests {
         let footer = (0..terminal.size().unwrap().width)
             .map(|x| buffer.cell((x, footer_y)).unwrap().symbol())
             .collect::<String>();
-        assert!(footer.contains("Enter queue · Alt+↑ now · Esc interrupt"));
+        assert!(footer.contains("Enter queue · Alt+↑ send now · Esc interrupt"));
 
         let enter_x = UnicodeWidthStr::width(&footer[..footer.find("Enter").unwrap()]) as u16;
         let alt_x = UnicodeWidthStr::width(&footer[..footer.find("Alt+↑").unwrap()]) as u16;
@@ -5070,6 +5074,29 @@ mod tests {
         assert_eq!(buffer.cell((enter_x, footer_y)).unwrap().fg, INPUT);
         assert_eq!(buffer.cell((alt_x, footer_y)).unwrap().fg, INPUT);
         assert_eq!(buffer.cell((escape_x, footer_y)).unwrap().fg, INPUT);
+    }
+
+    #[test]
+    fn queued_turn_exposes_send_now_below_an_empty_composer() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-1".to_owned());
+        app.queued_messages = vec![queued_message("queue-1", "urgent follow-up", 1)];
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let footer_y = terminal.size().unwrap().height - 1;
+        let footer = (0..terminal.size().unwrap().width)
+            .map(|x| {
+                terminal
+                    .backend()
+                    .buffer()
+                    .cell((x, footer_y))
+                    .unwrap()
+                    .symbol()
+            })
+            .collect::<String>();
+        assert!(footer.contains("Alt+↑ send now · ↑ edit · Esc interrupt"));
     }
 
     #[test]
