@@ -786,18 +786,29 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     DreamPhase::Completed => ("✓", MUTED),
                     DreamPhase::Failed => ("!", CORAL),
                 };
-                lines.push(RenderLine {
-                    line: Line::from(vec![
-                        Span::styled(
-                            if heading == "Dream" { "☾ " } else { "─ " },
-                            Style::default().fg(MUTED),
-                        ),
-                        Span::styled(heading.clone(), Style::default().fg(INPUT).bold()),
-                    ]),
-                    thought: None,
-                    sheen: None,
-                    hover_group: None,
-                });
+                let continues_wrap_up = heading == "Wrap-up"
+                    && index > 0
+                    && matches!(
+                        app.transcript.get(index - 1),
+                        Some(TranscriptItem::Dream {
+                            heading: previous,
+                            ..
+                        }) if previous == "Wrap-up"
+                    );
+                if !continues_wrap_up {
+                    lines.push(RenderLine {
+                        line: Line::from(vec![
+                            Span::styled(
+                                if heading == "Dream" { "☾ " } else { "─ " },
+                                Style::default().fg(MUTED),
+                            ),
+                            Span::styled(heading.clone(), Style::default().fg(INPUT).bold()),
+                        ]),
+                        thought: None,
+                        sheen: None,
+                        hover_group: None,
+                    });
+                }
                 lines.push(RenderLine {
                     line: Line::from(vec![
                         Span::styled(format!("  {glyph} "), Style::default().fg(color)),
@@ -922,10 +933,22 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
         while lines.last().is_some_and(|line| line.line.width() == 0) {
             lines.pop();
         }
-        if !matches!(
-            app.transcript.get(index + 1),
-            Some(TranscriptItem::Worked { .. })
-        ) {
+        let joins_next_wrap_up = matches!(
+            (item, app.transcript.get(index + 1)),
+            (
+                TranscriptItem::Dream { heading, .. },
+                Some(TranscriptItem::Dream {
+                    heading: next_heading,
+                    ..
+                })
+            ) if heading == "Wrap-up" && next_heading == "Wrap-up"
+        );
+        if !joins_next_wrap_up
+            && !matches!(
+                app.transcript.get(index + 1),
+                Some(TranscriptItem::Worked { .. })
+            )
+        {
             lines.push(RenderLine {
                 line: Line::from(""),
                 thought: None,
@@ -4665,6 +4688,51 @@ mod tests {
         assert!(rendered.contains("Consolidating memory in the background"));
         assert_eq!(super::current_activity(&app), "Ready");
         assert!(!app.animating());
+    }
+
+    #[test]
+    fn adjacent_wrap_up_jobs_share_one_heading_and_no_blank_gap() {
+        let mut app = App::new(session(), Vec::new(), true);
+        for (job_id, label, detail) in [
+            (
+                "memory-job",
+                "Memory update",
+                "Memory update waiting for the idle model",
+            ),
+            (
+                "skill-job",
+                "Skill update",
+                "Skill update waiting for the idle model",
+            ),
+        ] {
+            app.transcript.push(TranscriptItem::Dream {
+                job_id: job_id.to_owned(),
+                heading: "Wrap-up".to_owned(),
+                label: label.to_owned(),
+                phase: DreamPhase::Queued,
+                detail: detail.to_owned(),
+            });
+        }
+        let rendered = transcript_lines(&app, 80)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rendered
+                .iter()
+                .filter(|line| line.contains("Wrap-up"))
+                .count(),
+            1
+        );
+        let memory = rendered
+            .iter()
+            .position(|line| line.contains("Memory update"))
+            .unwrap();
+        let skill = rendered
+            .iter()
+            .position(|line| line.contains("Skill update"))
+            .unwrap();
+        assert_eq!(skill, memory + 1);
     }
 
     #[test]

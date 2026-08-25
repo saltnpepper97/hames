@@ -301,6 +301,12 @@ def test_execution_modes_are_gateway_policy_not_client_convention(tmp_path: Path
         'print("surface:", s.get_size())\npygame.quit()\nEOF',
         "env | grep -E '^(DISPLAY|WAYLAND_DISPLAY|XDG_SESSION_TYPE)='; "
         "ls /tmp/.X11-unix 2>/dev/null; true",
+        'echo "DISPLAY=$DISPLAY WAYLAND_DISPLAY=$WAYLAND_DISPLAY '
+        'XDG_SESSION_TYPE=$XDG_SESSION_TYPE"; python3 -c "\nimport os\n'
+        "os.environ.setdefault('SDL_VIDEODRIVER','dummy')\nimport pygame\npygame.init()\n"
+        "s = pygame.display.set_mode((320,240))\n"
+        "print('dummy-driver display OK:', s.get_size())\npygame.quit()\n"
+        '" 2>&1 | grep -v RuntimeWarning | grep -v avx2',
     ):
         assert (
             gate.decide(

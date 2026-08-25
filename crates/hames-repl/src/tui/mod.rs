@@ -2982,7 +2982,7 @@ mod tests {
             updated_at: "now".to_owned(),
         });
         app.open_tasks();
-        assert_eq!(app.sheet.as_ref().unwrap().options[0].label, "☐");
+        assert_eq!(app.sheet.as_ref().unwrap().options[0].label, "[ ]");
         assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).is_none());
         assert!(app.sheet.is_some());
         assert!(

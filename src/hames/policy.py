@@ -503,7 +503,7 @@ def _plan_python_call_allowed(call: ast.Call, local_functions: set[str]) -> bool
         return call.func.attr in {"getcwd", "getenv", "getuid", "getgid"} or (
             isinstance(call.func.value, ast.Attribute)
             and call.func.value.attr == "environ"
-            and call.func.attr == "get"
+            and call.func.attr in {"get", "setdefault"}
         )
     if root == "json":
         return call.func.attr in {"loads", "dumps"}

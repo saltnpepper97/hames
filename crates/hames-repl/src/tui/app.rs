@@ -2044,9 +2044,14 @@ impl App {
                     .cloned()
                     .and_then(|value| serde_json::from_value::<SessionTask>(value).ok())
                 {
+                    let text = task.text.clone();
                     let position = task.position.min(self.tasks.items.len());
                     self.tasks.items.insert(position, task);
                     normalize_task_positions(&mut self.tasks.items);
+                    self.transcript.push(TranscriptItem::Status {
+                        text: format!("Task added · {text}"),
+                        error: false,
+                    });
                 }
                 self.tasks.updated_at = event.created_at.clone();
             }
@@ -2074,15 +2079,48 @@ impl App {
                         .and_then(|value| usize::try_from(value).ok())
                         .unwrap_or(index)
                         .min(self.tasks.items.len());
+                    let update = event
+                        .payload
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .map(|status| match status {
+                            "completed" => format!("Task completed · {}", task.text),
+                            "in_progress" => format!("Task started · {}", task.text),
+                            "blocked" => format!("Task blocked · {}", task.text),
+                            _ => format!("Task pending · {}", task.text),
+                        })
+                        .or_else(|| {
+                            event
+                                .payload
+                                .get("text")
+                                .and_then(Value::as_str)
+                                .map(|_| format!("Task updated · {}", task.text))
+                        });
                     self.tasks.items.insert(position, task);
                     normalize_task_positions(&mut self.tasks.items);
+                    if let Some(text) = update {
+                        self.transcript
+                            .push(TranscriptItem::Status { text, error: false });
+                    }
                 }
                 self.tasks.updated_at = event.created_at.clone();
             }
             "task.removed" => {
                 let task_id = string(&event.payload, "task_id");
+                let removed = self
+                    .tasks
+                    .items
+                    .iter()
+                    .find(|item| item.id == task_id)
+                    .map(|item| item.text.clone());
                 self.tasks.items.retain(|item| item.id != task_id);
                 normalize_task_positions(&mut self.tasks.items);
+                if let Some(text) = removed {
+                    self.transcript.push(TranscriptItem::Status {
+                        text: format!("Task removed · {text}"),
+                        error: false,
+                    });
+                }
                 self.tasks.updated_at = event.created_at.clone();
             }
             "goal.created" => {
@@ -3110,10 +3148,9 @@ fn option(label: &str, detail: &str, action: MenuAction) -> MenuOption {
 
 fn task_checkbox(task: &SessionTask) -> &'static str {
     match task.status.as_str() {
-        "in_progress" => "▣",
-        "completed" => "☑",
-        "blocked" => "⚠",
-        _ => "☐",
+        "completed" => "[✓]",
+        "blocked" => "[!]",
+        _ => "[ ]",
     }
 }
 
@@ -3235,9 +3272,9 @@ mod tests {
 
     use super::{
         App, Composer, ComposerUnit, DreamPhase, TranscriptItem, TranscriptPoint,
-        TranscriptViewport,
+        TranscriptViewport, task_checkbox,
     };
-    use crate::api::{Event, PasteSpan, Session};
+    use crate::api::{Event, PasteSpan, Session, SessionTask};
 
     #[test]
     fn large_pastes_are_atomic_and_preserve_exact_message_bytes() {
@@ -3342,6 +3379,54 @@ mod tests {
         assert_eq!(app.composer.cursor, 0);
         assert!(app.handle_composer_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL,)));
         assert_eq!(app.composer.cursor, app.composer.units.len());
+    }
+
+    #[test]
+    fn task_checkboxes_use_a_literal_check_for_completion() {
+        let task = |status: &str| SessionTask {
+            id: status.to_owned(),
+            text: "Task".to_owned(),
+            status: status.to_owned(),
+            position: 0,
+            created_by: "plan".to_owned(),
+        };
+        assert_eq!(task_checkbox(&task("pending")), "[ ]");
+        assert_eq!(task_checkbox(&task("in_progress")), "[ ]");
+        assert_eq!(task_checkbox(&task("completed")), "[✓]");
+        assert_eq!(task_checkbox(&task("blocked")), "[!]");
+    }
+
+    #[test]
+    fn task_state_changes_are_visible_in_the_transcript() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.tasks.items.push(SessionTask {
+            id: "task-1".to_owned(),
+            text: "Build the game".to_owned(),
+            status: "in_progress".to_owned(),
+            position: 0,
+            created_by: "plan".to_owned(),
+        });
+
+        app.ingest_durable(
+            event(
+                1,
+                "task.updated",
+                "run-task",
+                json!({
+                    "task_id": "task-1",
+                    "status": "completed",
+                    "text": null,
+                    "position": null
+                }),
+            ),
+            true,
+        );
+
+        assert!(app.transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Status { text, error: false }
+                if text == "Task completed · Build the game"
+        )));
     }
 
     #[test]
