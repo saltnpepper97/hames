@@ -452,6 +452,7 @@ enum Effect {
     Quit,
     Trust,
     ResolveApproval(usize),
+    ResolveQuestion(String),
     Send(String, Vec<PasteSpan>),
     SendPlanNote(String, Vec<PasteSpan>),
     ExecutePlanWithNote(String),
@@ -479,7 +480,13 @@ fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
             handle_key(app, key)
         }
         Event::Paste(value) => {
-            if let Some(editor) = &mut app.inline_editor {
+            if let Some(question) = &mut app.question
+                && question.custom_active
+            {
+                question
+                    .custom_input
+                    .insert_text(&value.replace(['\r', '\n'], " "));
+            } else if let Some(editor) = &mut app.inline_editor {
                 if editor.kind == InlineEditorKind::PlanExecutionNote {
                     editor.input.insert_text(&value.replace(['\r', '\n'], " "));
                 } else {
@@ -520,6 +527,9 @@ fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
 fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     if app.modal.is_some() {
         return handle_modal_key(app, key);
+    }
+    if app.question.is_some() {
+        return handle_question_key(app, key);
     }
     if app.inline_editor.is_some() {
         return handle_inline_editor_key(app, key);
@@ -702,6 +712,115 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             app.handle_composer_key(key);
             None
         }
+    }
+}
+
+fn handle_question_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+    if key.code == KeyCode::BackTab
+        || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
+    {
+        return Some(Effect::Menu(MenuAction::SetMode(
+            next_mode(&app.session.interaction_mode).to_owned(),
+        )));
+    }
+    let question = app.question.as_mut()?;
+    if key.code == KeyCode::Esc {
+        app.notice = Some("Interrupting current work…".to_owned());
+        return Some(Effect::Cancel);
+    }
+    if question.custom_active {
+        match key.code {
+            KeyCode::Enter => {
+                let answer = question.custom_input.text();
+                if answer.trim().is_empty() {
+                    app.notice = Some("Type an answer first".to_owned());
+                    return None;
+                }
+                return Some(Effect::ResolveQuestion(answer));
+            }
+            KeyCode::Backspace => question.custom_input.backspace(),
+            KeyCode::Delete => question.custom_input.delete(),
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                question.custom_input.move_word_left();
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                question.custom_input.move_word_right();
+            }
+            KeyCode::Left => question.custom_input.move_left(),
+            KeyCode::Right => question.custom_input.move_right(),
+            KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                question.custom_input.move_buffer_home();
+            }
+            KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                question.custom_input.move_buffer_end();
+            }
+            KeyCode::Home | KeyCode::Char('a')
+                if key.code == KeyCode::Home || key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                question.custom_input.move_home();
+            }
+            KeyCode::End | KeyCode::Char('e')
+                if key.code == KeyCode::End || key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                question.custom_input.move_end();
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                question.custom_input.delete_to_line_start();
+            }
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                question.custom_input.delete_to_line_end();
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                question.custom_input.delete_previous_word();
+            }
+            KeyCode::Char(value)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                question.custom_input.insert_text(&value.to_string());
+            }
+            _ => {}
+        }
+        return None;
+    }
+    let choices = question.choice_count();
+    match key.code {
+        KeyCode::Up | KeyCode::Left => {
+            question.selected = if question.selected == 0 {
+                choices - 1
+            } else {
+                question.selected - 1
+            };
+            None
+        }
+        KeyCode::Down | KeyCode::Right => {
+            question.selected = (question.selected + 1) % choices;
+            None
+        }
+        KeyCode::Char('n' | 'N') => {
+            question.selected = question.custom_index();
+            question.custom_active = true;
+            None
+        }
+        KeyCode::Char(value @ '1'..='3') => {
+            let index = usize::from(value as u8 - b'1');
+            question
+                .options
+                .get(index)
+                .cloned()
+                .map(Effect::ResolveQuestion)
+        }
+        KeyCode::Enter if question.selected == question.custom_index() => {
+            question.custom_active = true;
+            None
+        }
+        KeyCode::Enter => question
+            .options
+            .get(question.selected)
+            .cloned()
+            .map(Effect::ResolveQuestion),
+        _ => None,
     }
 }
 
@@ -1277,6 +1396,21 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                     app.clear_transcript_selection();
                     Some(Effect::ResolveApproval(index))
                 }
+                Some(HitAction::Question(index)) => {
+                    app.clear_transcript_selection();
+                    let question = app.question.as_mut()?;
+                    if index == question.custom_index() {
+                        question.selected = index;
+                        question.custom_active = true;
+                        None
+                    } else {
+                        question
+                            .options
+                            .get(index)
+                            .cloned()
+                            .map(Effect::ResolveQuestion)
+                    }
+                }
                 Some(HitAction::QueuedMessage(queue_id)) => {
                     app.clear_transcript_selection();
                     Some(Effect::TakeQueued(queue_id))
@@ -1664,6 +1798,21 @@ async fn apply_effect(
                 "Permission {} ({})",
                 resolved.status, resolved.approval_scope
             ));
+        }
+        Effect::ResolveQuestion(answer) => {
+            let Some(question) = app.question.as_ref() else {
+                return Ok(None);
+            };
+            let resolved = client
+                .resolve_question(&question.question_id, &answer)
+                .await?;
+            debug_assert_eq!(resolved.question_id, question.question_id);
+            debug_assert_eq!(resolved.answer, answer.trim());
+            app.notice = Some(if resolved.custom {
+                "Custom answer sent".to_owned()
+            } else {
+                "Answer sent".to_owned()
+            });
         }
         Effect::Send(content, pastes) => {
             let accepted = client
@@ -2827,8 +2976,8 @@ mod tests {
     };
     use crate::tui::app::{
         AgentEditor, App, HitAction, HitRegion, InlineEditor, InlineEditorKind, MemoryBrowser,
-        MenuAction, MenuOption, Modal, ScarBrowser, ScarEditField, ScrollDrag, ScrollTarget, Sheet,
-        SheetKind, ThemeKind, TranscriptItem, TranscriptViewport,
+        MenuAction, MenuOption, Modal, QuestionTray, ScarBrowser, ScarEditField, ScrollDrag,
+        ScrollTarget, Sheet, SheetKind, ThemeKind, TranscriptItem, TranscriptViewport,
     };
 
     #[test]
@@ -3168,6 +3317,38 @@ mod tests {
         assert_eq!(next_mode("manual"), "auto");
         assert_eq!(next_mode("auto"), "plan");
         assert_eq!(next_mode("plan"), "manual");
+    }
+
+    #[test]
+    fn question_choices_wrap_and_custom_answer_uses_the_inline_field() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-question".to_owned());
+        app.question = Some(QuestionTray {
+            question_id: "question-1".to_owned(),
+            run_id: "run-question".to_owned(),
+            question: "Which direction?".to_owned(),
+            options: vec!["Subdued".to_owned(), "Bright".to_owned()],
+            selected: 0,
+            custom_active: false,
+            custom_input: Default::default(),
+        });
+        handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.question.as_ref().unwrap().selected, 2);
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        );
+        assert!(app.question.as_ref().unwrap().custom_active);
+        for value in "Something calmer".chars() {
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(value), KeyModifiers::NONE),
+            );
+        }
+        assert!(matches!(
+            handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Effect::ResolveQuestion(answer)) if answer == "Something calmer"
+        ));
     }
 
     #[test]

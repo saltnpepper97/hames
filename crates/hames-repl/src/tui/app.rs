@@ -497,6 +497,10 @@ pub enum TranscriptItem {
         live: bool,
         durable: bool,
     },
+    Question {
+        question: String,
+        answer: String,
+    },
     Plan {
         plan_id: String,
         revision: usize,
@@ -563,6 +567,27 @@ pub struct ApprovalModal {
     pub allow_session: bool,
     pub selected: usize,
     pub detail_scroll: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct QuestionTray {
+    pub question_id: String,
+    pub run_id: String,
+    pub question: String,
+    pub options: Vec<String>,
+    pub selected: usize,
+    pub custom_active: bool,
+    pub custom_input: Composer,
+}
+
+impl QuestionTray {
+    pub fn choice_count(&self) -> usize {
+        self.options.len() + 1
+    }
+
+    pub fn custom_index(&self) -> usize {
+        self.options.len()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1005,6 +1030,7 @@ pub enum HitAction {
     SelectMemory(usize),
     SelectScar(usize),
     Approval(usize),
+    Question(usize),
     QueuedMessage(String),
     TrustWorkspace,
     Quit,
@@ -1113,6 +1139,7 @@ pub struct App {
     pub skill_commands: Vec<SkillSummary>,
     pub trusted: bool,
     pub modal: Option<Modal>,
+    pub question: Option<QuestionTray>,
     pub sheet: Option<Sheet>,
     pub inline_editor: Option<InlineEditor>,
     pub notice: Option<String>,
@@ -1194,6 +1221,7 @@ impl App {
             skill_commands: Vec::new(),
             trusted,
             modal: (!trusted).then_some(Modal::Trust),
+            question: None,
             sheet: None,
             inline_editor: None,
             notice: None,
@@ -2473,6 +2501,24 @@ impl App {
                     self.modal = None;
                 }
             }
+            "question.requested" => {
+                self.question = Some(question_from(&run_id, &event.payload));
+                self.sheet = None;
+                self.inline_editor = None;
+            }
+            "question.answered" => {
+                let question_id = string(&event.payload, "question_id");
+                if let Some(question) = self
+                    .question
+                    .take()
+                    .filter(|question| question.question_id == question_id)
+                {
+                    self.transcript.push(TranscriptItem::Question {
+                        question: question.question,
+                        answer: string(&event.payload, "answer"),
+                    });
+                }
+            }
             "context.compiled" => {
                 self.context_usage = Some(ContextUsageProjection {
                     provider: string(&event.payload, "provider"),
@@ -2529,12 +2575,26 @@ impl App {
                     ));
                 }
                 if event.event_type == "run.failed" {
+                    if self
+                        .question
+                        .as_ref()
+                        .is_some_and(|question| question.run_id == run_id)
+                    {
+                        self.question = None;
+                    }
                     self.active_run = None;
                     self.run_started_at = None;
                 }
             }
             "run.completed" | "run.cancelled" => {
                 let cancelled = event.event_type == "run.cancelled";
+                if self
+                    .question
+                    .as_ref()
+                    .is_some_and(|question| question.run_id == run_id)
+                {
+                    self.question = None;
+                }
                 if self.active_run.as_deref() == Some(run_id.as_str()) {
                     if let Some(goal) = &mut self.goal
                         && goal.current_run_id.as_deref() == Some(run_id.as_str())
@@ -3256,6 +3316,26 @@ fn approval_from(payload: &Value) -> ApprovalModal {
             .unwrap_or(false),
         selected: 0,
         detail_scroll: 0,
+    }
+}
+
+fn question_from(run_id: &str, payload: &Value) -> QuestionTray {
+    QuestionTray {
+        question_id: string(payload, "question_id"),
+        run_id: run_id.to_owned(),
+        question: string(payload, "question"),
+        options: payload
+            .get("options")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .take(3)
+            .map(str::to_owned)
+            .collect(),
+        selected: 0,
+        custom_active: false,
+        custom_input: Composer::default(),
     }
 }
 
@@ -4642,6 +4722,46 @@ mod tests {
             1
         );
         assert!(app.active_run.is_none());
+    }
+
+    #[test]
+    fn durable_question_replay_restores_the_tray_then_records_the_answer() {
+        let run_id = "run-question";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.begin_foreground_run(Some(run_id.to_owned()));
+        app.ingest_durable(
+            event(
+                1,
+                "question.requested",
+                run_id,
+                json!({
+                    "question_id": "question-1",
+                    "tool_call_id": "call-1",
+                    "question": "Which direction?",
+                    "options": ["Subdued", "Bright"]
+                }),
+            ),
+            false,
+        );
+        let question = app.question.as_ref().expect("question tray");
+        assert_eq!(question.options, ["Subdued", "Bright"]);
+        assert_eq!(question.choice_count(), 3);
+
+        app.ingest_durable(
+            event(
+                2,
+                "question.answered",
+                run_id,
+                json!({"question_id": "question-1", "answer": "Subdued", "custom": false}),
+            ),
+            false,
+        );
+        assert!(app.question.is_none());
+        assert!(matches!(
+            app.transcript.last(),
+            Some(TranscriptItem::Question { question, answer })
+                if question == "Which direction?" && answer == "Subdued"
+        ));
     }
 
     fn session() -> Session {

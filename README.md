@@ -19,6 +19,9 @@ also has named local-provider profiles, explicit health probes, strict normalize
 streams, resumable SSE, and model-specific reasoning levels. Its Python runtime
 now executes bounded `read_file`, `list_dir`, `write_file`, `edit_file`, and Bash
 tool calls inside an explicitly trusted project or disposable scratch workspace.
+Agents can pause their current tool turn with `ask_user`; the clients present up
+to three suggested answers plus an always-available one-line custom response,
+then return the answer to that same run.
 Risky operations require exact one-shot approval in the Rust REPL.
 Execution mode is session-owned and gateway-enforced: `/mode manual` confirms
 state changes with allow-once/allow-for-session/deny choices, `/mode auto`
@@ -127,6 +130,8 @@ the client without sending anything does not create resumable clutter.
 The TUI keeps the transcript, activity continuity, and an expanding composer on
 one screen. The composer grows through eight visible content rows and then
 scrolls. Enter sends; Alt+Enter, Shift+Enter, or Ctrl+J inserts a new line.
+Agent questions appear in a lower tray above the composer: use Up/Down and Enter
+or click an answer, and press `N` to open the one-line custom response field.
 An empty new session opens with a compact, proportionally sampled ASCII mark
 derived from `crates/hames-repl/assets/welcome-ascii.txt`. It stays subdued for
 about twelve seconds between slow neutral-gray sheen passes and disappears

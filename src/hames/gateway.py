@@ -217,6 +217,16 @@ class ApprovalResolution(ApiModel):
     approval_scope: str
 
 
+class QuestionAnswerRequest(ApiModel):
+    answer: str = Field(min_length=1, max_length=4000)
+
+
+class QuestionResolution(ApiModel):
+    question_id: str
+    answer: str
+    custom: bool
+
+
 class ForkSessionRequest(ApiModel):
     at: str | None = None
     title: str | None = None
@@ -2076,6 +2086,24 @@ def create_app(state: GatewayState) -> FastAPI:
             status=approval.status,
             approval_scope=approval.approval_scope,
         )
+
+    @app.post(
+        "/v1/questions/{question_id}",
+        dependencies=auth,
+        response_model=QuestionResolution,
+    )
+    async def resolve_question(
+        question_id: str, request: QuestionAnswerRequest
+    ) -> QuestionResolution:
+        try:
+            answer, custom = await state.runs.resolve_question(
+                question_id, answer=request.answer
+            )
+        except ValueError as exc:
+            raise ApiError(422, "question_answer_invalid", str(exc)) from exc
+        except RuntimeError as exc:
+            raise ApiError(409, "question_not_pending", str(exc)) from exc
+        return QuestionResolution(question_id=question_id, answer=answer, custom=custom)
 
     @app.get("/v1/events", dependencies=auth)
     async def stream_events(

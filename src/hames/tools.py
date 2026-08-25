@@ -207,6 +207,38 @@ class SessionTitleArguments(ToolArguments):
     )
 
 
+class AskUserArguments(ToolArguments):
+    question: str = Field(
+        min_length=1,
+        max_length=1000,
+        description="One clear question that requires the user's input",
+    )
+    options: list[str] = Field(
+        default_factory=list,
+        max_length=3,
+        description=(
+            "Up to three concise, mutually exclusive suggested answers. "
+            "Hames always lets the user write a different answer."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def valid_options(self) -> AskUserArguments:
+        question = self.question.strip()
+        if not question:
+            raise ValueError("question must not be empty")
+        normalized = [option.strip() for option in self.options]
+        if any(not option for option in normalized):
+            raise ValueError("question options must not be empty")
+        if any(len(option) > 160 for option in normalized):
+            raise ValueError("question options must not exceed 160 characters")
+        if len({option.casefold() for option in normalized}) != len(normalized):
+            raise ValueError("question options must be unique")
+        self.question = question
+        self.options = normalized
+        return self
+
+
 class GoalReportArguments(ToolArguments):
     status: Literal["progress", "achieved", "blocked"]
     summary: str = Field(min_length=1, max_length=4000)
@@ -336,6 +368,21 @@ class ToolBase:
 
     async def execute(self, context: ToolContext, arguments: ToolArguments) -> ToolResult:
         raise NotImplementedError
+
+
+class AskUserTool(ToolBase):
+    name = "ask_user"
+    description = (
+        "Pause this run to ask the user one necessary question. Supply no more than three "
+        "concise suggested answers; Hames always provides a custom-answer choice. Use this only "
+        "when user input materially changes the work and the answer cannot be safely inferred."
+    )
+    side_effect_class = "interaction"
+    arguments_type: ClassVar[type[ToolArguments]] = AskUserArguments
+
+    async def execute(self, context: ToolContext, arguments: ToolArguments) -> ToolResult:
+        del context, arguments
+        return ToolResult(status="failed", summary="ask_user requires the interactive runtime")
 
 
 class ReadFileTool(ToolBase):
@@ -804,6 +851,7 @@ class WebFetchTool(_WebMcpTool):
 class ToolRegistry:
     def __init__(self, *, search: SearchToolExecutor | None = None) -> None:
         values: list[ToolBase] = [
+            AskUserTool(),
             ReadFileTool(),
             ListDirTool(),
             WriteFileTool(),

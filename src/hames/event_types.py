@@ -368,6 +368,19 @@ class ApprovalResolvedPayload(EventPayload):
     approval_scope: str = "once"
 
 
+class QuestionRequestedPayload(EventPayload):
+    question_id: str
+    tool_call_id: str
+    question: str
+    options: list[str] = Field(default_factory=list, max_length=3)
+
+
+class QuestionAnsweredPayload(EventPayload):
+    question_id: str
+    answer: str = Field(min_length=1, max_length=4000)
+    custom: bool = False
+
+
 class TrustPayload(EventPayload):
     path: str
 
@@ -828,6 +841,8 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "policy.decided": PolicyDecidedPayload,
     "approval.requested": ApprovalRequestedPayload,
     "approval.resolved": ApprovalResolvedPayload,
+    "question.requested": QuestionRequestedPayload,
+    "question.answered": QuestionAnsweredPayload,
     "trust.granted": TrustPayload,
     "trust.revoked": TrustPayload,
     "runtime.error": FailurePayload,

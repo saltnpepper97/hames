@@ -95,7 +95,10 @@ def test_read_only_and_tool_lists_only_restrict_authority(tmp_path: Path) -> Non
         encoding="utf-8",
     )
     capsule = load_agent(path)
-    assert permitted_tools(capsule, {"read_file", "list_dir", "write_file", "shell"}) == {
+    assert permitted_tools(
+        capsule, {"ask_user", "read_file", "list_dir", "write_file", "shell"}
+    ) == {
+        "ask_user",
         "read_file",
         "list_dir",
     }

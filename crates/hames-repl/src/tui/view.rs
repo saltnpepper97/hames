@@ -124,12 +124,24 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     } else {
         0
     };
+    let question_height = app.question.as_ref().map_or(0, |question| {
+        let prompt_width = usize::from(area.width.saturating_sub(5)).max(1);
+        let required =
+            u16::try_from(question_required_height(question, prompt_width)).unwrap_or(u16::MAX);
+        let available = area
+            .height
+            .saturating_sub(header_height + composer_height + notice_height + 2);
+        required.min(available.max(4))
+    });
     let inline_height = if app.inline_editor.is_some() && !plan_note_in_sheet {
         5
     } else {
         0
     };
-    let tray_height = sheet_height.max(approval_height).max(inline_height);
+    let tray_height = sheet_height
+        .max(approval_height)
+        .max(question_height)
+        .max(inline_height);
     let bottom = composer_height + notice_height + queue_height + tray_height + 1;
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -152,7 +164,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             Constraint::Length(1),
         ])
         .split(rows[2]);
-    if approval_height > 0 {
+    if question_height > 0 {
+        render_question_tray(frame, app, footer[0]);
+    } else if approval_height > 0 {
         render_approval_tray(frame, app, footer[0]);
     } else if inline_height > 0 {
         render_inline_editor(frame, app, footer[0]);
@@ -292,6 +306,9 @@ fn render_queue(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 pub(super) fn current_activity(app: &App) -> &'static str {
     if app.active_run.is_none() {
         return "Ready";
+    }
+    if app.question.is_some() {
+        return "Waiting for you";
     }
     if app.active_run_is_goal_step() {
         return "Goal";
@@ -609,6 +626,31 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     Style::default().fg(Color::White),
                 );
             }
+            TranscriptItem::Question { question, answer } => {
+                lines.push(RenderLine {
+                    line: Line::from(Span::styled(
+                        format!("{} asked", app.agent_name),
+                        Style::default().fg(INPUT).bold(),
+                    )),
+                    thought: None,
+                    sheen: None,
+                    hover_group: None,
+                });
+                push_wrapped(
+                    &mut lines,
+                    question,
+                    width,
+                    "  ",
+                    Style::default().fg(Color::White),
+                );
+                push_wrapped(
+                    &mut lines,
+                    answer,
+                    width,
+                    "  Answer  ",
+                    Style::default().fg(CYAN),
+                );
+            }
             TranscriptItem::Plan {
                 revision,
                 title,
@@ -677,7 +719,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
             } => {
                 let visible_rows = rows
                     .iter()
-                    .filter(|row| !row.name.is_empty())
+                    .filter(|row| !row.name.is_empty() && row.name != "ask_user")
                     .collect::<Vec<_>>();
                 if visible_rows.is_empty() {
                     continue;
@@ -1408,7 +1450,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             },
         });
     }
-    if app.modal.is_none() && app.inline_editor.is_none() {
+    if app.modal.is_none() && app.inline_editor.is_none() && app.question.is_none() {
         let adjusted_y = cursor_y.saturating_sub(start);
         if adjusted_y < available {
             frame.set_cursor_position((
@@ -1496,7 +1538,18 @@ fn scrollbar_position(top: usize, content_len: usize, viewport_len: usize) -> us
 }
 
 fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta: Duration) {
-    let left = if app.inline_editor.is_some() {
+    let left = if app.question.is_some() {
+        Line::from(vec![
+            Span::styled("  ↑↓", Style::default().fg(INPUT).bold()),
+            Span::styled(" choose · ", Style::default().fg(MUTED)),
+            Span::styled("Enter", Style::default().fg(INPUT).bold()),
+            Span::styled(" answer · ", Style::default().fg(MUTED)),
+            Span::styled("N", Style::default().fg(INPUT).bold()),
+            Span::styled(" write something else · ", Style::default().fg(MUTED)),
+            Span::styled("Esc", Style::default().fg(INPUT).bold()),
+            Span::styled(" interrupt", Style::default().fg(MUTED)),
+        ])
+    } else if app.inline_editor.is_some() {
         Line::from(vec![
             Span::styled("  Enter", Style::default().fg(INPUT).bold()),
             Span::styled(" approve and execute · ", Style::default().fg(MUTED)),
@@ -1547,6 +1600,7 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
     if app.sheet.is_none()
         && app.active_run.is_some()
         && !matches!(app.modal, Some(Modal::Approval(_)))
+        && app.question.is_none()
     {
         let effect = app
             .activity_bar_effect
@@ -1992,6 +2046,166 @@ fn render_approval_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             &mut state,
         );
     }
+}
+
+fn render_question_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let Some(question) = app.question.clone() else {
+        return;
+    };
+    let inner_width = usize::from(area.width.saturating_sub(4)).max(1);
+    let mut lines = complete_wrapped_lines(&question.question, inner_width)
+        .into_iter()
+        .map(|line| {
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled(line, Style::default().fg(Color::White)),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let mut choices = question.options.clone();
+    choices.push("Write something else".to_owned());
+    let mut choice_rows = Vec::new();
+    for (index, choice) in choices.iter().enumerate() {
+        let selected = question.selected == index;
+        let label = if index == question.custom_index() {
+            format!("{choice}  N")
+        } else {
+            choice.clone()
+        };
+        let parts = complete_wrapped_lines(&label, inner_width.saturating_sub(4).max(1));
+        let row = lines.len();
+        let height = parts.len();
+        for (part_index, part) in parts.into_iter().enumerate() {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    if part_index == 0 {
+                        if selected { "  ● " } else { "  ○ " }
+                    } else {
+                        "    "
+                    },
+                    Style::default().fg(if selected { CYAN } else { MUTED }),
+                ),
+                Span::styled(
+                    part,
+                    if selected {
+                        Style::default().fg(INPUT).bg(PANEL_BRIGHT)
+                    } else {
+                        Style::default().fg(MUTED_LIGHT)
+                    },
+                ),
+            ]));
+        }
+        choice_rows.push((index, row, height));
+    }
+    let mut cursor = None;
+    if question.custom_active {
+        let input_width = inner_width.saturating_sub(2).max(1);
+        let (visible, cursor_x) = one_line_input(&question.custom_input, input_width);
+        let placeholder = visible.is_empty();
+        lines.push(Line::from(vec![
+            Span::styled("  ❯ ", Style::default().fg(INPUT).bold()),
+            Span::styled(
+                if placeholder {
+                    "Type your answer…".to_owned()
+                } else {
+                    visible
+                },
+                Style::default().fg(if placeholder { MUTED } else { INPUT_LIGHT }),
+            ),
+        ]));
+        cursor = Some((
+            area.x
+                .saturating_add(4)
+                .saturating_add(u16::try_from(cursor_x).unwrap_or(0)),
+            lines.len().saturating_sub(1),
+        ));
+    }
+    let available = usize::from(area.height.saturating_sub(2));
+    let start = lines.len().saturating_sub(available);
+    let visible = lines.iter().skip(start).cloned().collect::<Vec<_>>();
+    for (index, row, height) in choice_rows {
+        let visible_start = row.max(start);
+        let visible_end = row.saturating_add(height).min(start + available);
+        if visible_start >= visible_end {
+            continue;
+        }
+        app.hits.push(HitRegion {
+            x: area.x.saturating_add(1),
+            y: area
+                .y
+                .saturating_add(1)
+                .saturating_add(u16::try_from(visible_start - start).unwrap_or(0)),
+            width: area.width.saturating_sub(2),
+            height: u16::try_from(visible_end - visible_start).unwrap_or(1),
+            action: HitAction::Question(index),
+        });
+    }
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled("─ ", Style::default().fg(RULE)),
+            Span::styled("Question", Style::default().fg(INPUT).bold()),
+            Span::styled(" ─", Style::default().fg(RULE)),
+        ]))
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .border_style(Style::default().fg(RULE));
+    frame.render_widget(
+        Paragraph::new(visible)
+            .block(block)
+            .style(Style::default().bg(Color::Reset)),
+        area,
+    );
+    if question.custom_active
+        && let Some((x, row)) = cursor
+        && row >= start
+        && row < start + available
+    {
+        let y = area
+            .y
+            .saturating_add(1)
+            .saturating_add(u16::try_from(row - start).unwrap_or(0));
+        frame.set_cursor_position((x.min(area.right().saturating_sub(2)), y));
+    }
+}
+
+fn question_required_height(question: &crate::tui::app::QuestionTray, width: usize) -> usize {
+    let prompt = complete_wrapped_lines(&question.question, width).len();
+    let option_width = width.saturating_sub(4).max(1);
+    let options = question
+        .options
+        .iter()
+        .map(|option| complete_wrapped_lines(option, option_width).len())
+        .sum::<usize>();
+    let custom = complete_wrapped_lines("Write something else  N", option_width).len();
+    prompt + options + custom + usize::from(question.custom_active) + 2
+}
+
+fn one_line_input(input: &Composer, width: usize) -> (String, usize) {
+    let units = input
+        .units
+        .iter()
+        .map(|unit| match unit {
+            ComposerUnit::Text(value) | ComposerUnit::Paste(value) => {
+                value.replace(['\r', '\n'], " ")
+            }
+        })
+        .collect::<Vec<_>>();
+    let cursor_index = input.cursor.min(units.len());
+    let mut start = 0;
+    while start < cursor_index
+        && UnicodeWidthStr::width(units[start..cursor_index].concat().as_str()) >= width
+    {
+        start += 1;
+    }
+    let mut visible = String::new();
+    for unit in units.iter().skip(start) {
+        if UnicodeWidthStr::width(visible.as_str()) + UnicodeWidthStr::width(unit.as_str()) > width
+        {
+            break;
+        }
+        visible.push_str(unit);
+    }
+    let cursor = UnicodeWidthStr::width(units[start..cursor_index].concat().as_str());
+    (visible, cursor.min(width.saturating_sub(1)))
 }
 
 fn render_empty_goal_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -4221,9 +4435,10 @@ mod tests {
         UsageProjection,
     };
     use crate::tui::app::{
-        ActivityPhase, ActivityRow, AgentEditor, AgentEditorPage, App, ApprovalModal, DreamPhase,
-        HitAction, InlineEditor, InlineEditorKind, MemoryBrowser, MenuAction, MenuOption, Modal,
-        ScarBrowser, ScarEditor, Sheet, SheetKind, TranscriptItem, TranscriptPoint, UsageModal,
+        ActivityPhase, ActivityRow, AgentEditor, AgentEditorPage, App, ApprovalModal, Composer,
+        DreamPhase, HitAction, InlineEditor, InlineEditorKind, MemoryBrowser, MenuAction,
+        MenuOption, Modal, QuestionTray, ScarBrowser, ScarEditor, Sheet, SheetKind, TranscriptItem,
+        TranscriptPoint, UsageModal,
     };
 
     fn usage_projection() -> UsageProjection {
@@ -5621,6 +5836,40 @@ mod tests {
         assert!(app.hits.iter().any(|region| {
             region.x == 2 && region.y == 4 && matches!(region.action, HitAction::Approval(0))
         }));
+    }
+
+    #[test]
+    fn agent_question_uses_the_lower_tray_with_a_clickable_custom_answer() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-question".to_owned());
+        app.question = Some(QuestionTray {
+            question_id: "question-1".to_owned(),
+            run_id: "run-question".to_owned(),
+            question: "Which visual direction should Hames use?".to_owned(),
+            options: vec!["Subdued".to_owned(), "High contrast".to_owned()],
+            selected: 2,
+            custom_active: true,
+            custom_input: Composer::default(),
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Question"));
+        assert!(rendered.contains("Which visual direction should Hames use?"));
+        assert!(rendered.contains("Write something else"));
+        assert!(rendered.contains("Type your answer"));
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| matches!(hit.action, HitAction::Question(2)))
+        );
     }
 
     #[test]

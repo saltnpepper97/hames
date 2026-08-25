@@ -1808,6 +1808,11 @@ async fn stream_message(
                         {
                             output.detach_activity();
                             handle_approval(client, editor, event).await?;
+                        } else if event.run_id.as_deref() == Some(run_id.as_str())
+                            && event.event_type == "question.requested"
+                        {
+                            output.detach_activity();
+                            handle_question(client, editor, event).await?;
                         }
                     }
                     if finished {
@@ -1824,6 +1829,63 @@ async fn stream_message(
             }
         }
     }
+}
+
+async fn handle_question(
+    client: &GatewayClient,
+    editor: &mut DefaultEditor,
+    event: &Event,
+) -> Result<()> {
+    let question_id = event.payload["question_id"]
+        .as_str()
+        .context("question event omitted its ID")?;
+    let question = event.payload["question"]
+        .as_str()
+        .context("question event omitted its prompt")?;
+    let options = event.payload["options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .take(3)
+        .collect::<Vec<_>>();
+    println!();
+    println!("{}", style::section("Question"));
+    println!("  {question}");
+    for (index, option) in options.iter().enumerate() {
+        println!("  {}. {option}", index + 1);
+    }
+    println!("  N. Write something else");
+    let answer = loop {
+        let selected = editor.readline("Choose an answer › ")?;
+        let selected = selected.trim();
+        if selected.eq_ignore_ascii_case("n") || options.is_empty() {
+            let custom = editor.readline("Your answer › ")?;
+            if !custom.trim().is_empty() {
+                break custom;
+            }
+            println!("  Please type an answer.");
+            continue;
+        }
+        if let Ok(index) = selected.parse::<usize>()
+            && let Some(option) = index.checked_sub(1).and_then(|index| options.get(index))
+        {
+            break (*option).to_owned();
+        }
+        println!("  Choose 1-{} or N.", options.len());
+    };
+    let resolved = client.resolve_question(question_id, answer.trim()).await?;
+    debug_assert_eq!(resolved.question_id, question_id);
+    debug_assert_eq!(resolved.answer, answer.trim());
+    println!(
+        "  {}",
+        style::success(if resolved.custom {
+            "Custom answer sent"
+        } else {
+            "Answer sent"
+        })
+    );
+    Ok(())
 }
 
 async fn handle_approval(

@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 24;
+pub const PROTOCOL_VERSION: u32 = 25;
 pub const HEAL_SCARS_PROMPT: &str = "Heal behavioral scars now.";
 
 #[derive(Clone)]
@@ -319,6 +319,13 @@ pub struct TrustStatus {
 pub struct ApprovalResolution {
     pub status: String,
     pub approval_scope: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct QuestionResolution {
+    pub question_id: String,
+    pub answer: String,
+    pub custom: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1677,6 +1684,20 @@ impl GatewayClient {
                     "request_hash": request_hash,
                     "decision": decision,
                 }))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn resolve_question(
+        &self,
+        question_id: &str,
+        answer: &str,
+    ) -> Result<QuestionResolution> {
+        decode(
+            self.post(&format!("/v1/questions/{question_id}"))
+                .json(&serde_json::json!({"answer": answer}))
                 .send()
                 .await?,
         )

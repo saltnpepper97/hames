@@ -64,6 +64,7 @@ from hames.search_runtime import SearchMcpManager
 from hames.skills import SkillRegistry, SkillSummary, SkillVersion, render_skill_invocation
 from hames.tasks import SessionTaskList, TaskStore
 from hames.tools import (
+    AskUserArguments,
     GoalReportArguments,
     MemoryAddArguments,
     MemoryEditArguments,
@@ -326,6 +327,9 @@ class RunManager:
         self._session_runs: dict[str, str] = {}
         self._post_terminal_runs: dict[str, set[str]] = {}
         self._approval_waiters: dict[str, asyncio.Future[str]] = {}
+        self._question_waiters: dict[str, asyncio.Future[str]] = {}
+        self._question_runs: dict[str, tuple[str, str, str, tuple[str, ...]]] = {}
+        self._question_answering: set[str] = set()
         self._children_by_parent: dict[str, set[str]] = {}
         self._child_count_by_parent: dict[str, int] = {}
         self._scratch_base = Path("/tmp/hames/runs")
@@ -1316,6 +1320,40 @@ class RunManager:
         waiter.set_result(resolved.status)
         return resolved
 
+    async def resolve_question(self, question_id: str, *, answer: str) -> tuple[str, bool]:
+        waiter = self._question_waiters.get(question_id)
+        pending = self._question_runs.get(question_id)
+        if (
+            waiter is None
+            or waiter.done()
+            or pending is None
+            or question_id in self._question_answering
+        ):
+            raise RuntimeError("question is not attached to an active run")
+        normalized = " ".join(answer.splitlines()).strip()
+        if not normalized:
+            raise ValueError("question answer must not be empty")
+        if len(normalized) > 4000:
+            raise ValueError("question answer must not exceed 4000 characters")
+        session_id, run_id, agent_id, options = pending
+        custom = normalized.casefold() not in {option.casefold() for option in options}
+        self._question_answering.add(question_id)
+        try:
+            await self._append(
+                session_id=session_id,
+                run_id=run_id,
+                agent_id=agent_id,
+                event_type="question.answered",
+                payload={"question_id": question_id, "answer": normalized, "custom": custom},
+                correlation_id=run_id,
+            )
+            if waiter.done():
+                raise RuntimeError("question's run ended before the answer was accepted")
+            waiter.set_result(normalized)
+            return normalized, custom
+        finally:
+            self._question_answering.discard(question_id)
+
     async def close(self) -> None:
         self._closing = True
         dream_tasks = tuple(self._dream_tasks.values())
@@ -1350,6 +1388,7 @@ class RunManager:
         except asyncio.CancelledError:
             await self._cancel_children(run_id)
             await self._cancel_approvals(run_id)
+            self._cancel_questions(run_id)
             await self._append(
                 session_id=session_id,
                 run_id=run_id,
@@ -2891,6 +2930,23 @@ class RunManager:
                 started.id,
             )
             return await self._persist_tool_result(session, run_id, invocation, result, started.id)
+        if invocation.name == "ask_user":
+            started = await self._append(
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                event_type="tool.started",
+                payload={"tool_call_id": invocation.tool_call_id, "name": invocation.name},
+                causation_id=policy_decided.id,
+                correlation_id=run_id,
+            )
+            if not isinstance(arguments, AskUserArguments):
+                result = ToolResult(status="failed", summary="invalid ask_user arguments")
+            else:
+                result = await self._request_question(
+                    run_id, session, invocation, arguments, started.id
+                )
+            return await self._persist_tool_result(session, run_id, invocation, result, started.id)
         if invocation.name in {"skill_load", "skill_author", "skill_run"}:
             started = await self._append(
                 session_id=session.id,
@@ -3831,6 +3887,59 @@ class RunManager:
             return await waiter == "approved"
         finally:
             self._approval_waiters.pop(approval.id, None)
+
+    async def _request_question(
+        self,
+        run_id: str,
+        session: Session,
+        invocation: ToolInvocation,
+        arguments: AskUserArguments,
+        causation_id: str,
+    ) -> ToolResult:
+        question_id = new_id()
+        waiter: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        self._question_waiters[question_id] = waiter
+        self._question_runs[question_id] = (
+            session.id,
+            run_id,
+            session.agent_id,
+            tuple(arguments.options),
+        )
+        await self._append(
+            session_id=session.id,
+            run_id=run_id,
+            agent_id=session.agent_id,
+            event_type="question.requested",
+            payload={
+                "question_id": question_id,
+                "tool_call_id": invocation.tool_call_id,
+                "question": arguments.question,
+                "options": arguments.options,
+            },
+            causation_id=causation_id,
+            correlation_id=run_id,
+        )
+        try:
+            answer = await waiter
+            return ToolResult(
+                status="completed",
+                summary=f"user answered: {answer}",
+                content=answer,
+                structured_data={"question_id": question_id, "answer": answer},
+            )
+        finally:
+            self._question_waiters.pop(question_id, None)
+            self._question_runs.pop(question_id, None)
+
+    def _cancel_questions(self, run_id: str) -> None:
+        for question_id, pending in tuple(self._question_runs.items()):
+            if pending[1] != run_id:
+                continue
+            waiter = self._question_waiters.get(question_id)
+            if waiter is not None and not waiter.done():
+                waiter.cancel()
+            self._question_waiters.pop(question_id, None)
+            self._question_runs.pop(question_id, None)
 
     async def _cancel_approvals(self, run_id: str) -> None:
         approvals = await asyncio.to_thread(self.controls.cancel_pending_for_run, run_id)

@@ -169,6 +169,46 @@ class PlanExecutionProvider:
         return None
 
 
+class QuestionProvider:
+    profile_id = "fake"
+    adapter = "fake"
+    base_url = ""
+
+    def __init__(self) -> None:
+        self.requests: list[ModelRequest] = []
+
+    async def list_models(self) -> list[ProviderModel]:
+        return [ProviderModel(id="fixture", provider="fake", status="available")]
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+        self.requests.append(request)
+        yield StreamEvent(kind=StreamEventKind.STARTED)
+        if len(self.requests) == 1:
+            yield StreamEvent(
+                kind=StreamEventKind.TOOL_CALL_DELTA,
+                tool_call=ToolCallDelta(
+                    index=0,
+                    provider_call_id="question-1",
+                    name="ask_user",
+                    arguments_delta=json.dumps(
+                        {
+                            "question": "Which visual direction should I use?",
+                            "options": ["Subdued", "High contrast", "Terminal native"],
+                        }
+                    ),
+                ),
+            )
+            yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls")
+            return
+        result = json.loads(request.messages[-1].content)
+        assert result["structured_data"]["answer"] == "Subdued"
+        yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="I will use the subdued direction.")
+        yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
+
+    async def aclose(self) -> None:
+        return None
+
+
 class StalledPlanExecutionProvider(PlanExecutionProvider):
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
         self.requests.append(request)
@@ -666,7 +706,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 23
+            assert health_body["protocol_version"] == 25
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -899,6 +939,67 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                 f"/v1/sessions/{session_id}/usage", headers=headers
             )
             assert invalidated_usage.json()["latest_context"] is None
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_question_pauses_and_resumes_the_same_run(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text("[memory]\nenabled = false\n", encoding="utf-8")
+    provider = QuestionProvider()
+    state = GatewayState.create(paths, providers={"fake": provider})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            accepted = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Ask me before choosing a visual direction."},
+            )
+            assert accepted.status_code == 202, accepted.text
+            run_id = str(response_object(accepted)["run_id"])
+            events = await _wait_for_event(client, headers, session_id, "question.requested")
+            requested = next(event for event in events if event["type"] == "question.requested")
+            assert requested["run_id"] == run_id
+            payload = JSON_OBJECT.validate_python(requested["payload"])
+            assert payload["options"] == ["Subdued", "High contrast", "Terminal native"]
+            assert not any(event["type"] == "run.completed" for event in events)
+
+            resolved = await client.post(
+                f"/v1/questions/{payload['question_id']}",
+                headers=headers,
+                json={"answer": "Subdued"},
+            )
+            assert resolved.status_code == 200, resolved.text
+            assert response_object(resolved) == {
+                "question_id": payload["question_id"],
+                "answer": "Subdued",
+                "custom": False,
+            }
+            events = await _wait_for_event(client, headers, session_id, "run.completed")
+            types = [event["type"] for event in events]
+            assert types.index("question.requested") < types.index("question.answered")
+            assert types.index("question.answered") < types.index("tool.completed")
+            assert types.index("tool.completed") < types.index("run.completed")
+            answer = next(
+                event for event in reversed(events) if event["type"] == "assistant.message"
+            )
+            assert answer["payload"]["content"] == "I will use the subdued direction."  # type: ignore[index]
+            assert len(provider.requests) == 2
     finally:
         await state.runs.close()
 
@@ -2944,6 +3045,7 @@ async def test_runtime_delegates_with_an_explicit_task_card(tmp_path: Path) -> N
             assert result["payload"]["name"] == "spawn_agent"  # type: ignore[index]
             assert len(fake.requests) == 3
             assert [tool.name for tool in fake.requests[1].tools] == [
+                "ask_user",
                 "read_file",
                 "list_dir",
                 "skill_load",
@@ -3025,6 +3127,7 @@ async def test_agent_selection_changes_only_future_turns(tmp_path: Path) -> None
                 )
             )
             assert [tool.name for tool in second_turn.tools] == [
+                "ask_user",
                 "read_file",
                 "list_dir",
                 "skill_load",

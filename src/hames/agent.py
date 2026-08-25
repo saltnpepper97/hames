@@ -18,6 +18,7 @@ AGENT_ID = re.compile(r"[a-z][a-z0-9-]{0,62}")
 _NON_SLUG = re.compile(r"[^a-z0-9]+")
 READ_ONLY_TOOLS = frozenset(
     {
+        "ask_user",
         "read_file",
         "list_dir",
         "skill_load",
@@ -369,12 +370,14 @@ def _validate_id(agent_id: str) -> None:
 def permitted_tools(capsule: AgentCapsule, available: set[str]) -> frozenset[str]:
     """Intersect a capsule's declared authority with the harness tool registry."""
 
+    interaction_tools = {"ask_user"}.intersection(available)
     permitted = set(available)
     if capsule.metadata.authority == "read_only":
         permitted.intersection_update(READ_ONLY_TOOLS)
     if capsule.metadata.tools.allow:
         permitted.intersection_update(capsule.metadata.tools.allow)
     permitted.difference_update(capsule.metadata.tools.deny)
+    permitted.update(interaction_tools.difference(capsule.metadata.tools.deny))
     return frozenset(permitted)
 
 

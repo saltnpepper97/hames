@@ -11,6 +11,7 @@ from hames.database import Database
 from hames.policy import PolicyDecisionKind, PolicyGate, approval_request_hash
 from hames.providers.base import JsonValue
 from hames.tools import (
+    AskUserArguments,
     EditFileArguments,
     EditFileTool,
     MemoryEditArguments,
@@ -104,6 +105,27 @@ def test_write_file_ignores_unknown_model_fields() -> None:
     assert isinstance(arguments, WriteFileArguments)
     assert arguments.path == "src/game.py"
     assert arguments.create_parents is True
+
+
+def test_ask_user_schema_limits_and_normalizes_choices() -> None:
+    arguments = ToolRegistry().validate(
+        "ask_user",
+        {"question": " Which direction? ", "options": [" Keep it ", "Replace it"]},
+    )
+    assert isinstance(arguments, AskUserArguments)
+    assert arguments.question == "Which direction?"
+    assert arguments.options == ["Keep it", "Replace it"]
+    with pytest.raises(ValueError, match="at most 3 items"):
+        ToolRegistry().validate(
+            "ask_user",
+            {"question": "Choose", "options": ["one", "two", "three", "four"]},
+        )
+    with pytest.raises(ValueError, match="unique"):
+        ToolRegistry().validate(
+            "ask_user", {"question": "Choose", "options": ["Same", "same"]}
+        )
+    with pytest.raises(ValueError, match="question must not be empty"):
+        ToolRegistry().validate("ask_user", {"question": "   "})
 
 
 @pytest.mark.asyncio
@@ -412,6 +434,7 @@ def test_self_management_tools_are_typed_and_destructive_controls_confirm(
 ) -> None:
     registry = ToolRegistry()
     assert {
+        "ask_user",
         "memory_search",
         "memory_add",
         "memory_edit",

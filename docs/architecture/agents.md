@@ -59,6 +59,7 @@ every invocation.
 
 Core tool ids today:
 
+- Interaction: `ask_user` (always available unless explicitly denied).
 - Work: `read_file`, `list_dir`, `write_file`, `edit_file`, `shell`, `spawn_agent`.
 - Skills: `skill_load`, `skill_author`, `skill_run`, `skill_catalog`, `skill_control`.
 - Memory: `memory_search`, `memory_add`, `memory_edit`, `memory_forget`.
@@ -97,12 +98,13 @@ delegation:
 
 Reduction-only rules:
 
-- `authority: read_only` is a preset: intersect with `read_file`, `list_dir`,
+- `authority: read_only` is a preset: intersect with `ask_user`, `read_file`, `list_dir`,
   `skill_load`, `memory_search`, `scar_list`, and `skill_catalog`. `standard` is
   the default and is not a grant.
 - `tools.allow` empty → all harness tools minus the preset minus `deny`.
 - `tools.allow` set → intersection with that list. Still cannot add unknown or
-  policy-forbidden tools.
+  policy-forbidden tools. `ask_user` remains available as a baseline interaction
+  capability unless it appears in `tools.deny`.
 - `skills.allow` empty → all Skills already visible for this session/workspace.
 - `skills.allow` set → catalog and `skill_load` only those slugs.
 - `skills.deny` → never catalog or load.
