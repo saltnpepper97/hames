@@ -868,7 +868,6 @@ impl ScarEditor {
 
 #[derive(Clone, Debug)]
 pub enum Modal {
-    Trust,
     Approval(ApprovalModal),
     Help,
     Usage(UsageModal),
@@ -1063,8 +1062,6 @@ pub enum HitAction {
     Question(usize),
     QuestionNote(usize),
     QueuedMessage(String),
-    TrustWorkspace,
-    Quit,
     ShowSession,
     FocusComposer,
     Scrollbar {
@@ -1251,7 +1248,7 @@ impl App {
             },
             skill_commands: Vec::new(),
             trusted,
-            modal: (!trusted).then_some(Modal::Trust),
+            modal: None,
             question: None,
             sheet: None,
             inline_editor: None,

@@ -2378,38 +2378,6 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         return;
     }
     let (title, mut body, width, height) = match &modal {
-        Modal::Trust => (
-            "Trust this workspace",
-            vec![
-                Line::from(Span::styled(
-                    compact_home(&app.session.working_directory),
-                    Style::default().fg(INPUT).bold(),
-                )),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "Hames can inspect this project after you trust it.",
-                    Style::default().fg(MUTED),
-                )),
-                Line::from(Span::styled(
-                    "Tool permissions still follow the selected execution mode.",
-                    Style::default().fg(MUTED),
-                )),
-                Line::from(""),
-                Line::from(vec![
-                    Span::styled(
-                        "  Trust workspace  ",
-                        Style::default().fg(Color::Black).bg(MINT).bold(),
-                    ),
-                    Span::raw("    "),
-                    Span::styled(
-                        "  Quit  ",
-                        Style::default().fg(Color::White).bg(PANEL_BRIGHT),
-                    ),
-                ]),
-            ],
-            68,
-            9,
-        ),
         Modal::Approval(_) => unreachable!("approvals render in the lower tray"),
         Modal::Help => {
             let wide = area.width >= 92;
@@ -2654,23 +2622,6 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         popup,
     );
     match &modal {
-        Modal::Trust => {
-            let y = popup.bottom().saturating_sub(2);
-            app.hits.push(HitRegion {
-                x: popup.x + 2,
-                y,
-                width: 19,
-                height: 1,
-                action: HitAction::TrustWorkspace,
-            });
-            app.hits.push(HitRegion {
-                x: popup.x + 25,
-                y,
-                width: 8,
-                height: 1,
-                action: HitAction::Quit,
-            });
-        }
         Modal::Approval(approval) => {
             let count = if approval.allow_session { 3 } else { 2 };
             let y = popup.bottom().saturating_sub(2);

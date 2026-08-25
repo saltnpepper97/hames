@@ -2,7 +2,7 @@ mod app;
 mod view;
 
 use std::env;
-use std::io::{self, Stdout, Write};
+use std::io::{self, IsTerminal, Stdout, Write};
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -15,6 +15,7 @@ use app::{
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use crossterm::cursor::{Hide, MoveToColumn, MoveUp, Show};
 use crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
     EnableFocusChange, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
@@ -23,7 +24,8 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode, enable_raw_mode,
+    Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode,
+    enable_raw_mode,
 };
 use futures_util::StreamExt;
 use futures_util::future::join_all;
@@ -42,6 +44,7 @@ use crate::repl::ensure_gateway;
 const RECENT_SESSION_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 pub async fn run() -> Result<()> {
+    crate::style::init();
     let paths = LocalPaths::resolve()?;
     crate::local::ensure_search_setup(&paths, false)?;
     ensure_gateway(&paths).await?;
@@ -59,13 +62,19 @@ pub async fn run() -> Result<()> {
     }
     let cwd = env::current_dir()?.canonicalize()?;
     let cwd_text = cwd.to_string_lossy();
-    let session = match client
+    let (session, created_session) = match client
         .recent_session(&cwd_text, RECENT_SESSION_SECONDS)
         .await?
     {
-        Some(session) => session,
-        None => create_session(&client, &paths, None).await?,
+        Some(session) => (session, false),
+        None => (create_session(&client, &paths, None).await?, true),
     };
+    if !ensure_workspace_trust(&client, &session).await? {
+        if created_session {
+            client.close_session(&session.id).await?;
+        }
+        return Ok(());
+    }
     let mut app = load_app(&client, session).await?;
     let configured_theme = paths.configured_theme()?;
     app.theme = ThemeKind::from_config(&configured_theme)
@@ -220,6 +229,111 @@ pub async fn run() -> Result<()> {
         println!("{notice}");
     }
     Ok(())
+}
+
+async fn ensure_workspace_trust(client: &GatewayClient, session: &Session) -> Result<bool> {
+    if client.trust_status(&session.id).await?.trusted {
+        return Ok(true);
+    }
+    if !io::stdin().is_terminal() {
+        bail!("workspace is not trusted; run hames from an interactive terminal to choose access");
+    }
+
+    println!();
+    println!("{}", crate::style::section("Trust this workspace?"));
+    println!("    {}", compact_home(&session.working_directory));
+    println!();
+    let trust_workspace = read_workspace_trust_choice()?;
+    if !trust_workspace {
+        println!();
+        return Ok(false);
+    }
+    let trust = client.trust_session(&session.id).await?;
+    println!(
+        "{}",
+        crate::style::success(&format!("Trusted {}", trust.path))
+    );
+    println!();
+    Ok(true)
+}
+
+fn read_workspace_trust_choice() -> Result<bool> {
+    enable_raw_mode().context("failed to enter workspace trust prompt")?;
+    let _guard = InlinePromptGuard;
+    let mut output = io::stdout();
+    execute!(output, Hide)?;
+    let mut selected = 0_usize;
+    render_workspace_trust_choices(&mut output, selected, false)?;
+    loop {
+        let Event::Key(key) = crossterm::event::read().context("failed to read trust choice")?
+        else {
+            continue;
+        };
+        if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            continue;
+        }
+        match key.code {
+            KeyCode::Up | KeyCode::Down => {
+                selected = next_workspace_trust_choice(selected);
+                render_workspace_trust_choices(&mut output, selected, true)?;
+            }
+            KeyCode::Enter => return Ok(selected == 0),
+            KeyCode::Esc => return Ok(false),
+            KeyCode::Char('1' | 't' | 'y') => return Ok(true),
+            KeyCode::Char('2' | 'q' | 'n') => return Ok(false),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return Ok(false);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn render_workspace_trust_choices(
+    output: &mut Stdout,
+    selected: usize,
+    redraw: bool,
+) -> Result<()> {
+    if redraw {
+        execute!(output, MoveUp(3), MoveToColumn(0))?;
+    }
+    for (index, label) in ["Trust workspace", "Don't trust"].into_iter().enumerate() {
+        execute!(output, Clear(ClearType::CurrentLine))?;
+        let row = if index == selected {
+            format!("›  {label:<18}")
+        } else {
+            format!("   {label:<18}")
+        };
+        let row = if index == selected && index == 0 {
+            crate::style::paint("1;30;42", &row)
+        } else if index == selected {
+            crate::style::paint("1;37;41", &row)
+        } else {
+            row
+        };
+        writeln!(output, "    {row}")?;
+    }
+    execute!(output, Clear(ClearType::CurrentLine))?;
+    writeln!(
+        output,
+        "    {}",
+        crate::style::dim("↑↓ choose · Enter confirm · Esc quit")
+    )?;
+    output.flush()?;
+    Ok(())
+}
+
+fn next_workspace_trust_choice(selected: usize) -> usize {
+    usize::from(selected == 0)
+}
+
+struct InlinePromptGuard;
+
+impl Drop for InlinePromptGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), Show);
+    }
 }
 
 fn session_exit_notice(session_id: &str, discard_empty: bool) -> Option<String> {
@@ -450,7 +564,6 @@ fn workspace_identity(working_directory: &str) -> (String, Option<String>) {
 #[derive(Debug)]
 enum Effect {
     Quit,
-    Trust,
     ResolveApproval(usize),
     ResolveQuestion {
         selected_option: Option<String>,
@@ -900,11 +1013,6 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         return None;
     };
     match modal {
-        Modal::Trust => match key.code {
-            KeyCode::Enter | KeyCode::Char('t' | 'y') => Some(Effect::Trust),
-            KeyCode::Esc | KeyCode::Char('q' | 'n') => Some(Effect::Quit),
-            _ => None,
-        },
         Modal::Approval(approval) => {
             let choices = if approval.allow_session { 3 } else { 2 };
             match key.code {
@@ -1448,14 +1556,6 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                     app.clear_transcript_selection();
                     Some(Effect::TakeQueued(queue_id))
                 }
-                Some(HitAction::TrustWorkspace) => {
-                    app.clear_transcript_selection();
-                    Some(Effect::Trust)
-                }
-                Some(HitAction::Quit) => {
-                    app.clear_transcript_selection();
-                    Some(Effect::Quit)
-                }
                 Some(HitAction::ShowSession) => {
                     app.clear_transcript_selection();
                     app.modal = Some(Modal::Session);
@@ -1802,12 +1902,6 @@ async fn apply_effect(
 ) -> Result<Option<Session>> {
     match effect {
         Effect::Quit => app.should_quit = true,
-        Effect::Trust => {
-            let trust = client.trust_session(&app.session.id).await?;
-            app.trusted = trust.trusted;
-            app.modal = None;
-            app.notice = Some("Workspace trusted for this canonical path".to_owned());
-        }
         Effect::ResolveApproval(selected) => {
             let Some(Modal::Approval(approval)) = app.modal.clone() else {
                 return Ok(None);
@@ -2582,7 +2676,9 @@ async fn apply_menu_action(
         MenuAction::RevokeTrust => {
             client.revoke_trust(&app.session.id).await?;
             app.trusted = false;
-            app.modal = Some(Modal::Trust);
+            app.modal = None;
+            app.notice =
+                Some("Workspace trust revoked; restart Hames to grant it again".to_owned());
         }
         MenuAction::Export { path, format } => {
             if !matches!(format.as_str(), "markdown" | "jsonl") {
@@ -3012,8 +3108,8 @@ mod tests {
 
     use super::{
         Effect, SseDecoder, action_error_message, agent_source, handle_key, handle_mouse,
-        handle_terminal_event, model_efforts, next_mode, parse_command, pointer_top,
-        session_exit_notice, terminal_tab_title, workspace_identity,
+        handle_terminal_event, model_efforts, next_mode, next_workspace_trust_choice,
+        parse_command, pointer_top, session_exit_notice, terminal_tab_title, workspace_identity,
     };
     use crate::api::{
         Goal, MemoryRecord, PlanRevision, PlanState, ProviderModel, QueuedMessage, Scar, Session,
@@ -3043,6 +3139,12 @@ mod tests {
             session_exit_notice("kept", false).as_deref(),
             Some("Resume session with\n  /resume kept")
         );
+    }
+
+    #[test]
+    fn workspace_trust_prompt_wraps_between_two_choices() {
+        assert_eq!(next_workspace_trust_choice(0), 1);
+        assert_eq!(next_workspace_trust_choice(1), 0);
     }
 
     #[test]
