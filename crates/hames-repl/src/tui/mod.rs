@@ -122,14 +122,18 @@ pub async fn run() -> Result<()> {
             event = input.next() => {
                 match event {
                     Some(Ok(event)) => {
-                        if matches!(&event, Event::Mouse(MouseEvent { kind: MouseEventKind::Moved, .. })) {
-                            suppress_redraw = last_hover_repaint.elapsed() < Duration::from_millis(16);
+                        let pointer_moved = matches!(&event, Event::Mouse(MouseEvent { kind: MouseEventKind::Moved, .. }));
+                        let previous_hovered_row = app.hovered_transcript_row;
+                        app.error_notice = None;
+                        let effect = handle_terminal_event(&mut app, event);
+                        if pointer_moved {
+                            suppress_redraw = previous_hovered_row == app.hovered_transcript_row
+                                && last_hover_repaint.elapsed() < Duration::from_millis(16);
                             if !suppress_redraw {
                                 last_hover_repaint = Instant::now();
                             }
                         }
-                        app.error_notice = None;
-                        handle_terminal_event(&mut app, event)
+                        effect
                     }
                     Some(Err(error)) => {
                         app.modal = Some(Modal::Error(format!("terminal input failed: {error}")));
@@ -1349,8 +1353,7 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
     if matches!(mouse.kind, MouseEventKind::Moved) {
         app.hovered_transcript_row = if app.modal.is_none() {
             app.transcript_viewport
-                .point(mouse.column, mouse.row)
-                .map(|point| point.row)
+                .hoverable_row(mouse.column, mouse.row)
         } else {
             None
         };
@@ -4148,6 +4151,53 @@ mod tests {
                 kind: MouseEventKind::Moved,
                 column: 8,
                 row: 8,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(app.hovered_transcript_row, None);
+    }
+
+    #[test]
+    fn moving_pointer_off_highlightable_content_clears_transcript_hover() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript_viewport = TranscriptViewport {
+            x: 2,
+            y: 3,
+            width: 30,
+            height: 4,
+            line_offset: 0,
+            lines: vec!["first".to_owned(), String::new()],
+        };
+
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 8,
+                row: 3,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(app.hovered_transcript_row, Some(0));
+
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 8,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(app.hovered_transcript_row, None);
+
+        app.hovered_transcript_row = Some(0);
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 8,
+                row: 5,
                 modifiers: KeyModifiers::NONE,
             },
         );
