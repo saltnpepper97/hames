@@ -2528,46 +2528,66 @@ impl App {
             .get("index")
             .and_then(Value::as_u64)
             .unwrap_or(u64::MAX);
-        let row = self.ensure_activity_row(run_id, index, call_id);
-        let name = string(payload, "name");
-        if !name.is_empty() {
-            row.name = name;
+        {
+            let row = self.ensure_activity_row(run_id, index, call_id.clone());
+            let name = string(payload, "name");
+            if !name.is_empty() {
+                row.name = name;
+            }
+            if let Some(arguments) = payload.get("arguments") {
+                row.arguments = arguments.clone();
+            }
+            row.phase = match event_type {
+                "tool.requested" | "policy.requested" => ActivityPhase::Checking,
+                "policy.decided" => match payload.get("decision").and_then(Value::as_str) {
+                    Some("deny") => ActivityPhase::Rejected,
+                    _ => ActivityPhase::Checking,
+                },
+                "approval.requested" => ActivityPhase::Approval,
+                "approval.resolved" => match payload.get("decision").and_then(Value::as_str) {
+                    Some("denied" | "cancelled") => ActivityPhase::Rejected,
+                    _ => ActivityPhase::Checking,
+                },
+                "tool.started" => ActivityPhase::Running,
+                "tool.completed" => ActivityPhase::Completed,
+                "tool.failed" => ActivityPhase::Failed,
+                "tool.rejected" => ActivityPhase::Rejected,
+                _ => row.phase,
+            };
+            row.summary = string(payload, "summary");
+            if let Some(content) = payload.get("content").and_then(Value::as_str) {
+                row.content = content.to_owned();
+            }
+            if let Some(structured_data) = payload.get("structured_data") {
+                row.structured_data = structured_data.clone();
+            }
+            row.truncated = payload
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(row.truncated);
+            row.duration_seconds = payload
+                .get("duration_seconds")
+                .and_then(Value::as_f64)
+                .unwrap_or(row.duration_seconds);
         }
-        if let Some(arguments) = payload.get("arguments") {
-            row.arguments = arguments.clone();
+        if matches!(
+            event_type,
+            "tool.completed" | "tool.failed" | "tool.rejected"
+        ) && let Some(TranscriptItem::Activity {
+            rows, collapsed, ..
+        }) = self.transcript.iter_mut().rev().find(|item| {
+            matches!(
+                item,
+                TranscriptItem::Activity { run_id: id, rows, .. }
+                    if id == run_id
+                        && call_id.as_ref().is_none_or(|call_id| rows.iter().any(|row| {
+                            row.tool_call_id.as_ref() == Some(call_id)
+                        }))
+            )
+        }) && rows.iter().all(|row| row.phase.terminal())
+        {
+            *collapsed = true;
         }
-        row.phase = match event_type {
-            "tool.requested" | "policy.requested" => ActivityPhase::Checking,
-            "policy.decided" => match payload.get("decision").and_then(Value::as_str) {
-                Some("deny") => ActivityPhase::Rejected,
-                _ => ActivityPhase::Checking,
-            },
-            "approval.requested" => ActivityPhase::Approval,
-            "approval.resolved" => match payload.get("decision").and_then(Value::as_str) {
-                Some("denied" | "cancelled") => ActivityPhase::Rejected,
-                _ => ActivityPhase::Checking,
-            },
-            "tool.started" => ActivityPhase::Running,
-            "tool.completed" => ActivityPhase::Completed,
-            "tool.failed" => ActivityPhase::Failed,
-            "tool.rejected" => ActivityPhase::Rejected,
-            _ => row.phase,
-        };
-        row.summary = string(payload, "summary");
-        if let Some(content) = payload.get("content").and_then(Value::as_str) {
-            row.content = content.to_owned();
-        }
-        if let Some(structured_data) = payload.get("structured_data") {
-            row.structured_data = structured_data.clone();
-        }
-        row.truncated = payload
-            .get("truncated")
-            .and_then(Value::as_bool)
-            .unwrap_or(row.truncated);
-        row.duration_seconds = payload
-            .get("duration_seconds")
-            .and_then(Value::as_f64)
-            .unwrap_or(row.duration_seconds);
     }
 
     fn collapse_completed_thoughts(&mut self) {
@@ -3177,7 +3197,9 @@ mod tests {
             .transcript
             .iter()
             .filter_map(|item| match item {
-                TranscriptItem::Activity { rows, .. } => Some(rows),
+                TranscriptItem::Activity {
+                    rows, collapsed, ..
+                } => Some((rows, collapsed)),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -3191,7 +3213,8 @@ mod tests {
         assert_eq!(thoughts[0].0, "first check\n\nsecond check");
         assert_eq!(*thoughts[0].1, 3.0);
         assert_eq!(activities.len(), 1);
-        assert_eq!(activities[0].len(), 2);
+        assert_eq!(activities[0].0.len(), 2);
+        assert!(*activities[0].1);
         assert_eq!(assistants, 1);
     }
 
