@@ -2924,8 +2924,6 @@ fn dream_phase(event_type: &str) -> DreamPhase {
         DreamPhase::Paused
     } else if event_type.ends_with(".failed") {
         DreamPhase::Failed
-    } else if event_type.ends_with(".started") {
-        DreamPhase::Queued
     } else {
         DreamPhase::Queued
     }

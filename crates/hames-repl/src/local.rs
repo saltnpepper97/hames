@@ -486,8 +486,8 @@ fn provider_index(provider: ProviderBackend) -> usize {
 }
 
 fn setup_area(area: Rect) -> Rect {
-    let width = area.width.min(76).max(36);
-    let height = area.height.min(18).max(12);
+    let width = area.width.clamp(36, 76);
+    let height = area.height.clamp(12, 18);
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
