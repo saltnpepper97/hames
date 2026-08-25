@@ -460,6 +460,14 @@ class MemoryJobPayload(EventPayload):
     error_message: str | None = None
 
 
+class DreamPayload(EventPayload):
+    dream_id: str
+    status: Literal["running", "paused", "completed", "failed"]
+    memories_reconciled: int = 0
+    skills_reconciled: int = 0
+    message: str = ""
+
+
 class MemoryRetrievedItemPayload(EventPayload):
     memory_id: str
     layer: str
@@ -832,6 +840,10 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "memory.job.completed": MemoryJobPayload,
     "memory.job.failed": MemoryJobPayload,
     "memory.job.paused": MemoryJobPayload,
+    "dream.started": DreamPayload,
+    "dream.paused": DreamPayload,
+    "dream.completed": DreamPayload,
+    "dream.failed": DreamPayload,
     "memory.retrieved": MemoryRetrievedPayload,
     "memory.episode.projected": MemoryEpisodePayload,
     "memory.capture.requested": MemoryCapturePayload,

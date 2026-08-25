@@ -769,7 +769,12 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     }
                 }
             }
-            TranscriptItem::Dream { phase, detail, .. } => {
+            TranscriptItem::Dream {
+                heading,
+                phase,
+                detail,
+                ..
+            } => {
                 let (glyph, color) = match phase {
                     DreamPhase::Queued => ("·", MUTED),
                     DreamPhase::Running => ("○", INPUT),
@@ -779,8 +784,11 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 };
                 lines.push(RenderLine {
                     line: Line::from(vec![
-                        Span::styled("☾ ", Style::default().fg(MUTED)),
-                        Span::styled("Dream", Style::default().fg(INPUT).bold()),
+                        Span::styled(
+                            if heading == "Dream" { "☾ " } else { "─ " },
+                            Style::default().fg(MUTED),
+                        ),
+                        Span::styled(heading.clone(), Style::default().fg(INPUT).bold()),
                     ]),
                     thought: None,
                     sheen: None,
@@ -906,6 +914,9 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     hover_group: None,
                 });
             }
+        }
+        while lines.last().is_some_and(|line| line.line.width() == 0) {
+            lines.pop();
         }
         if !matches!(
             app.transcript.get(index + 1),
@@ -1322,15 +1333,24 @@ fn composer_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize)
     if app.composer.units.is_empty() {
         return (
             vec![Line::from(vec![
-                Span::styled("❯ ", Style::default().fg(INPUT).bold()),
+                Span::styled(
+                    "❯ ",
+                    Style::default()
+                        .fg(composer_caret_color(&app.session.interaction_mode))
+                        .bold(),
+                ),
                 Span::styled("Message Hames…", Style::default().fg(MUTED)),
             ])],
             2,
             0,
         );
     }
-    let mut rows: Vec<Vec<Span<'static>>> =
-        vec![vec![Span::styled("❯ ", Style::default().fg(INPUT).bold())]];
+    let mut rows: Vec<Vec<Span<'static>>> = vec![vec![Span::styled(
+        "❯ ",
+        Style::default()
+            .fg(composer_caret_color(&app.session.interaction_mode))
+            .bold(),
+    )]];
     let mut x = 2;
     let mut cursor = (2, 0);
     for (index, unit) in app.composer.units.iter().enumerate() {
@@ -1450,7 +1470,7 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
     if let Some(context) = context_footer(app) {
         let right_width = UnicodeWidthStr::width(context.as_str()) + 15;
         if left_width + right_width + 2 <= usize::from(area.width) {
-            right.push(Span::styled(context, Style::default().fg(INPUT_LIGHT)));
+            right.push(Span::styled(context, Style::default().fg(MUTED)));
             right.push(Span::styled(" · ", Style::default().fg(MUTED)));
         }
     }
@@ -3622,6 +3642,10 @@ fn mode_outline(mode: &str) -> Color {
     if mode == "plan" { GOLD } else { MUTED }
 }
 
+fn composer_caret_color(mode: &str) -> Color {
+    if mode == "plan" { GOLD } else { INPUT }
+}
+
 fn sheet_text_color(theme: ThemeKind) -> Color {
     match theme {
         ThemeKind::Hames => INPUT,
@@ -4088,11 +4112,11 @@ mod tests {
     use super::{
         ADDITION_BG, CORAL, CYAN, DELETE_BG, GOLD, INPUT, INPUT_LIGHT, MINT, MINT_LIGHT, MUTED,
         PANEL_BRIGHT, REMOVAL_BG, SKY, agent_access_body, agent_identity_body,
-        approval_detail_lines, compact_diff_lines, compact_home, context_footer, context_percent,
-        draw, format_elapsed, format_token_count, goal_elapsed, help_body, line_text,
-        memory_browser_body, mode_color, mode_outline, scar_browser_body, scar_editor_body,
-        scrollbar_position, sheet_text_color, single_line_editor, thought_label, transcript_lines,
-        traveling_sheen, usage_body,
+        approval_detail_lines, compact_diff_lines, compact_home, composer_caret_color,
+        context_footer, context_percent, draw, format_elapsed, format_token_count, goal_elapsed,
+        help_body, line_text, memory_browser_body, mode_color, mode_outline, scar_browser_body,
+        scar_editor_body, scrollbar_position, sheet_text_color, single_line_editor, thought_label,
+        transcript_lines, traveling_sheen, usage_body,
     };
 
     use crate::api::{
@@ -4323,7 +4347,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_mode_colors_keep_the_caret_neutral() {
+    fn composer_mode_colors_make_plan_caret_yellow() {
         assert_eq!(INPUT, Color::Rgb(156, 164, 178));
         assert_eq!(mode_color("manual"), MUTED);
         assert_eq!(mode_color("auto"), SKY);
@@ -4331,6 +4355,9 @@ mod tests {
         assert_eq!(mode_outline("manual"), MUTED);
         assert_eq!(mode_outline("auto"), MUTED);
         assert_eq!(mode_outline("plan"), GOLD);
+        assert_eq!(composer_caret_color("manual"), INPUT);
+        assert_eq!(composer_caret_color("auto"), INPUT);
+        assert_eq!(composer_caret_color("plan"), GOLD);
         assert_eq!(sheet_text_color(crate::tui::app::ThemeKind::Hames), INPUT);
         assert_eq!(
             sheet_text_color(crate::tui::app::ThemeKind::Terminal),
@@ -4620,6 +4647,7 @@ mod tests {
         let mut app = App::new(session(), Vec::new(), true);
         app.transcript.push(TranscriptItem::Dream {
             job_id: "memory-job".to_owned(),
+            heading: "Dream".to_owned(),
             label: "Memory consolidation".to_owned(),
             phase: DreamPhase::Running,
             detail: "Consolidating memory in the background".to_owned(),
@@ -4640,7 +4668,7 @@ mod tests {
         let mut app = App::new(session(), Vec::new(), true);
         app.transcript.push(TranscriptItem::Assistant {
             run_id: "run-handoff".to_owned(),
-            content: "Next, I'll write it:".to_owned(),
+            content: "Next, I'll write it:\n\n".to_owned(),
             live: false,
             durable: true,
         });

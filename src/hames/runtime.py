@@ -9,6 +9,7 @@ import re
 import shutil
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -307,6 +308,7 @@ class RunManager:
         self._loaded_skills: dict[str, dict[str, SkillVersion]] = {}
         self._submission_locks: dict[str, asyncio.Lock] = {}
         self._auto_compacted_runs: set[str] = set()
+        self._dream_tasks: dict[str, asyncio.Task[None]] = {}
         self._closing = False
         self._prune_scratch()
 
@@ -375,6 +377,7 @@ class RunManager:
         trust = await asyncio.to_thread(self.controls.get_trust, Path(session.working_directory))
         if trust is None:
             raise PermissionError("working directory is not trusted")
+        await self._yield_dream(session_id)
         user_event = await self._append(
             session_id=session_id,
             event_type="user.message",
@@ -531,6 +534,7 @@ class RunManager:
                 raise ValueError("cannot start a goal while the session has active work")
             if (await self.queue_state(session_id)).items:
                 raise ValueError("cannot start a goal while the session has queued turns")
+            await self._yield_dream(session_id)
             session = await asyncio.to_thread(self.ledger.get_session, session_id)
             await self._validate_goal_session(session)
             goal, event = await asyncio.to_thread(self.goals.create, session, objective)
@@ -606,9 +610,7 @@ class RunManager:
                     deadline = asyncio.get_running_loop().time() + 0.5
                     while not terminal and asyncio.get_running_loop().time() < deadline:
                         await asyncio.sleep(0.005)
-                        events = await asyncio.to_thread(
-                            self.ledger.list_run_events, active_run
-                        )
+                        events = await asyncio.to_thread(self.ledger.list_run_events, active_run)
                         terminal = any(event.type in terminal_types for event in events)
                 if terminal:
                     self._mark_post_terminal(active_run, session_id)
@@ -616,6 +618,7 @@ class RunManager:
                     raise ValueError("cannot execute a plan while the session has active work")
             if (await self.queue_state(session_id)).items:
                 raise ValueError("cannot execute a plan while notes or turns are queued")
+            await self._yield_dream(session_id)
             session = await asyncio.to_thread(self.ledger.get_session, session_id)
             state = await asyncio.to_thread(self.plans.current, session_id)
             plan = state.current
@@ -1080,6 +1083,9 @@ class RunManager:
         )
 
     def _launch(self, session_id: str, user_event: Event, *, run_id: str | None = None) -> str:
+        dream = self._dream_tasks.pop(session_id, None)
+        if dream is not None and not dream.done():
+            dream.cancel()
         run_id = run_id or new_id()
         task = asyncio.create_task(
             self._run(run_id, session_id, user_event), name=f"hames-run-{run_id}"
@@ -1255,6 +1261,12 @@ class RunManager:
 
     async def close(self) -> None:
         self._closing = True
+        dream_tasks = tuple(self._dream_tasks.values())
+        for task in dream_tasks:
+            task.cancel()
+        if dream_tasks:
+            await asyncio.gather(*dream_tasks, return_exceptions=True)
+        self._dream_tasks.clear()
         tasks = tuple(self._tasks.values())
         for task in tasks:
             task.cancel()
@@ -1366,8 +1378,131 @@ class RunManager:
                             "details": {},
                         },
                     )
+            run_events = await asyncio.to_thread(self.ledger.list_run_events, run_id)
+            terminal = next(
+                (
+                    event
+                    for event in reversed(run_events)
+                    if event.type in {"run.completed", "run.failed", "run.cancelled"}
+                ),
+                None,
+            )
+            solid_action = any(event.type == "tool.completed" for event in run_events)
+            if (
+                session is not None
+                and terminal is not None
+                and solid_action
+                and not planning_only
+                and not self._closing
+            ):
+                self._schedule_dream(session.id, terminal.id)
             if scratch_root is not None:
                 await asyncio.to_thread(self._remove_scratch, scratch_root)
+
+    def _schedule_dream(self, session_id: str, causation_id: str) -> None:
+        previous = self._dream_tasks.pop(session_id, None)
+        if previous is not None and not previous.done():
+            previous.cancel()
+        task = asyncio.create_task(
+            self._dream_after_idle(session_id, causation_id),
+            name=f"hames-dream-{session_id}",
+        )
+        self._dream_tasks[session_id] = task
+        task.add_done_callback(
+            lambda completed: (
+                self._dream_tasks.pop(session_id, None)
+                if self._dream_tasks.get(session_id) is completed
+                else None
+            )
+        )
+
+    async def _yield_dream(self, session_id: str) -> None:
+        task = self._dream_tasks.pop(session_id, None)
+        if task is None or task.done():
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def _dream_after_idle(self, session_id: str, causation_id: str) -> None:
+        dream_id = new_id()
+        started: Event | None = None
+        try:
+            await asyncio.sleep(self.config.runtime.dream_idle_seconds)
+            if self.is_session_active(session_id) or (await self.queue_state(session_id)).items:
+                return
+            if self.memory_manager is not None:
+                await self.memory_manager.wait_idle()
+            if self.skill_manager is not None:
+                await self.skill_manager.wait_idle()
+            if self.is_session_active(session_id) or (await self.queue_state(session_id)).items:
+                return
+            session = await asyncio.to_thread(self.ledger.get_session, session_id)
+            started = await self._append(
+                session_id=session_id,
+                agent_id=session.agent_id,
+                event_type="dream.started",
+                payload={"dream_id": dream_id, "status": "running"},
+                causation_id=causation_id,
+                correlation_id=dream_id,
+            )
+            since = datetime.now(UTC) - timedelta(days=self.config.runtime.dream_recent_days)
+            memories = (
+                0
+                if self.memory_manager is None
+                else await self.memory_manager.dream_cleanup(
+                    session_id, since=since, causation_id=started.id
+                )
+            )
+            skills = (
+                0
+                if self.skill_manager is None
+                else await self.skill_manager.dream_cleanup(
+                    session_id, since=since, causation_id=started.id
+                )
+            )
+            await self._append(
+                session_id=session_id,
+                agent_id=session.agent_id,
+                event_type="dream.completed",
+                payload={
+                    "dream_id": dream_id,
+                    "status": "completed",
+                    "memories_reconciled": memories,
+                    "skills_reconciled": skills,
+                },
+                causation_id=started.id,
+                correlation_id=dream_id,
+            )
+        except asyncio.CancelledError:
+            if started is not None and not self._closing:
+                session = await asyncio.to_thread(self.ledger.get_session, session_id)
+                await self._append(
+                    session_id=session_id,
+                    agent_id=session.agent_id,
+                    event_type="dream.paused",
+                    payload={
+                        "dream_id": dream_id,
+                        "status": "paused",
+                        "message": "Paused for foreground work",
+                    },
+                    causation_id=started.id,
+                    correlation_id=dream_id,
+                )
+            raise
+        except (KeyError, OSError, ValueError) as exc:
+            session = await asyncio.to_thread(self.ledger.get_session, session_id)
+            await self._append(
+                session_id=session_id,
+                agent_id=session.agent_id,
+                event_type="dream.failed",
+                payload={
+                    "dream_id": dream_id,
+                    "status": "failed",
+                    "message": str(exc),
+                },
+                causation_id=started.id if started is not None else causation_id,
+                correlation_id=dream_id,
+            )
 
     async def _finalize_plan_execution(self, session_id: str, run_id: str) -> None:
         state = await asyncio.to_thread(self.plans.current, session_id)
@@ -1870,8 +2005,7 @@ class RunManager:
         parts = [
             str(event.payload.get("content", "")).strip()
             for event in self.ledger.list_run_events(run_id)
-            if event.type == "assistant.message"
-            and str(event.payload.get("content", "")).strip()
+            if event.type == "assistant.message" and str(event.payload.get("content", "")).strip()
         ]
         if current.strip() and (not parts or parts[-1] != current.strip()):
             parts.append(current.strip())

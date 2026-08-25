@@ -26,6 +26,8 @@ class RuntimeConfig(StrictModel):
     max_active_seconds_per_run: float = Field(default=1800.0, gt=0)
     max_delegation_depth: int = Field(default=1, ge=0, le=2)
     max_child_runs_per_parent_run: int = Field(default=4, ge=1, le=16)
+    dream_idle_seconds: float = Field(default=300.0, ge=0.01)
+    dream_recent_days: int = Field(default=7, ge=1, le=90)
 
 
 class ContextConfig(StrictModel):

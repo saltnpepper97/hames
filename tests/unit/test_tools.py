@@ -281,17 +281,30 @@ def test_execution_modes_are_gateway_policy_not_client_convention(tmp_path: Path
         is PolicyDecisionKind.ALLOW
     )
     for safe_python_probe in (
-        'python3 -c "import os; print(os.environ.get(\'DISPLAY\')); '
-        'print(os.environ.get(\'WAYLAND_DISPLAY\'))"',
+        "python3 -c \"import os; print(os.environ.get('DISPLAY')); "
+        "print(os.environ.get('WAYLAND_DISPLAY'))\"",
         'SDL_VIDEODRIVER=dummy python3 -c "import pygame; pygame.init(); '
-        'pygame.display.set_mode((320,240)); print(\'headless OK\')"',
+        "pygame.display.set_mode((320,240)); print('headless OK')\"",
         'python3 -c "def next_cell(c, d): return ((c[0]+d[0])%10, (c[1]+d[1])%10); '
-        'assert next_cell((0,0),(1,0))==(1,0); print(\'logic OK\')"',
+        "assert next_cell((0,0),(1,0))==(1,0); print('logic OK')\"",
     ):
         assert (
             gate.decide(
                 "shell",
                 ShellArguments(command=safe_python_probe),
+                context,
+                interaction_mode="plan",
+            ).decision
+            is PolicyDecisionKind.ALLOW
+        )
+    for navigation_probe in (
+        "cd /tmp && pwd && ls -la",
+        "cd ~/ && test -d . && stat .",
+    ):
+        assert (
+            gate.decide(
+                "shell",
+                ShellArguments(command=navigation_probe),
                 context,
                 interaction_mode="plan",
             ).decision

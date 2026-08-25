@@ -8,6 +8,7 @@ import py_compile
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -86,6 +87,36 @@ class SkillManager:
         self._worker.cancel()
         await asyncio.gather(self._worker, return_exceptions=True)
         self._worker = None
+
+    async def wait_idle(self) -> None:
+        await self._queue.join()
+
+    async def dream_cleanup(self, session_id: str, *, since: datetime, causation_id: str) -> int:
+        """Revalidate Skills changed recently and quarantine deterministic regressions."""
+
+        if not self.config.skills.enabled:
+            return 0
+        session = await asyncio.to_thread(self.ledger.get_session, session_id)
+        versions = await asyncio.to_thread(self.registry.visible, session, limit=200)
+        changed = 0
+        for summary in versions:
+            version = await asyncio.to_thread(self.registry.get, summary.version_id)
+            if version.activated_at is None or datetime.fromisoformat(version.activated_at) < since:
+                continue
+            report = await asyncio.to_thread(self._validate, version)
+            if bool(report["passed"]):
+                continue
+            _, events = await asyncio.to_thread(
+                self.registry.quarantine_and_rollback,
+                session,
+                version.id,
+                reason="idle_dream_revalidation_failed",
+                causation_id=causation_id,
+            )
+            for event in events:
+                await self._publish(event)
+            changed += 1
+        return changed
 
     async def observe_run(self, session_id: str, run_id: str) -> list[SkillJob]:
         if not self.config.skills.enabled or not self.config.skills.autonomous_authoring:

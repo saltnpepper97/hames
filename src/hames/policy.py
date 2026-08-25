@@ -353,8 +353,12 @@ def _plan_clause_allowed(clause: str) -> bool:
         return False
     command = words[0].removeprefix("./")
     args = words[1:]
+    if command == "cd":
+        return len(args) <= 1 and not any(arg.startswith("-") for arg in args)
     if command in {"pwd", "ls", "rg", "grep", "find", "head", "tail", "wc"}:
         return not any(arg in {"--delete", "-delete"} for arg in args)
+    if command in {"file", "readlink", "realpath", "stat", "test", "which"}:
+        return True
     if command == "command":
         return len(args) == 2 and args[0] in {"-v", "-V"}
     if command == "echo":
@@ -494,10 +498,7 @@ def _plan_python_probe_allowed(source: str) -> bool:
                 return False
             continue
         if isinstance(node, ast.ImportFrom):
-            if (
-                node.level
-                or (node.module or "").split(".", 1)[0] not in _PLAN_PYTHON_PROBE_MODULES
-            ):
+            if node.level or (node.module or "").split(".", 1)[0] not in _PLAN_PYTHON_PROBE_MODULES:
                 return False
             continue
         if isinstance(node, ast.Call) and not _plan_python_call_allowed(node, local_functions):

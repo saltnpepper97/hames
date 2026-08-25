@@ -81,20 +81,29 @@ pub async fn run() -> Result<()> {
     let mut terminal = TerminalGuard::enter()?;
     let mut input = EventStream::new();
     let mut dirty = true;
+    let mut last_hover_repaint = Instant::now() - Duration::from_millis(20);
 
     loop {
+        app.expire_transcript_hover(Duration::from_millis(160));
         if dirty {
             terminal.draw(&mut app)?;
         }
-        let tick_delay = if app.animating() {
+        let tick_delay = if app.animating() || app.hovered_transcript_row.is_some() {
             Duration::from_millis(80)
         } else {
             Duration::from_secs(3600)
         };
+        let mut suppress_redraw = false;
         let effect = tokio::select! {
             event = input.next() => {
                 match event {
                     Some(Ok(event)) => {
+                        if matches!(&event, Event::Mouse(MouseEvent { kind: MouseEventKind::Moved, .. })) {
+                            suppress_redraw = last_hover_repaint.elapsed() < Duration::from_millis(16);
+                            if !suppress_redraw {
+                                last_hover_repaint = Instant::now();
+                            }
+                        }
                         app.error_notice = None;
                         handle_terminal_event(&mut app, event)
                     }
@@ -125,7 +134,7 @@ pub async fn run() -> Result<()> {
             }
             _ = tokio::time::sleep(tick_delay) => None
         };
-        dirty = true;
+        dirty = !suppress_redraw;
         let Some(effect) = effect else {
             continue;
         };
@@ -481,10 +490,12 @@ fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
         Event::Mouse(mouse) => handle_mouse(app, mouse),
         Event::FocusLost => {
             app.hovered_transcript_row = None;
+            app.hovered_transcript_at = None;
             None
         }
         Event::Resize(_, _) => {
             app.hovered_transcript_row = None;
+            app.hovered_transcript_at = None;
             None
         }
         _ => None,
@@ -1120,6 +1131,12 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
     } else {
         None
     };
+    app.hovered_transcript_at =
+        if matches!(mouse.kind, MouseEventKind::Moved) && app.hovered_transcript_row.is_some() {
+            Some(Instant::now())
+        } else {
+            None
+        };
     match mouse.kind {
         MouseEventKind::ScrollUp => {
             app.hovered_transcript_row = None;
@@ -2721,6 +2738,8 @@ fn info(title: &str, lines: Vec<String>) -> Modal {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use crossterm::event::{
         Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
@@ -3488,9 +3507,23 @@ mod tests {
     fn terminal_focus_loss_clears_transcript_hover() {
         let mut app = App::new(session(), Vec::new(), true);
         app.hovered_transcript_row = Some(4);
+        app.hovered_transcript_at = Some(Instant::now());
 
         assert!(handle_terminal_event(&mut app, Event::FocusLost).is_none());
         assert_eq!(app.hovered_transcript_row, None);
+        assert_eq!(app.hovered_transcript_at, None);
+    }
+
+    #[test]
+    fn transcript_hover_expires_when_pointer_events_stop_at_window_edge() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.hovered_transcript_row = Some(4);
+        app.hovered_transcript_at = Some(Instant::now() - Duration::from_millis(200));
+
+        app.expire_transcript_hover(Duration::from_millis(160));
+
+        assert_eq!(app.hovered_transcript_row, None);
+        assert_eq!(app.hovered_transcript_at, None);
     }
 
     #[test]

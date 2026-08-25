@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -255,6 +256,63 @@ def test_workspace_visibility_and_supersession(hames_paths: HamesPaths, tmp_path
     assert replacement.record.status == "active"
     assert store.get(original.id).status == "superseded"
     assert replacement.events[-1].type == "memory.superseded"
+
+
+def test_idle_dream_reconciles_newer_fact_into_the_same_memory_slot(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    session = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    store = MemoryStore(ledger)
+    first_source = ledger.append(
+        session_id=session.id,
+        agent_id=session.agent_id,
+        event_type="user.message",
+        payload={"content": "Use concise docs."},
+    )
+    first = store.create_candidate(
+        session=session,
+        candidate=_candidate(first_source.id, visibility="workspace"),
+        run_id="run-first",
+        origin_kind="automatic",
+        activate=True,
+        causation_id=first_source.id,
+    ).record
+    second_source = ledger.append(
+        session_id=session.id,
+        agent_id=session.agent_id,
+        event_type="user.message",
+        payload={"content": "Use detailed docs now."},
+    )
+    second = store.create_candidate(
+        session=session,
+        candidate=_candidate(
+            second_source.id,
+            summary="The user now prefers detailed documentation.",
+            visibility="workspace",
+        ),
+        run_id="run-second",
+        origin_kind="automatic",
+        activate=True,
+        causation_id=second_source.id,
+    ).record
+
+    events = store.reconcile_recent(
+        session,
+        since=datetime.now(UTC) - timedelta(days=1),
+        causation_id=second_source.id,
+    )
+
+    assert [event.type for event in events] == ["memory.superseded"]
+    assert events[0].payload["reason"] == "idle_dream_reconciliation"
+    assert store.get(first.id).status == "superseded"
+    assert store.get(first.id).superseded_by_id == second.id
+    assert store.get(second.id).status == "active"
 
 
 def test_episode_projection_is_deterministic_and_skips_routine_chat(

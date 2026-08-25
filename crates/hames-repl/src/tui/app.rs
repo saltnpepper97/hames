@@ -423,6 +423,7 @@ pub enum TranscriptItem {
     },
     Dream {
         job_id: String,
+        heading: String,
         label: String,
         phase: DreamPhase,
         detail: String,
@@ -1022,6 +1023,7 @@ pub struct App {
     pub scroll_drag: Option<ScrollDrag>,
     pub transcript_viewport: TranscriptViewport,
     pub hovered_transcript_row: Option<usize>,
+    pub hovered_transcript_at: Option<Instant>,
     pub transcript_selection: Option<TranscriptSelection>,
     pub selecting_transcript: bool,
     pub modal_viewport: TranscriptViewport,
@@ -1102,6 +1104,7 @@ impl App {
             scroll_drag: None,
             transcript_viewport: TranscriptViewport::default(),
             hovered_transcript_row: None,
+            hovered_transcript_at: None,
             transcript_selection: None,
             selecting_transcript: false,
             modal_viewport: TranscriptViewport::default(),
@@ -1141,6 +1144,16 @@ impl App {
                 TranscriptItem::Compaction { live, .. } => *live,
                 _ => false,
             })
+    }
+
+    pub fn expire_transcript_hover(&mut self, maximum_age: Duration) {
+        if self
+            .hovered_transcript_at
+            .is_some_and(|seen| seen.elapsed() >= maximum_age)
+        {
+            self.hovered_transcript_row = None;
+            self.hovered_transcript_at = None;
+        }
     }
 
     pub fn set_queue(&mut self, state: QueueState) {
@@ -2381,7 +2394,7 @@ impl App {
                 let kind = string(&event.payload, "kind");
                 let automatic = kind != "explicit_capture";
                 let label = if automatic {
-                    "Memory consolidation"
+                    "Memory update"
                 } else {
                     "Requested memory capture"
                 };
@@ -2389,6 +2402,7 @@ impl App {
                 let detail = dream_detail(label, phase, &event.payload);
                 self.update_dream(
                     string(&event.payload, "job_id"),
+                    "Wrap-up".to_owned(),
                     label.to_owned(),
                     phase,
                     detail,
@@ -2399,12 +2413,46 @@ impl App {
             | "skill.job.paused"
             | "skill.job.completed"
             | "skill.job.failed" => {
-                let label = "Skill refinement";
+                let label = "Skill update";
                 let phase = dream_phase(&event.event_type);
                 let detail = dream_detail(label, phase, &event.payload);
                 self.update_dream(
                     string(&event.payload, "job_id"),
+                    "Wrap-up".to_owned(),
                     label.to_owned(),
+                    phase,
+                    detail,
+                );
+            }
+            "dream.started" | "dream.paused" | "dream.completed" | "dream.failed" => {
+                let phase = dream_phase(&event.event_type);
+                let memories = u64_value(&event.payload, "memories_reconciled");
+                let skills = u64_value(&event.payload, "skills_reconciled");
+                let detail = match phase {
+                    DreamPhase::Running => "Reviewing recent memory and Skills changes".to_owned(),
+                    DreamPhase::Paused => "Dream paused for foreground work".to_owned(),
+                    DreamPhase::Completed if memories == 0 && skills == 0 => {
+                        "Recent memory and Skills are already tidy".to_owned()
+                    }
+                    DreamPhase::Completed => format!(
+                        "Reconciled {memories} memor{} and {skills} Skill{}",
+                        if memories == 1 { "y" } else { "ies" },
+                        if skills == 1 { "" } else { "s" }
+                    ),
+                    DreamPhase::Failed => {
+                        let message = string(&event.payload, "message");
+                        if message.is_empty() {
+                            "Dream maintenance failed".to_owned()
+                        } else {
+                            message
+                        }
+                    }
+                    DreamPhase::Queued => "Waiting for idle time".to_owned(),
+                };
+                self.update_dream(
+                    string(&event.payload, "dream_id"),
+                    "Dream".to_owned(),
+                    "Idle maintenance".to_owned(),
                     phase,
                     detail,
                 );
@@ -2425,8 +2473,16 @@ impl App {
         }
     }
 
-    fn update_dream(&mut self, job_id: String, label: String, phase: DreamPhase, detail: String) {
+    fn update_dream(
+        &mut self,
+        job_id: String,
+        heading: String,
+        label: String,
+        phase: DreamPhase,
+        detail: String,
+    ) {
         if let Some(TranscriptItem::Dream {
+            heading: current_heading,
             label: current_label,
             phase: current_phase,
             detail: current_detail,
@@ -2436,6 +2492,7 @@ impl App {
                 |item| matches!(item, TranscriptItem::Dream { job_id: id, .. } if id == &job_id),
             )
         {
+            *current_heading = heading;
             *current_label = label;
             *current_phase = phase;
             *current_detail = detail;
@@ -2443,6 +2500,7 @@ impl App {
         }
         let item = TranscriptItem::Dream {
             job_id,
+            heading,
             label,
             phase,
             detail,
@@ -2930,7 +2988,9 @@ fn u64_value(payload: &Value, key: &str) -> u64 {
 }
 
 fn dream_phase(event_type: &str) -> DreamPhase {
-    if event_type.ends_with(".completed") {
+    if event_type == "dream.started" {
+        DreamPhase::Running
+    } else if event_type.ends_with(".completed") {
         DreamPhase::Completed
     } else if event_type.ends_with(".paused") {
         DreamPhase::Paused
@@ -2959,15 +3019,15 @@ fn dream_detail(label: &str, phase: DreamPhase, payload: &Value) -> String {
             }
         }
         DreamPhase::Running => match label {
-            "Memory consolidation" => "Consolidating memory in the background".to_owned(),
+            "Memory update" => "Reviewing this turn for durable memory".to_owned(),
             "Requested memory capture" => "Capturing requested memory in the background".to_owned(),
-            "Skill refinement" => "Refining a reusable Skill in the background".to_owned(),
+            "Skill update" => "Creating or refining a reusable Skill".to_owned(),
             _ => format!("{label} in the background"),
         },
         DreamPhase::Completed => match label {
-            "Memory consolidation" => "Memory consolidated".to_owned(),
+            "Memory update" => "Turn memory reviewed".to_owned(),
             "Requested memory capture" => "Requested memory captured".to_owned(),
-            "Skill refinement" => "Skill refinement complete".to_owned(),
+            "Skill update" => "Skill update complete".to_owned(),
             _ => format!("{label} complete"),
         },
         DreamPhase::Paused => format!("{label} paused for foreground work"),
@@ -3666,7 +3726,7 @@ mod tests {
     }
 
     #[test]
-    fn maintenance_preemption_is_a_neutral_paused_dream_not_a_global_error() {
+    fn wrap_up_preemption_is_neutral_and_not_a_global_error() {
         let mut app = App::new(session(), Vec::new(), true);
         app.ingest_durable(
             event(
@@ -3708,10 +3768,11 @@ mod tests {
         assert!(app.transcript.iter().any(|item| matches!(
             item,
             TranscriptItem::Dream {
+                heading,
                 phase: DreamPhase::Paused,
                 detail,
                 ..
-            } if detail == "Memory consolidation paused for foreground work"
+            } if heading == "Wrap-up" && detail == "Memory update paused for foreground work"
         )));
     }
 
@@ -3763,7 +3824,7 @@ mod tests {
     }
 
     #[test]
-    fn background_memory_lifecycle_is_one_dormant_transcript_item() {
+    fn end_of_turn_memory_lifecycle_is_one_wrap_up_item() {
         let mut app = App::new(session(), Vec::new(), true);
         let payload = |status: &str| {
             json!({
@@ -3784,10 +3845,11 @@ mod tests {
         assert!(app.transcript.iter().any(|item| matches!(
             item,
             TranscriptItem::Dream {
+                heading,
                 phase: DreamPhase::Queued,
                 detail,
                 ..
-            } if detail == "Memory consolidation waiting for the idle model"
+            } if heading == "Wrap-up" && detail == "Memory update waiting for the idle model"
         )));
         app.ingest_durable(
             event(3, "model.response.started", "memory-job", json!({})),
@@ -3796,10 +3858,11 @@ mod tests {
         assert!(app.transcript.iter().any(|item| matches!(
             item,
             TranscriptItem::Dream {
+                heading,
                 phase: DreamPhase::Running,
                 detail,
                 ..
-            } if detail == "Consolidating memory in the background"
+            } if heading == "Wrap-up" && detail == "Reviewing this turn for durable memory"
         )));
         app.ingest_durable(
             event(
@@ -3819,9 +3882,50 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(dreams, vec![(DreamPhase::Completed, "Memory consolidated")]);
+        assert_eq!(
+            dreams,
+            vec![(DreamPhase::Completed, "Turn memory reviewed")]
+        );
         assert!(app.active_run.is_none());
         assert!(!app.animating());
+    }
+
+    #[test]
+    fn idle_dream_lifecycle_is_distinct_from_turn_wrap_up() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_durable(
+            event(
+                1,
+                "dream.started",
+                "",
+                json!({"dream_id": "dream-1", "status": "running"}),
+            ),
+            true,
+        );
+        app.ingest_durable(
+            event(
+                2,
+                "dream.completed",
+                "",
+                json!({
+                    "dream_id": "dream-1",
+                    "status": "completed",
+                    "memories_reconciled": 2,
+                    "skills_reconciled": 1
+                }),
+            ),
+            true,
+        );
+
+        assert!(app.transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Dream {
+                heading,
+                phase: DreamPhase::Completed,
+                detail,
+                ..
+            } if heading == "Dream" && detail == "Reconciled 2 memories and 1 Skill"
+        )));
     }
 
     #[test]

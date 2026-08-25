@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -70,6 +71,23 @@ class MemoryManager:
         self._worker.cancel()
         await asyncio.gather(self._worker, return_exceptions=True)
         self._worker = None
+
+    async def wait_idle(self) -> None:
+        await self._queue.join()
+
+    async def dream_cleanup(self, session_id: str, *, since: datetime, causation_id: str) -> int:
+        if not self.config.memory.enabled:
+            return 0
+        session = await asyncio.to_thread(self.ledger.get_session, session_id)
+        events = await asyncio.to_thread(
+            self.store.reconcile_recent,
+            session,
+            since=since,
+            causation_id=causation_id,
+        )
+        for event in events:
+            await self._publish(event)
+        return len(events)
 
     async def enqueue_run(self, session_id: str, run_id: str) -> MemoryJob | None:
         if not self.config.memory.enabled or not self.config.memory.automatic_extraction:

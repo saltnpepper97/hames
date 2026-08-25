@@ -545,7 +545,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 21
+            assert health_body["protocol_version"] == 22
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -861,6 +861,136 @@ async def test_malformed_tool_arguments_retry_without_abandoning_the_run(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_dream_starts_only_after_a_solid_run_has_been_idle(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text(
+        "[runtime]\ndream_idle_seconds = 0.02\n"
+        "[memory]\nenabled = false\n"
+        "[skills]\nenabled = false\n"
+        "[evolution]\nenabled = false\n",
+        encoding="utf-8",
+    )
+    fake = FakeProvider(
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="write-before-dream",
+                        name="write_file",
+                        arguments_delta='{"path":"done.txt","content":"done"}',
+                    ),
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="Finished."),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
+    )
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Create the file."},
+            )
+            events = await _wait_for_event(client, headers, session_id, "dream.completed")
+            types = [str(event["type"]) for event in events]
+            assert types.index("run.completed") < types.index("dream.started")
+            assert types.index("dream.started") < types.index("dream.completed")
+            assert "memory.job.queued" not in types
+            assert "skill.job.queued" not in types
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_plan_round_with_safe_tool_work_never_schedules_dream(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text(
+        "[runtime]\ndream_idle_seconds = 0.01\n"
+        "[memory]\nenabled = false\n"
+        "[skills]\nenabled = false\n"
+        "[evolution]\nenabled = false\n",
+        encoding="utf-8",
+    )
+    plan = f"# Safe plan\n\n## Tasks\n- [ ] Implement later\n\n{PLAN_READY_MARKER}"
+    fake = FakeProvider(
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="plan-pwd",
+                        name="shell",
+                        arguments_delta='{"command":"cd /tmp && pwd"}',
+                    ),
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text=plan),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
+    )
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.put(
+                f"/v1/sessions/{session_id}/mode", headers=headers, json={"mode": "plan"}
+            )
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Inspect and make a plan."},
+            )
+            await _wait_for_event(client, headers, session_id, "run.completed")
+            await asyncio.sleep(0.05)
+            history = EVENT_LIST.validate_python(
+                cast(
+                    object,
+                    (await client.get(f"/v1/sessions/{session_id}/events", headers=headers)).json(),
+                )
+            )
+            assert "tool.completed" in [str(event["type"]) for event in history]
+            assert not any(str(event["type"]).startswith("dream.") for event in history)
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
 async def test_plan_review_execution_and_session_tasks_lifecycle(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     paths.ensure_foundation()
@@ -998,9 +1128,7 @@ async def test_truncated_plan_execution_continues_with_reasoning_and_tasks(tmp_p
                 json={"strategy": "keep", "note": "Preserve continuity"},
             )
             assert executed.status_code == 202
-            events = await _wait_for_event(
-                client, headers, session_id, "plan.execution.completed"
-            )
+            events = await _wait_for_event(client, headers, session_id, "plan.execution.completed")
             execution_run_id = str(response_object(executed)["run_id"])
             run_events = [event for event in events if event.get("run_id") == execution_run_id]
             event_types = [str(event["type"]) for event in run_events]
@@ -1066,9 +1194,7 @@ async def test_plan_execution_stall_fails_visibly_after_three_no_progress_turns(
             run_events = [event for event in events if event.get("run_id") == run_id]
             failure = next(event for event in run_events if event["type"] == "run.failed")
             assert failure["payload"]["code"] == "run_stalled"  # type: ignore[index]
-            assert sum(
-                event["type"] == "run.continuation.requested" for event in run_events
-            ) == 2
+            assert sum(event["type"] == "run.continuation.requested" for event in run_events) == 2
             assert not any(event["type"] == "run.completed" for event in run_events)
     finally:
         await state.runs.close()

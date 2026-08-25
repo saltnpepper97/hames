@@ -712,6 +712,60 @@ class MemoryStore:
             values.sort(key=lambda record: (position[record.id], record.id))
         return values[:limit]
 
+    def reconcile_recent(
+        self,
+        session: Session,
+        *,
+        since: datetime,
+        causation_id: str,
+    ) -> tuple[Event, ...]:
+        """Supersede older visible facts when a newer fact owns the same exact slot."""
+
+        records = self.list_visible(session, status="active", limit=10_000)
+        groups: dict[tuple[object, ...], list[MemoryRecord]] = {}
+        for record in records:
+            if record.layer == "episodic":
+                continue
+            key = (
+                record.layer,
+                record.visibility,
+                record.owner_agent_id,
+                record.workspace_path,
+                record.lineage_root_session_id,
+                record.subject.casefold(),
+                record.predicate.casefold(),
+            )
+            groups.setdefault(key, []).append(record)
+        replacements: list[tuple[MemoryRecord, MemoryRecord]] = []
+        for values in groups.values():
+            values.sort(key=lambda record: (record.created_at, record.id), reverse=True)
+            newest = values[0]
+            if datetime.fromisoformat(newest.created_at) < since:
+                continue
+            replacements.extend((older, newest) for older in values[1:])
+        if not replacements:
+            return ()
+
+        now = utc_now()
+        events: list[Event] = []
+        with self.ledger.transaction_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for previous, replacement in replacements:
+                events.append(
+                    self._supersede_on_connection(
+                        connection,
+                        session,
+                        previous.id,
+                        replacement.id,
+                        None,
+                        causation_id,
+                        now,
+                        reason="idle_dream_reconciliation",
+                    )
+                )
+            connection.commit()
+        return tuple(events)
+
     def retrieve(
         self,
         session: Session,
@@ -827,6 +881,7 @@ class MemoryStore:
         run_id: str | None,
         causation_id: str,
         now: str,
+        reason: str = "replacement_accepted",
     ) -> Event:
         cursor = connection.execute(
             "UPDATE memory_records SET status = 'superseded', superseded_by_id = ?, "
@@ -845,7 +900,7 @@ class MemoryStore:
                 "memory_id": previous_id,
                 "previous_status": "active",
                 "status": "superseded",
-                "reason": "replacement_accepted",
+                "reason": reason,
                 "replacement_id": replacement_id,
             },
             causation_id=causation_id,
