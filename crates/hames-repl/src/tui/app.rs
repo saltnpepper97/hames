@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1031,7 +1031,6 @@ pub struct App {
     pub copy_notice: Option<CopyNotice>,
     pub last_sequence: u64,
     pub seen_events: HashSet<String>,
-    thought_segment_starts: HashMap<String, usize>,
     pub context_usage: Option<ContextUsageProjection>,
     pub hits: Vec<HitRegion>,
     pub should_quit: bool,
@@ -1111,7 +1110,6 @@ impl App {
             copy_notice: None,
             last_sequence: 0,
             seen_events: HashSet::new(),
-            thought_segment_starts: HashMap::new(),
             context_usage: None,
             hits: Vec::new(),
             should_quit: false,
@@ -1208,6 +1206,19 @@ impl App {
         let Some(run_id) = run_id else {
             return;
         };
+        for item in &mut self.transcript {
+            if let TranscriptItem::Dream {
+                label,
+                phase,
+                detail,
+                ..
+            } = item
+                && matches!(*phase, DreamPhase::Queued | DreamPhase::Running)
+            {
+                *phase = DreamPhase::Paused;
+                *detail = format!("{label} paused for foreground work");
+            }
+        }
         self.active_run = Some(run_id.clone());
         self.run_started_at = Some(Instant::now());
         self.scroll = 0;
@@ -1682,20 +1693,9 @@ impl App {
                     .and_then(Value::as_str)
                     .unwrap_or_default();
                 let index = self.ensure_thought(run_id, true);
-                let mut segment_start = self
-                    .thought_segment_starts
-                    .get(run_id)
-                    .copied()
-                    .unwrap_or(0);
                 if let TranscriptItem::Thought { content, .. } = &mut self.transcript[index] {
-                    if !text.is_empty() && segment_start > 0 && content.len() == segment_start {
-                        content.push_str("\n\n");
-                        segment_start = content.len();
-                    }
                     content.push_str(text);
                 }
-                self.thought_segment_starts
-                    .insert(run_id.to_owned(), segment_start);
             }
             "response.text_delta" => {
                 self.finish_live_thought(run_id);
@@ -1862,20 +1862,22 @@ impl App {
                     plan.error = string(&event.payload, "message");
                     plan.updated_at = event.created_at.clone();
                 }
-                for item in &mut self.transcript {
-                    if let TranscriptItem::Plan {
-                        plan_id,
-                        status: item_status,
-                        collapsed,
-                        ..
-                    } = item
-                        && plan_id == &string(&event.payload, "plan_id")
-                    {
-                        *item_status = status.to_owned();
-                        *collapsed = status != "ready";
+                if !matches!(status, "requested" | "approved") {
+                    for item in &mut self.transcript {
+                        if let TranscriptItem::Plan {
+                            plan_id,
+                            status: item_status,
+                            collapsed,
+                            ..
+                        } = item
+                            && plan_id == &string(&event.payload, "plan_id")
+                        {
+                            *item_status = status.to_owned();
+                            *collapsed = status != "ready";
+                        }
                     }
                 }
-                if matches!(status, "requested" | "approved" | "executing" | "completed") {
+                if status == "executing" {
                     self.collapse_for_plan_execution();
                 }
                 if status == "failed" {
@@ -2209,14 +2211,14 @@ impl App {
             {
                 self.ensure_thought(&run_id, true);
             }
+            "model.response.started" => {
+                if let Some(job_id) = event.correlation_id.as_deref() {
+                    self.start_dream(job_id);
+                }
+            }
             "assistant.reasoning" => {
                 let index = self.ensure_thought(&run_id, false);
                 let segment = string(&event.payload, "content");
-                let mut segment_start = self
-                    .thought_segment_starts
-                    .get(&run_id)
-                    .copied()
-                    .unwrap_or(0);
                 if let TranscriptItem::Thought {
                     content,
                     duration_seconds,
@@ -2225,13 +2227,8 @@ impl App {
                     ..
                 } = &mut self.transcript[index]
                 {
-                    if !segment.is_empty() && segment_start > 0 && content.len() == segment_start {
-                        content.push_str("\n\n");
-                        segment_start = content.len();
-                    }
-                    content.truncate(segment_start.min(content.len()));
-                    content.push_str(&segment);
-                    *duration_seconds += event
+                    *content = segment;
+                    *duration_seconds = event
                         .payload
                         .get("duration_seconds")
                         .and_then(Value::as_f64)
@@ -2240,8 +2237,6 @@ impl App {
                         event.payload.get("status").and_then(Value::as_str) == Some("interrupted");
                     *live = false;
                 }
-                self.thought_segment_starts
-                    .insert(run_id.clone(), segment_start);
             }
             "assistant.message" => {
                 self.finish_live_thought(&run_id);
@@ -2434,12 +2429,47 @@ impl App {
             *current_detail = detail;
             return;
         }
-        self.transcript.push(TranscriptItem::Dream {
+        let item = TranscriptItem::Dream {
             job_id,
             label,
             phase,
             detail,
+        };
+        let insertion = self.active_run.as_ref().and_then(|active_run| {
+            self.transcript.iter().position(|item| match item {
+                TranscriptItem::Thought { run_id, .. }
+                | TranscriptItem::Assistant { run_id, .. }
+                | TranscriptItem::Activity { run_id, .. }
+                | TranscriptItem::Compaction { run_id, .. } => run_id == active_run,
+                _ => false,
+            })
         });
+        if let Some(index) = insertion {
+            self.transcript.insert(index, item);
+        } else {
+            self.transcript.push(item);
+        }
+    }
+
+    fn start_dream(&mut self, job_id: &str) {
+        if let Some(TranscriptItem::Dream {
+            label,
+            phase,
+            detail,
+            ..
+        }) =
+            self.transcript.iter_mut().rev().find(
+                |item| matches!(item, TranscriptItem::Dream { job_id: id, .. } if id == job_id),
+            )
+        {
+            if self.active_run.is_some() {
+                *phase = DreamPhase::Paused;
+                *detail = format!("{label} paused for foreground work");
+            } else {
+                *phase = DreamPhase::Running;
+                *detail = dream_detail(label, DreamPhase::Running, &Value::Null);
+            }
+        }
     }
 
     pub fn toggle_thought(&mut self, index: usize) {
@@ -2470,19 +2500,13 @@ impl App {
             TranscriptItem::Thought { run_id: id, .. } => id == run_id,
             _ => false,
         }) {
-            if live
-                && let TranscriptItem::Thought {
-                    content,
-                    live: existing_live,
-                    ..
-                } = &mut self.transcript[index]
-                && !*existing_live
-            {
-                self.thought_segment_starts
-                    .insert(run_id.to_owned(), content.len());
-                *existing_live = true;
+            let existing_live = matches!(
+                &self.transcript[index],
+                TranscriptItem::Thought { live: true, .. }
+            );
+            if !live || existing_live {
+                return index;
             }
-            return index;
         }
         self.transcript.push(TranscriptItem::Thought {
             run_id: run_id.to_owned(),
@@ -2492,7 +2516,6 @@ impl App {
             live,
             collapsed: true,
         });
-        self.thought_segment_starts.insert(run_id.to_owned(), 0);
         self.transcript.len() - 1
     }
 
@@ -2902,7 +2925,7 @@ fn dream_phase(event_type: &str) -> DreamPhase {
     } else if event_type.ends_with(".failed") {
         DreamPhase::Failed
     } else if event_type.ends_with(".started") {
-        DreamPhase::Running
+        DreamPhase::Queued
     } else {
         DreamPhase::Queued
     }
@@ -2918,7 +2941,13 @@ fn dream_detail(label: &str, phase: DreamPhase, payload: &Value) -> String {
         };
     }
     match phase {
-        DreamPhase::Queued => format!("{label} queued"),
+        DreamPhase::Queued => {
+            if string(payload, "status") == "running" {
+                format!("{label} waiting for the idle model")
+            } else {
+                format!("{label} queued")
+            }
+        }
         DreamPhase::Running => match label {
             "Memory consolidation" => "Consolidating memory in the background".to_owned(),
             "Requested memory capture" => "Capturing requested memory in the background".to_owned(),
@@ -3201,7 +3230,7 @@ mod tests {
     }
 
     #[test]
-    fn sequential_tool_cycles_share_one_thought_and_work_group() {
+    fn sequential_tool_cycles_keep_thought_and_work_in_chronological_segments() {
         let run_id = "run-tool-loop";
         let events = vec![
             event(1, "run.started", run_id, json!({})),
@@ -3294,13 +3323,32 @@ mod tests {
             .filter(|item| matches!(item, TranscriptItem::Assistant { .. }))
             .count();
 
-        assert_eq!(thoughts.len(), 1);
-        assert_eq!(thoughts[0].0, "first check\n\nsecond check");
-        assert_eq!(*thoughts[0].1, 3.0);
-        assert_eq!(activities.len(), 1);
-        assert_eq!(activities[0].0.len(), 2);
-        assert!(*activities[0].1);
+        assert_eq!(thoughts.len(), 3);
+        assert_eq!(thoughts[0].0, "first check");
+        assert_eq!(*thoughts[0].1, 1.0);
+        assert_eq!(thoughts[1].0, "second check");
+        assert_eq!(*thoughts[1].1, 2.0);
+        assert!(thoughts[2].0.is_empty());
+        assert_eq!(activities.len(), 2);
+        assert_eq!(activities[0].0.len(), 1);
+        assert_eq!(activities[1].0.len(), 1);
+        assert!(activities.iter().all(|(_, collapsed)| **collapsed));
         assert_eq!(assistants, 1);
+
+        let kinds = app
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Thought { .. } => Some("thought"),
+                TranscriptItem::Activity { .. } => Some("work"),
+                TranscriptItem::Assistant { .. } => Some("answer"),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            ["thought", "work", "thought", "work", "thought", "answer"]
+        );
     }
 
     #[test]
@@ -3348,10 +3396,10 @@ mod tests {
             true,
         );
 
-        let thought = app
+        let thoughts = app
             .transcript
             .iter()
-            .find_map(|item| match item {
+            .filter_map(|item| match item {
                 TranscriptItem::Thought {
                     content,
                     duration_seconds,
@@ -3359,9 +3407,12 @@ mod tests {
                 } => Some((content, duration_seconds)),
                 _ => None,
             })
-            .unwrap();
-        assert_eq!(thought.0, "first\n\nsecond");
-        assert_eq!(*thought.1, 3.0);
+            .collect::<Vec<_>>();
+        assert_eq!(thoughts.len(), 2);
+        assert_eq!(thoughts[0].0, "first");
+        assert_eq!(*thoughts[0].1, 1.0);
+        assert_eq!(thoughts[1].0, "second");
+        assert_eq!(*thoughts[1].1, 2.0);
     }
 
     #[test]
@@ -3480,11 +3531,11 @@ mod tests {
             true,
         );
 
-        assert!(app.focused_thought.is_none());
+        assert!(app.focused_thought.is_some());
         assert!(app.transcript.iter().any(|item| matches!(
             item,
             TranscriptItem::Plan {
-                collapsed: true,
+                collapsed: false,
                 ..
             }
         )));
@@ -3498,10 +3549,29 @@ mod tests {
             } if run_id == "run-plan"
         )));
 
-        app.ingest_durable(event(3, "run.started", "run-execution", json!({})), true);
         app.ingest_durable(
             event(
-                4,
+                3,
+                "plan.execution.started",
+                "run-execution",
+                json!({"plan_id": "plan-1", "strategy": "keep", "execution_run_id": "run-execution"}),
+            ),
+            true,
+        );
+        assert!(app.focused_thought.is_none());
+        assert!(app.transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Plan {
+                collapsed: true,
+                status,
+                ..
+            } if status == "executing"
+        )));
+
+        app.ingest_durable(event(4, "run.started", "run-execution", json!({})), true);
+        app.ingest_durable(
+            event(
+                5,
                 "model.requested",
                 "run-execution",
                 json!({"purpose": "agent_turn"}),
@@ -3674,9 +3744,29 @@ mod tests {
             event(2, "memory.job.started", "source-run", payload("running")),
             true,
         );
+        assert!(app.transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Dream {
+                phase: DreamPhase::Queued,
+                detail,
+                ..
+            } if detail == "Memory consolidation waiting for the idle model"
+        )));
+        app.ingest_durable(
+            event(3, "model.response.started", "memory-job", json!({})),
+            true,
+        );
+        assert!(app.transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Dream {
+                phase: DreamPhase::Running,
+                detail,
+                ..
+            } if detail == "Consolidating memory in the background"
+        )));
         app.ingest_durable(
             event(
-                3,
+                4,
                 "memory.job.completed",
                 "source-run",
                 payload("completed"),
