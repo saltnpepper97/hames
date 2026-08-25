@@ -85,11 +85,10 @@ pub async fn run() -> Result<()> {
     let mut last_hover_repaint = Instant::now() - Duration::from_millis(20);
 
     loop {
-        app.expire_transcript_hover(Duration::from_millis(160));
         if dirty {
             terminal.draw(&mut app)?;
         }
-        let tick_delay = if app.animating() || app.hovered_transcript_row.is_some() {
+        let tick_delay = if app.animating() {
             Duration::from_millis(80)
         } else {
             Duration::from_secs(3600)
@@ -491,12 +490,10 @@ fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
         Event::Mouse(mouse) => handle_mouse(app, mouse),
         Event::FocusLost => {
             app.hovered_transcript_row = None;
-            app.hovered_transcript_at = None;
             None
         }
         Event::Resize(_, _) => {
             app.hovered_transcript_row = None;
-            app.hovered_transcript_at = None;
             None
         }
         _ => None,
@@ -1125,20 +1122,15 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
 }
 
 fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
-    app.hovered_transcript_row =
-        if matches!(mouse.kind, MouseEventKind::Moved) && app.modal.is_none() {
+    if matches!(mouse.kind, MouseEventKind::Moved) {
+        app.hovered_transcript_row = if app.modal.is_none() {
             app.transcript_viewport
                 .point(mouse.column, mouse.row)
                 .map(|point| point.row)
         } else {
             None
         };
-    app.hovered_transcript_at =
-        if matches!(mouse.kind, MouseEventKind::Moved) && app.hovered_transcript_row.is_some() {
-            Some(Instant::now())
-        } else {
-            None
-        };
+    }
     match mouse.kind {
         MouseEventKind::ScrollUp => {
             app.hovered_transcript_row = None;
@@ -2753,8 +2745,6 @@ fn info(title: &str, lines: Vec<String>) -> Modal {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
-
     use crossterm::event::{
         Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
@@ -3523,23 +3513,50 @@ mod tests {
     fn terminal_focus_loss_clears_transcript_hover() {
         let mut app = App::new(session(), Vec::new(), true);
         app.hovered_transcript_row = Some(4);
-        app.hovered_transcript_at = Some(Instant::now());
 
         assert!(handle_terminal_event(&mut app, Event::FocusLost).is_none());
         assert_eq!(app.hovered_transcript_row, None);
-        assert_eq!(app.hovered_transcript_at, None);
     }
 
     #[test]
-    fn transcript_hover_expires_when_pointer_events_stop_at_window_edge() {
+    fn still_pointer_keeps_transcript_hover() {
         let mut app = App::new(session(), Vec::new(), true);
-        app.hovered_transcript_row = Some(4);
-        app.hovered_transcript_at = Some(Instant::now() - Duration::from_millis(200));
+        app.transcript_viewport = TranscriptViewport {
+            x: 2,
+            y: 3,
+            width: 30,
+            height: 2,
+            line_offset: 4,
+            lines: vec![
+                "first".to_owned(),
+                "second".to_owned(),
+                "third".to_owned(),
+                "fourth".to_owned(),
+                "fifth".to_owned(),
+                "sixth".to_owned(),
+            ],
+        };
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 8,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(app.hovered_transcript_row, Some(5));
 
-        app.expire_transcript_hover(Duration::from_millis(160));
-
-        assert_eq!(app.hovered_transcript_row, None);
-        assert_eq!(app.hovered_transcript_at, None);
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 8,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(app.hovered_transcript_row, Some(5));
     }
 
     #[test]
@@ -3588,7 +3605,6 @@ mod tests {
             panic!("fixture should remain an activity item");
         };
         assert!(*collapsed);
-        assert_eq!(app.hovered_transcript_row, None);
     }
 
     #[test]

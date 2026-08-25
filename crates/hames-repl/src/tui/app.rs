@@ -1116,7 +1116,6 @@ pub struct App {
     pub scroll_drag: Option<ScrollDrag>,
     pub transcript_viewport: TranscriptViewport,
     pub hovered_transcript_row: Option<usize>,
-    pub hovered_transcript_at: Option<Instant>,
     pub transcript_selection: Option<TranscriptSelection>,
     pub selecting_transcript: bool,
     pub modal_viewport: TranscriptViewport,
@@ -1197,7 +1196,6 @@ impl App {
             scroll_drag: None,
             transcript_viewport: TranscriptViewport::default(),
             hovered_transcript_row: None,
-            hovered_transcript_at: None,
             transcript_selection: None,
             selecting_transcript: false,
             modal_viewport: TranscriptViewport::default(),
@@ -1237,16 +1235,6 @@ impl App {
                 TranscriptItem::Compaction { live, .. } => *live,
                 _ => false,
             })
-    }
-
-    pub fn expire_transcript_hover(&mut self, maximum_age: Duration) {
-        if self
-            .hovered_transcript_at
-            .is_some_and(|seen| seen.elapsed() >= maximum_age)
-        {
-            self.hovered_transcript_row = None;
-            self.hovered_transcript_at = None;
-        }
     }
 
     pub fn set_queue(&mut self, state: QueueState) {
