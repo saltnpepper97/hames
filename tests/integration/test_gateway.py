@@ -722,6 +722,8 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
 @pytest.mark.asyncio
 async def test_plan_review_execution_and_session_tasks_lifecycle(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text("[memory]\nenabled = false\n", encoding="utf-8")
     plan_markdown = "# Ship it\n\n## Tasks\n- [ ] Implement lifecycle\n- [ ] Verify behavior"
     fake = PlanExecutionProvider(plan_markdown)
     state = GatewayState.create(paths, providers={"fake": fake})
@@ -824,6 +826,8 @@ async def test_plan_review_execution_and_session_tasks_lifecycle(tmp_path: Path)
 @pytest.mark.asyncio
 async def test_truncated_plan_execution_continues_with_reasoning_and_tasks(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text("[memory]\nenabled = false\n", encoding="utf-8")
     plan_markdown = "# Continue it\n\n## Tasks\n- [ ] Implement change\n- [ ] Verify change"
     fake = PlanExecutionProvider(plan_markdown, truncate_first_execution=True)
     state = GatewayState.create(paths, providers={"fake": fake})
@@ -887,6 +891,8 @@ async def test_plan_execution_stall_fails_visibly_after_three_no_progress_turns(
     tmp_path: Path,
 ) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text("[memory]\nenabled = false\n", encoding="utf-8")
     provider = StalledPlanExecutionProvider("# Stalled\n\n## Tasks\n- [ ] Do the work")
     state = GatewayState.create(paths, providers={"fake": provider})
     headers = {"Authorization": f"Bearer {state.token}"}
