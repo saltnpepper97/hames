@@ -1877,30 +1877,15 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             9,
         ),
         Modal::Approval(_) => unreachable!("approvals render in the lower tray"),
-        Modal::Help => (
-            "Hames shortcuts",
-            vec![
-                help_line("Enter", "send"),
-                help_line("Alt+Enter / Shift+Enter / Ctrl+J", "new line"),
-                help_line("Ctrl+K", "command palette"),
-                help_line("Shift+Tab", "cycle Manual, Auto, and Plan mode"),
-                help_line("Ctrl+C", "cancel active work"),
-                help_line("PgUp / wheel", "scroll transcript"),
-                help_line("Enter / Space", "expand or collapse a selected Thought"),
-                help_line(
-                    "/new /clear /resume /compact /goal",
-                    "session continuity and context",
-                ),
-                help_line("/model /agent /mode", "runtime controls"),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "The palette opens session status, gateway health, usage, events, run/context, memory, Skills, Scars, and plugins.",
-                    Style::default().fg(MUTED),
-                )),
-            ],
-            78,
-            14,
-        ),
+        Modal::Help => {
+            let wide = area.width >= 92;
+            (
+                "Help",
+                help_body(wide),
+                if wide { 88 } else { 62 },
+                if wide { 18 } else { 22 },
+            )
+        }
         Modal::Session => {
             let mut lines = vec![
                 detail_line("Session", &app.session.id),
@@ -3627,9 +3612,118 @@ fn detail_line(label: &str, value: &str) -> Line<'static> {
 
 fn help_line(key: &str, description: &str) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{key:<24}"), Style::default().fg(MINT).bold()),
-        Span::styled(description.to_owned(), Style::default().fg(Color::White)),
+        Span::styled(
+            format!("  {key:<18}"),
+            Style::default().fg(INPUT_LIGHT).bold(),
+        ),
+        Span::styled(description.to_owned(), Style::default().fg(MUTED_LIGHT)),
     ])
+}
+
+fn help_section(label: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("  {}", label.to_ascii_uppercase()),
+        Style::default().fg(Color::White).bold(),
+    ))
+}
+
+fn help_pair_line(
+    left_key: &str,
+    left_description: &str,
+    right_key: &str,
+    right_description: &str,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("  {left_key:<15}"),
+            Style::default().fg(INPUT_LIGHT).bold(),
+        ),
+        Span::styled(
+            format!("{left_description:<21}"),
+            Style::default().fg(MUTED_LIGHT),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format!("{right_key:<15}"),
+            Style::default().fg(INPUT_LIGHT).bold(),
+        ),
+        Span::styled(
+            right_description.to_owned(),
+            Style::default().fg(MUTED_LIGHT),
+        ),
+    ])
+}
+
+fn help_footer() -> Line<'static> {
+    Line::from(vec![
+        Span::styled("  Type ", Style::default().fg(MUTED)),
+        Span::styled("/", Style::default().fg(INPUT_LIGHT).bold()),
+        Span::styled(
+            " for commands, sessions, models, tasks, memory, and settings",
+            Style::default().fg(MUTED),
+        ),
+    ])
+}
+
+fn help_body(wide: bool) -> Vec<Line<'static>> {
+    if wide {
+        return vec![
+            help_section("Basics"),
+            help_pair_line("Enter", "Send message", "Shift/Alt+Enter", "New line"),
+            help_pair_line("Ctrl+K", "Commands", "Shift+Tab", "Change mode"),
+            help_pair_line("Ctrl+P", "Preview paste", "Ctrl+Q", "Quit Hames"),
+            Line::from(""),
+            help_section("While working"),
+            help_pair_line("Esc", "Interrupt turn", "Enter", "Queue message"),
+            help_pair_line("Alt+↑", "Send now", "Ctrl+C", "Cancel or pause"),
+            Line::from(""),
+            help_section("Navigation"),
+            help_pair_line(
+                "PgUp / PgDn",
+                "Scroll transcript",
+                "↑ / ↓",
+                "Move selection",
+            ),
+            help_pair_line(
+                "Enter / Space",
+                "Open selection",
+                "Click",
+                "Open Thought/Work",
+            ),
+            help_pair_line("Drag", "Select and copy", "Wheel", "Scroll"),
+            Line::from(""),
+            help_footer(),
+            Line::from(Span::styled(
+                "  Esc or Enter closes help",
+                Style::default().fg(MUTED),
+            )),
+        ];
+    }
+    vec![
+        help_section("Basics"),
+        help_line("Enter", "Send message"),
+        help_line("Shift/Alt+Enter", "New line"),
+        help_line("Ctrl+K", "Commands"),
+        help_line("Shift+Tab", "Change mode"),
+        Line::from(""),
+        help_section("While working"),
+        help_line("Esc", "Interrupt turn"),
+        help_line("Enter", "Queue message"),
+        help_line("Alt+↑", "Send now"),
+        help_line("Ctrl+C", "Cancel or pause"),
+        Line::from(""),
+        help_section("Navigation"),
+        help_line("PgUp / PgDn", "Scroll transcript"),
+        help_line("↑ / ↓", "Move selection"),
+        help_line("Enter / Space", "Open selection"),
+        help_line("Drag", "Select and copy"),
+        Line::from(""),
+        help_footer(),
+        Line::from(Span::styled(
+            "  Esc or Enter closes help",
+            Style::default().fg(MUTED),
+        )),
+    ]
 }
 
 #[cfg(test)]
@@ -3648,9 +3742,9 @@ mod tests {
         ADDITION_BG, CORAL, CYAN, DELETE_BG, GOLD, INPUT, INPUT_LIGHT, MINT, MINT_LIGHT, MUTED,
         PANEL_BRIGHT, REMOVAL_BG, SKY, agent_access_body, agent_identity_body,
         approval_detail_lines, compact_diff_lines, compact_home, draw, format_elapsed,
-        goal_elapsed, line_text, memory_browser_body, mode_color, mode_outline, scar_browser_body,
-        scar_editor_body, scrollbar_position, sheet_text_color, single_line_editor, thought_label,
-        transcript_lines, traveling_sheen,
+        goal_elapsed, help_body, line_text, memory_browser_body, mode_color, mode_outline,
+        scar_browser_body, scar_editor_body, scrollbar_position, sheet_text_color,
+        single_line_editor, thought_label, transcript_lines, traveling_sheen,
     };
 
     use crate::api::{Goal, MemoryRecord, QueuedMessage, Scar, Session};
@@ -4630,6 +4724,33 @@ mod tests {
         assert_eq!(buffer.cell((88, 8)).unwrap().symbol(), "┐");
         assert_eq!(buffer.cell((11, 8)).unwrap().fg, INPUT);
         assert_ne!(buffer.cell((11, 8)).unwrap().fg, MINT);
+    }
+
+    #[test]
+    fn help_uses_sectioned_wide_and_compact_layouts() {
+        let wide = help_body(true).iter().map(line_text).collect::<Vec<_>>();
+        assert_eq!(wide.len(), 16);
+        assert!(wide.iter().any(|line| line.contains("BASICS")));
+        assert!(wide.iter().any(|line| line.contains("WHILE WORKING")));
+        assert!(wide.iter().any(|line| line.contains("NAVIGATION")));
+        assert!(wide.iter().any(|line| {
+            line.contains("Enter")
+                && line.contains("Send message")
+                && line.contains("Shift/Alt+Enter")
+        }));
+        assert!(
+            wide.iter()
+                .all(|line| UnicodeWidthStr::width(line.as_str()) <= 86)
+        );
+
+        let compact = help_body(false).iter().map(line_text).collect::<Vec<_>>();
+        assert_eq!(compact.len(), 20);
+        assert!(
+            compact
+                .iter()
+                .any(|line| line.contains("Type / for commands"))
+        );
+        assert!(!compact.iter().any(|line| line.contains("palette opens")));
     }
 
     #[test]
