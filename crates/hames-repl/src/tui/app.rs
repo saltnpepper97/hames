@@ -8,8 +8,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::api::{
-    Event, Goal, MemoryRecord, PasteSpan, PlanRevision, PlanState, QueueState, QueuedMessage, Scar,
-    Session, SessionTask, SessionTaskList,
+    ContextUsageProjection, Event, Goal, MemoryRecord, PasteSpan, PlanRevision, PlanState,
+    QueueState, QueuedMessage, Scar, Session, SessionTask, SessionTaskList, UsageProjection,
 };
 
 pub const LARGE_PASTE_LINES: usize = 4;
@@ -722,6 +722,7 @@ pub enum Modal {
     Trust,
     Approval(ApprovalModal),
     Help,
+    Usage(UsageModal),
     Session,
     Goal(GoalModal),
     Memory(MemoryBrowser),
@@ -731,6 +732,11 @@ pub enum Modal {
     PastePreview(String),
     Error(String),
     Info { title: String, lines: Vec<String> },
+}
+
+#[derive(Clone, Debug)]
+pub struct UsageModal {
+    pub usage: UsageProjection,
 }
 
 #[derive(Clone, Debug)]
@@ -1026,8 +1032,7 @@ pub struct App {
     pub last_sequence: u64,
     pub seen_events: HashSet<String>,
     thought_segment_starts: HashMap<String, usize>,
-    pub context_tokens: u64,
-    pub context_window: u64,
+    pub context_usage: Option<ContextUsageProjection>,
     pub hits: Vec<HitRegion>,
     pub should_quit: bool,
     pub focused_thought: Option<usize>,
@@ -1040,7 +1045,6 @@ pub struct App {
 
 impl App {
     pub fn new(session: Session, events: Vec<Event>, trusted: bool) -> Self {
-        let context_window = session.context_window_tokens;
         let session_id = session.id.clone();
         let workspace_name = session.working_directory.clone();
         let agent_name = if session.agent_id == "default" {
@@ -1108,8 +1112,7 @@ impl App {
             last_sequence: 0,
             seen_events: HashSet::new(),
             thought_segment_starts: HashMap::new(),
-            context_tokens: 0,
-            context_window,
+            context_usage: None,
             hits: Vec::new(),
             should_quit: false,
             focused_thought: None,
@@ -1146,11 +1149,61 @@ impl App {
     }
 
     pub fn set_plan(&mut self, plan: PlanState) {
+        let current = plan
+            .current
+            .as_ref()
+            .map(|current| (current.id.clone(), current.status.clone()));
+        let execution_started = current.as_ref().is_some_and(|(_, status)| {
+            matches!(
+                status.as_str(),
+                "requested" | "approved" | "executing" | "completed"
+            )
+        });
         self.plan = plan;
+        if let Some((current_id, current_status)) = current {
+            for item in &mut self.transcript {
+                if let TranscriptItem::Plan {
+                    plan_id,
+                    status,
+                    collapsed,
+                    ..
+                } = item
+                    && plan_id == &current_id
+                {
+                    *status = current_status.clone();
+                    *collapsed = current_status != "ready";
+                }
+            }
+        }
+        if execution_started {
+            self.collapse_for_plan_execution();
+        }
     }
 
     pub fn set_tasks(&mut self, tasks: SessionTaskList) {
         self.tasks = tasks;
+    }
+
+    pub fn current_context_usage(&self) -> Option<&ContextUsageProjection> {
+        self.context_usage.as_ref().filter(|context| {
+            context.estimated_input_tokens > 0
+                && context.context_window_tokens > 0
+                && context.provider == self.session.provider
+                && context.model == self.session.model
+                && context.agent_id == self.session.agent_id
+        })
+    }
+
+    fn collapse_for_plan_execution(&mut self) {
+        self.focused_thought = None;
+        self.pending_thought_toggle = None;
+        for item in &mut self.transcript {
+            match item {
+                TranscriptItem::Plan { collapsed, .. }
+                | TranscriptItem::Thought { collapsed, .. } => *collapsed = true,
+                _ => {}
+            }
+        }
     }
 
     pub fn plan_ready(&self) -> bool {
@@ -1693,6 +1746,21 @@ impl App {
         match event.event_type.as_str() {
             "session.mode.changed" => {
                 self.session.interaction_mode = string(&event.payload, "mode");
+                self.context_usage = None;
+            }
+            "session.settings.changed" => {
+                self.session.provider = string(&event.payload, "provider");
+                self.session.model = string(&event.payload, "model");
+                self.session.reasoning_effort = string(&event.payload, "reasoning_effort");
+                self.session.context_window_tokens =
+                    u64_value(&event.payload, "context_window_tokens");
+                self.session.context_window_source =
+                    string(&event.payload, "context_window_source");
+                self.context_usage = None;
+            }
+            "session.agent.changed" => {
+                self.session.agent_id = string(&event.payload, "agent_id");
+                self.context_usage = None;
             }
             "session.title.changed" => {
                 self.session.title = Some(string(&event.payload, "title"));
@@ -1790,12 +1858,17 @@ impl App {
                     if let TranscriptItem::Plan {
                         plan_id,
                         status: item_status,
+                        collapsed,
                         ..
                     } = item
                         && plan_id == &string(&event.payload, "plan_id")
                     {
                         *item_status = status.to_owned();
+                        *collapsed = status != "ready";
                     }
+                }
+                if matches!(status, "requested" | "approved" | "executing" | "completed") {
+                    self.collapse_for_plan_execution();
                 }
                 if status == "failed" {
                     self.active_run = None;
@@ -2059,6 +2132,7 @@ impl App {
                 self.run_started_at.get_or_insert_with(Instant::now);
             }
             "context.compaction.completed" => {
+                self.context_usage = None;
                 if let Some(TranscriptItem::Compaction {
                     summary,
                     provider,
@@ -2210,16 +2284,16 @@ impl App {
                 }
             }
             "context.compiled" => {
-                self.context_tokens = event
-                    .payload
-                    .get("estimated_input_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(self.context_tokens);
-                self.context_window = event
-                    .payload
-                    .get("context_window_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(self.context_window);
+                self.context_usage = Some(ContextUsageProjection {
+                    provider: string(&event.payload, "provider"),
+                    model: string(&event.payload, "model"),
+                    agent_id: string(&event.payload, "agent_id"),
+                    estimated_input_tokens: u64_value(&event.payload, "estimated_input_tokens"),
+                    context_window_tokens: u64_value(&event.payload, "context_window_tokens"),
+                    input_budget_tokens: u64_value(&event.payload, "input_budget_tokens"),
+                    output_reserve_tokens: u64_value(&event.payload, "output_reserve_tokens"),
+                    context_window_source: string(&event.payload, "context_window_source"),
+                });
             }
             "model.response.failed" | "run.failed" => {
                 if event.event_type == "model.response.failed"
@@ -3347,6 +3421,84 @@ mod tests {
             item,
             TranscriptItem::Assistant { content, .. } if content.starts_with("# Initial plan") || content.starts_with("# Revised plan")
         )));
+    }
+
+    #[test]
+    fn plan_approval_collapses_plan_and_clears_stale_thought_focus() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_durable(
+            event(
+                1,
+                "plan.proposed",
+                "run-plan",
+                json!({
+                    "plan_id": "plan-1",
+                    "revision": 1,
+                    "title": "Build it",
+                    "markdown": "# Build it\n\n## Tasks\n- [ ] Implement it",
+                    "tasks": ["Implement it"],
+                    "source_run_id": "run-plan",
+                    "supersedes_plan_id": null
+                }),
+            ),
+            true,
+        );
+        app.transcript.push(TranscriptItem::Thought {
+            run_id: "run-plan".to_owned(),
+            content: "old expanded reasoning".to_owned(),
+            duration_seconds: 12.0,
+            interrupted: false,
+            live: false,
+            collapsed: false,
+        });
+        app.focused_thought = Some(app.transcript.len() - 1);
+
+        app.ingest_durable(
+            event(
+                2,
+                "plan.approved",
+                "run-execution",
+                json!({"plan_id": "plan-1", "strategy": "keep", "execution_run_id": "run-execution"}),
+            ),
+            true,
+        );
+
+        assert!(app.focused_thought.is_none());
+        assert!(app.transcript.iter().all(|item| match item {
+            TranscriptItem::Plan { collapsed, .. } | TranscriptItem::Thought { collapsed, .. } =>
+                *collapsed,
+            _ => true,
+        }));
+    }
+
+    #[test]
+    fn compiled_context_rehydrates_on_resume_and_invalidates_on_mode_change() {
+        let context = event(
+            1,
+            "context.compiled",
+            "run-context",
+            json!({
+                "provider": "fake",
+                "model": "fixture",
+                "agent_id": "default",
+                "estimated_input_tokens": 28_500,
+                "context_window_tokens": 114_000,
+                "input_budget_tokens": 100_000,
+                "output_reserve_tokens": 14_000,
+                "context_window_source": "provider"
+            }),
+        );
+        let mut app = App::new(session(), vec![context], true);
+        assert!(matches!(
+            app.current_context_usage(),
+            Some(context) if context.estimated_input_tokens == 28_500
+        ));
+
+        app.ingest_durable(
+            event(2, "session.mode.changed", "", json!({"mode": "plan"})),
+            true,
+        );
+        assert!(app.current_context_usage().is_none());
     }
 
     #[test]

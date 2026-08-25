@@ -17,7 +17,7 @@ use super::app::{
     ActivityCategory, ActivityPhase, AgentChoice, AgentEditField, AgentEditor, AgentEditorPage,
     App, ApprovalModal, Composer, ComposerUnit, DreamPhase, HitAction, HitRegion, MemoryBrowser,
     MenuAction, Modal, ScarBrowser, ScarEditField, ScarEditor, ScrollTarget, Sheet, SheetKind,
-    ThemeKind, TranscriptItem, TranscriptViewport,
+    ThemeKind, TranscriptItem, TranscriptViewport, UsageModal,
 };
 
 const MINT: Color = Color::Rgb(116, 226, 192);
@@ -579,6 +579,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     "requested" => "Starting",
                     "approved" => "Approved",
                     "executing" => "Executing",
+                    "completed" => "Completed",
                     "failed" => "Needs attention",
                     _ => "Ready",
                 };
@@ -1387,6 +1388,7 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
             Span::styled(" commands", Style::default().fg(MUTED)),
         ])
     };
+    let left_width = UnicodeWidthStr::width(line_text(&left).as_str());
     frame.render_widget(Paragraph::new(left), area);
     if app.sheet.is_none()
         && app.active_run.is_some()
@@ -1403,15 +1405,42 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
     } else {
         app.activity_bar_effect = None;
     }
+    let mut right = Vec::new();
+    if let Some(context) = context_footer(app) {
+        let right_width = UnicodeWidthStr::width(context.as_str()) + 15;
+        if left_width + right_width + 2 <= usize::from(area.width) {
+            right.push(Span::styled(context, Style::default().fg(INPUT_LIGHT)));
+            right.push(Span::styled(" · ", Style::default().fg(MUTED)));
+        }
+    }
+    right.extend([
+        Span::styled("[", Style::default().fg(MUTED)),
+        Span::styled("connected", Style::default().fg(MINT)),
+        Span::styled("]  ", Style::default().fg(MUTED)),
+    ]);
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("[", Style::default().fg(MUTED)),
-            Span::styled("connected", Style::default().fg(MINT)),
-            Span::styled("]  ", Style::default().fg(MUTED)),
-        ]))
-        .alignment(Alignment::Right),
+        Paragraph::new(Line::from(right)).alignment(Alignment::Right),
         area,
     );
+}
+
+fn context_percent(used: u64, window: u64) -> u64 {
+    if window == 0 {
+        return 0;
+    }
+    ((used as f64 / window as f64) * 100.0).round() as u64
+}
+
+fn context_footer(app: &App) -> Option<String> {
+    let context = app.current_context_usage()?;
+    Some(format!(
+        "{} ({}%)",
+        format_token_count(context.estimated_input_tokens),
+        context_percent(
+            context.estimated_input_tokens,
+            context.context_window_tokens
+        )
+    ))
 }
 
 fn sheet_shortcuts(app: &App) -> Line<'static> {
@@ -1613,13 +1642,18 @@ fn goal_elapsed(goal: &crate::api::Goal) -> String {
 }
 
 fn format_token_count(tokens: u64) -> String {
-    if tokens >= 10_000 {
-        format!("{}k", tokens / 1_000)
+    if tokens >= 1_000_000 {
+        compact_decimal(tokens as f64 / 1_000_000.0, "m")
     } else if tokens >= 1_000 {
-        format!("{:.1}k", tokens as f64 / 1_000.0)
+        compact_decimal(tokens as f64 / 1_000.0, "k")
     } else {
         tokens.to_string()
     }
+}
+
+fn compact_decimal(value: f64, suffix: &str) -> String {
+    let rendered = format!("{value:.1}");
+    format!("{}{suffix}", rendered.trim_end_matches(".0"))
 }
 
 fn composer_rows(app: &App, width: u16) -> u16 {
@@ -1885,6 +1919,14 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 if wide { 88 } else { 62 },
                 if wide { 18 } else { 22 },
             )
+        }
+        Modal::Usage(usage) => {
+            let wide = area.width >= 84;
+            let body = usage_body(usage, wide);
+            let height = u16::try_from(body.len().saturating_add(2))
+                .unwrap_or(22)
+                .min(22);
+            ("Usage", body, if wide { 82 } else { 62 }, height)
         }
         Modal::Session => {
             let mut lines = vec![
@@ -3726,6 +3768,168 @@ fn help_body(wide: bool) -> Vec<Line<'static>> {
     ]
 }
 
+fn usage_section(label: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("  {}", label.to_ascii_uppercase()),
+        Style::default().fg(Color::White).bold(),
+    ))
+}
+
+fn usage_metric_line(label: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("  {label:<18}"), Style::default().fg(MUTED)),
+        Span::styled(value.to_owned(), Style::default().fg(INPUT_LIGHT)),
+    ])
+}
+
+fn usage_metric_pair(left: (&str, &str), right: Option<(&str, &str)>) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled(format!("  {:<16}", left.0), Style::default().fg(MUTED)),
+        Span::styled(format!("{:<15}", left.1), Style::default().fg(INPUT_LIGHT)),
+    ];
+    if let Some((label, value)) = right {
+        spans.extend([
+            Span::styled(format!("{label:<16}"), Style::default().fg(MUTED)),
+            Span::styled(value.to_owned(), Style::default().fg(INPUT_LIGHT)),
+        ]);
+    }
+    Line::from(spans)
+}
+
+fn usage_value(tokens: u64) -> String {
+    if tokens == 0 {
+        "—".to_owned()
+    } else {
+        format_token_count(tokens)
+    }
+}
+
+fn usage_cost(value: f64) -> String {
+    if value <= 0.0 {
+        "—".to_owned()
+    } else if value < 0.01 {
+        format!("${value:.4}")
+    } else {
+        format!("${value:.2}")
+    }
+}
+
+fn context_gauge(used: u64, window: u64, cells: usize) -> Line<'static> {
+    let percent = context_percent(used, window);
+    let filled = if used == 0 || window == 0 {
+        0
+    } else {
+        (((percent.min(100) as usize) * cells).div_ceil(100)).max(1)
+    };
+    let fill_color = if percent >= 100 {
+        CORAL
+    } else if percent >= 80 {
+        GOLD
+    } else {
+        INPUT_LIGHT
+    };
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled("█".repeat(filled), Style::default().fg(fill_color)),
+        Span::styled(
+            "░".repeat(cells.saturating_sub(filled)),
+            Style::default().fg(RULE_LIGHT),
+        ),
+    ])
+}
+
+fn usage_body(modal: &UsageModal, wide: bool) -> Vec<Line<'static>> {
+    let usage = &modal.usage;
+    let mut lines = vec![usage_section("Context")];
+    if let Some(context) = &usage.latest_context {
+        let content_width: usize = if wide { 76 } else { 56 };
+        let left = format!(
+            "  {} / {}",
+            format_token_count(context.estimated_input_tokens),
+            format_token_count(context.context_window_tokens)
+        );
+        let right = format!(
+            "{}%",
+            context_percent(
+                context.estimated_input_tokens,
+                context.context_window_tokens
+            )
+        );
+        let gap = " ".repeat(
+            content_width
+                .saturating_sub(UnicodeWidthStr::width(left.as_str()))
+                .saturating_sub(UnicodeWidthStr::width(right.as_str())),
+        );
+        lines.push(Line::from(vec![
+            Span::styled(left, Style::default().fg(INPUT_LIGHT).bold()),
+            Span::raw(gap),
+            Span::styled(right, Style::default().fg(INPUT_LIGHT).bold()),
+        ]));
+        lines.push(context_gauge(
+            context.estimated_input_tokens,
+            context.context_window_tokens,
+            if wide { 58 } else { 42 },
+        ));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  {} input budget · {} response reserve · {}",
+                format_token_count(context.input_budget_tokens),
+                format_token_count(context.output_reserve_tokens),
+                context.context_window_source
+            ),
+            Style::default().fg(MUTED),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("  {} / {}", context.provider, context.model),
+            Style::default().fg(MUTED),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "  No compiled context yet",
+            Style::default().fg(MUTED),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(usage_section("Session totals"));
+
+    let mut metrics = vec![
+        ("Provider input", usage_value(usage.input_tokens)),
+        ("Output", usage_value(usage.output_tokens)),
+        ("Model requests", usage.model_requests.to_string()),
+    ];
+    if usage.cached_input_tokens > 0 {
+        metrics.insert(1, ("Cached input", usage_value(usage.cached_input_tokens)));
+    }
+    if usage.reasoning_tokens > 0 {
+        metrics.push(("Reasoning", usage_value(usage.reasoning_tokens)));
+    }
+    if usage.estimated_input_tokens > 0 {
+        metrics.push(("Compiled input", usage_value(usage.estimated_input_tokens)));
+    }
+    if usage.provider_reported_cost > 0.0 {
+        metrics.push(("Reported cost", usage_cost(usage.provider_reported_cost)));
+    }
+
+    if wide {
+        for pair in metrics.chunks(2) {
+            lines.push(usage_metric_pair(
+                (&pair[0].0, &pair[0].1),
+                pair.get(1).map(|item| (item.0, item.1.as_str())),
+            ));
+        }
+    } else {
+        for (label, value) in metrics {
+            lines.push(usage_metric_line(label, &value));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Esc or Enter closes usage",
+        Style::default().fg(MUTED),
+    )));
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
@@ -3741,18 +3945,43 @@ mod tests {
     use super::{
         ADDITION_BG, CORAL, CYAN, DELETE_BG, GOLD, INPUT, INPUT_LIGHT, MINT, MINT_LIGHT, MUTED,
         PANEL_BRIGHT, REMOVAL_BG, SKY, agent_access_body, agent_identity_body,
-        approval_detail_lines, compact_diff_lines, compact_home, draw, format_elapsed,
-        goal_elapsed, help_body, line_text, memory_browser_body, mode_color, mode_outline,
-        scar_browser_body, scar_editor_body, scrollbar_position, sheet_text_color,
-        single_line_editor, thought_label, transcript_lines, traveling_sheen,
+        approval_detail_lines, compact_diff_lines, compact_home, context_footer, context_percent,
+        draw, format_elapsed, format_token_count, goal_elapsed, help_body, line_text,
+        memory_browser_body, mode_color, mode_outline, scar_browser_body, scar_editor_body,
+        scrollbar_position, sheet_text_color, single_line_editor, thought_label, transcript_lines,
+        traveling_sheen, usage_body,
     };
 
-    use crate::api::{Goal, MemoryRecord, QueuedMessage, Scar, Session};
+    use crate::api::{
+        ContextUsageProjection, Goal, MemoryRecord, QueuedMessage, Scar, Session, UsageProjection,
+    };
     use crate::tui::app::{
         ActivityPhase, ActivityRow, AgentEditor, AgentEditorPage, App, ApprovalModal, DreamPhase,
         HitAction, InlineEditor, InlineEditorKind, MemoryBrowser, MenuAction, MenuOption, Modal,
-        ScarBrowser, ScarEditor, Sheet, SheetKind, TranscriptItem, TranscriptPoint,
+        ScarBrowser, ScarEditor, Sheet, SheetKind, TranscriptItem, TranscriptPoint, UsageModal,
     };
+
+    fn usage_projection() -> UsageProjection {
+        UsageProjection {
+            estimated_input_tokens: 40_100,
+            input_tokens: 38_400,
+            output_tokens: 12_400,
+            cached_input_tokens: 20_100,
+            reasoning_tokens: 3_200,
+            provider_reported_cost: 0.0,
+            model_requests: 17,
+            latest_context: Some(ContextUsageProjection {
+                provider: "fake".to_owned(),
+                model: "fixture".to_owned(),
+                agent_id: "default".to_owned(),
+                estimated_input_tokens: 28_500,
+                context_window_tokens: 114_000,
+                input_budget_tokens: 100_000,
+                output_reserve_tokens: 14_000,
+                context_window_source: "provider".to_owned(),
+            }),
+        }
+    }
 
     #[test]
     fn workspace_header_compacts_only_the_exact_home_prefix() {
@@ -4751,6 +4980,74 @@ mod tests {
                 .any(|line| line.contains("Type / for commands"))
         );
         assert!(!compact.iter().any(|line| line.contains("palette opens")));
+    }
+
+    #[test]
+    fn compact_context_formatting_matches_the_footer_density() {
+        assert_eq!(format_token_count(950), "950");
+        assert_eq!(format_token_count(21_000), "21k");
+        assert_eq!(format_token_count(28_500), "28.5k");
+        assert_eq!(format_token_count(1_250_000), "1.2m");
+        assert_eq!(context_percent(28_500, 114_000), 25);
+    }
+
+    #[test]
+    fn footer_shows_valid_context_before_connected_when_space_allows() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.context_usage = usage_projection().latest_context;
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("28.5k (25%) · [connected]"));
+        assert_eq!(context_footer(&app).as_deref(), Some("28.5k (25%)"));
+
+        let narrow_backend = TestBackend::new(60, 24);
+        let mut narrow_terminal = Terminal::new(narrow_backend).unwrap();
+        narrow_terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let narrow = narrow_terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(!narrow.contains("28.5k (25%)"));
+        assert!(narrow.contains("[connected]"));
+    }
+
+    #[test]
+    fn usage_view_uses_a_thick_context_gauge_and_organized_totals() {
+        let modal = UsageModal {
+            usage: usage_projection(),
+        };
+        let wide = usage_body(&modal, true)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>();
+        assert!(wide.iter().any(|line| line.contains("CONTEXT")));
+        assert!(wide.iter().any(|line| line.contains("28.5k / 114k")));
+        assert!(wide.iter().any(|line| line.contains("25%")));
+        assert!(wide.iter().any(|line| line.contains('█')));
+        assert!(wide.iter().any(|line| line.contains('░')));
+        assert!(wide.iter().any(|line| line.contains("SESSION TOTALS")));
+        assert!(wide.iter().any(|line| line.contains("Provider input")));
+        assert!(wide.iter().any(|line| line.contains("Cached input")));
+        assert!(!wide.iter().any(|line| line.contains("Reported cost")));
+
+        let compact = usage_body(&modal, false)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>();
+        assert!(compact.len() > wide.len());
+        assert!(compact.iter().any(|line| line.contains("Model requests")));
     }
 
     #[test]

@@ -321,6 +321,18 @@ pub struct ApprovalResolution {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ContextUsageProjection {
+    pub provider: String,
+    pub model: String,
+    pub agent_id: String,
+    pub estimated_input_tokens: u64,
+    pub context_window_tokens: u64,
+    pub input_budget_tokens: u64,
+    pub output_reserve_tokens: u64,
+    pub context_window_source: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct UsageProjection {
     pub estimated_input_tokens: u64,
     pub input_tokens: u64,
@@ -329,6 +341,8 @@ pub struct UsageProjection {
     pub reasoning_tokens: u64,
     pub provider_reported_cost: f64,
     pub model_requests: u64,
+    #[serde(default)]
+    pub latest_context: Option<ContextUsageProjection>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

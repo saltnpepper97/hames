@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use app::{
     AgentEditField, AgentEditor, AgentEditorPage, App, GoalModal, HitAction, InlineEditor,
     InlineEditorKind, MemoryBrowser, MenuAction, MenuOption, Modal, ScarBrowser, ScarEditField,
-    ScarEditor, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind,
+    ScarEditor, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind, UsageModal,
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -1093,7 +1093,7 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             }
             _ => None,
         },
-        Modal::Help | Modal::Session | Modal::Error(_) | Modal::Info { .. } => {
+        Modal::Help | Modal::Usage(_) | Modal::Session | Modal::Error(_) | Modal::Info { .. } => {
             if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
                 app.modal = None;
             }
@@ -1786,6 +1786,7 @@ async fn apply_effect(
                     .update_session_agent(&app.session.id, "default")
                     .await?;
                 app.agent_name = "Hames".to_owned();
+                app.context_usage = None;
             }
             client.retire_agent(&agent_id).await?;
             refresh_agents_sheet(client, app).await?;
@@ -2007,7 +2008,7 @@ async fn apply_menu_action(
                 app.session = client
                     .update_session(&app.session.id, &provider, &model, "off")
                     .await?;
-                app.context_window = app.session.context_window_tokens;
+                app.context_usage = None;
                 app.sheet = None;
                 app.notice = Some(format!("Using {provider} / {model} · reasoning off"));
                 return Ok(None);
@@ -2143,17 +2144,8 @@ async fn apply_menu_action(
         }
         MenuAction::Usage => {
             let usage = client.usage(&app.session.id).await?;
-            app.modal = Some(info(
-                "Session usage",
-                vec![
-                    format!("Estimated input  {}", usage.estimated_input_tokens),
-                    format!("Provider input   {}", usage.input_tokens),
-                    format!("Output           {}", usage.output_tokens),
-                    format!("Reasoning        {}", usage.reasoning_tokens),
-                    format!("Cached input     {}", usage.cached_input_tokens),
-                    format!("Model requests   {}", usage.model_requests),
-                ],
-            ));
+            app.context_usage = usage.latest_context.clone();
+            app.modal = Some(Modal::Usage(UsageModal { usage }));
         }
         MenuAction::Events => {
             let events = client.events(&app.session.id).await?;
@@ -2327,11 +2319,12 @@ async fn apply_menu_action(
             app.session = client
                 .update_session(&app.session.id, &provider, &model, &reasoning)
                 .await?;
-            app.context_window = app.session.context_window_tokens;
+            app.context_usage = None;
             app.notice = Some(format!("Using {provider} / {model}"));
         }
         MenuAction::SetAgent(agent) => {
             app.session = client.update_session_agent(&app.session.id, &agent).await?;
+            app.context_usage = None;
             app.agent_name = client.agent(&agent).await?.agent.name;
             app.notice = Some(format!("Agent changed to {agent}"));
         }
@@ -2340,6 +2333,7 @@ async fn apply_menu_action(
                 bail!("mode must be manual, auto, or plan");
             }
             app.session = client.update_session_mode(&app.session.id, &mode).await?;
+            app.context_usage = None;
             app.notice = Some(match mode.as_str() {
                 "manual" => "Manual mode · ask before every edit".to_owned(),
                 "plan" => "Plan mode · inspect and test without code writes".to_owned(),
@@ -2356,6 +2350,7 @@ async fn apply_menu_action(
                     effort,
                 )
                 .await?;
+            app.context_usage = None;
             app.notice = Some(format!(
                 "Reasoning effort · {}",
                 effort_label(&app.session.reasoning_effort)

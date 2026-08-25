@@ -17,6 +17,17 @@ class InspectionModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ContextUsageProjection(InspectionModel):
+    provider: str
+    model: str
+    agent_id: str
+    estimated_input_tokens: int
+    context_window_tokens: int
+    input_budget_tokens: int
+    output_reserve_tokens: int
+    context_window_source: str
+
+
 class UsageProjection(InspectionModel):
     estimated_input_tokens: int = 0
     input_tokens: int = 0
@@ -25,6 +36,7 @@ class UsageProjection(InspectionModel):
     reasoning_tokens: int = 0
     provider_reported_cost: float = 0.0
     model_requests: int = 0
+    latest_context: ContextUsageProjection | None = None
 
 
 class AgentUsageProjection(InspectionModel):
@@ -152,6 +164,8 @@ def agent_usage(ledger: Ledger, agent_id: str) -> AgentUsageProjection:
         if event.agent_id == agent_id
     ]
     usage = _usage(events)
+    # A latest compiled context belongs to one session, not an agent aggregate.
+    usage.latest_context = None
     tool_events = [
         event
         for event in events
@@ -427,6 +441,23 @@ def _usage(events: list[Event]) -> UsageProjection:
     for event in events:
         if event.type == "context.compiled":
             result.estimated_input_tokens += int(event.payload.get("estimated_input_tokens", 0))
+            result.latest_context = ContextUsageProjection(
+                provider=str(event.payload.get("provider", "")),
+                model=str(event.payload.get("model", "")),
+                agent_id=str(event.payload.get("agent_id", "")),
+                estimated_input_tokens=int(event.payload.get("estimated_input_tokens", 0)),
+                context_window_tokens=int(event.payload.get("context_window_tokens", 0)),
+                input_budget_tokens=int(event.payload.get("input_budget_tokens", 0)),
+                output_reserve_tokens=int(event.payload.get("output_reserve_tokens", 0)),
+                context_window_source=str(event.payload.get("context_window_source", "")),
+            )
+        elif event.type in {
+            "session.settings.changed",
+            "session.agent.changed",
+            "session.mode.changed",
+            "context.compaction.completed",
+        }:
+            result.latest_context = None
         elif event.type == "model.requested":
             result.model_requests += 1
         elif event.type == "model.usage":

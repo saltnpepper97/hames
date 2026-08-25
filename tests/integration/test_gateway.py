@@ -548,7 +548,18 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             assert context_response.status_code == 200
             assert context_response.json()["request_snapshot"] == persisted_request
             usage_response = await client.get(f"/v1/sessions/{session_id}/usage", headers=headers)
-            assert usage_response.json()["input_tokens"] == 10
+            usage_body = usage_response.json()
+            assert usage_body["input_tokens"] == 10
+            assert usage_body["latest_context"] == {
+                "provider": context_payload["provider"],
+                "model": context_payload["model"],
+                "agent_id": context_payload["agent_id"],
+                "estimated_input_tokens": context_payload["estimated_input_tokens"],
+                "context_window_tokens": context_payload["context_window_tokens"],
+                "input_budget_tokens": context_payload["input_budget_tokens"],
+                "output_reserve_tokens": context_payload["output_reserve_tokens"],
+                "context_window_source": context_payload["context_window_source"],
+            }
             markdown = await client.get(
                 f"/v1/sessions/{session_id}/transcript",
                 headers=headers,
@@ -621,6 +632,17 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             )
             assert verified.status_code == 200
             assert response_object(verified)["ok"] is True
+
+            changed_mode = await client.put(
+                f"/v1/sessions/{session_id}/mode",
+                headers=headers,
+                json={"mode": "plan"},
+            )
+            assert changed_mode.status_code == 200
+            invalidated_usage = await client.get(
+                f"/v1/sessions/{session_id}/usage", headers=headers
+            )
+            assert invalidated_usage.json()["latest_context"] is None
     finally:
         await state.runs.close()
 
