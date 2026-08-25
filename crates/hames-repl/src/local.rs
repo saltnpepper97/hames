@@ -119,6 +119,16 @@ impl LocalPaths {
     }
 
     pub fn configured_model(&self, provider: &str) -> Result<String> {
+        if let Ok(value) = env::var("HAMES_RUNTIME__DEFAULT_MODEL")
+            && !value.is_empty()
+        {
+            return Ok(value);
+        }
+        if let Some(value) = self.config_value(&["runtime", "default_model"])?
+            && !value.is_empty()
+        {
+            return Ok(value);
+        }
         let key = format!("HAMES_PROVIDERS__{}__MODEL", provider.to_uppercase());
         if let Ok(value) = env::var(key) {
             return Ok(value);
@@ -128,22 +138,6 @@ impl LocalPaths {
         }
         Ok(self
             .legacy_provider_value(provider, "model")?
-            .unwrap_or_default())
-    }
-
-    pub fn configured_reasoning(&self, provider: &str) -> Result<String> {
-        let key = format!(
-            "HAMES_PROVIDERS__{}__REASONING_EFFORT",
-            provider.to_uppercase()
-        );
-        if let Ok(value) = env::var(key) {
-            return Ok(value);
-        }
-        if let Some(value) = self.config_value(&["providers", provider, "reasoning_effort"])? {
-            return Ok(value);
-        }
-        Ok(self
-            .legacy_provider_value(provider, "reasoning_effort")?
             .unwrap_or_default())
     }
 
@@ -930,6 +924,20 @@ mod tests {
     fn legacy_llamacpp_name_is_normalized() {
         assert_eq!(normalize_provider("llamacpp"), "llama_cpp");
         assert_eq!(normalize_provider("ollama"), "ollama");
+    }
+
+    #[test]
+    fn runtime_default_model_overrides_the_provider_fallback() {
+        let paths = temporary_paths("default-model");
+        fs::create_dir_all(&paths.root).unwrap();
+        fs::write(
+            &paths.config,
+            "[runtime]\ndefault_model = \"preferred\"\n\n[providers.llama_cpp]\nmodel = \"fallback\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(paths.configured_model("llama_cpp").unwrap(), "preferred");
+        fs::remove_dir_all(&paths.root).unwrap();
     }
 
     #[test]

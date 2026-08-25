@@ -769,16 +769,10 @@ async fn run_session_command(action: SessionAction) -> Result<()> {
         } => {
             let provider = provider.unwrap_or(paths.configured_provider()?);
             let model = model.unwrap_or(paths.configured_model(&provider)?);
-            let reasoning = reasoning.unwrap_or(paths.configured_reasoning(&provider)?);
+            let reasoning = reasoning.unwrap_or_default();
             let cwd = env::current_dir()?.canonicalize()?;
             let session = client
-                .create_session(
-                    &cwd.to_string_lossy(),
-                    "default",
-                    &provider,
-                    &model,
-                    &reasoning,
-                )
+                .create_session(&cwd.to_string_lossy(), "", &provider, &model, &reasoning)
                 .await?;
             if json {
                 print_json(&session)

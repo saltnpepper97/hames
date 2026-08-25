@@ -216,14 +216,21 @@ model's supported reasoning setting on a second sheet before applying the change
 Boolean reasoning models get `on`/`off`; models with a declared effort scale get
 their named levels plus `default` and `off`.
 
-Hames defaults to the `llama_cpp` profile at `http://127.0.0.1:8080`. Model
-selection prefers the request, then the profile default, then a sole discovered
-model; otherwise the REPL asks. A minimal `~/.hames/config.toml` override looks
-like:
+Hames defaults to the `llama_cpp` profile at `http://127.0.0.1:8080`. A fresh
+session uses the runtime defaults below. Model selection prefers an explicit
+request, then `runtime.default_model`, then the selected profile's model, then a
+sole discovered model; otherwise the REPL asks. The configured reasoning effort
+is applied only when the selected model advertises thinking support (boolean
+thinking models use `on`, and non-thinking models use `off`). A minimal
+`~/.hames/config.toml` override looks like:
 
 ```toml
 [runtime]
+default_agent = "default"
 default_provider = "llama_cpp" # or "ollama"
+default_model = "qwen3.8-27b"
+default_reasoning_effort = "medium"
+default_interaction_mode = "auto" # manual, auto, or plan
 max_model_turns_per_user_message = 100
 max_tool_calls_per_run = 99
 max_active_seconds_per_run = 1800.0
@@ -282,6 +289,7 @@ script_timeout_seconds = 60.0
 [providers.llama_cpp]
 adapter = "llama_cpp"
 base_url = "http://127.0.0.1:8080"
+# Per-profile fallback when runtime.default_model is blank or another profile is selected.
 model = "qwen3.8-27b"
 reasoning_effort = "medium"
 supported_reasoning_efforts = ["low", "medium", "xhigh"]
@@ -295,6 +303,12 @@ base_url = "http://127.0.0.1:11434"
 
 Profile names are arbitrary, and multiple profiles may use the same adapter.
 The legacy profile names infer their adapter when it is omitted.
+
+Runtime defaults apply only when creating a genuinely fresh session. Reopening
+a recent workspace session, using `/resume`, or inheriting a session restores
+that session's durable agent, provider, model, reasoning effort, and interaction
+mode exactly as the user left them; later config changes do not rewrite saved
+session settings.
 
 Every setting can be overridden with a nested environment name such as
 `HAMES_PROVIDERS__LLAMA_CPP__MODEL=qwen3.8-27b`. `HAMES_HOME` relocates all

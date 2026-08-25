@@ -2233,12 +2233,25 @@ def _resume_sequence(after_sequence: int | None, last_event_id: str | None) -> i
 
 def _public_profile(state: GatewayState, profile_id: str, provider: Provider) -> ProviderProfile:
     configured = state.provider_profile(profile_id)
+    is_default = profile_id == state.config.runtime.default_provider
     return ProviderProfile(
         id=profile_id,
         adapter=configured.adapter if configured else provider.adapter,
         endpoint=configured.base_url if configured else provider.base_url,
-        configured_model=configured.model if configured else "",
-        default_reasoning_effort=configured.reasoning_effort if configured else "",
+        configured_model=(
+            state.config.runtime.default_model
+            if is_default and state.config.runtime.default_model
+            else configured.model
+            if configured
+            else ""
+        ),
+        default_reasoning_effort=(
+            state.config.runtime.default_reasoning_effort
+            if is_default
+            else configured.reasoning_effort
+            if configured
+            else ""
+        ),
         supported_reasoning_efforts=(configured.supported_reasoning_efforts if configured else []),
     )
 

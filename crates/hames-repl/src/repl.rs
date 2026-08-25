@@ -47,26 +47,20 @@ pub async fn run() -> Result<()> {
         bail!("provider {provider} is not configured in the gateway");
     }
     let mut model = paths.configured_model(&provider)?;
-    let mut reasoning = paths.configured_reasoning(&provider)?;
+    let mut reasoning = String::new();
     let profiles = client.providers().await?;
     let profile = find_profile(&profiles, &provider)?;
     if model.is_empty() {
         model.clone_from(&profile.configured_model);
     }
-    if reasoning.is_empty() {
-        reasoning.clone_from(&profile.default_reasoning_effort);
-    }
     let probe = client.probe_provider(&provider).await?;
     model = select_model(&mut editor, &probe, &model)?;
     let mut session = client
-        .create_session(
-            &cwd.to_string_lossy(),
-            "default",
-            &provider,
-            &model,
-            &reasoning,
-        )
+        .create_session(&cwd.to_string_lossy(), "", &provider, &model, "")
         .await?;
+    provider.clone_from(&session.provider);
+    model.clone_from(&session.model);
+    reasoning.clone_from(&session.reasoning_effort);
     println!(
         "{}",
         style::banner_lines(

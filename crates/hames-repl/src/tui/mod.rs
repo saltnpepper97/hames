@@ -351,20 +351,10 @@ async fn create_session(
             .create_session_from(&cwd.to_string_lossy(), &current.id)
             .await;
     }
-    let provider = current
-        .map(|session| session.provider.clone())
-        .unwrap_or(paths.configured_provider()?);
-    let model = current
-        .map(|session| session.model.clone())
-        .unwrap_or(paths.configured_model(&provider)?);
-    let reasoning = current
-        .map(|session| session.reasoning_effort.clone())
-        .unwrap_or(paths.configured_reasoning(&provider)?);
-    let agent = current
-        .map(|session| session.agent_id.as_str())
-        .unwrap_or("default");
+    let provider = paths.configured_provider()?;
+    let model = paths.configured_model(&provider)?;
     let created = client
-        .create_session(&cwd.to_string_lossy(), agent, &provider, &model, &reasoning)
+        .create_session(&cwd.to_string_lossy(), "", &provider, &model, "")
         .await?;
     Ok(created)
 }
