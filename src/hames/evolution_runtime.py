@@ -139,6 +139,24 @@ class EvolutionManager:
             return promoted.scar, repair
         return mutation.scar, repair
 
+    async def dream_cleanup(self, session_id: str) -> int:
+        """Route repairable open or regressed scars during idle maintenance."""
+        if not self.config.evolution.enabled:
+            return 0
+        session = await asyncio.to_thread(self.ledger.get_session, session_id)
+        candidates = [
+            *(await asyncio.to_thread(self.store.list_scars, session, status="open")),
+            *(await asyncio.to_thread(self.store.list_scars, session, status="regressed")),
+        ]
+        repaired = 0
+        for scar in candidates:
+            try:
+                await self.propose_repair(session_id, scar.id)
+            except ValueError:
+                continue
+            repaired += 1
+        return repaired
+
     async def _execute_repair(
         self,
         session: Session,

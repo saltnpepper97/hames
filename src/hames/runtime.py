@@ -162,6 +162,14 @@ MODE_POLICY_SUMMARIES = {
     ),
 }
 
+HEALING_POLICY_SUMMARY = (
+    "This is an explicit scar-healing maintenance run. Inspect visible open and regressed scars "
+    "with scar_list. For every evidence-backed autonomous repair, call scar_control with action "
+    "repair. Never dismiss or delete a scar during healing, and never claim a guarded repair is "
+    "already healed; healing requires successful future guard runs. Report repairs and anything "
+    "that still needs human judgment."
+)
+
 
 class RunFailure(RuntimeError):
     def __init__(
@@ -417,8 +425,8 @@ class RunManager:
     ) -> SubmissionResult:
         async with self._submission_lock(session_id):
             session = await asyncio.to_thread(self.ledger.get_session, session_id)
-            if purpose not in {"turn", "plan_note"}:
-                raise ValueError("message purpose must be turn or plan_note")
+            if purpose not in {"turn", "plan_note", "heal"}:
+                raise ValueError("message purpose must be turn, plan_note, or heal")
             if purpose == "plan_note":
                 if session.interaction_mode != "plan":
                     raise ValueError("plan notes require plan mode")
@@ -1351,7 +1359,8 @@ class RunManager:
             planning_only = (
                 session is not None
                 and session.interaction_mode == "plan"
-                and str(user_event.payload.get("purpose", "turn")) != "plan_execution"
+                and str(user_event.payload.get("purpose", "turn"))
+                not in {"plan_execution", "heal"}
             )
             if self.config.memory.enabled:
                 await self._project_episode(session_id, run_id)
@@ -1360,11 +1369,11 @@ class RunManager:
                     await self.memory_manager.enqueue_capture(
                         session, str(user_event.payload.get("content", "")), user_event
                     )
-                elif not planning_only:
+                else:
                     await self.memory_manager.enqueue_run(session_id, run_id)
-            if self.skill_manager is not None and session is not None and not planning_only:
+            if self.skill_manager is not None and session is not None:
                 await self.skill_manager.observe_run(session_id, run_id)
-            if self.evolution_manager is not None and session is not None and not planning_only:
+            if self.evolution_manager is not None and session is not None:
                 try:
                     await self.evolution_manager.observe_run(session_id, run_id)
                 except (KeyError, ValueError) as exc:
@@ -1460,6 +1469,11 @@ class RunManager:
                     session_id, since=since, causation_id=started.id
                 )
             )
+            scars = (
+                0
+                if self.evolution_manager is None
+                else await self.evolution_manager.dream_cleanup(session_id)
+            )
             await self._append(
                 session_id=session_id,
                 agent_id=session.agent_id,
@@ -1469,6 +1483,7 @@ class RunManager:
                     "status": "completed",
                     "memories_reconciled": memories,
                     "skills_reconciled": skills,
+                    "scars_repaired": scars,
                 },
                 causation_id=started.id,
                 correlation_id=dream_id,
@@ -1849,6 +1864,7 @@ class RunManager:
         user_requested_memory_maintenance = _explicit_memory_maintenance_request(
             str(user_event.payload.get("content", ""))
         )
+        healing_run = str(user_event.payload.get("purpose", "turn")) == "heal"
         tool_count = 0
         model_turns = 0
         consecutive_no_progress = 0
@@ -1869,6 +1885,8 @@ class RunManager:
                         if model_turns == 1
                         else None,
                         memories,
+                        interaction_mode="auto" if healing_run else session.interaction_mode,
+                        healing_run=healing_run,
                     )
                 )
             except ProviderError as exc:
@@ -1999,6 +2017,7 @@ class RunManager:
                     turn.allowed_tools,
                     turn.capsule,
                     user_requested_memory_maintenance,
+                    "auto" if healing_run else None,
                 )
 
     def _assembled_plan_markdown(self, run_id: str, current: str) -> str:
@@ -2017,6 +2036,9 @@ class RunManager:
         session: Session,
         initial_causation_id: str | None,
         memories: list[RetrievedMemory],
+        *,
+        interaction_mode: str,
+        healing_run: bool,
     ) -> ModelTurn:
         reasoning_parts: list[str] = []
         answer_parts: list[str] = []
@@ -2063,12 +2085,15 @@ class RunManager:
             agent_id=session.agent_id,
         )
         guard_scars = await asyncio.to_thread(self.guarded_scars_for_context, session, history)
+        policy_summary = f"{POLICY_SUMMARY} {MODE_POLICY_SUMMARIES[interaction_mode]}"
+        if healing_run:
+            policy_summary = f"{policy_summary} {HEALING_POLICY_SUMMARY}"
         context = compile_context(
             session,
             history,
             capsule,
             definitions,
-            f"{POLICY_SUMMARY} {MODE_POLICY_SUMMARIES[session.interaction_mode]}",
+            policy_summary,
             self.config.context,
             run_id=run_id,
             memories=memories,
@@ -2139,7 +2164,7 @@ class RunManager:
                         history,
                         capsule,
                         definitions,
-                        f"{POLICY_SUMMARY} {MODE_POLICY_SUMMARIES[session.interaction_mode]}",
+                        policy_summary,
                         self.config.context,
                         run_id=run_id,
                         memories=memories,
@@ -2202,7 +2227,7 @@ class RunManager:
         reasoning_finished_at: float | None = None
         published_answer_length = 0
         provider_items: list[dict[str, JsonValue]] = []
-        plan_response = session.interaction_mode == "plan"
+        plan_response = interaction_mode == "plan"
 
         def reasoning_duration() -> float:
             if reasoning_started_at is None:
@@ -2543,6 +2568,7 @@ class RunManager:
         allowed_tools: frozenset[str],
         capsule: AgentCapsule,
         user_requested_memory_maintenance: bool,
+        forced_interaction_mode: str | None,
     ) -> None:
         requested = await self._append(
             session_id=session.id,
@@ -2603,7 +2629,7 @@ class RunManager:
             context,
             allowed_tools=allowed_tools,
             declarative_rules=active_policy_rules,
-            interaction_mode=current_session.interaction_mode,
+            interaction_mode=forced_interaction_mode or current_session.interaction_mode,
             session_tool_granted=session_tool_granted,
             user_requested_memory_maintenance=user_requested_memory_maintenance,
         )
@@ -3010,6 +3036,20 @@ class RunManager:
                     structured_data={"scar": opened.scar.model_dump(mode="json")},
                 )
             if isinstance(arguments, ScarControlArguments):
+                if arguments.action == "repair":
+                    if self.evolution_manager is None:
+                        raise ValueError("scar repair is unavailable")
+                    repaired, repair = await self.evolution_manager.propose_repair(
+                        session.id, arguments.scar_id
+                    )
+                    return ToolResult(
+                        status="completed",
+                        summary=f"repaired scar {repaired.id} into {repaired.status}",
+                        structured_data={
+                            "scar": repaired.model_dump(mode="json"),
+                            "repair": repair.model_dump(mode="json"),
+                        },
+                    )
                 if arguments.action == "delete":
                     deleted = await asyncio.to_thread(
                         self.scar_store.delete,

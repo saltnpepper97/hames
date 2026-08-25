@@ -50,16 +50,17 @@ async def test_llama_cpp_discovers_reasoning_and_streams_separate_channels() -> 
                 200,
                 json={"chat_template_caps": {"supports_reasoning_effort": True}},
             )
-        if request.url.path == "/v1/chat/completions":
+        if request.url.path == "/v1/responses":
             seen_request.update(json.loads(request.content))
             stream = "\n".join(
                 [
-                    'data: {"id":"one","choices":[{"delta":{"reasoning_content":"think "}}]}',
-                    'data: {"id":"one","choices":[{"delta":{"content":"answer"}}]}',
-                    'data: {"id":"one","choices":[{"delta":{},"finish_reason":"stop"}]}',
-                    'data: {"id":"one","choices":[],"usage":'
-                    '{"prompt_tokens":10,"completion_tokens":4,'
-                    '"completion_tokens_details":{"reasoning_tokens":2},"cost":0.25}}',
+                    'data: {"type":"response.created","response":{"id":"one"}}',
+                    'data: {"type":"response.reasoning_text.delta","delta":"think "}',
+                    'data: {"type":"response.output_text.delta","delta":"answer"}',
+                    'data: {"type":"response.completed","response":{"usage":'
+                    '{"input_tokens":10,"output_tokens":4,'
+                    '"output_tokens_details":{"reasoning_tokens":2},"cost":0.25},'
+                    '"output":[]}}',
                     "data: [DONE]",
                 ]
             )
@@ -85,10 +86,8 @@ async def test_llama_cpp_discovers_reasoning_and_streams_separate_channels() -> 
         StreamEventKind.USAGE,
         StreamEventKind.COMPLETED,
     ]
-    assert seen_request["chat_template_kwargs"] == {
-        "enable_thinking": True,
-        "reasoning_effort": "medium",
-    }
+    assert seen_request["reasoning"] == {"effort": "medium"}
+    assert seen_request["timings_per_token"] is True
     assert events[-2].usage is not None
     assert events[-2].usage.reasoning_tokens == 2
     assert events[-2].usage.provider_reported_cost == 0.25
@@ -249,12 +248,21 @@ async def test_llama_cpp_normalizes_streamed_tool_calls() -> None:
             200,
             text="\n".join(
                 [
-                    'data: {"id":"one","choices":[{"delta":{"tool_calls":['
-                    '{"index":0,"id":"call-1","function":{"name":"read_file",'
-                    '"arguments":"{\\"pa"}}]}}]}',
-                    'data: {"id":"one","choices":[{"delta":{"tool_calls":['
-                    '{"index":0,"function":{"arguments":"th\\":\\"README.md\\"}"}}]},'
-                    '"finish_reason":"tool_calls"}]}',
+                    'data: {"type":"response.created","response":{"id":"one"}}',
+                    'data: {"type":"response.output_item.added","item":'
+                    '{"id":"fc-1","type":"function_call","call_id":"call-1",'
+                    '"name":"read_file","arguments":""}}',
+                    'data: {"type":"response.function_call_arguments.delta",'
+                    '"item_id":"fc-1","delta":"{\\"pa"}',
+                    'data: {"type":"response.function_call_arguments.delta",'
+                    '"item_id":"fc-1","delta":"th\\":\\"README.md\\"}"}',
+                    'data: {"type":"response.output_item.done","item":'
+                    '{"id":"fc-1","type":"function_call","call_id":"call-1",'
+                    '"name":"read_file","arguments":"{\\"path\\":\\"README.md\\"}"}}',
+                    'data: {"type":"response.completed","response":{"output":['
+                    '{"id":"fc-1","type":"function_call","call_id":"call-1",'
+                    '"name":"read_file","arguments":"{\\"path\\":\\"README.md\\"}"}],'
+                    '"usage":{"input_tokens":10,"output_tokens":4}}}',
                     "data: [DONE]",
                 ]
             ),
@@ -304,16 +312,52 @@ async def test_llama_cpp_normalizes_streamed_tool_calls() -> None:
     ]
 
     tool_events = [event for event in events if event.kind is StreamEventKind.TOOL_CALL_DELTA]
-    assert len(tool_events) == 2
+    assert len(tool_events) == 1
     assert tool_events[0].tool_call is not None
     assert tool_events[0].tool_call.name == "read_file"
     assert "tools" in seen_request
     assert seen_request["parallel_tool_calls"] is False
-    sent_messages = seen_request["messages"]
-    assert isinstance(sent_messages, list)
-    assert sent_messages[-2]["tool_calls"][0]["id"] == "hames-call-1"
-    assert sent_messages[-1]["tool_call_id"] == "hames-call-1"
+    sent_input = seen_request["input"]
+    assert isinstance(sent_input, list)
+    assert sent_input[-2]["type"] == "function_call"
+    assert sent_input[-2]["call_id"] == "hames-call-1"
+    assert sent_input[-1]["type"] == "function_call_output"
+    assert sent_input[-1]["call_id"] == "hames-call-1"
     assert events[-1].finish_reason == "tool_calls"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_llama_cpp_treats_saturated_unfinished_output_as_length() -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text="\n".join(
+                [
+                    'data: {"type":"response.created","response":{"id":"one"}}',
+                    'data: {"type":"response.reasoning_text.delta","delta":"truncated"}',
+                    'data: {"type":"response.completed","response":{"output":[],"usage":'
+                    '{"input_tokens":10,"output_tokens":32}}}',
+                    "data: [DONE]",
+                ]
+            ),
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = LlamaCppProvider("http://llama", client=client)
+    events = [
+        event
+        async for event in provider.stream(
+            ModelRequest(
+                model="fixture",
+                messages=[ProviderMessage(role="user", content="write a large file")],
+                system="",
+                max_tokens=32,
+            )
+        )
+    ]
+    assert not any(event.kind is StreamEventKind.TOOL_CALL_DELTA for event in events)
+    assert events[-1].finish_reason == "length"
     await client.aclose()
 
 

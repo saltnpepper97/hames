@@ -184,7 +184,7 @@ class ScarRecordArguments(ToolArguments):
 
 class ScarControlArguments(ToolArguments):
     scar_id: str = Field(min_length=1)
-    action: Literal["open", "dismiss", "delete"]
+    action: Literal["open", "repair", "dismiss", "delete"]
     reason: str = Field(min_length=1, max_length=1000)
 
 
@@ -671,8 +671,9 @@ class ScarRecordTool(ToolBase):
 class ScarControlTool(ToolBase):
     name = "scar_control"
     description = (
-        "Open a candidate scar, dismiss a visible scar, or permanently delete an erroneous Scar "
-        "with an explicit reason."
+        "Open or repair a visible behavioral scar, dismiss one, or permanently delete an "
+        "erroneous Scar with an explicit reason. Repair routes it through the weakest sufficient "
+        "durable repair layer; it becomes healed only after its guard succeeds repeatedly."
     )
     side_effect_class = "scar_write"
     arguments_type: ClassVar[type[ToolArguments]] = ScarControlArguments

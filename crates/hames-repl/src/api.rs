@@ -7,7 +7,8 @@ use serde_json::Value;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 23;
+pub const HEAL_SCARS_PROMPT: &str = "Heal behavioral scars now.";
 
 #[derive(Clone)]
 pub struct GatewayClient {
@@ -1127,6 +1128,22 @@ impl GatewayClient {
     ) -> Result<MessageAccepted> {
         self.send_message_request(session_id, content, remember, paste_spans, true)
             .await
+    }
+
+    pub async fn heal_scars(&self, session_id: &str, content: &str) -> Result<MessageAccepted> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/messages"))
+                .json(&serde_json::json!({
+                    "content": content,
+                    "remember": false,
+                    "paste_spans": [],
+                    "send_now": false,
+                    "purpose": "heal",
+                }))
+                .send()
+                .await?,
+        )
+        .await
     }
 
     async fn send_message_request(

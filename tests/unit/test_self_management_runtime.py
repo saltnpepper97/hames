@@ -176,6 +176,41 @@ async def test_runtime_self_management_memory_and_scar_lifecycles(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_idle_dream_routes_repairable_open_scars(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    session = state.ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    try:
+        evidence_id = _evidence(state, session.id, "scar-dream-source")
+        candidate = state.evolution.store.record_candidate(
+            session=session,
+            title="Honor the corrected source",
+            severity="medium",
+            failure_signature="assistant:wrong_source",
+            description="The assistant used the wrong source.",
+            expected_behavior="Use the corrected source.",
+            evidence_event_ids=[evidence_id],
+        )
+        opened = state.evolution.store.open(
+            session=session,
+            scar_id=candidate.scar.id,
+            reason="test repair",
+        )
+
+        repaired = await state.evolution.dream_cleanup(session.id)
+
+        assert repaired == 1
+        assert state.evolution.store.get(opened.scar.id).status == "guarded"
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
 async def test_runtime_skill_catalog_and_controls_reuse_registry(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     state = GatewayState.create(paths, providers={"fake": FakeProvider([])})

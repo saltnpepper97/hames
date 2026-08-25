@@ -113,7 +113,7 @@ class MessageRequest(ApiModel):
     content: str = Field(min_length=1)
     remember: bool = False
     send_now: bool = False
-    purpose: Literal["turn", "plan_note"] = "turn"
+    purpose: Literal["turn", "plan_note", "heal"] = "turn"
     paste_spans: list[PasteSpan] = Field(default_factory=_empty_paste_spans, max_length=64)
 
     @model_validator(mode="after")

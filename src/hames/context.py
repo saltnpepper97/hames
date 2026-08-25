@@ -209,8 +209,10 @@ def compile_context(
         if reason == "output_limit":
             directive = (
                 "The previous model response reached its output limit before completing this "
-                "run. Continue from its exact unfinished state. Do not restart, recap, or "
-                "rewrite the plan; take the next concrete action now."
+                "run. Any unfinished tool call was discarded and did not execute. Continue the "
+                "same work without restarting or recapping. Make the next tool call small enough "
+                "to finish; for a large file, write a bounded scaffold and then patch it in "
+                "bounded sections."
             )
         elif reason == "malformed_tool_call":
             directive = (

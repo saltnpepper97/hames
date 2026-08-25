@@ -70,7 +70,7 @@ def _empty_paste_spans() -> list[PasteSpanPayload]:
 class MessagePayload(EventPayload):
     content: str
     remember: bool = False
-    purpose: Literal["turn", "plan_note", "plan_execution"] = "turn"
+    purpose: Literal["turn", "plan_note", "plan_execution", "heal"] = "turn"
     paste_spans: list[PasteSpanPayload] = Field(default_factory=_empty_paste_spans, max_length=64)
 
 
@@ -465,6 +465,7 @@ class DreamPayload(EventPayload):
     status: Literal["running", "paused", "completed", "failed"]
     memories_reconciled: int = 0
     skills_reconciled: int = 0
+    scars_repaired: int = 0
     message: str = ""
 
 

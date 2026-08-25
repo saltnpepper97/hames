@@ -784,6 +784,7 @@ pub enum MenuAction {
     Memory,
     Skills,
     Scars,
+    Heal,
     Plugins,
     Trust,
     RevokeTrust,
@@ -1553,6 +1554,11 @@ impl App {
             option("/memory", "active durable memories", MenuAction::Memory),
             option("/skills", "active procedural catalog", MenuAction::Skills),
             option("/scars", "corrections and repair state", MenuAction::Scars),
+            option(
+                "/heal",
+                "actively repair behavioral scars",
+                MenuAction::Heal,
+            ),
             option("/plugins", "installed capabilities", MenuAction::Plugins),
             option("/help", "keyboard and mouse guide", MenuAction::Help),
             option("/cancel", "stop current work", MenuAction::CancelRun),
@@ -2428,17 +2434,33 @@ impl App {
                 let phase = dream_phase(&event.event_type);
                 let memories = u64_value(&event.payload, "memories_reconciled");
                 let skills = u64_value(&event.payload, "skills_reconciled");
+                let scars = u64_value(&event.payload, "scars_repaired");
                 let detail = match phase {
-                    DreamPhase::Running => "Reviewing recent memory and Skills changes".to_owned(),
+                    DreamPhase::Running => "Reviewing recent memory, Skills, and scars".to_owned(),
                     DreamPhase::Paused => "Dream paused for foreground work".to_owned(),
-                    DreamPhase::Completed if memories == 0 && skills == 0 => {
-                        "Recent memory and Skills are already tidy".to_owned()
+                    DreamPhase::Completed if memories == 0 && skills == 0 && scars == 0 => {
+                        "Recent memory, Skills, and scars are already tidy".to_owned()
                     }
-                    DreamPhase::Completed => format!(
-                        "Reconciled {memories} memor{} and {skills} Skill{}",
-                        if memories == 1 { "y" } else { "ies" },
-                        if skills == 1 { "" } else { "s" }
-                    ),
+                    DreamPhase::Completed => {
+                        let mut parts = Vec::new();
+                        if memories > 0 {
+                            parts.push(format!(
+                                "{memories} memor{}",
+                                if memories == 1 { "y" } else { "ies" }
+                            ));
+                        }
+                        if skills > 0 {
+                            parts.push(format!(
+                                "{skills} Skill{}",
+                                if skills == 1 { "" } else { "s" }
+                            ));
+                        }
+                        if scars > 0 {
+                            parts
+                                .push(format!("{scars} scar{}", if scars == 1 { "" } else { "s" }));
+                        }
+                        format!("Reconciled {}", parts.join(" · "))
+                    }
                     DreamPhase::Failed => {
                         let message = string(&event.payload, "message");
                         if message.is_empty() {
@@ -2554,6 +2576,7 @@ impl App {
         {
             *collapsed = !*collapsed;
         }
+        self.focused_thought = None;
     }
 
     pub fn toggle_activity(&mut self, index: usize) {
@@ -3808,6 +3831,31 @@ mod tests {
     }
 
     #[test]
+    fn toggling_thought_clears_persistent_focus_highlight() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::Thought {
+            run_id: "run-focus".to_owned(),
+            content: "reasoning".to_owned(),
+            duration_seconds: 2.0,
+            interrupted: false,
+            live: false,
+            collapsed: false,
+        });
+        app.focused_thought = Some(0);
+
+        app.toggle_thought(0);
+
+        assert_eq!(app.focused_thought, None);
+        assert!(matches!(
+            &app.transcript[0],
+            TranscriptItem::Thought {
+                collapsed: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn a_live_user_message_rearms_bottom_following() {
         let mut app = App::new(session(), Vec::new(), true);
         app.scroll = 20;
@@ -3924,7 +3972,7 @@ mod tests {
                 phase: DreamPhase::Completed,
                 detail,
                 ..
-            } if heading == "Dream" && detail == "Reconciled 2 memories and 1 Skill"
+            } if heading == "Dream" && detail == "Reconciled 2 memories · 1 Skill"
         )));
     }
 

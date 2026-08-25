@@ -1,9 +1,9 @@
-"""llama.cpp OpenAI-compatible streaming adapter."""
+"""llama.cpp Responses API streaming adapter."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import cast
 
 import httpx
@@ -126,16 +126,18 @@ class LlamaCppProvider:
             return {}
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
-        messages = [_openai_message(message) for message in request.messages]
-        if request.system:
-            messages.insert(0, {"role": "system", "content": request.system})
         body: dict[str, object] = {
             "model": request.model,
-            "messages": messages,
+            "input": _response_input(request.messages),
+            "instructions": request.system,
             "stream": True,
-            "stream_options": {"include_usage": True},
-            "max_tokens": request.max_tokens,
-            "reasoning_format": "deepseek",
+            "store": False,
+            "max_output_tokens": request.max_tokens,
+            # llama.cpp attaches its exact slot counters to streamed Responses
+            # events when this is enabled. The final response also carries the
+            # normalized usage object used below.
+            "timings_per_token": True,
+            "parallel_tool_calls": False,
         }
         if request.temperature is not None:
             body["temperature"] = request.temperature
@@ -143,99 +145,160 @@ class LlamaCppProvider:
             body["tools"] = [
                 {
                     "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.input_schema,
-                    },
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.input_schema,
                 }
                 for tool in request.tools
             ]
-            body["parallel_tool_calls"] = False
         if request.reasoning_effort == "off":
-            body["chat_template_kwargs"] = {"enable_thinking": False}
-        elif request.reasoning_effort:
-            template_options: dict[str, object] = {"enable_thinking": True}
-            if request.reasoning_effort != "on":
-                template_options["reasoning_effort"] = request.reasoning_effort
-            body["chat_template_kwargs"] = template_options
+            body["reasoning_budget_tokens"] = 0
+        elif request.reasoning_effort and request.reasoning_effort != "on":
+            body["reasoning"] = {"effort": request.reasoning_effort}
 
         try:
             async with self.client.stream(
-                "POST", f"{self.base_url}/v1/chat/completions", json=body
+                "POST", f"{self.base_url}/v1/responses", json=body
             ) as response:
                 response.raise_for_status()
                 started = False
-                finish_reason: str | None = None
+                completed = False
                 provider_request_id: str | None = None
+                next_tool_index = 0
+                tool_indices: dict[str, int] = {}
+                finalized_tool_items: dict[str, dict[str, JsonValue]] = {}
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
                         continue
                     data = line.removeprefix("data:").strip()
-                    if data == "[DONE]":
-                        break
+                    if not data or data == "[DONE]":
+                        continue
                     try:
-                        chunk = JSON_OBJECT.validate_json(data)
+                        event = JSON_OBJECT.validate_json(data)
                     except ValueError as exc:
                         raise ProviderError(
                             "malformed_provider_event", "llama.cpp emitted invalid SSE JSON"
                         ) from exc
-                    request_id = _optional_str(chunk.get("id"))
-                    provider_request_id = request_id or provider_request_id
-                    if not started:
+                    event_type = str(event.get("type", ""))
+                    if event_type == "response.created":
+                        if started:
+                            raise ProviderError(
+                                "provider_protocol_error", "llama.cpp started a response twice"
+                            )
+                        response_object = event.get("response", {})
+                        if isinstance(response_object, dict):
+                            provider_request_id = _optional_str(response_object.get("id"))
                         started = True
                         yield StreamEvent(
-                            kind=StreamEventKind.STARTED, provider_request_id=request_id
+                            kind=StreamEventKind.STARTED,
+                            provider_request_id=provider_request_id,
                         )
-                    usage = _usage_from_openai(chunk.get("usage"))
-                    if usage is not None:
-                        yield StreamEvent(kind=StreamEventKind.USAGE, usage=usage)
-                    choices = chunk.get("choices", [])
-                    if not isinstance(choices, list):
-                        continue
-                    for choice_object in choices:
-                        if not isinstance(choice_object, dict):
+                    elif event_type == "response.output_item.added":
+                        item = event.get("item", {})
+                        if not isinstance(item, dict) or item.get("type") != "function_call":
                             continue
-                        choice = choice_object
-                        delta = choice.get("delta", {})
-                        if isinstance(delta, dict):
-                            reasoning = delta.get("reasoning_content", "")
-                            content = delta.get("content", "")
-                            if reasoning:
-                                yield StreamEvent(
-                                    kind=StreamEventKind.REASONING_DELTA,
-                                    text=str(reasoning),
-                                )
-                            if content:
-                                yield StreamEvent(
-                                    kind=StreamEventKind.TEXT_DELTA, text=str(content)
-                                )
-                            for tool_call in _tool_call_deltas(delta.get("tool_calls")):
-                                yield StreamEvent(
-                                    kind=StreamEventKind.TOOL_CALL_DELTA,
-                                    tool_call=tool_call,
-                                )
-                        finish = choice.get("finish_reason")
-                        if finish:
-                            value = str(finish)
-                            if finish_reason is not None and finish_reason != value:
-                                raise ProviderError(
-                                    "malformed_provider_event",
-                                    "llama.cpp emitted conflicting finish reasons",
-                                )
-                            finish_reason = value
+                        item_id = _optional_str(item.get("id"))
+                        if item_id is not None and item_id not in tool_indices:
+                            tool_indices[item_id] = next_tool_index
+                            next_tool_index += 1
+                    elif event_type in {
+                        "response.reasoning_summary_text.delta",
+                        "response.reasoning_text.delta",
+                    }:
+                        yield StreamEvent(
+                            kind=StreamEventKind.REASONING_DELTA,
+                            text=str(event.get("delta", "")),
+                        )
+                    elif event_type == "response.output_text.delta":
+                        yield StreamEvent(
+                            kind=StreamEventKind.TEXT_DELTA,
+                            text=str(event.get("delta", "")),
+                        )
+                    elif event_type == "response.output_item.done":
+                        item = event.get("item", {})
+                        if not isinstance(item, dict) or item.get("type") != "function_call":
+                            continue
+                        item_id = _optional_str(item.get("id")) or f"tool-{next_tool_index}"
+                        index = tool_indices.get(item_id)
+                        if index is None:
+                            index = next_tool_index
+                            next_tool_index += 1
+                            tool_indices[item_id] = index
+                        finalized_tool_items[item_id] = item
+                    elif event_type in {"response.completed", "response.incomplete"}:
+                        response_object = event.get("response", {})
+                        if not isinstance(response_object, dict):
+                            raise ProviderError(
+                                "malformed_provider_event",
+                                "llama.cpp completion omitted response",
+                            )
+                        # A completed output item is authoritative. If a server
+                        # omitted output_item.done, recover it from the final
+                        # response. Never expose an incomplete function call:
+                        # its arguments may be truncated at the token limit.
+                        if event_type == "response.completed":
+                            output = response_object.get("output", [])
+                            if isinstance(output, list):
+                                for value in output:
+                                    if (
+                                        not isinstance(value, dict)
+                                        or value.get("type") != "function_call"
+                                    ):
+                                        continue
+                                    item_id = (
+                                        _optional_str(value.get("id"))
+                                        or f"tool-{next_tool_index}"
+                                    )
+                                    index = tool_indices.get(item_id)
+                                    if index is None:
+                                        index = next_tool_index
+                                        next_tool_index += 1
+                                        tool_indices[item_id] = index
+                                    finalized_tool_items[item_id] = value
+                            for item_id, value in finalized_tool_items.items():
+                                yield _final_tool_call_event(value, tool_indices[item_id])
+                        usage = _usage_from_responses(response_object.get("usage"))
+                        if usage is not None:
+                            yield StreamEvent(kind=StreamEventKind.USAGE, usage=usage)
+                        hit_output_limit = (
+                            usage is not None and usage.output_tokens >= request.max_tokens
+                        )
+                        completed = True
+                        yield StreamEvent(
+                            kind=StreamEventKind.COMPLETED,
+                            finish_reason=(
+                                "length"
+                                if event_type == "response.incomplete"
+                                or (hit_output_limit and not finalized_tool_items)
+                                else "tool_calls" if finalized_tool_items else "stop"
+                            ),
+                            provider_request_id=provider_request_id,
+                        )
+                    elif event_type == "response.failed":
+                        response_object = event.get("response", {})
+                        error = (
+                            response_object.get("error")
+                            if isinstance(response_object, dict)
+                            else None
+                        )
+                        message = (
+                            str(error.get("message", "llama.cpp response failed"))
+                            if isinstance(error, dict)
+                            else "llama.cpp response failed"
+                        )
+                        raise ProviderError("provider_response_failed", message)
+                    elif event_type == "error":
+                        raise ProviderError(
+                            str(event.get("code", "provider_response_failed")),
+                            str(event.get("message", "llama.cpp stream failed")),
+                        )
                 if not started:
                     raise ProviderError("empty_provider_response", "llama.cpp emitted no events")
-                if finish_reason is None:
+                if not completed:
                     raise ProviderError(
                         "incomplete_provider_response",
-                        "llama.cpp stream ended without a finish reason",
+                        "llama.cpp stream ended before completion",
                     )
-                yield StreamEvent(
-                    kind=StreamEventKind.COMPLETED,
-                    finish_reason=finish_reason,
-                    provider_request_id=provider_request_id,
-                )
         except ProviderError:
             raise
         except httpx.TimeoutException as exc:
@@ -248,76 +311,69 @@ class LlamaCppProvider:
             raise ProviderError("provider_transport_error", str(exc), retryable=True) from exc
 
 
-def _usage_from_openai(value: JsonValue) -> Usage | None:
+def _usage_from_responses(value: JsonValue) -> Usage | None:
     if not isinstance(value, dict):
         return None
-    details = value.get("prompt_tokens_details", {})
+    details = value.get("input_tokens_details", {})
     cached = details.get("cached_tokens") if isinstance(details, dict) else None
-    completion_details = value.get("completion_tokens_details", {})
+    completion_details = value.get("output_tokens_details", {})
     reasoning = (
         completion_details.get("reasoning_tokens") if isinstance(completion_details, dict) else None
     )
     return Usage(
-        input_tokens=_int_default(value.get("prompt_tokens")),
-        output_tokens=_int_default(value.get("completion_tokens")),
+        input_tokens=_int_default(value.get("input_tokens")),
+        output_tokens=_int_default(value.get("output_tokens")),
         cached_input_tokens=_optional_int(cached),
         reasoning_tokens=_optional_int(reasoning),
         provider_reported_cost=_optional_float(value.get("cost")),
     )
 
 
-def _openai_message(message: object) -> dict[str, object]:
+def _response_input(messages: Sequence[object]) -> list[dict[str, object]]:
     from hames.providers.base import ProviderMessage
 
-    value = ProviderMessage.model_validate(message)
-    result: dict[str, object] = {"role": value.role, "content": value.content}
-    if value.reasoning_content:
-        result["reasoning_content"] = value.reasoning_content
-    if value.tool_calls:
-        result["tool_calls"] = [
-            {
-                "id": call.id,
-                "type": "function",
-                "function": {
+    result: list[dict[str, object]] = []
+    for message in messages:
+        value = ProviderMessage.model_validate(message)
+        if value.role == "tool":
+            if value.tool_call_id:
+                result.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": value.tool_call_id,
+                        "output": value.content,
+                    }
+                )
+            continue
+        if value.content:
+            result.append({"role": value.role, "content": value.content})
+        for call in value.tool_calls:
+            result.append(
+                {
+                    "type": "function_call",
+                    "call_id": call.id,
                     "name": call.name,
                     "arguments": json.dumps(call.arguments, separators=(",", ":")),
-                },
-            }
-            for call in value.tool_calls
-        ]
-    if value.tool_call_id is not None:
-        result["tool_call_id"] = value.tool_call_id
-    if value.tool_name is not None:
-        result["name"] = value.tool_name
-    return result
-
-
-def _tool_call_deltas(value: JsonValue) -> list[ToolCallDelta]:
-    if not isinstance(value, list):
-        return []
-    result: list[ToolCallDelta] = []
-    for fallback_index, raw in enumerate(value):
-        if not isinstance(raw, dict):
-            continue
-        function = raw.get("function", {})
-        if not isinstance(function, dict):
-            function = {}
-        raw_index = raw.get("index", fallback_index)
-        index = int(raw_index) if isinstance(raw_index, int | float) else fallback_index
-        arguments = function.get("arguments", "")
-        result.append(
-            ToolCallDelta(
-                index=index,
-                provider_call_id=_optional_str(raw.get("id")),
-                name=_optional_str(function.get("name")),
-                arguments_delta=(
-                    arguments
-                    if isinstance(arguments, str)
-                    else json.dumps(arguments, separators=(",", ":"))
-                ),
+                }
             )
-        )
     return result
+
+
+def _final_tool_call_event(item: dict[str, JsonValue], index: int) -> StreamEvent:
+    arguments = item.get("arguments", "")
+    return StreamEvent(
+        kind=StreamEventKind.TOOL_CALL_DELTA,
+        tool_call=ToolCallDelta(
+            index=index,
+            provider_call_id=_optional_str(item.get("call_id")) or _optional_str(item.get("id")),
+            name=_optional_str(item.get("name")),
+            arguments_delta=(
+                arguments
+                if isinstance(arguments, str)
+                else json.dumps(arguments, separators=(",", ":"))
+            ),
+        ),
+    )
 
 
 def _reasoning_efforts(model_id: str, supported: bool | None, configured: list[str]) -> list[str]:

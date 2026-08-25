@@ -678,24 +678,28 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     "Working"
                 };
                 let count = visible_rows.len();
+                let disclosure = if count > 1 {
+                    format!("  {}", if *collapsed { "▸" } else { "▾" })
+                } else {
+                    String::new()
+                };
                 lines.push(RenderLine {
                     line: Line::from(vec![
                         Span::styled("◆ ", Style::default().fg(INPUT)),
                         Span::styled("Work", Style::default().fg(INPUT).bold()),
                         Span::styled(
                             format!(
-                                " · {count} {} · {state}  {}",
+                                " · {count} {} · {state}{disclosure}",
                                 if count == 1 { "action" } else { "actions" },
-                                if *collapsed { "▸" } else { "▾" }
                             ),
                             Style::default().fg(MUTED),
                         ),
                     ]),
-                    thought: Some(TranscriptDisclosure::Activity(index)),
+                    thought: (count > 1).then_some(TranscriptDisclosure::Activity(index)),
                     sheen: None,
                     hover_group: None,
                 });
-                let first_visible_row = if *collapsed {
+                let first_visible_row = if *collapsed && count > 1 {
                     visible_rows.len().saturating_sub(1)
                 } else {
                     0
@@ -5520,20 +5524,21 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(rendered.contains("◆ Work"));
-        assert!(rendered.contains("1 action · Completed  ▾"));
+        assert!(rendered.contains("1 action · Completed"));
+        assert!(!rendered.contains("1 action · Completed  ▾"));
         assert!(rendered.contains("✓ Forgot  memory 8f9b40f1"));
         assert!(!rendered.contains("◆ Run"));
         assert!(!rendered.contains("Hames"));
         assert!(!rendered.contains("ec06-4706"));
 
         app.toggle_activity(0);
-        let collapsed = transcript_lines(&app, 90)
+        let still_single = transcript_lines(&app, 90)
             .iter()
             .map(|item| line_text(&item.line))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(collapsed.contains("◆ Work · 1 action · Completed  ▸"));
-        assert!(collapsed.contains("✓ Forgot  memory 8f9b40f1"));
+        assert!(!still_single.contains("◆ Work · 1 action · Completed  ▸"));
+        assert!(still_single.contains("✓ Forgot  memory 8f9b40f1"));
     }
 
     #[test]

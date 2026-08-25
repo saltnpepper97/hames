@@ -12,9 +12,9 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::activity::{ActivityBoard, ActivityCategory};
 use crate::api::{
-    ContextInspection, Event, GatewayClient, Goal, LiveEnvelope, MemoryJob, MemoryRecord,
-    PROTOCOL_VERSION, PlanState, ProviderModel, ProviderProbe, ProviderProfile, RunInspection,
-    Scar, Session, SessionTaskList, SkillJob, SkillSummary, SkillVersion,
+    ContextInspection, Event, GatewayClient, Goal, HEAL_SCARS_PROMPT, LiveEnvelope, MemoryJob,
+    MemoryRecord, PROTOCOL_VERSION, PlanState, ProviderModel, ProviderProbe, ProviderProfile,
+    RunInspection, Scar, Session, SessionTaskList, SkillJob, SkillSummary, SkillVersion,
 };
 use crate::local::{LocalPaths, start_backend, write_private_export};
 use crate::style;
@@ -628,6 +628,13 @@ async fn handle_command(
         "/skills" => handle_skills_command(client, session, &parts).await?,
         "/plugins" => handle_plugins_command(client, &parts).await?,
         "/evolution" => handle_evolution_command(client, session, &parts).await?,
+        "/heal" => {
+            let accepted = client.heal_scars(&session.id, HEAL_SCARS_PROMPT).await?;
+            println!(
+                "{}",
+                style::success(&format!("Scar healing {}", accepted.disposition))
+            );
+        }
         "/correct" => {
             let content = input.strip_prefix("/correct").unwrap_or("").trim();
             if content.is_empty() {
@@ -2463,6 +2470,7 @@ fn print_help() {
     print_help_rows(&[
         ("/remember [fact]", "Capture durable memory"),
         ("/memory …", "Inspect and control memories"),
+        ("/heal", "Actively repair visible behavioral scars"),
         ("/skills …", "Inspect and control Skills"),
         ("/plugins …", "Inspect plugins and proposals"),
         ("/evolution … · /correct …", "Inspect or record corrections"),

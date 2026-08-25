@@ -384,13 +384,22 @@ def _plan_clause_allowed(clause: str) -> bool:
     if Path(command).name in {"python", "python3"}:
         if args in (["--version"], ["-V"]):
             return True
+        if len(args) >= 3 and args[:2] == ["-m", "pip"] and args[2] == "show":
+            return all(not argument.startswith("-") for argument in args[3:])
         return len(args) == 2 and args[0] == "-c" and _plan_python_probe_allowed(args[1])
+    if Path(command).name in {"pip", "pip3"}:
+        return (
+            len(args) >= 2
+            and args[0] == "show"
+            and all(not argument.startswith("-") for argument in args[1:])
+        )
     return False
 
 
 _PLAN_PYTHON_PROBE_MODULES = {
     "curses",
     "json",
+    "numpy",
     "os",
     "platform",
     "pygame",
@@ -505,7 +514,7 @@ def _plan_python_probe_allowed(source: str) -> bool:
             return False
         if isinstance(node, (ast.Name, ast.Attribute)):
             name = node.id if isinstance(node, ast.Name) else node.attr
-            if name.startswith("__"):
+            if name.startswith("__") and name != "__version__":
                 return False
     return bool(tree.body)
 

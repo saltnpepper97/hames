@@ -33,7 +33,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::api::{
-    GatewayClient, LiveEnvelope, PROTOCOL_VERSION, PasteSpan, ProviderModel, ScarUpdate, Session,
+    GatewayClient, HEAL_SCARS_PROMPT, LiveEnvelope, PROTOCOL_VERSION, PasteSpan, ProviderModel,
+    ScarUpdate, Session,
 };
 use crate::local::{LocalPaths, write_private_export};
 use crate::repl::ensure_gateway;
@@ -1124,13 +1125,14 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
 }
 
 fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
-    app.hovered_transcript_row = if app.modal.is_none() {
-        app.transcript_viewport
-            .point(mouse.column, mouse.row)
-            .map(|point| point.row)
-    } else {
-        None
-    };
+    app.hovered_transcript_row =
+        if matches!(mouse.kind, MouseEventKind::Moved) && app.modal.is_none() {
+            app.transcript_viewport
+                .point(mouse.column, mouse.row)
+                .map(|point| point.row)
+        } else {
+            None
+        };
     app.hovered_transcript_at =
         if matches!(mouse.kind, MouseEventKind::Moved) && app.hovered_transcript_row.is_some() {
             Some(Instant::now())
@@ -1569,6 +1571,7 @@ fn parse_command(value: &str) -> Option<MenuAction> {
         "/memory" => Some(MenuAction::Memory),
         "/skills" => Some(MenuAction::Skills),
         "/evolution" | "/scars" => Some(MenuAction::Scars),
+        "/heal" => Some(MenuAction::Heal),
         "/plugins" => Some(MenuAction::Plugins),
         "/export" => parts.next().map(|path| MenuAction::Export {
             path: path.to_owned(),
@@ -2276,6 +2279,18 @@ async fn apply_menu_action(
                 pending_delete: None,
             }));
         }
+        MenuAction::Heal => {
+            let accepted = client
+                .heal_scars(&app.session.id, HEAL_SCARS_PROMPT)
+                .await?;
+            if accepted.disposition == "started" {
+                app.begin_foreground_run(accepted.run_id);
+                app.notice = Some("Healing scars…".to_owned());
+            } else if let Some(item) = accepted.queued {
+                app.insert_queued_message(item);
+                app.notice = Some("Scar healing queued".to_owned());
+            }
+        }
         MenuAction::Plugins => {
             let plugins = client.plugins().await?;
             let mut lines = vec![
@@ -2851,6 +2866,7 @@ mod tests {
             parse_command("/memory list"),
             Some(MenuAction::Memory)
         ));
+        assert!(matches!(parse_command("/heal"), Some(MenuAction::Heal)));
         assert!(matches!(
             parse_command("/effort xhigh"),
             Some(MenuAction::SetEffort(effort)) if effort == "xhigh"
@@ -3572,6 +3588,7 @@ mod tests {
             panic!("fixture should remain an activity item");
         };
         assert!(*collapsed);
+        assert_eq!(app.hovered_transcript_row, None);
     }
 
     #[test]

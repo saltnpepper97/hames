@@ -545,7 +545,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 22
+            assert health_body["protocol_version"] == 23
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -592,7 +592,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                     ],
                 },
             )
-            assert accepted.status_code == 202
+            assert accepted.status_code == 202, accepted.text
             run_id = str(response_object(accepted)["run_id"])
 
             event_types: list[str] = []
@@ -856,6 +856,96 @@ async def test_malformed_tool_arguments_retry_without_abandoning_the_run(tmp_pat
                 and event["payload"]["content"] == "Recovered and finished."  # type: ignore[index]
                 for event in events
             )
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_explicit_heal_repairs_scars_without_changing_plan_mode(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    fake = FakeProvider([], turns=[])
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.put(
+                f"/v1/sessions/{session_id}/mode", headers=headers, json={"mode": "plan"}
+            )
+            session = state.ledger.get_session(session_id)
+            evidence = state.ledger.append(
+                session_id=session_id,
+                agent_id=session.agent_id,
+                event_type="tool.started",
+                payload={"tool_call_id": "heal-source", "name": "fixture"},
+            )
+            candidate = state.evolution.store.record_candidate(
+                session=session,
+                title="Use the corrected source",
+                severity="medium",
+                failure_signature="assistant:wrong_source",
+                description="The assistant used the wrong source.",
+                expected_behavior="Use the corrected source.",
+                evidence_event_ids=[evidence.id],
+            )
+            scar = state.evolution.store.open(
+                session=session,
+                scar_id=candidate.scar.id,
+                reason="explicit healing test",
+            ).scar
+            assert fake.turns is not None
+            fake.turns.extend(
+                [
+                    [
+                        StreamEvent(kind=StreamEventKind.STARTED),
+                        StreamEvent(
+                            kind=StreamEventKind.TOOL_CALL_DELTA,
+                            tool_call=ToolCallDelta(
+                                index=0,
+                                provider_call_id="heal-scar",
+                                name="scar_control",
+                                arguments_delta=json.dumps(
+                                    {
+                                        "scar_id": scar.id,
+                                        "action": "repair",
+                                        "reason": "explicit /heal maintenance",
+                                    }
+                                ),
+                            ),
+                        ),
+                        StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+                    ],
+                    [
+                        StreamEvent(kind=StreamEventKind.STARTED),
+                        StreamEvent(
+                            kind=StreamEventKind.TEXT_DELTA,
+                            text="The scar now has a durable guard.",
+                        ),
+                        StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+                    ],
+                ]
+            )
+
+            accepted = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Heal behavioral scars now.", "purpose": "heal"},
+            )
+            assert accepted.status_code == 202, accepted.text
+            await _wait_for_event(client, headers, session_id, "run.completed")
+
+            assert state.evolution.store.get(scar.id).status == "guarded"
+            assert state.ledger.get_session(session_id).interaction_mode == "plan"
+            assert "Execution mode is auto" in fake.requests[0].system
+            assert "explicit scar-healing maintenance run" in fake.requests[0].system
     finally:
         await state.runs.close()
 
@@ -1201,7 +1291,7 @@ async def test_plan_execution_stall_fails_visibly_after_three_no_progress_turns(
 
 
 @pytest.mark.asyncio
-async def test_planning_only_run_does_not_start_post_run_model_work(tmp_path: Path) -> None:
+async def test_planning_only_run_still_runs_wrap_up_observers(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     paths.ensure_foundation()
     paths.config_file.write_text("[memory]\nenabled = false\n", encoding="utf-8")
@@ -1229,15 +1319,6 @@ async def test_planning_only_run_does_not_start_post_run_model_work(tmp_path: Pa
                 json={"content": "Plan the work"},
             )
             await _wait_for_event(client, headers, session_id, "run.completed")
-            with pytest.raises(TimeoutError):
-                await asyncio.wait_for(observer.started.wait(), timeout=0.05)
-
-            executed = await client.post(
-                f"/v1/sessions/{session_id}/plans/current/execute",
-                headers=headers,
-                json={"strategy": "keep"},
-            )
-            assert executed.status_code == 202
             await asyncio.wait_for(observer.started.wait(), timeout=1)
     finally:
         observer.release.set()

@@ -287,6 +287,10 @@ def test_execution_modes_are_gateway_policy_not_client_convention(tmp_path: Path
         "pygame.display.set_mode((320,240)); print('headless OK')\"",
         'python3 -c "def next_cell(c, d): return ((c[0]+d[0])%10, (c[1]+d[1])%10); '
         "assert next_cell((0,0),(1,0))==(1,0); print('logic OK')\"",
+        "python3 -c \"import numpy; print('numpy', numpy.__version__)\"",
+        "python3 -c \"import numpy; print('numpy', numpy.__version__)\" 2>&1; "
+        'echo "---"; ls ~ | head -30',
+        "python3 -m pip show numpy | head -3",
     ):
         assert (
             gate.decide(
