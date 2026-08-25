@@ -222,6 +222,7 @@ class TaskUpdateArguments(ToolArguments):
     task_id: str | None = None
     text: str | None = Field(default=None, max_length=500)
     status: Literal["pending", "in_progress", "completed", "blocked"] | None = None
+    blocked_reason: str | None = Field(default=None, min_length=1, max_length=1000)
     position: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
@@ -234,6 +235,10 @@ class TaskUpdateArguments(ToolArguments):
             value is None for value in (self.text, self.status, self.position)
         ):
             raise ValueError("updating a task requires text, status, or position")
+        if self.status == "blocked" and not self.blocked_reason:
+            raise ValueError("blocking a task requires blocked_reason")
+        if self.status != "blocked" and self.blocked_reason is not None:
+            raise ValueError("blocked_reason is valid only with blocked status")
         return self
 
 

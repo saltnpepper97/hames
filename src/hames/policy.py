@@ -46,6 +46,10 @@ _DENIED_SHELL = (
     (re.compile(r"\bdd\b[^\n]*(?:of=)?/dev/(?:sd|nvme|vd|hd)", re.I), "raw disk write"),
     (re.compile(r"(?:^|[\s'\"])(?:~?/)?\.hames(?:[/\s'\"]|$)"), "Hames state access"),
     (
+        re.compile(r"(?:^|[\s'\"])(?:~?/)?\.codex(?:[/\s'\"]|$)"),
+        "provider-private Codex state access",
+    ),
+    (
         re.compile(r"(?:^|[\s'\"])(?:~?/)?\.(?:ssh|gnupg|aws)(?:[/\s'\"]|$)"),
         "credential store access",
     ),
@@ -115,8 +119,18 @@ _MANUAL_CONFIRM_TOOLS = {
 
 
 class PolicyGate:
-    def __init__(self, protected_root: Path) -> None:
+    def __init__(
+        self, protected_root: Path, *, provider_private_roots: Sequence[Path] | None = None
+    ) -> None:
         self.protected_root = protected_root.expanduser().resolve(strict=False)
+        self.provider_private_roots = tuple(
+            root.expanduser().resolve(strict=False)
+            for root in (
+                provider_private_roots
+                if provider_private_roots is not None
+                else (Path.home() / ".codex",)
+            )
+        )
 
     def decide(
         self,
@@ -220,6 +234,15 @@ class PolicyGate:
                     return PolicyDecision(
                         PolicyDecisionKind.DENY,
                         "generic tools cannot access Hames configuration or state",
+                        "protected_state",
+                    )
+                if any(
+                    target == root or target.is_relative_to(root)
+                    for root in self.provider_private_roots
+                ):
+                    return PolicyDecision(
+                        PolicyDecisionKind.DENY,
+                        "generic tools cannot access provider-private Codex state",
                         "protected_state",
                     )
                 if target.name in _SECRET_NAMES or (

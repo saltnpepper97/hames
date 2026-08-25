@@ -148,6 +148,21 @@ async def test_home_paths_normalize_and_auto_allows_non_secret_access(
     assert denied.decision is PolicyDecisionKind.DENY
     assert denied.risk == "secret"
 
+    codex_memory = user_home / ".codex" / "memories" / "MEMORY.md"
+    codex_memory.parent.mkdir(parents=True)
+    codex_memory.write_text("provider-private\n", encoding="utf-8")
+    provider_state = gate.decide(
+        "read_file", ReadFileArguments(path="~/.codex/memories/MEMORY.md"), context
+    )
+    assert provider_state.decision is PolicyDecisionKind.DENY
+    assert provider_state.risk == "protected_state"
+    assert (
+        gate.decide(
+            "shell", ShellArguments(command="cat ~/.codex/memories/MEMORY.md"), context
+        ).decision
+        is PolicyDecisionKind.DENY
+    )
+
 
 @pytest.mark.asyncio
 async def test_shell_captures_channels_filters_secrets_and_times_out(
@@ -378,6 +393,18 @@ def test_execution_modes_are_gateway_policy_not_client_convention(tmp_path: Path
         ).decision
         is PolicyDecisionKind.REQUIRE_CONFIRMATION
     )
+
+
+def test_blocking_a_task_requires_a_reason() -> None:
+    with pytest.raises(ValueError, match="requires blocked_reason"):
+        TaskUpdateArguments(action="update", task_id="task-1", status="blocked")
+    blocked = TaskUpdateArguments(
+        action="update",
+        task_id="task-1",
+        status="blocked",
+        blocked_reason="dependency lookup failed",
+    )
+    assert blocked.blocked_reason == "dependency lookup failed"
 
 
 def test_self_management_tools_are_typed_and_destructive_controls_confirm(

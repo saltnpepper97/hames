@@ -184,6 +184,54 @@ class StalledPlanExecutionProvider(PlanExecutionProvider):
         yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="length")
 
 
+class FalseBlockerProvider:
+    profile_id = "fake"
+    adapter = "fake"
+    base_url = ""
+
+    def __init__(self) -> None:
+        self.requests: list[ModelRequest] = []
+
+    async def list_models(self) -> list[ProviderModel]:
+        return [ProviderModel(id="fixture", provider="fake", status="available")]
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+        self.requests.append(request)
+        yield StreamEvent(kind=StreamEventKind.STARTED)
+        if len(self.requests) == 1:
+            arguments = {"action": "add", "text": "Create the requested file"}
+        elif len(self.requests) == 2:
+            task_ids = re.findall(r"- \[([^\]]+)\] pending:", request.system)
+            assert task_ids
+            arguments = {
+                "action": "update",
+                "task_id": task_ids[0],
+                "status": "blocked",
+                "blocked_reason": "current session filesystem is read-only",
+                "text": (
+                    "Create the requested file "
+                    "(blocked: current session filesystem is read-only)."
+                ),
+            }
+        else:
+            yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="Continuing with Hames tools.")
+            yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
+            return
+        yield StreamEvent(
+            kind=StreamEventKind.TOOL_CALL_DELTA,
+            tool_call=ToolCallDelta(
+                index=0,
+                provider_call_id=f"task-{len(self.requests)}",
+                name="task_update",
+                arguments_delta=json.dumps(arguments),
+            ),
+        )
+        yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls")
+
+    async def aclose(self) -> None:
+        return None
+
+
 class BlockingPostRunObserver:
     def __init__(self) -> None:
         self.started = asyncio.Event()
@@ -856,6 +904,137 @@ async def test_malformed_tool_arguments_retry_without_abandoning_the_run(tmp_pat
                 and event["payload"]["content"] == "Recovered and finished."  # type: ignore[index]
                 for event in events
             )
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_task_cannot_be_blocked_by_an_unverified_provider_capability_claim(
+    tmp_path: Path,
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text("[memory]\nenabled = false\n", encoding="utf-8")
+    provider = FalseBlockerProvider()
+    state = GatewayState.create(paths, providers={"fake": provider})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Create a file."},
+            )
+            events = await _wait_for_event(client, headers, session_id, "run.completed")
+            rejected = next(
+                event
+                for event in events
+                if event["type"] == "tool.rejected"
+                and event["payload"]["name"] == "task_update"  # type: ignore[index]
+            )
+            assert "cannot mark a task blocked" in rejected["payload"]["summary"]  # type: ignore[index]
+            tasks = response_object(
+                await client.get(f"/v1/sessions/{session_id}/tasks", headers=headers)
+            )
+            assert tasks["items"][0]["status"] == "pending"  # type: ignore[index,union-attr]
+            assert "read-only" not in str(tasks["items"][0]["text"])  # type: ignore[index,union-attr]
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_next_run_repairs_legacy_false_read_only_task_and_memory(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text("[memory]\nenabled = false\n", encoding="utf-8")
+    provider = FakeProvider(
+        [
+            StreamEvent(kind=StreamEventKind.STARTED),
+            StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="Continuing."),
+            StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+        ]
+    )
+    state = GatewayState.create(paths, providers={"fake": provider})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            session = state.ledger.get_session(session_id)
+            tasks, _ = state.runs.session_tasks.add(
+                session,
+                text="Create the requested file",
+            )
+            task = tasks.items[0]
+            state.runs.session_tasks.update(
+                session,
+                task.id,
+                text=(
+                    "Create the requested file "
+                    "(blocked: current session filesystem is read-only)."
+                ),
+                status="blocked",
+            )
+            source = state.ledger.append(
+                session_id=session.id,
+                agent_id=session.agent_id,
+                event_type="user.message",
+                payload={"content": "poisoned provider result"},
+            )
+            memory = state.runs.memory.create_candidate(
+                session=session,
+                candidate=MemoryCandidate.model_validate(
+                    {
+                        "layer": "episodic",
+                        "visibility": "workspace",
+                        "subject": "session:test",
+                        "predicate": "run_outcome",
+                        "value": "false blocker",
+                        "summary": (
+                            "Actions: read .codex/memories/MEMORY.md. Outcome: the current "
+                            "session has a read-only filesystem."
+                        ),
+                        "confidence": 1.0,
+                        "importance": 0.8,
+                        "provenance_event_ids": [source.id],
+                        "evidence_basis": "assistant_inference",
+                    }
+                ),
+                run_id="poisoned-run",
+                origin_kind="automatic",
+                activate=True,
+                causation_id=source.id,
+            ).record
+
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Continue."},
+            )
+            events = await _wait_for_event(client, headers, session_id, "run.completed")
+            assert any(
+                event["type"] == "runtime.notice"
+                and event["payload"]["code"] == "provider_state_repaired"  # type: ignore[index]
+                for event in events
+            )
+            repaired = await state.runs.current_tasks(session_id)
+            assert repaired.items[0].status == "pending"
+            assert repaired.items[0].text == "Create the requested file"
+            assert state.runs.memory.get(memory.id).status == "retracted"
     finally:
         await state.runs.close()
 
@@ -2271,7 +2450,11 @@ async def test_automatic_compaction_runs_before_an_over_budget_agent_request(
             assert len(fake.requests) == 3
             assert fake.requests[0].metadata == {"purpose": "context_compaction"}
             assert fake.requests[1].metadata == {"purpose": "context_compaction"}
-            assert fake.requests[2].metadata == {}
+            assert fake.requests[2].metadata == {
+                "purpose": "agent",
+                "workspace_path": str(tmp_path),
+                "interaction_mode": "auto",
+            }
     finally:
         await state.runs.close()
 

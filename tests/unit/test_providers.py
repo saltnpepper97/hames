@@ -740,8 +740,30 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
                         print(json.dumps({"id": request_id, "error": {
                             "code": -1, "message": "dynamic tools missing"}}), flush=True)
                         continue
+                    config = params.get("config", {})
+                    features = config.get("features", {})
+                    memories = config.get("memories", {})
+                    isolated = (
+                        params.get("sandbox") == "danger-full-access"
+                        and params.get("environments") == []
+                        and features.get("memories") is False
+                        and features.get("shell_tool") is False
+                        and features.get("multi_agent") is False
+                        and memories.get("generate_memories") is False
+                        and memories.get("use_memories") is False
+                        and "Never infer that Hames is read-only"
+                            in params.get("developerInstructions", "")
+                    )
+                    if not isolated:
+                        print(json.dumps({"id": request_id, "error": {
+                            "code": -2, "message": "provider isolation missing"}}), flush=True)
+                        continue
                     result = {"thread": {"id": "thread-1"}}
                 elif method == "turn/start":
+                    if params.get("sandboxPolicy", {}).get("type") != "externalSandbox":
+                        print(json.dumps({"id": request_id, "error": {
+                            "code": -3, "message": "external sandbox missing"}}), flush=True)
+                        continue
                     result = {"turn": {"id": "turn-1"}}
                     print(json.dumps({"id": request_id, "result": result}), flush=True)
                     prompt = params["input"][0]["text"]
@@ -800,6 +822,10 @@ async def test_codex_subscription_discovers_models_and_normalizes_app_server_str
                 messages=[ProviderMessage(role="user", content="ANSWER")],
                 system="contract",
                 reasoning_effort="medium",
+                metadata={
+                    "workspace_path": str(tmp_path),
+                    "interaction_mode": "auto",
+                },
                 tools=[
                     ToolDefinition(
                         name="read_file",

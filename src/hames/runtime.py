@@ -107,6 +107,10 @@ SELF_MANAGEMENT_TOOLS = frozenset(
 )
 
 _MEMORY_SUBJECT = re.compile(r"\b(?:memories|memory)\b", re.IGNORECASE)
+_FALSE_READ_ONLY_TASK_SUFFIX = re.compile(
+    r"\s*\(blocked:\s*current session filesystem is read-only\)\.?$",
+    re.IGNORECASE,
+)
 _MEMORY_MAINTENANCE = re.compile(
     r"\b(?:clean\s*up|cleanup|maintain|maintenance|prune|forget|delete|remove|retract|"
     r"edit|update|correct|fix)\b",
@@ -1858,6 +1862,7 @@ class RunManager:
             causation_id=user_event.id,
             correlation_id=run_id,
         )
+        await self._repair_legacy_provider_state(session, run_id, run_started.id)
         memories, retrieval_event = await self._retrieve_memories(
             session, run_id, str(user_event.payload.get("content", "")), run_started.id
         )
@@ -2033,6 +2038,67 @@ class RunManager:
                     user_requested_memory_maintenance,
                     "auto" if healing_run else None,
                 )
+
+    async def _repair_legacy_provider_state(
+        self, session: Session, run_id: str, causation_id: str
+    ) -> None:
+        """Undo the known Codex read-only capability leak before compiling context."""
+
+        repaired_task_ids: list[str] = []
+        task_state = await asyncio.to_thread(self.session_tasks.current, session.id)
+        for item in task_state.items:
+            if item.status != "blocked" or not _FALSE_READ_ONLY_TASK_SUFFIX.search(item.text):
+                continue
+            cleaned = _FALSE_READ_ONLY_TASK_SUFFIX.sub("", item.text).rstrip()
+            _, event = await asyncio.to_thread(
+                self.session_tasks.update,
+                session,
+                item.id,
+                text=cleaned,
+                status="pending",
+                causation_id=causation_id,
+            )
+            await self._publish_store_events((event,))
+            repaired_task_ids.append(item.id)
+
+        retracted_memory_ids: list[str] = []
+        active_memories = await asyncio.to_thread(
+            self.memory.list_visible, session, status="active", limit=200
+        )
+        for record in active_memories:
+            normalized = record.summary.lower()
+            if (
+                "read .codex/memories/memory.md" not in normalized
+                or "read-only filesystem" not in normalized
+            ):
+                continue
+            mutation = await asyncio.to_thread(
+                self.memory.transition,
+                session=session,
+                memory_id=record.id,
+                action="retract",
+                reason="invalid Codex provider capability claim",
+            )
+            await self._publish_store_events(mutation.events)
+            retracted_memory_ids.append(record.id)
+
+        if repaired_task_ids or retracted_memory_ids:
+            await self._append(
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                event_type="runtime.notice",
+                payload={
+                    "code": "provider_state_repaired",
+                    "message": "repaired false Codex read-only state",
+                    "details": {
+                        "task_ids": repaired_task_ids,
+                        "memory_ids": retracted_memory_ids,
+                    },
+                },
+                causation_id=causation_id,
+                correlation_id=run_id,
+            )
 
     def _assembled_plan_markdown(self, run_id: str, current: str) -> str:
         parts = [
@@ -2282,6 +2348,11 @@ class RunManager:
             system=context.system,
             reasoning_effort=session.reasoning_effort,
             max_tokens=self.config.context.output_reserve_tokens,
+            metadata={
+                "purpose": "agent",
+                "workspace_path": session.working_directory,
+                "interaction_mode": interaction_mode,
+            },
             tools=context.tools,
             tool_handler=tool_handler,
         )
@@ -2910,6 +2981,18 @@ class RunManager:
                     structured_data={"task_list": task_list.model_dump(mode="json")},
                 )
             if isinstance(arguments, TaskUpdateArguments):
+                if arguments.status == "blocked":
+                    run_events = await asyncio.to_thread(self.ledger.list_run_events, run_id)
+                    verified_blocker = any(
+                        event.type in {"tool.failed", "tool.rejected", "model.response.failed"}
+                        for event in run_events
+                    )
+                    if not verified_blocker:
+                        raise ValueError(
+                            "cannot mark a task blocked without a failed or rejected Hames "
+                            "action in this run; Hames filesystem capabilities remain available "
+                            "through the supplied tools"
+                        )
                 if arguments.action == "add":
                     task_list, event = await asyncio.to_thread(
                         self.session_tasks.add,

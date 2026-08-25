@@ -7,7 +7,6 @@ import json
 import os
 import time
 from collections.abc import AsyncIterator, Mapping, Sequence
-from pathlib import Path
 from typing import cast
 
 from hames.providers.base import (
@@ -295,11 +294,17 @@ class CodexProvider:
                 "thread/start",
                 {
                     "ephemeral": True,
-                    "cwd": str(Path.cwd()),
+                    "cwd": _request_workspace(request),
                     "model": request.model,
                     "approvalPolicy": "never",
-                    "sandbox": "read-only",
-                    "baseInstructions": _codex_instructions(request.system),
+                    # Codex is hosted behind Hames' tool and policy boundary. Advertising the
+                    # native read-only sandbox here caused the model to treat Hames writes as
+                    # impossible even though dynamic tools remained available.
+                    "sandbox": "danger-full-access",
+                    "baseInstructions": request.system,
+                    "developerInstructions": _codex_instructions(request),
+                    "config": _codex_isolation_config(),
+                    "environments": [],
                     "dynamicTools": dynamic_tools,
                 },
             )
@@ -317,7 +322,12 @@ class CodexProvider:
                     "model": request.model,
                     "effort": request.reasoning_effort or None,
                     "approvalPolicy": "never",
-                    "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
+                    # Hames is the external sandbox. Codex native tools are disabled below;
+                    # every model-visible side effect must arrive as an item/tool/call request.
+                    "sandboxPolicy": {
+                        "type": "externalSandbox",
+                        "networkAccess": "restricted",
+                    },
                 },
             )
             turn_object = turn.get("turn", {})
@@ -418,16 +428,43 @@ class CodexProvider:
             await connection.close()
 
 
-def _codex_instructions(system: str) -> str:
+def _request_workspace(request: ModelRequest) -> str:
+    value = request.metadata.get("workspace_path")
+    return value if isinstance(value, str) and value else os.getcwd()
+
+
+def _codex_isolation_config() -> dict[str, JsonValue]:
+    """Remove Codex-owned agent state and tools from an embedded provider thread."""
+
+    return {
+        "features": {
+            "memories": False,
+            "external_agent_memory_import": False,
+            "multi_agent": False,
+            "multi_agent_v2": False,
+            "shell_tool": False,
+        },
+        "memories": {"generate_memories": False, "use_memories": False},
+        "mcp_servers": {},
+        "plugins": {},
+    }
+
+
+def _codex_instructions(request: ModelRequest) -> str:
+    workspace = _request_workspace(request)
+    mode = request.metadata.get("interaction_mode")
+    rendered_mode = mode if isinstance(mode, str) and mode else "auto"
     return (
         "You are the model provider inside Hames. Hames owns the conversation, permissions, "
         "tools, and every side effect. Never use Codex native shell, file, web, or delegation "
-        "tools. Use only the dynamic tools supplied by Hames. Codex sandbox metadata limits "
-        "native Codex tools, not Hames dynamic tools. If the user requests a path outside the "
-        "current repository but below their home, call the Hames tool with workspace home and "
-        "let Hames request any needed approval; do not ask the user to expose another workspace "
-        "root. Treat the serialized transcript in the user input as authoritative conversation "
-        "history.\n\n" + system
+        "tools. Use only the dynamic tools supplied by Hames. Do not load or mention Codex "
+        "memories, Skills, sessions, project rules, or configuration. The Hames workspace is "
+        f"{workspace!r} and the interaction mode is {rendered_mode!r}. Hames dynamic tools may "
+        "access the project, disposable scratch, and user-requested paths below their home, "
+        "subject to Hames policy and approvals. Never infer that Hames is read-only from Codex "
+        "sandbox metadata. Attempt the supplied Hames tool and treat its structured result as "
+        "the only authority. Treat the serialized transcript in the user input as authoritative "
+        "conversation history."
     )
 
 
