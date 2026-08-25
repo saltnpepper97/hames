@@ -214,8 +214,8 @@ like:
 ```toml
 [runtime]
 default_provider = "llama_cpp" # or "ollama"
-max_model_turns_per_user_message = 24
-max_tool_calls_per_run = 96
+max_model_turns_per_user_message = 100
+max_tool_calls_per_run = 99
 max_active_seconds_per_run = 1800.0
 max_delegation_depth = 1
 max_child_runs_per_parent_run = 4

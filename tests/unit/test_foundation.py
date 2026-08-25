@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from hames import __version__
 from hames.agent import load_agent
 from hames.cli import main
-from hames.config import load_config
+from hames.config import RuntimeConfig, load_config
 from hames.context import CORE_CONTRACT
 from hames.doctor import run_doctor
 from hames.paths import HamesPaths
@@ -147,6 +147,13 @@ def test_agent_runtime_limits_are_configurable(hames_paths: HamesPaths) -> None:
     assert config.runtime.max_tool_calls_per_run == 20
     assert config.runtime.max_active_seconds_per_run == 90
     assert config.tools.shell_timeout_seconds == 30
+
+
+def test_agent_runtime_defaults_allow_ninety_nine_sequential_tools() -> None:
+    config = RuntimeConfig()
+
+    assert config.max_tool_calls_per_run == 99
+    assert config.max_model_turns_per_user_message == 100
 
 
 def test_context_capacity_is_strict_and_configurable(hames_paths: HamesPaths) -> None:

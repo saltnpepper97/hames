@@ -21,8 +21,8 @@ class StrictModel(BaseModel):
 class RuntimeConfig(StrictModel):
     default_agent: str = "default"
     default_provider: str = "llama_cpp"
-    max_model_turns_per_user_message: int = Field(default=24, ge=1)
-    max_tool_calls_per_run: int = Field(default=96, ge=1)
+    max_model_turns_per_user_message: int = Field(default=100, ge=1)
+    max_tool_calls_per_run: int = Field(default=99, ge=1)
     max_active_seconds_per_run: float = Field(default=1800.0, gt=0)
     max_delegation_depth: int = Field(default=1, ge=0, le=2)
     max_child_runs_per_parent_run: int = Field(default=4, ge=1, le=16)
