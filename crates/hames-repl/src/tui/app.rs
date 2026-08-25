@@ -2289,6 +2289,20 @@ impl App {
                     item.position = index + 1;
                 }
             }
+            "queue.prioritized" => {
+                let queue_id = string(&event.payload, "queue_id");
+                if let Some(index) = self
+                    .queued_messages
+                    .iter()
+                    .position(|item| item.id == queue_id)
+                {
+                    let item = self.queued_messages.remove(index);
+                    self.queued_messages.insert(0, item);
+                    for (position, item) in self.queued_messages.iter_mut().enumerate() {
+                        item.position = position + 1;
+                    }
+                }
+            }
             "queue.paused" | "queue.resumed" => {
                 self.queue_paused = event
                     .payload

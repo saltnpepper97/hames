@@ -346,7 +346,20 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
     let lines = transcript_lines(app, width);
     let height = usize::from(area.height);
     let bottom_start = lines.len().saturating_sub(height);
-    app.scroll = app.scroll.min(bottom_start);
+    let previous_height = app.transcript_viewport.height as usize;
+    let previous_bottom = app
+        .transcript_viewport
+        .lines
+        .len()
+        .saturating_sub(previous_height);
+    let previous_scroll = previous_bottom.saturating_sub(app.transcript_viewport.line_offset);
+    let content_height_changed =
+        previous_height > 0 && app.transcript_viewport.lines.len() != lines.len();
+    if app.scroll > 0 && content_height_changed && app.scroll == previous_scroll {
+        app.scroll = bottom_start.saturating_sub(app.transcript_viewport.line_offset);
+    } else {
+        app.scroll = app.scroll.min(bottom_start);
+    }
     let start = bottom_start.saturating_sub(app.scroll);
     let end = (start + height).min(lines.len());
     app.transcript_viewport = TranscriptViewport {
@@ -4480,6 +4493,37 @@ mod tests {
         app.scroll = app.scroll.saturating_sub(3);
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         assert_eq!(app.scroll, clamped - 3);
+    }
+
+    #[test]
+    fn growing_open_thought_preserves_the_scrolled_viewport_anchor() {
+        let backend = TestBackend::new(80, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::Thought {
+            run_id: "run-live".to_owned(),
+            content: (0..40)
+                .map(|index| format!("reasoning line {index}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            duration_seconds: 1.0,
+            interrupted: false,
+            live: true,
+            collapsed: false,
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        app.scroll = 10;
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let anchored_line = app.transcript_viewport.line_offset;
+
+        let TranscriptItem::Thought { content, .. } = &mut app.transcript[0] else {
+            unreachable!();
+        };
+        content.push_str("\nnew streamed reasoning");
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        assert_eq!(app.transcript_viewport.line_offset, anchored_line);
+        assert_eq!(app.scroll, 11);
     }
 
     #[test]

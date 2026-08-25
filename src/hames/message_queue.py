@@ -145,6 +145,39 @@ class MessageQueueStore:
     def take_oldest(self, session_id: str, *, reason: str) -> QueueMutation:
         return self._take(session_id, queue_id=None, newest=False, reason=reason)
 
+    def prioritize(self, session_id: str, queue_id: str, *, reason: str) -> QueueMutation:
+        session = self.ledger.get_session(session_id)
+        with self.ledger.transaction_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM session_queue WHERE session_id = ? AND id = ?",
+                (session_id, queue_id),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise KeyError(queue_id)
+            ordinal = int(
+                connection.execute(
+                    "SELECT MIN(ordinal) - 1 FROM session_queue WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()[0]
+            )
+            connection.execute(
+                "UPDATE session_queue SET ordinal = ? WHERE id = ?", (ordinal, queue_id)
+            )
+            event = self.ledger.append_in_transaction(
+                connection,
+                session_id=session_id,
+                agent_id=session.agent_id,
+                event_type="queue.prioritized",
+                payload={"queue_id": queue_id, "position": 1, "reason": reason},
+                correlation_id=queue_id,
+            )
+            connection.commit()
+        state = self.state(session_id)
+        item = next(item for item in state.items if item.id == queue_id)
+        return QueueMutation(state=state, event=event, item=item)
+
     def _take(
         self, session_id: str, *, queue_id: str | None, newest: bool, reason: str
     ) -> QueueMutation:

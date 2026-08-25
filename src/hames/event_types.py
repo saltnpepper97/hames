@@ -89,6 +89,12 @@ class QueueRemovedPayload(EventPayload):
     reason: str
 
 
+class QueuePrioritizedPayload(EventPayload):
+    queue_id: str
+    position: Literal[1] = 1
+    reason: str
+
+
 class QueueStatePayload(EventPayload):
     paused: bool
 
@@ -768,6 +774,7 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "queue.enqueued": QueuedMessagePayload,
     "queue.removed": QueueRemovedPayload,
     "queue.promoted": QueueRemovedPayload,
+    "queue.prioritized": QueuePrioritizedPayload,
     "queue.paused": QueueStatePayload,
     "queue.resumed": QueueStatePayload,
     "plan.proposed": PlanProposedPayload,

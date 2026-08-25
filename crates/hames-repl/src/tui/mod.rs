@@ -456,6 +456,7 @@ enum Effect {
     SendPlanNote(String, Vec<PasteSpan>),
     ExecutePlanWithNote(String),
     SendNow(String, Vec<PasteSpan>),
+    SendQueuedNow(String),
     TakeQueued(String),
     TakeLatestQueued,
     Cancel,
@@ -1487,6 +1488,12 @@ fn send_message(
 }
 
 fn send_now(app: &mut App) -> Option<Effect> {
+    if app.composer.is_empty()
+        && let Some(item) = app.queued_messages.last()
+    {
+        app.notice = Some("Promoting queued message · interrupting current work…".to_owned());
+        return Some(Effect::SendQueuedNow(item.id.clone()));
+    }
     if app.session.interaction_mode == "plan" {
         return send_or_command(app);
     }
@@ -1719,6 +1726,19 @@ async fn apply_effect(
             } else {
                 "Current work interrupted · priority turn queued".to_owned()
             });
+        }
+        Effect::SendQueuedNow(queue_id) => {
+            let accepted = client.send_queued_now(&app.session.id, &queue_id).await?;
+            app.queued_messages.retain(|queued| queued.id != queue_id);
+            if let Some(item) = accepted.queued {
+                app.insert_queued_message(item);
+            }
+            if accepted.disposition == "started" {
+                app.begin_foreground_run(accepted.run_id);
+                app.notice = Some("Queued message started now".to_owned());
+            } else {
+                app.notice = Some("Queued message promoted · current work interrupted".to_owned());
+            }
         }
         Effect::TakeQueued(queue_id) => {
             let item = client.take_queued(&app.session.id, &queue_id).await?;
@@ -3092,6 +3112,24 @@ mod tests {
         ));
         assert_eq!(app.composer.text(), "urgent correction");
         assert!(app.notice.as_deref().unwrap().contains("will run next"));
+    }
+
+    #[test]
+    fn alt_up_promotes_the_latest_queued_message_when_the_composer_is_empty() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-active".to_owned());
+        app.queued_messages = vec![queued("queue-1", "older"), queued("queue-2", "latest")];
+
+        assert!(matches!(
+            handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::ALT)),
+            Some(Effect::SendQueuedNow(queue_id)) if queue_id == "queue-2"
+        ));
+        assert!(
+            app.notice
+                .as_deref()
+                .unwrap()
+                .contains("Promoting queued message")
+        );
     }
 
     #[test]

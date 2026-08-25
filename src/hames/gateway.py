@@ -1987,6 +1987,27 @@ def create_app(state: GatewayState) -> FastAPI:
                 404, "queued_message_not_found", f"unknown queue item: {queue_id}"
             ) from exc
 
+    @app.post(
+        "/v1/sessions/{session_id}/queue/{queue_id}/send-now",
+        dependencies=auth,
+        response_model=MessageAccepted,
+        status_code=202,
+    )
+    async def send_queued_now(session_id: str, queue_id: str) -> MessageAccepted:
+        try:
+            result = await state.runs.send_queued_now(session_id, queue_id)
+            return MessageAccepted(
+                disposition=cast(Literal["started", "queued"], result.disposition),
+                run_id=result.run_id,
+                queued=result.queued,
+            )
+        except KeyError as exc:
+            raise ApiError(
+                404, "queued_message_not_found", f"unknown queue item: {queue_id}"
+            ) from exc
+        except ValueError as exc:
+            raise ApiError(409, "queued_message_not_sendable", str(exc)) from exc
+
     @app.delete(
         "/v1/sessions/{session_id}/queue/{queue_id}",
         dependencies=auth,

@@ -1003,6 +1003,27 @@ class RunManager:
         assert mutation.item is not None
         return mutation.item
 
+    async def send_queued_now(self, session_id: str, queue_id: str) -> SubmissionResult:
+        async with self._submission_lock(session_id):
+            mutation = await asyncio.to_thread(
+                self.message_queue.prioritize,
+                session_id,
+                queue_id,
+                reason="send_now",
+            )
+            await self._publish_durable(mutation.event)
+            assert mutation.item is not None
+            if mutation.state.paused:
+                resumed = await asyncio.to_thread(self.message_queue.set_paused, session_id, False)
+                await self._publish_durable(resumed.event)
+            if self.is_session_active(session_id):
+                await self.cancel(self._session_runs[session_id])
+                return SubmissionResult(disposition="queued", queued=mutation.item)
+            run_id = await self._promote_next_locked(session_id)
+            if run_id is None:
+                return SubmissionResult(disposition="queued", queued=mutation.item)
+            return SubmissionResult(disposition="started", run_id=run_id)
+
     async def delete_queued(self, session_id: str, queue_id: str) -> QueueState:
         mutation = await asyncio.to_thread(
             self.message_queue.take, session_id, queue_id, reason="deleted"

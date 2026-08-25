@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 23;
+pub const PROTOCOL_VERSION: u32 = 24;
 pub const HEAL_SCARS_PROMPT: &str = "Heal behavioral scars now.";
 
 #[derive(Clone)]
@@ -1314,6 +1314,21 @@ impl GatewayClient {
             self.post(&format!("/v1/sessions/{session_id}/queue/{queue_id}/take"))
                 .send()
                 .await?,
+        )
+        .await
+    }
+
+    pub async fn send_queued_now(
+        &self,
+        session_id: &str,
+        queue_id: &str,
+    ) -> Result<MessageAccepted> {
+        decode(
+            self.post(&format!(
+                "/v1/sessions/{session_id}/queue/{queue_id}/send-now"
+            ))
+            .send()
+            .await?,
         )
         .await
     }

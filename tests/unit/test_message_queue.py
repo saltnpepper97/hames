@@ -87,3 +87,27 @@ def test_priority_enqueue_preserves_existing_turns_and_moves_to_front(
     assert older is not None and priority is not None
     assert priority.position == 1
     assert [item.content for item in store.state(session.id).items] == ["send now", "older"]
+
+
+def test_existing_queue_item_can_be_prioritized_without_recreating_it(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    session = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    store = MessageQueueStore(ledger)
+    first = store.enqueue(session.id, "first", remember=False, paste_spans=[]).item
+    second = store.enqueue(session.id, "second", remember=False, paste_spans=[]).item
+    assert first is not None and second is not None
+
+    prioritized = store.prioritize(session.id, second.id, reason="send_now")
+
+    assert prioritized.item is not None
+    assert prioritized.item.id == second.id
+    assert prioritized.item.position == 1
+    assert prioritized.event.type == "queue.prioritized"
+    assert [item.id for item in prioritized.state.items] == [second.id, first.id]
