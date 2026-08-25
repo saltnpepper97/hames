@@ -73,11 +73,20 @@ pub async fn run() -> Result<()> {
         Some(session) => (session, false),
         None => (create_session(&client, &paths, None).await?, true),
     };
-    if !ensure_workspace_trust(&client, &session).await? {
-        if created_session {
-            client.close_session(&session.id).await?;
+    match ensure_workspace_trust(&client, &session).await {
+        Ok(true) => {}
+        Ok(false) => {
+            if created_session {
+                client.close_session(&session.id).await?;
+            }
+            return Ok(());
         }
-        return Ok(());
+        Err(error) => {
+            if created_session {
+                let _ = client.close_session(&session.id).await;
+            }
+            return Err(error);
+        }
     }
     let mut app = load_app(&client, session).await?;
     app.connection_state = ConnectionState::Connecting;

@@ -102,6 +102,7 @@ async def test_rust_repl_through_gateway_and_ledger(tmp_path: Path) -> None:
     )
     paths = HamesPaths.resolve(root=tmp_path / "home")
     state = GatewayState.create(paths, providers={"fake": provider})
+    state.controls.grant_trust(REPOSITORY)
     port = available_port()
     server = uvicorn.Server(
         uvicorn.Config(create_app(state), host="127.0.0.1", port=port, log_level="error")
@@ -132,7 +133,7 @@ async def test_rust_repl_through_gateway_and_ledger(tmp_path: Path) -> None:
         stdout, stderr = await asyncio.wait_for(
             process.communicate(
                 (
-                    "y\n/mode plan\n/session\nhello\n/usage\n/inspect\n/context\n"
+                    "/mode plan\n/session\nhello\n/usage\n/inspect\n/context\n"
                     f"/export {repl_export} markdown\n"
                     "/fork\n/session\n/events\n/quit\n"
                 ).encode()
@@ -406,6 +407,7 @@ async def test_repl_preserves_tool_preparation_through_completion(tmp_path: Path
     )
     paths = HamesPaths.resolve(root=tmp_path / "home")
     state = GatewayState.create(paths, providers={"fake": provider})
+    state.controls.grant_trust(REPOSITORY)
     port = available_port()
     server = uvicorn.Server(
         uvicorn.Config(create_app(state), host="127.0.0.1", port=port, log_level="error")
@@ -433,7 +435,7 @@ async def test_repl_preserves_tool_preparation_through_completion(tmp_path: Path
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(
-            process.communicate(b"y\n/mode manual\nexercise tools\ns\n/quit\n"), timeout=10
+            process.communicate(b"/mode manual\nexercise tools\ns\n/quit\n"), timeout=10
         )
         output = stdout.decode()
         assert process.returncode == 0, stderr.decode()
@@ -501,6 +503,7 @@ async def test_repl_resolves_tilde_without_auto_mode_approval(
     )
     paths = HamesPaths.resolve(root=tmp_path / "hames-home")
     state = GatewayState.create(paths, providers={"fake": provider})
+    state.controls.grant_trust(REPOSITORY)
     port = available_port()
     server = uvicorn.Server(
         uvicorn.Config(create_app(state), host="127.0.0.1", port=port, log_level="error")
@@ -529,7 +532,7 @@ async def test_repl_resolves_tilde_without_auto_mode_approval(
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(
-            process.communicate(b"y\nread ~/.zshrc\n/quit\n"), timeout=10
+            process.communicate(b"read ~/.zshrc\n/quit\n"), timeout=10
         )
         output = stdout.decode()
         assert process.returncode == 0, stderr.decode()

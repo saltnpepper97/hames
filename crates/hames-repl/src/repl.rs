@@ -88,9 +88,16 @@ pub async fn run() -> Result<()> {
         style::dim("Type /help for commands. The Python gateway remains running after exit.")
     );
     println!();
-    if !ensure_trust(&client, &session).await? {
-        client.close_session(&session.id).await?;
-        return Ok(());
+    match ensure_trust(&client, &session).await {
+        Ok(true) => {}
+        Ok(false) => {
+            client.close_session(&session.id).await?;
+            return Ok(());
+        }
+        Err(error) => {
+            let _ = client.close_session(&session.id).await;
+            return Err(error);
+        }
     }
     let mut remember_next = false;
 
