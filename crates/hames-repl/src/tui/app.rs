@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1025,6 +1025,7 @@ pub struct App {
     pub copy_notice: Option<CopyNotice>,
     pub last_sequence: u64,
     pub seen_events: HashSet<String>,
+    thought_segment_starts: HashMap<String, usize>,
     pub context_tokens: u64,
     pub context_window: u64,
     pub hits: Vec<HitRegion>,
@@ -1106,6 +1107,7 @@ impl App {
             copy_notice: None,
             last_sequence: 0,
             seen_events: HashSet::new(),
+            thought_segment_starts: HashMap::new(),
             context_tokens: 0,
             context_window,
             hits: Vec::new(),
@@ -1619,9 +1621,20 @@ impl App {
                     .and_then(Value::as_str)
                     .unwrap_or_default();
                 let index = self.ensure_thought(run_id, true);
+                let mut segment_start = self
+                    .thought_segment_starts
+                    .get(run_id)
+                    .copied()
+                    .unwrap_or(0);
                 if let TranscriptItem::Thought { content, .. } = &mut self.transcript[index] {
+                    if !text.is_empty() && segment_start > 0 && content.len() == segment_start {
+                        content.push_str("\n\n");
+                        segment_start = content.len();
+                    }
                     content.push_str(text);
                 }
+                self.thought_segment_starts
+                    .insert(run_id.to_owned(), segment_start);
             }
             "response.text_delta" => {
                 self.finish_live_thought(run_id);
@@ -2112,6 +2125,12 @@ impl App {
             }
             "assistant.reasoning" => {
                 let index = self.ensure_thought(&run_id, false);
+                let segment = string(&event.payload, "content");
+                let mut segment_start = self
+                    .thought_segment_starts
+                    .get(&run_id)
+                    .copied()
+                    .unwrap_or(0);
                 if let TranscriptItem::Thought {
                     content,
                     duration_seconds,
@@ -2120,8 +2139,13 @@ impl App {
                     ..
                 } = &mut self.transcript[index]
                 {
-                    *content = string(&event.payload, "content");
-                    *duration_seconds = event
+                    if !segment.is_empty() && segment_start > 0 && content.len() == segment_start {
+                        content.push_str("\n\n");
+                        segment_start = content.len();
+                    }
+                    content.truncate(segment_start.min(content.len()));
+                    content.push_str(&segment);
+                    *duration_seconds += event
                         .payload
                         .get("duration_seconds")
                         .and_then(Value::as_f64)
@@ -2130,20 +2154,25 @@ impl App {
                         event.payload.get("status").and_then(Value::as_str) == Some("interrupted");
                     *live = false;
                 }
+                self.thought_segment_starts
+                    .insert(run_id.clone(), segment_start);
             }
             "assistant.message" => {
                 self.finish_live_thought(&run_id);
-                let index = self.ensure_assistant(&run_id, false);
-                if let TranscriptItem::Assistant {
-                    content,
-                    live,
-                    durable,
-                    ..
-                } = &mut self.transcript[index]
-                {
-                    *content = string(&event.payload, "content");
-                    *live = false;
-                    *durable = true;
+                let message = string(&event.payload, "content");
+                if !message.is_empty() {
+                    let index = self.ensure_assistant(&run_id, false);
+                    if let TranscriptItem::Assistant {
+                        content,
+                        live,
+                        durable,
+                        ..
+                    } = &mut self.transcript[index]
+                    {
+                        *content = message;
+                        *live = false;
+                        *durable = true;
+                    }
                 }
             }
             "model.tool_call" => {
@@ -2352,13 +2381,21 @@ impl App {
 
     fn ensure_thought(&mut self, run_id: &str, live: bool) -> usize {
         if let Some(index) = self.transcript.iter().rposition(|item| match item {
-            TranscriptItem::Thought {
-                run_id: id,
-                live: existing_live,
-                ..
-            } => id == run_id && (!live || *existing_live),
+            TranscriptItem::Thought { run_id: id, .. } => id == run_id,
             _ => false,
         }) {
+            if live
+                && let TranscriptItem::Thought {
+                    content,
+                    live: existing_live,
+                    ..
+                } = &mut self.transcript[index]
+                && !*existing_live
+            {
+                self.thought_segment_starts
+                    .insert(run_id.to_owned(), content.len());
+                *existing_live = true;
+            }
             return index;
         }
         self.collapse_completed_thoughts();
@@ -2370,6 +2407,7 @@ impl App {
             live,
             collapsed: true,
         });
+        self.thought_segment_starts.insert(run_id.to_owned(), 0);
         self.transcript.len() - 1
     }
 
@@ -2466,10 +2504,10 @@ impl App {
         let row_index = rows
             .iter()
             .position(|row| {
-                call_id
-                    .as_ref()
-                    .is_some_and(|id| row.tool_call_id.as_ref() == Some(id))
-                    || row.index == index
+                call_id.as_ref().map_or(row.index == index, |id| {
+                    row.tool_call_id.as_ref() == Some(id)
+                        || (row.tool_call_id.is_none() && row.index == index)
+                })
             })
             .unwrap_or_else(|| {
                 rows.push(ActivityRow::new(index));
@@ -2588,6 +2626,8 @@ impl App {
                     *live = false;
                     if cancelled && was_live {
                         *interrupted = true;
+                    } else if !cancelled {
+                        *interrupted = false;
                     }
                 }
                 TranscriptItem::Assistant {
@@ -3053,6 +3093,167 @@ mod tests {
         assert_eq!(positions[0].1, "I will edit it.");
         assert_eq!(positions[1].1, "The edit is done.");
         assert!(positions[0].0 < activity && activity < positions[1].0);
+    }
+
+    #[test]
+    fn sequential_tool_cycles_share_one_thought_and_work_group() {
+        let run_id = "run-tool-loop";
+        let events = vec![
+            event(1, "run.started", run_id, json!({})),
+            event(2, "model.requested", run_id, json!({})),
+            event(
+                3,
+                "assistant.reasoning",
+                run_id,
+                json!({"content": "first check", "status": "interrupted", "duration_seconds": 1.0}),
+            ),
+            event(
+                4,
+                "assistant.message",
+                run_id,
+                json!({"content": "", "status": "interrupted"}),
+            ),
+            event(
+                5,
+                "model.tool_call",
+                run_id,
+                json!({"index": 0, "tool_call_id": "call-1", "name": "shell", "arguments": {"command": "pwd"}}),
+            ),
+            event(
+                6,
+                "tool.completed",
+                run_id,
+                json!({"index": 0, "tool_call_id": "call-1", "name": "shell", "summary": "first"}),
+            ),
+            event(7, "model.requested", run_id, json!({})),
+            event(
+                8,
+                "assistant.reasoning",
+                run_id,
+                json!({"content": "second check", "status": "interrupted", "duration_seconds": 2.0}),
+            ),
+            event(
+                9,
+                "assistant.message",
+                run_id,
+                json!({"content": "", "status": "interrupted"}),
+            ),
+            event(
+                10,
+                "model.tool_call",
+                run_id,
+                json!({"index": 0, "tool_call_id": "call-2", "name": "shell", "arguments": {"command": "git status"}}),
+            ),
+            event(
+                11,
+                "tool.completed",
+                run_id,
+                json!({"index": 0, "tool_call_id": "call-2", "name": "shell", "summary": "second"}),
+            ),
+            event(12, "model.requested", run_id, json!({})),
+            event(
+                13,
+                "assistant.message",
+                run_id,
+                json!({"content": "Done.", "status": "completed"}),
+            ),
+            event(14, "run.completed", run_id, json!({"active_seconds": 3.0})),
+        ];
+
+        let app = App::new(session(), events, true);
+        let thoughts = app
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Thought {
+                    content,
+                    duration_seconds,
+                    ..
+                } => Some((content, duration_seconds)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let activities = app
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Activity { rows, .. } => Some(rows),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let assistants = app
+            .transcript
+            .iter()
+            .filter(|item| matches!(item, TranscriptItem::Assistant { .. }))
+            .count();
+
+        assert_eq!(thoughts.len(), 1);
+        assert_eq!(thoughts[0].0, "first check\n\nsecond check");
+        assert_eq!(*thoughts[0].1, 3.0);
+        assert_eq!(activities.len(), 1);
+        assert_eq!(activities[0].len(), 2);
+        assert_eq!(assistants, 1);
+    }
+
+    #[test]
+    fn streamed_reasoning_segments_reconcile_without_duplication() {
+        let run_id = "run-streamed-tool-loop";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_durable(event(1, "run.started", run_id, json!({})), true);
+        app.ingest_durable(event(2, "model.requested", run_id, json!({})), true);
+        app.ingest_transient(
+            run_id,
+            "response.reasoning_delta",
+            &json!({"text": "first"}),
+        );
+        app.ingest_durable(
+            event(
+                3,
+                "assistant.reasoning",
+                run_id,
+                json!({"content": "first", "status": "interrupted", "duration_seconds": 1.0}),
+            ),
+            true,
+        );
+        app.ingest_durable(
+            event(
+                4,
+                "model.tool_call",
+                run_id,
+                json!({"index": 0, "tool_call_id": "call-1", "name": "shell", "arguments": {"command": "pwd"}}),
+            ),
+            true,
+        );
+        app.ingest_durable(event(5, "model.requested", run_id, json!({})), true);
+        app.ingest_transient(
+            run_id,
+            "response.reasoning_delta",
+            &json!({"text": "second"}),
+        );
+        app.ingest_durable(
+            event(
+                6,
+                "assistant.reasoning",
+                run_id,
+                json!({"content": "second", "status": "completed", "duration_seconds": 2.0}),
+            ),
+            true,
+        );
+
+        let thought = app
+            .transcript
+            .iter()
+            .find_map(|item| match item {
+                TranscriptItem::Thought {
+                    content,
+                    duration_seconds,
+                    ..
+                } => Some((content, duration_seconds)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(thought.0, "first\n\nsecond");
+        assert_eq!(*thought.1, 3.0);
     }
 
     #[test]
