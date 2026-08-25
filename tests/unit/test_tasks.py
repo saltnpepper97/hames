@@ -54,3 +54,22 @@ def test_task_updates_reject_empty_changes_and_unknown_ids(
         store.update(session, tasks.items[0].id)
     with pytest.raises(KeyError):
         store.remove(session, "missing")
+
+
+def test_task_projection_repairs_legacy_false_codex_read_only_blocker(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    store, session = _fixture(hames_paths, tmp_path)
+    tasks, _ = store.add(session, text="Create the requested file")
+    store.update(
+        session,
+        tasks.items[0].id,
+        text=("Create the requested file (blocked: current session filesystem is read-only)."),
+        status="blocked",
+    )
+    store.ledger.close_session(session.id)
+
+    repaired = store.current(session.id)
+
+    assert repaired.items[0].text == "Create the requested file"
+    assert repaired.items[0].status == "pending"

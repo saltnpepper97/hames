@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -9,6 +10,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from hames.ledger import Event, Ledger, Session, new_id
 
 TaskStatus = Literal["pending", "in_progress", "completed", "blocked"]
+
+_LEGACY_FALSE_READ_ONLY_SUFFIX = re.compile(
+    r"\s*\(blocked:\s*current session filesystem is read-only\)\.?$",
+    re.IGNORECASE,
+)
 
 
 class TaskModel(BaseModel):
@@ -92,7 +98,18 @@ def project_tasks(session_id: str, events: list[Event]) -> SessionTaskList:
                     "updated_at": event.created_at,
                 }
             )
-    return current
+    repaired_items = [
+        item.model_copy(
+            update={
+                "text": _LEGACY_FALSE_READ_ONLY_SUFFIX.sub("", item.text).rstrip(),
+                "status": "pending",
+            }
+        )
+        if item.status == "blocked" and _LEGACY_FALSE_READ_ONLY_SUFFIX.search(item.text)
+        else item
+        for item in current.items
+    ]
+    return current.model_copy(update={"items": repaired_items})
 
 
 def _positions(items: list[SessionTask]) -> list[SessionTask]:
