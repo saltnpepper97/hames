@@ -3,6 +3,7 @@ mod api;
 mod local;
 mod repl;
 mod style;
+mod trust;
 mod tui;
 
 use std::env;

@@ -35,9 +35,10 @@ pub async fn run() -> Result<()> {
             PROTOCOL_VERSION
         );
     }
+    prepare_history(&paths.history)?;
     let mut editor = DefaultEditor::new()?;
-    if paths.history.exists() {
-        let _ = editor.load_history(&paths.history);
+    if let Err(error) = editor.load_history(&paths.history) {
+        warn_history("load", &error);
     }
     let cwd = env::current_dir()?.canonicalize()?;
     let mut provider = paths.configured_provider()?;
@@ -87,7 +88,10 @@ pub async fn run() -> Result<()> {
         style::dim("Type /help for commands. The Python gateway remains running after exit.")
     );
     println!();
-    ensure_trust(&client, &mut editor, &session).await?;
+    if !ensure_trust(&client, &session).await? {
+        client.close_session(&session.id).await?;
+        return Ok(());
+    }
     let mut remember_next = false;
 
     loop {
@@ -98,6 +102,9 @@ pub async fn run() -> Result<()> {
             continue;
         }
         let _ = editor.add_history_entry(input.as_str());
+        if let Err(error) = editor.append_history(&paths.history) {
+            warn_history("append", &error);
+        }
         if input.starts_with('/') && !is_user_skill_command(&client, &session, &input).await? {
             match handle_command(
                 &client,
@@ -131,9 +138,11 @@ pub async fn run() -> Result<()> {
             eprintln!("{} {error:#}", style::badge(style::Badge::Error, false));
         }
     }
-    fs::create_dir_all(&paths.root).ok();
-    editor.save_history(&paths.history)?;
-    make_history_private(&paths.history)?;
+    if let Err(error) = editor.save_history(&paths.history) {
+        warn_history("save", &error);
+    } else if let Err(error) = make_history_private(&paths.history) {
+        warn_history("secure", &error);
+    }
     let has_conversation = session_has_conversation(&client, &session.id).await?;
     if let Some(command) = exit_resume_command(&session.id, has_conversation) {
         print_exit_handoff(&command);
@@ -170,6 +179,42 @@ fn print_exit_handoff(command: &str) {
     println!();
     println!("{}", style::dim("Resume session with"));
     println!("  {}", style::paint("1", command));
+}
+
+fn prepare_history(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create history directory {}", parent.display()))?;
+    }
+    open_private_history(path)?;
+    make_history_private(path)
+}
+
+#[cfg(unix)]
+fn open_private_history(path: &Path) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("failed to prepare history file {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn open_private_history(path: &Path) -> Result<()> {
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to prepare history file {}", path.display()))?;
+    Ok(())
+}
+
+fn warn_history(action: &str, error: &dyn std::fmt::Display) {
+    eprintln!("Warning: could not {action} REPL history: {error}");
 }
 
 #[cfg(unix)]
@@ -268,17 +313,25 @@ async fn handle_command(
             let previous_id = session.id.clone();
             let discard_previous = !session_has_conversation(client, &previous_id).await?;
             let created = client.create_session_from(cwd, &previous_id).await?;
+            if !ensure_trust(client, &created).await? {
+                client.close_session(&created.id).await?;
+                bail!("working directory was not trusted");
+            }
             if discard_previous && let Err(error) = client.close_session(&previous_id).await {
                 let _ = client.close_session(&created.id).await;
                 return Err(error);
             }
             *session = created;
-            ensure_trust(client, editor, session).await?;
             println!("{}", style::success(&format!("New session {}", session.id)));
         }
         "/clear" => {
             *remember_next = false;
             let previous_id = session.id.clone();
+            let created = client.create_session_from(cwd, &previous_id).await?;
+            if !ensure_trust(client, &created).await? {
+                client.close_session(&created.id).await?;
+                bail!("working directory was not trusted");
+            }
             if client
                 .goals(&previous_id)
                 .await?
@@ -287,13 +340,11 @@ async fn handle_command(
             {
                 client.cancel_goal(&previous_id).await?;
             }
-            let created = client.create_session_from(cwd, &previous_id).await?;
             if let Err(error) = client.close_session(&previous_id).await {
                 let _ = client.close_session(&created.id).await;
                 return Err(error);
             }
             *session = created;
-            ensure_trust(client, editor, session).await?;
             print!("\x1b[2J\x1b[H");
             io::stdout().flush()?;
             println!(
@@ -344,13 +395,17 @@ async fn handle_command(
             }
         }
         "/fork" => {
-            *session = client
+            let created = client
                 .fork_session(&session.id, parts.get(1).copied(), None)
                 .await?;
+            if !ensure_trust(client, &created).await? {
+                client.close_session(&created.id).await?;
+                bail!("working directory was not trusted");
+            }
+            *session = created;
             *provider = session.provider.clone();
             *model = session.model.clone();
             *reasoning = session.reasoning_effort.clone();
-            ensure_trust(client, editor, session).await?;
             println!(
                 "{}",
                 style::success(&format!(
@@ -411,6 +466,9 @@ async fn handle_command(
                 return Ok(CommandOutcome::Continue);
             };
             let selected = client.session(id).await?;
+            if !ensure_trust(client, &selected).await? {
+                bail!("working directory was not trusted");
+            }
             if *id != session.id && !session_has_conversation(client, &session.id).await? {
                 client.close_session(&session.id).await?;
             }
@@ -418,7 +476,6 @@ async fn handle_command(
             *provider = session.provider.clone();
             *model = session.model.clone();
             *reasoning = session.reasoning_effort.clone();
-            ensure_trust(client, editor, session).await?;
             println!(
                 "{}",
                 style::success(&format!("Resumed session {}", session.id))
@@ -1010,28 +1067,19 @@ fn print_tasks(tasks: &SessionTaskList) {
     }
 }
 
-async fn ensure_trust(
-    client: &GatewayClient,
-    editor: &mut DefaultEditor,
-    session: &Session,
-) -> Result<()> {
+async fn ensure_trust(client: &GatewayClient, session: &Session) -> Result<bool> {
     let status = client.trust_status(&session.id).await?;
     if status.trusted {
-        return Ok(());
+        return Ok(true);
     }
-    println!("{}", style::badge(style::Badge::Approval, false));
-    println!("{}", style::key_value("Directory", &status.path));
-    println!(
-        "  {}",
-        style::dim("Hames needs permission to work in this exact folder.")
-    );
-    let answer = editor.readline("Trust and remember this folder? [y/N] › ")?;
-    if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-        bail!("working directory was not trusted");
+    if !crate::trust::prompt_workspace_trust(&status.path)? {
+        println!();
+        return Ok(false);
     }
     let granted = client.trust_session(&session.id).await?;
     println!("{}", style::success(&format!("Trusted {}", granted.path)));
-    Ok(())
+    println!();
+    Ok(true)
 }
 
 async fn print_trust(client: &GatewayClient, session: &Session) -> Result<()> {
@@ -2627,7 +2675,7 @@ fn print_help_rows(rows: &[(&str, &str)]) {
 mod tests {
     use unicode_width::UnicodeWidthStr;
 
-    use super::{exit_resume_command, heading_repaint_sequence, wrap_body};
+    use super::{exit_resume_command, heading_repaint_sequence, prepare_history, wrap_body};
     use crate::api::SseDecoder;
 
     #[test]
@@ -2637,6 +2685,27 @@ mod tests {
             exit_resume_command("kept", true).as_deref(),
             Some("/resume kept")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repl_history_is_precreated_private() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = std::env::temp_dir().join(format!(
+            "hames-history-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let path = directory.join("repl-history");
+        prepare_history(&path).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(&directory).unwrap();
     }
 
     #[test]

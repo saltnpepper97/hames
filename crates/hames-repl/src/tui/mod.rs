@@ -2,7 +2,7 @@ mod app;
 mod view;
 
 use std::env;
-use std::io::{self, IsTerminal, Stdout, Write};
+use std::io::{self, Stdout, Write};
 use std::path::Path;
 use std::process::Command;
 use std::sync::Once;
@@ -18,7 +18,7 @@ use app::{
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use crossterm::cursor::{Hide, MoveToColumn, MoveUp, Show};
+use crossterm::cursor::Show;
 use crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
     EnableFocusChange, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
@@ -27,8 +27,7 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode,
-    enable_raw_mode,
+    EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode, enable_raw_mode,
 };
 use futures_util::StreamExt;
 use futures_util::future::join_all;
@@ -247,15 +246,7 @@ async fn ensure_workspace_trust(client: &GatewayClient, session: &Session) -> Re
     if client.trust_status(&session.id).await?.trusted {
         return Ok(true);
     }
-    if !io::stdin().is_terminal() {
-        bail!("workspace is not trusted; run hames from an interactive terminal to choose access");
-    }
-
-    println!();
-    println!("{}", crate::style::section("Trust this workspace?"));
-    println!("    {}", compact_home(&session.working_directory));
-    println!();
-    let trust_workspace = read_workspace_trust_choice()?;
+    let trust_workspace = crate::trust::prompt_workspace_trust(&session.working_directory)?;
     if !trust_workspace {
         println!();
         return Ok(false);
@@ -267,88 +258,6 @@ async fn ensure_workspace_trust(client: &GatewayClient, session: &Session) -> Re
     );
     println!();
     Ok(true)
-}
-
-fn read_workspace_trust_choice() -> Result<bool> {
-    enable_raw_mode().context("failed to enter workspace trust prompt")?;
-    let _guard = InlinePromptGuard;
-    let mut output = io::stdout();
-    execute!(output, Hide)?;
-    let mut selected = 0_usize;
-    render_workspace_trust_choices(&mut output, selected, false)?;
-    loop {
-        let Event::Key(key) = crossterm::event::read().context("failed to read trust choice")?
-        else {
-            continue;
-        };
-        if key.kind != KeyEventKind::Press
-            && !(key.kind == KeyEventKind::Repeat
-                && matches!(key.code, KeyCode::Up | KeyCode::Down))
-        {
-            continue;
-        }
-        match key.code {
-            KeyCode::Up | KeyCode::Down => {
-                selected = next_workspace_trust_choice(selected);
-                render_workspace_trust_choices(&mut output, selected, true)?;
-            }
-            KeyCode::Enter => return Ok(selected == 0),
-            KeyCode::Esc => return Ok(false),
-            KeyCode::Char('1' | 't' | 'y') => return Ok(true),
-            KeyCode::Char('2' | 'q' | 'n') => return Ok(false),
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                return Ok(false);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn render_workspace_trust_choices(
-    output: &mut Stdout,
-    selected: usize,
-    redraw: bool,
-) -> Result<()> {
-    if redraw {
-        execute!(output, MoveUp(3), MoveToColumn(0))?;
-    }
-    for (index, label) in ["Trust workspace", "Don't trust"].into_iter().enumerate() {
-        execute!(output, Clear(ClearType::CurrentLine))?;
-        let row = if index == selected {
-            format!("›  {label:<18}")
-        } else {
-            format!("   {label:<18}")
-        };
-        let row = if index == selected && index == 0 {
-            crate::style::paint("1;30;42", &row)
-        } else if index == selected {
-            crate::style::paint("1;30;41", &row)
-        } else {
-            row
-        };
-        write!(output, "    {row}\r\n")?;
-    }
-    execute!(output, Clear(ClearType::CurrentLine))?;
-    write!(
-        output,
-        "    {}\r\n",
-        crate::style::dim("↑↓ choose · Enter confirm · Esc quit")
-    )?;
-    output.flush()?;
-    Ok(())
-}
-
-fn next_workspace_trust_choice(selected: usize) -> usize {
-    usize::from(selected == 0)
-}
-
-struct InlinePromptGuard;
-
-impl Drop for InlinePromptGuard {
-    fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), Show);
-    }
 }
 
 fn session_exit_notice(session_id: &str, discard_empty: bool) -> Option<String> {
@@ -3299,9 +3208,8 @@ mod tests {
 
     use super::{
         Effect, action_error_message, agent_source, handle_key, handle_mouse,
-        handle_terminal_event, model_efforts, next_mode, next_workspace_trust_choice,
-        parse_command, pointer_top, repeat_safe_key, session_exit_notice, terminal_tab_title,
-        workspace_identity,
+        handle_terminal_event, model_efforts, next_mode, parse_command, pointer_top,
+        repeat_safe_key, session_exit_notice, terminal_tab_title, workspace_identity,
     };
     use crate::api::{
         Goal, MemoryRecord, PlanRevision, PlanState, ProviderModel, QueuedMessage, Scar, Session,
@@ -3386,12 +3294,6 @@ mod tests {
             session_exit_notice("kept", false).as_deref(),
             Some("Resume session with\n  /resume kept")
         );
-    }
-
-    #[test]
-    fn workspace_trust_prompt_wraps_between_two_choices() {
-        assert_eq!(next_workspace_trust_choice(0), 1);
-        assert_eq!(next_workspace_trust_choice(1), 0);
     }
 
     #[test]
