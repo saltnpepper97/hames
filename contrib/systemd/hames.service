@@ -1,0 +1,17 @@
+[Unit]
+Description=Hames gateway
+
+[Service]
+Type=forking
+Environment=HAMES_HOME=%h/.hames
+PIDFile=%h/.hames/runtime/gateway.pid
+ExecStart=%h/.local/bin/hames gateway start
+ExecStop=%h/.local/bin/hames gateway stop
+Restart=on-failure
+RestartSec=2s
+TimeoutStartSec=30s
+TimeoutStopSec=30s
+UMask=0077
+
+[Install]
+WantedBy=default.target

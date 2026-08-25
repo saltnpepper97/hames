@@ -24,6 +24,8 @@ def build_parser() -> argparse.ArgumentParser:
     start_parser.add_argument("--json", action="store_true", dest="as_json")
     stop_parser = subcommands.add_parser("stop", help="stop the persistent gateway")
     stop_parser.add_argument("--json", action="store_true", dest="as_json")
+    restart_parser = subcommands.add_parser("restart", help="restart the persistent gateway")
+    restart_parser.add_argument("--json", action="store_true", dest="as_json")
     status_parser = subcommands.add_parser("status", help="inspect the persistent gateway")
     status_parser.add_argument("--json", action="store_true", dest="as_json")
     search_parser = subcommands.add_parser("search", help="manage private web search")
@@ -80,6 +82,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         status = start(paths)
     elif args.command == "stop":
         status = stop(paths)
+    elif args.command == "restart":
+        stop(paths)
+        status = start(paths)
     elif args.command == "status":
         status = gateway_status(paths)
     else:

@@ -243,7 +243,35 @@ pub fn run_backend<const N: usize>(args: [&str; N]) -> Result<()> {
 }
 
 pub fn start_backend() -> Result<()> {
-    run_backend(["start", "--json"])
+    run_gateway_action("start")
+}
+
+pub fn run_gateway_action(action: &str) -> Result<()> {
+    if gateway_service_available() && matches!(action, "start" | "stop" | "restart") {
+        let status = Command::new("systemctl")
+            .args(["--user", action, "hames.service"])
+            .status()
+            .context("failed to control hames.service with systemd")?;
+        if !status.success() {
+            bail!("systemctl --user {action} hames.service exited with {status}");
+        }
+        return if action == "stop" {
+            run_backend(["stop", "--json"])
+        } else {
+            run_backend(["status", "--json"])
+        };
+    }
+    run_backend([action, "--json"])
+}
+
+fn gateway_service_available() -> bool {
+    if env::var_os("HAMES_HOME").is_some() || env::var_os("INVOCATION_ID").is_some() {
+        return false;
+    }
+    let config = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
+    config.is_some_and(|root| root.join("systemd/user/hames.service").is_file())
 }
 
 pub fn run_setup(

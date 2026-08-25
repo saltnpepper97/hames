@@ -85,6 +85,7 @@ enum Command {
 enum GatewayAction {
     Start,
     Stop,
+    Restart,
     Status,
 }
 
@@ -359,15 +360,16 @@ async fn main() -> Result<()> {
         Some(Command::Doctor) => local::run_backend(["doctor", "--json"]),
         Some(Command::Gateway { action }) => {
             let paths = LocalPaths::resolve()?;
-            if matches!(action, GatewayAction::Start) {
+            if matches!(action, GatewayAction::Start | GatewayAction::Restart) {
                 local::ensure_search_setup(&paths, false)?;
             }
             let action = match action {
                 GatewayAction::Start => "start",
                 GatewayAction::Stop => "stop",
+                GatewayAction::Restart => "restart",
                 GatewayAction::Status => "status",
             };
-            local::run_backend([action, "--json"])
+            local::run_gateway_action(action)
         }
         Some(Command::Search { action }) => {
             let action = match action {
