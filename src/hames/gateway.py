@@ -218,12 +218,24 @@ class ApprovalResolution(ApiModel):
 
 
 class QuestionAnswerRequest(ApiModel):
-    answer: str = Field(min_length=1, max_length=4000)
+    selected_option: str | None = Field(default=None, min_length=1, max_length=160)
+    note: str = Field(default="", max_length=4000)
+    custom_answer: str = Field(default="", max_length=4000)
+
+    @model_validator(mode="after")
+    def valid_answer(self) -> QuestionAnswerRequest:
+        if (self.selected_option is None) == (not self.custom_answer.strip()):
+            raise ValueError("provide either selected_option or custom_answer")
+        if self.custom_answer.strip() and self.note.strip():
+            raise ValueError("a custom answer cannot also have an option note")
+        return self
 
 
 class QuestionResolution(ApiModel):
     question_id: str
     answer: str
+    selected_option: str | None
+    note: str
     custom: bool
 
 
@@ -2096,14 +2108,23 @@ def create_app(state: GatewayState) -> FastAPI:
         question_id: str, request: QuestionAnswerRequest
     ) -> QuestionResolution:
         try:
-            answer, custom = await state.runs.resolve_question(
-                question_id, answer=request.answer
+            answer = await state.runs.resolve_question(
+                question_id,
+                selected_option=request.selected_option,
+                note=request.note,
+                custom_answer=request.custom_answer,
             )
         except ValueError as exc:
             raise ApiError(422, "question_answer_invalid", str(exc)) from exc
         except RuntimeError as exc:
             raise ApiError(409, "question_not_pending", str(exc)) from exc
-        return QuestionResolution(question_id=question_id, answer=answer, custom=custom)
+        return QuestionResolution(
+            question_id=question_id,
+            answer=answer.answer,
+            selected_option=answer.selected_option,
+            note=answer.note,
+            custom=answer.custom,
+        )
 
     @app.get("/v1/events", dependencies=auth)
     async def stream_events(

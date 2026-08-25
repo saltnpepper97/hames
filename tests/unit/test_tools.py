@@ -121,9 +121,7 @@ def test_ask_user_schema_limits_and_normalizes_choices() -> None:
             {"question": "Choose", "options": ["one", "two", "three", "four"]},
         )
     with pytest.raises(ValueError, match="unique"):
-        ToolRegistry().validate(
-            "ask_user", {"question": "Choose", "options": ["Same", "same"]}
-        )
+        ToolRegistry().validate("ask_user", {"question": "Choose", "options": ["Same", "same"]})
     with pytest.raises(ValueError, match="question must not be empty"):
         ToolRegistry().validate("ask_user", {"question": "   "})
 

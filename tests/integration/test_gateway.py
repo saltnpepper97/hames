@@ -201,7 +201,13 @@ class QuestionProvider:
             yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls")
             return
         result = json.loads(request.messages[-1].content)
-        assert result["structured_data"]["answer"] == "Subdued"
+        assert result["structured_data"] == {
+            "question_id": result["structured_data"]["question_id"],
+            "answer": "Subdued\nNote: Keep it calm",
+            "selected_option": "Subdued",
+            "note": "Keep it calm",
+            "custom": False,
+        }
         yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="I will use the subdued direction.")
         yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
 
@@ -706,7 +712,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 25
+            assert health_body["protocol_version"] == 26
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -982,12 +988,14 @@ async def test_agent_question_pauses_and_resumes_the_same_run(tmp_path: Path) ->
             resolved = await client.post(
                 f"/v1/questions/{payload['question_id']}",
                 headers=headers,
-                json={"answer": "Subdued"},
+                json={"selected_option": "Subdued", "note": "Keep it calm"},
             )
             assert resolved.status_code == 200, resolved.text
             assert response_object(resolved) == {
                 "question_id": payload["question_id"],
-                "answer": "Subdued",
+                "answer": "Subdued\nNote: Keep it calm",
+                "selected_option": "Subdued",
+                "note": "Keep it calm",
                 "custom": False,
             }
             events = await _wait_for_event(client, headers, session_id, "run.completed")

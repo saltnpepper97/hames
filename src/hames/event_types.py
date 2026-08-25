@@ -377,7 +377,9 @@ class QuestionRequestedPayload(EventPayload):
 
 class QuestionAnsweredPayload(EventPayload):
     question_id: str
-    answer: str = Field(min_length=1, max_length=4000)
+    answer: str = Field(min_length=1, max_length=4200)
+    selected_option: str | None = Field(default=None, max_length=160)
+    note: str = Field(default="", max_length=4000)
     custom: bool = False
 
 

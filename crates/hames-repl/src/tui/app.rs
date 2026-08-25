@@ -500,6 +500,9 @@ pub enum TranscriptItem {
     Question {
         question: String,
         answer: String,
+        selected_option: Option<String>,
+        note: String,
+        custom: bool,
     },
     Plan {
         plan_id: String,
@@ -576,8 +579,14 @@ pub struct QuestionTray {
     pub question: String,
     pub options: Vec<String>,
     pub selected: usize,
-    pub custom_active: bool,
-    pub custom_input: Composer,
+    pub input_kind: Option<QuestionInputKind>,
+    pub response_input: Composer,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QuestionInputKind {
+    Note,
+    Custom,
 }
 
 impl QuestionTray {
@@ -587,6 +596,20 @@ impl QuestionTray {
 
     pub fn custom_index(&self) -> usize {
         self.options.len()
+    }
+
+    pub fn start_note(&mut self, index: usize) {
+        if index < self.options.len() {
+            self.selected = index;
+            self.input_kind = Some(QuestionInputKind::Note);
+            self.response_input.clear();
+        }
+    }
+
+    pub fn start_custom(&mut self) {
+        self.selected = self.custom_index();
+        self.input_kind = Some(QuestionInputKind::Custom);
+        self.response_input.clear();
     }
 }
 
@@ -1031,6 +1054,7 @@ pub enum HitAction {
     SelectScar(usize),
     Approval(usize),
     Question(usize),
+    QuestionNote(usize),
     QueuedMessage(String),
     TrustWorkspace,
     Quit,
@@ -2516,6 +2540,17 @@ impl App {
                     self.transcript.push(TranscriptItem::Question {
                         question: question.question,
                         answer: string(&event.payload, "answer"),
+                        selected_option: event
+                            .payload
+                            .get("selected_option")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        note: string(&event.payload, "note"),
+                        custom: event
+                            .payload
+                            .get("custom")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
                     });
                 }
             }
@@ -3334,8 +3369,8 @@ fn question_from(run_id: &str, payload: &Value) -> QuestionTray {
             .map(str::to_owned)
             .collect(),
         selected: 0,
-        custom_active: false,
-        custom_input: Composer::default(),
+        input_kind: None,
+        response_input: Composer::default(),
     }
 }
 
@@ -4752,15 +4787,30 @@ mod tests {
                 2,
                 "question.answered",
                 run_id,
-                json!({"question_id": "question-1", "answer": "Subdued", "custom": false}),
+                json!({
+                    "question_id": "question-1",
+                    "answer": "Subdued",
+                    "selected_option": "Subdued",
+                    "note": "",
+                    "custom": false
+                }),
             ),
             false,
         );
         assert!(app.question.is_none());
         assert!(matches!(
             app.transcript.last(),
-            Some(TranscriptItem::Question { question, answer })
-                if question == "Which direction?" && answer == "Subdued"
+            Some(TranscriptItem::Question {
+                question,
+                answer,
+                selected_option,
+                note,
+                custom,
+            }) if question == "Which direction?"
+                && answer == "Subdued"
+                && selected_option.as_deref() == Some("Subdued")
+                && note.is_empty()
+                && !custom
         ));
     }
 

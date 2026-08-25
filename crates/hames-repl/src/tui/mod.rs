@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use app::{
     AgentEditField, AgentEditor, AgentEditorPage, App, GoalModal, HitAction, InlineEditor,
-    InlineEditorKind, MemoryBrowser, MenuAction, MenuOption, Modal, ScarBrowser, ScarEditField,
-    ScarEditor, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind, UsageModal,
+    InlineEditorKind, MemoryBrowser, MenuAction, MenuOption, Modal, QuestionInputKind, ScarBrowser,
+    ScarEditField, ScarEditor, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind, UsageModal,
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -452,7 +452,11 @@ enum Effect {
     Quit,
     Trust,
     ResolveApproval(usize),
-    ResolveQuestion(String),
+    ResolveQuestion {
+        selected_option: Option<String>,
+        note: String,
+        custom_answer: String,
+    },
     Send(String, Vec<PasteSpan>),
     SendPlanNote(String, Vec<PasteSpan>),
     ExecutePlanWithNote(String),
@@ -481,10 +485,10 @@ fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
         }
         Event::Paste(value) => {
             if let Some(question) = &mut app.question
-                && question.custom_active
+                && question.input_kind.is_some()
             {
                 question
-                    .custom_input
+                    .response_input
                     .insert_text(&value.replace(['\r', '\n'], " "));
             } else if let Some(editor) = &mut app.inline_editor {
                 if editor.kind == InlineEditorKind::PlanExecutionNote {
@@ -728,57 +732,72 @@ fn handle_question_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         app.notice = Some("Interrupting current work…".to_owned());
         return Some(Effect::Cancel);
     }
-    if question.custom_active {
+    if let Some(input_kind) = question.input_kind {
         match key.code {
             KeyCode::Enter => {
-                let answer = question.custom_input.text();
-                if answer.trim().is_empty() {
+                let response = question.response_input.text();
+                if response.trim().is_empty() {
                     app.notice = Some("Type an answer first".to_owned());
                     return None;
                 }
-                return Some(Effect::ResolveQuestion(answer));
+                return match input_kind {
+                    QuestionInputKind::Note => question
+                        .options
+                        .get(question.selected)
+                        .cloned()
+                        .map(|selected_option| Effect::ResolveQuestion {
+                            selected_option: Some(selected_option),
+                            note: response,
+                            custom_answer: String::new(),
+                        }),
+                    QuestionInputKind::Custom => Some(Effect::ResolveQuestion {
+                        selected_option: None,
+                        note: String::new(),
+                        custom_answer: response,
+                    }),
+                };
             }
-            KeyCode::Backspace => question.custom_input.backspace(),
-            KeyCode::Delete => question.custom_input.delete(),
+            KeyCode::Backspace => question.response_input.backspace(),
+            KeyCode::Delete => question.response_input.delete(),
             KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                question.custom_input.move_word_left();
+                question.response_input.move_word_left();
             }
             KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                question.custom_input.move_word_right();
+                question.response_input.move_word_right();
             }
-            KeyCode::Left => question.custom_input.move_left(),
-            KeyCode::Right => question.custom_input.move_right(),
+            KeyCode::Left => question.response_input.move_left(),
+            KeyCode::Right => question.response_input.move_right(),
             KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                question.custom_input.move_buffer_home();
+                question.response_input.move_buffer_home();
             }
             KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                question.custom_input.move_buffer_end();
+                question.response_input.move_buffer_end();
             }
             KeyCode::Home | KeyCode::Char('a')
                 if key.code == KeyCode::Home || key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
-                question.custom_input.move_home();
+                question.response_input.move_home();
             }
             KeyCode::End | KeyCode::Char('e')
                 if key.code == KeyCode::End || key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
-                question.custom_input.move_end();
+                question.response_input.move_end();
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                question.custom_input.delete_to_line_start();
+                question.response_input.delete_to_line_start();
             }
             KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                question.custom_input.delete_to_line_end();
+                question.response_input.delete_to_line_end();
             }
             KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                question.custom_input.delete_previous_word();
+                question.response_input.delete_previous_word();
             }
             KeyCode::Char(value)
                 if !key
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                question.custom_input.insert_text(&value.to_string());
+                question.response_input.insert_text(&value.to_string());
             }
             _ => {}
         }
@@ -799,27 +818,24 @@ fn handle_question_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             None
         }
         KeyCode::Char('n' | 'N') => {
-            question.selected = question.custom_index();
-            question.custom_active = true;
+            if question.selected < question.custom_index() {
+                question.start_note(question.selected);
+            }
             None
         }
-        KeyCode::Char(value @ '1'..='3') => {
-            let index = usize::from(value as u8 - b'1');
-            question
-                .options
-                .get(index)
-                .cloned()
-                .map(Effect::ResolveQuestion)
-        }
         KeyCode::Enter if question.selected == question.custom_index() => {
-            question.custom_active = true;
+            question.start_custom();
             None
         }
         KeyCode::Enter => question
             .options
             .get(question.selected)
             .cloned()
-            .map(Effect::ResolveQuestion),
+            .map(|selected_option| Effect::ResolveQuestion {
+                selected_option: Some(selected_option),
+                note: String::new(),
+                custom_answer: String::new(),
+            }),
         _ => None,
     }
 }
@@ -1400,16 +1416,24 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                     app.clear_transcript_selection();
                     let question = app.question.as_mut()?;
                     if index == question.custom_index() {
-                        question.selected = index;
-                        question.custom_active = true;
+                        question.start_custom();
                         None
                     } else {
-                        question
-                            .options
-                            .get(index)
-                            .cloned()
-                            .map(Effect::ResolveQuestion)
+                        question.options.get(index).cloned().map(|selected_option| {
+                            Effect::ResolveQuestion {
+                                selected_option: Some(selected_option),
+                                note: String::new(),
+                                custom_answer: String::new(),
+                            }
+                        })
                     }
+                }
+                Some(HitAction::QuestionNote(index)) => {
+                    app.clear_transcript_selection();
+                    if let Some(question) = &mut app.question {
+                        question.start_note(index);
+                    }
+                    None
                 }
                 Some(HitAction::QueuedMessage(queue_id)) => {
                     app.clear_transcript_selection();
@@ -1799,17 +1823,29 @@ async fn apply_effect(
                 resolved.status, resolved.approval_scope
             ));
         }
-        Effect::ResolveQuestion(answer) => {
+        Effect::ResolveQuestion {
+            selected_option,
+            note,
+            custom_answer,
+        } => {
             let Some(question) = app.question.as_ref() else {
                 return Ok(None);
             };
             let resolved = client
-                .resolve_question(&question.question_id, &answer)
+                .resolve_question(
+                    &question.question_id,
+                    selected_option.as_deref(),
+                    &note,
+                    &custom_answer,
+                )
                 .await?;
             debug_assert_eq!(resolved.question_id, question.question_id);
-            debug_assert_eq!(resolved.answer, answer.trim());
+            debug_assert_eq!(resolved.selected_option, selected_option);
+            debug_assert_eq!(resolved.note, note.trim());
             app.notice = Some(if resolved.custom {
                 "Custom answer sent".to_owned()
+            } else if !resolved.note.is_empty() {
+                "Answer and note sent".to_owned()
             } else {
                 "Answer sent".to_owned()
             });
@@ -2976,8 +3012,8 @@ mod tests {
     };
     use crate::tui::app::{
         AgentEditor, App, HitAction, HitRegion, InlineEditor, InlineEditorKind, MemoryBrowser,
-        MenuAction, MenuOption, Modal, QuestionTray, ScarBrowser, ScarEditField, ScrollDrag,
-        ScrollTarget, Sheet, SheetKind, ThemeKind, TranscriptItem, TranscriptViewport,
+        MenuAction, MenuOption, Modal, QuestionInputKind, QuestionTray, ScarBrowser, ScarEditField,
+        ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind, TranscriptItem, TranscriptViewport,
     };
 
     #[test]
@@ -3320,7 +3356,7 @@ mod tests {
     }
 
     #[test]
-    fn question_choices_wrap_and_custom_answer_uses_the_inline_field() {
+    fn question_note_and_custom_answer_are_distinct_paths() {
         let mut app = App::new(session(), Vec::new(), true);
         app.active_run = Some("run-question".to_owned());
         app.question = Some(QuestionTray {
@@ -3329,17 +3365,19 @@ mod tests {
             question: "Which direction?".to_owned(),
             options: vec!["Subdued".to_owned(), "Bright".to_owned()],
             selected: 0,
-            custom_active: false,
-            custom_input: Default::default(),
+            input_kind: None,
+            response_input: Default::default(),
         });
-        handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.question.as_ref().unwrap().selected, 2);
         handle_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
         );
-        assert!(app.question.as_ref().unwrap().custom_active);
-        for value in "Something calmer".chars() {
+        assert_eq!(
+            app.question.as_ref().unwrap().input_kind,
+            Some(QuestionInputKind::Note)
+        );
+        assert_eq!(app.question.as_ref().unwrap().selected, 0);
+        for value in "Keep it calm".chars() {
             handle_key(
                 &mut app,
                 KeyEvent::new(KeyCode::Char(value), KeyModifiers::NONE),
@@ -3347,8 +3385,24 @@ mod tests {
         }
         assert!(matches!(
             handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            Some(Effect::ResolveQuestion(answer)) if answer == "Something calmer"
+            Some(Effect::ResolveQuestion { selected_option: Some(option), note, custom_answer })
+                if option == "Subdued" && note == "Keep it calm" && custom_answer.is_empty()
         ));
+
+        let question = app.question.as_mut().unwrap();
+        question.input_kind = None;
+        question.response_input.clear();
+        question.selected = question.custom_index();
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.question.as_ref().unwrap().input_kind, None);
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).is_none());
+        assert_eq!(
+            app.question.as_ref().unwrap().input_kind,
+            Some(QuestionInputKind::Custom)
+        );
     }
 
     #[test]

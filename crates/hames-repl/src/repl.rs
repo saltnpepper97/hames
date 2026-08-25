@@ -1852,35 +1852,55 @@ async fn handle_question(
     println!();
     println!("{}", style::section("Question"));
     println!("  {question}");
-    for (index, option) in options.iter().enumerate() {
-        println!("  {}. {option}", index + 1);
+    for option in &options {
+        println!("  ○ {option}");
     }
-    println!("  N. Write something else");
-    let answer = loop {
-        let selected = editor.readline("Choose an answer › ")?;
+    println!("  ○ Write something else");
+    let (selected_option, note, custom_answer) = loop {
+        let selected = editor.readline("Type an offered answer, or 'other' › ")?;
         let selected = selected.trim();
-        if selected.eq_ignore_ascii_case("n") || options.is_empty() {
+        if selected.eq_ignore_ascii_case("other")
+            || selected.eq_ignore_ascii_case("write something else")
+            || options.is_empty()
+        {
             let custom = editor.readline("Your answer › ")?;
             if !custom.trim().is_empty() {
-                break custom;
+                break (None, String::new(), custom);
             }
             println!("  Please type an answer.");
             continue;
         }
-        if let Ok(index) = selected.parse::<usize>()
-            && let Some(option) = index.checked_sub(1).and_then(|index| options.get(index))
+        if let Some(option) = options
+            .iter()
+            .find(|option| option.eq_ignore_ascii_case(selected))
         {
-            break (*option).to_owned();
+            let add_note = editor.readline("Enter use as-is · N add note › ")?;
+            let note = if add_note.trim().eq_ignore_ascii_case("n") {
+                editor.readline("Note › ")?
+            } else {
+                String::new()
+            };
+            break (Some((*option).to_owned()), note, String::new());
         }
-        println!("  Choose 1-{} or N.", options.len());
+        println!("  Type one of the offered answers, or 'other'.");
     };
-    let resolved = client.resolve_question(question_id, answer.trim()).await?;
+    let resolved = client
+        .resolve_question(
+            question_id,
+            selected_option.as_deref(),
+            note.trim(),
+            custom_answer.trim(),
+        )
+        .await?;
     debug_assert_eq!(resolved.question_id, question_id);
-    debug_assert_eq!(resolved.answer, answer.trim());
+    debug_assert_eq!(resolved.selected_option, selected_option);
+    debug_assert_eq!(resolved.note, note.trim());
     println!(
         "  {}",
         style::success(if resolved.custom {
             "Custom answer sent"
+        } else if !resolved.note.is_empty() {
+            "Answer and note sent"
         } else {
             "Answer sent"
         })

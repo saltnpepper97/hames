@@ -16,8 +16,8 @@ use unicode_width::UnicodeWidthStr;
 use super::app::{
     ActivityCategory, ActivityPhase, AgentChoice, AgentEditField, AgentEditor, AgentEditorPage,
     App, ApprovalModal, Composer, ComposerUnit, DreamPhase, HitAction, HitRegion, MemoryBrowser,
-    MenuAction, Modal, ScarBrowser, ScarEditField, ScarEditor, ScrollTarget, Sheet, SheetKind,
-    ThemeKind, TranscriptItem, TranscriptViewport, UsageModal, task_checkbox,
+    MenuAction, Modal, QuestionInputKind, ScarBrowser, ScarEditField, ScarEditor, ScrollTarget,
+    Sheet, SheetKind, ThemeKind, TranscriptItem, TranscriptViewport, UsageModal, task_checkbox,
 };
 
 const MINT: Color = Color::Rgb(116, 226, 192);
@@ -626,7 +626,13 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     Style::default().fg(Color::White),
                 );
             }
-            TranscriptItem::Question { question, answer } => {
+            TranscriptItem::Question {
+                question,
+                answer,
+                selected_option,
+                note,
+                custom,
+            } => {
                 lines.push(RenderLine {
                     line: Line::from(Span::styled(
                         format!("{} asked", app.agent_name),
@@ -645,11 +651,24 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 );
                 push_wrapped(
                     &mut lines,
-                    answer,
+                    if *custom {
+                        answer
+                    } else {
+                        selected_option.as_deref().unwrap_or(answer)
+                    },
                     width,
                     "  Answer  ",
                     Style::default().fg(CYAN),
                 );
+                if !note.is_empty() {
+                    push_wrapped(
+                        &mut lines,
+                        note,
+                        width,
+                        "  Note    ",
+                        Style::default().fg(MUTED_LIGHT),
+                    );
+                }
             }
             TranscriptItem::Plan {
                 revision,
@@ -1538,17 +1557,33 @@ fn scrollbar_position(top: usize, content_len: usize, viewport_len: usize) -> us
 }
 
 fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta: Duration) {
-    let left = if app.question.is_some() {
-        Line::from(vec![
+    let left = if let Some(question) = &app.question {
+        let mut spans = vec![
             Span::styled("  ↑↓", Style::default().fg(INPUT).bold()),
             Span::styled(" choose · ", Style::default().fg(MUTED)),
             Span::styled("Enter", Style::default().fg(INPUT).bold()),
-            Span::styled(" answer · ", Style::default().fg(MUTED)),
-            Span::styled("N", Style::default().fg(INPUT).bold()),
-            Span::styled(" write something else · ", Style::default().fg(MUTED)),
+            Span::styled(
+                if question.input_kind.is_some() {
+                    " send · "
+                } else if question.selected == question.custom_index() {
+                    " write your own · "
+                } else {
+                    " answer · "
+                },
+                Style::default().fg(MUTED),
+            ),
+        ];
+        if question.input_kind.is_none() && question.selected < question.custom_index() {
+            spans.extend([
+                Span::styled("N", Style::default().fg(INPUT).bold()),
+                Span::styled(" add note · ", Style::default().fg(MUTED)),
+            ]);
+        }
+        spans.extend([
             Span::styled("Esc", Style::default().fg(INPUT).bold()),
             Span::styled(" interrupt", Style::default().fg(MUTED)),
-        ])
+        ]);
+        Line::from(spans)
     } else if app.inline_editor.is_some() {
         Line::from(vec![
             Span::styled("  Enter", Style::default().fg(INPUT).bold()),
@@ -2065,18 +2100,19 @@ fn render_question_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let mut choices = question.options.clone();
     choices.push("Write something else".to_owned());
     let mut choice_rows = Vec::new();
+    let mut note_hits = Vec::new();
     for (index, choice) in choices.iter().enumerate() {
         let selected = question.selected == index;
-        let label = if index == question.custom_index() {
-            format!("{choice}  N")
-        } else {
-            choice.clone()
-        };
-        let parts = complete_wrapped_lines(&label, inner_width.saturating_sub(4).max(1));
+        let supports_note = index < question.custom_index();
+        let note_label = "  N add note";
+        let label_width = inner_width
+            .saturating_sub(4 + if supports_note { note_label.width() } else { 0 })
+            .max(1);
+        let parts = complete_wrapped_lines(choice, label_width);
         let row = lines.len();
         let height = parts.len();
         for (part_index, part) in parts.into_iter().enumerate() {
-            lines.push(Line::from(vec![
+            let mut spans = vec![
                 Span::styled(
                     if part_index == 0 {
                         if selected { "  ● " } else { "  ○ " }
@@ -2086,27 +2122,40 @@ fn render_question_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                     Style::default().fg(if selected { CYAN } else { MUTED }),
                 ),
                 Span::styled(
-                    part,
+                    part.clone(),
                     if selected {
                         Style::default().fg(INPUT).bg(PANEL_BRIGHT)
                     } else {
                         Style::default().fg(MUTED_LIGHT)
                     },
                 ),
-            ]));
+            ];
+            if part_index == 0 && supports_note {
+                let note_x = 4 + part.width();
+                spans.push(Span::styled(note_label, Style::default().fg(MUTED)));
+                note_hits.push((index, row, note_x, note_label.width()));
+            }
+            lines.push(Line::from(spans));
         }
         choice_rows.push((index, row, height));
     }
     let mut cursor = None;
-    if question.custom_active {
+    if let Some(input_kind) = question.input_kind {
         let input_width = inner_width.saturating_sub(2).max(1);
-        let (visible, cursor_x) = one_line_input(&question.custom_input, input_width);
+        let (visible, cursor_x) = one_line_input(&question.response_input, input_width);
         let placeholder = visible.is_empty();
+        let placeholder_text = match input_kind {
+            QuestionInputKind::Note => question.options.get(question.selected).map_or_else(
+                || "Add a note…".to_owned(),
+                |option| format!("Add a note to {option}…"),
+            ),
+            QuestionInputKind::Custom => "Write your answer…".to_owned(),
+        };
         lines.push(Line::from(vec![
             Span::styled("  ❯ ", Style::default().fg(INPUT).bold()),
             Span::styled(
                 if placeholder {
-                    "Type your answer…".to_owned()
+                    placeholder_text
                 } else {
                     visible
                 },
@@ -2140,6 +2189,24 @@ fn render_question_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             action: HitAction::Question(index),
         });
     }
+    for (index, row, x, width) in note_hits {
+        if row < start || row >= start + available {
+            continue;
+        }
+        app.hits.push(HitRegion {
+            x: area
+                .x
+                .saturating_add(1)
+                .saturating_add(u16::try_from(x).unwrap_or(0)),
+            y: area
+                .y
+                .saturating_add(1)
+                .saturating_add(u16::try_from(row - start).unwrap_or(0)),
+            width: u16::try_from(width).unwrap_or(1),
+            height: 1,
+            action: HitAction::QuestionNote(index),
+        });
+    }
     let block = Block::default()
         .title(Line::from(vec![
             Span::styled("─ ", Style::default().fg(RULE)),
@@ -2154,7 +2221,7 @@ fn render_question_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             .style(Style::default().bg(Color::Reset)),
         area,
     );
-    if question.custom_active
+    if question.input_kind.is_some()
         && let Some((x, row)) = cursor
         && row >= start
         && row < start + available
@@ -2169,14 +2236,17 @@ fn render_question_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 
 fn question_required_height(question: &crate::tui::app::QuestionTray, width: usize) -> usize {
     let prompt = complete_wrapped_lines(&question.question, width).len();
-    let option_width = width.saturating_sub(4).max(1);
+    let option_width = width
+        .saturating_sub(4 + UnicodeWidthStr::width("  N add note"))
+        .max(1);
     let options = question
         .options
         .iter()
         .map(|option| complete_wrapped_lines(option, option_width).len())
         .sum::<usize>();
-    let custom = complete_wrapped_lines("Write something else  N", option_width).len();
-    prompt + options + custom + usize::from(question.custom_active) + 2
+    let custom_width = width.saturating_sub(4).max(1);
+    let custom = complete_wrapped_lines("Write something else", custom_width).len();
+    prompt + options + custom + usize::from(question.input_kind.is_some()) + 2
 }
 
 fn one_line_input(input: &Composer, width: usize) -> (String, usize) {
@@ -4437,8 +4507,8 @@ mod tests {
     use crate::tui::app::{
         ActivityPhase, ActivityRow, AgentEditor, AgentEditorPage, App, ApprovalModal, Composer,
         DreamPhase, HitAction, InlineEditor, InlineEditorKind, MemoryBrowser, MenuAction,
-        MenuOption, Modal, QuestionTray, ScarBrowser, ScarEditor, Sheet, SheetKind, TranscriptItem,
-        TranscriptPoint, UsageModal,
+        MenuOption, Modal, QuestionInputKind, QuestionTray, ScarBrowser, ScarEditor, Sheet,
+        SheetKind, TranscriptItem, TranscriptPoint, UsageModal,
     };
 
     fn usage_projection() -> UsageProjection {
@@ -5839,7 +5909,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_question_uses_the_lower_tray_with_a_clickable_custom_answer() {
+    fn agent_question_uses_unnumbered_radios_with_distinct_note_and_custom_actions() {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(session(), Vec::new(), true);
@@ -5850,8 +5920,8 @@ mod tests {
             question: "Which visual direction should Hames use?".to_owned(),
             options: vec!["Subdued".to_owned(), "High contrast".to_owned()],
             selected: 2,
-            custom_active: true,
-            custom_input: Composer::default(),
+            input_kind: Some(QuestionInputKind::Custom),
+            response_input: Composer::default(),
         });
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let rendered = terminal
@@ -5864,11 +5934,23 @@ mod tests {
         assert!(rendered.contains("Question"));
         assert!(rendered.contains("Which visual direction should Hames use?"));
         assert!(rendered.contains("Write something else"));
-        assert!(rendered.contains("Type your answer"));
+        assert!(rendered.contains("Write your answer"));
+        assert!(!rendered.contains("1."));
+        assert!(!rendered.contains("2."));
         assert!(
             app.hits
                 .iter()
                 .any(|hit| matches!(hit.action, HitAction::Question(2)))
+        );
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| matches!(hit.action, HitAction::QuestionNote(0 | 1)))
+        );
+        assert!(
+            !app.hits
+                .iter()
+                .any(|hit| matches!(hit.action, HitAction::QuestionNote(2)))
         );
     }
 

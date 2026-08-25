@@ -285,6 +285,14 @@ class SubmissionResult:
     queued: QueuedMessage | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class QuestionAnswer:
+    answer: str
+    selected_option: str | None
+    note: str
+    custom: bool
+
+
 class RunManager:
     def __init__(
         self,
@@ -327,7 +335,7 @@ class RunManager:
         self._session_runs: dict[str, str] = {}
         self._post_terminal_runs: dict[str, set[str]] = {}
         self._approval_waiters: dict[str, asyncio.Future[str]] = {}
-        self._question_waiters: dict[str, asyncio.Future[str]] = {}
+        self._question_waiters: dict[str, asyncio.Future[QuestionAnswer]] = {}
         self._question_runs: dict[str, tuple[str, str, str, tuple[str, ...]]] = {}
         self._question_answering: set[str] = set()
         self._children_by_parent: dict[str, set[str]] = {}
@@ -1320,7 +1328,14 @@ class RunManager:
         waiter.set_result(resolved.status)
         return resolved
 
-    async def resolve_question(self, question_id: str, *, answer: str) -> tuple[str, bool]:
+    async def resolve_question(
+        self,
+        question_id: str,
+        *,
+        selected_option: str | None,
+        note: str,
+        custom_answer: str,
+    ) -> QuestionAnswer:
         waiter = self._question_waiters.get(question_id)
         pending = self._question_runs.get(question_id)
         if (
@@ -1330,13 +1345,37 @@ class RunManager:
             or question_id in self._question_answering
         ):
             raise RuntimeError("question is not attached to an active run")
-        normalized = " ".join(answer.splitlines()).strip()
-        if not normalized:
-            raise ValueError("question answer must not be empty")
-        if len(normalized) > 4000:
-            raise ValueError("question answer must not exceed 4000 characters")
         session_id, run_id, agent_id, options = pending
-        custom = normalized.casefold() not in {option.casefold() for option in options}
+        normalized_note = " ".join(note.splitlines()).strip()
+        normalized_custom = " ".join(custom_answer.splitlines()).strip()
+        if len(normalized_note) > 4000 or len(normalized_custom) > 4000:
+            raise ValueError("question response must not exceed 4000 characters")
+        selected = selected_option.strip() if selected_option is not None else None
+        canonical = next(
+            (option for option in options if selected and option.casefold() == selected.casefold()),
+            None,
+        )
+        if normalized_custom:
+            if selected is not None or normalized_note:
+                raise ValueError("a custom answer cannot include an option or option note")
+            resolved = QuestionAnswer(
+                answer=normalized_custom,
+                selected_option=None,
+                note="",
+                custom=True,
+            )
+        elif canonical is not None:
+            answer_text = canonical
+            if normalized_note:
+                answer_text = f"{canonical}\nNote: {normalized_note}"
+            resolved = QuestionAnswer(
+                answer=answer_text,
+                selected_option=canonical,
+                note=normalized_note,
+                custom=False,
+            )
+        else:
+            raise ValueError("selected_option is not one of this question's options")
         self._question_answering.add(question_id)
         try:
             await self._append(
@@ -1344,13 +1383,19 @@ class RunManager:
                 run_id=run_id,
                 agent_id=agent_id,
                 event_type="question.answered",
-                payload={"question_id": question_id, "answer": normalized, "custom": custom},
+                payload={
+                    "question_id": question_id,
+                    "answer": resolved.answer,
+                    "selected_option": resolved.selected_option,
+                    "note": resolved.note,
+                    "custom": resolved.custom,
+                },
                 correlation_id=run_id,
             )
             if waiter.done():
                 raise RuntimeError("question's run ended before the answer was accepted")
-            waiter.set_result(normalized)
-            return normalized, custom
+            waiter.set_result(resolved)
+            return resolved
         finally:
             self._question_answering.discard(question_id)
 
@@ -3897,7 +3942,7 @@ class RunManager:
         causation_id: str,
     ) -> ToolResult:
         question_id = new_id()
-        waiter: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        waiter: asyncio.Future[QuestionAnswer] = asyncio.get_running_loop().create_future()
         self._question_waiters[question_id] = waiter
         self._question_runs[question_id] = (
             session.id,
@@ -3923,9 +3968,23 @@ class RunManager:
             answer = await waiter
             return ToolResult(
                 status="completed",
-                summary=f"user answered: {answer}",
-                content=answer,
-                structured_data={"question_id": question_id, "answer": answer},
+                summary=(
+                    "user supplied a custom answer"
+                    if answer.custom
+                    else (
+                        f"user selected {answer.selected_option} with a note"
+                        if answer.note
+                        else f"user selected {answer.selected_option}"
+                    )
+                ),
+                content=answer.answer,
+                structured_data={
+                    "question_id": question_id,
+                    "answer": answer.answer,
+                    "selected_option": answer.selected_option,
+                    "note": answer.note,
+                    "custom": answer.custom,
+                },
             )
         finally:
             self._question_waiters.pop(question_id, None)

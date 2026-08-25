@@ -130,8 +130,10 @@ the client without sending anything does not create resumable clutter.
 The TUI keeps the transcript, activity continuity, and an expanding composer on
 one screen. The composer grows through eight visible content rows and then
 scrolls. Enter sends; Alt+Enter, Shift+Enter, or Ctrl+J inserts a new line.
-Agent questions appear in a lower tray above the composer: use Up/Down and Enter
-or click an answer, and press `N` to open the one-line custom response field.
+Agent questions appear in a lower tray above the composer. Use Up/Down and Enter
+or click an offered answer to choose it. Press `N` (or click `N add note`) to
+attach a one-line note to that answer. `Write something else` is a separate
+fourth radio choice that opens a one-line custom answer.
 An empty new session opens with a compact, proportionally sampled ASCII mark
 derived from `crates/hames-repl/assets/welcome-ascii.txt`. It stays subdued for
 about twelve seconds between slow neutral-gray sheen passes and disappears
