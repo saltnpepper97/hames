@@ -626,6 +626,7 @@ def canonical_request_snapshot(
     messages: list[ProviderMessage],
     tools: list[ToolDefinition],
     reasoning_effort: str,
+    reasoning_budget_tokens: int | None = None,
     max_tokens: int,
 ) -> bytes:
     return _canonical_json(
@@ -635,6 +636,7 @@ def canonical_request_snapshot(
             "messages": [message.model_dump(mode="json") for message in messages],
             "tools": [tool.model_dump(mode="json") for tool in tools],
             "reasoning_effort": reasoning_effort,
+            "reasoning_budget_tokens": reasoning_budget_tokens,
             "max_tokens": max_tokens,
         }
     ).encode()

@@ -151,9 +151,16 @@ class LlamaCppProvider:
                 }
                 for tool in request.tools
             ]
-        if request.reasoning_effort == "off":
-            body["reasoning_budget_tokens"] = 0
-        elif request.reasoning_effort and request.reasoning_effort != "on":
+        reasoning_budget = request.reasoning_budget_tokens
+        if reasoning_budget is None:
+            reasoning_budget = _qwen_reasoning_budget(request.model, request.reasoning_effort)
+        if reasoning_budget is not None:
+            body["reasoning_budget_tokens"] = reasoning_budget
+        if (
+            request.reasoning_effort
+            and request.reasoning_effort not in {"off", "on"}
+            and reasoning_budget is None
+        ):
             body["reasoning"] = {"effort": request.reasoning_effort}
 
         try:
@@ -250,7 +257,6 @@ class LlamaCppProvider:
                                     tool_indices[item_id] = index
                                 finalized_tool_items[item_id] = value
                         for item_id, value in list(finalized_tool_items.items()):
-                            _require_complete_tool_arguments(value)
                             yield _final_tool_call_event(value, tool_indices[item_id])
                         usage = _usage_from_responses(response_object.get("usage"))
                         if usage is not None:
@@ -387,20 +393,6 @@ def _http_error(exc: httpx.HTTPStatusError) -> ProviderError:
     )
 
 
-def _require_complete_tool_arguments(item: dict[str, JsonValue]) -> None:
-    arguments = item.get("arguments", "")
-    text = arguments if isinstance(arguments, str) else json.dumps(arguments, separators=(",", ":"))
-    try:
-        JSON_OBJECT.validate_json(text or "{}")
-    except ValueError as exc:
-        name = _optional_str(item.get("name")) or "tool"
-        raise ProviderError(
-            "malformed_tool_call",
-            f"{name} arguments were truncated at the output limit; write smaller chunks",
-            retryable=True,
-        ) from exc
-
-
 def _final_tool_call_event(item: dict[str, JsonValue], index: int) -> StreamEvent:
     arguments = item.get("arguments", "")
     return StreamEvent(
@@ -416,6 +408,18 @@ def _final_tool_call_event(item: dict[str, JsonValue], index: int) -> StreamEven
             ),
         ),
     )
+
+
+def _qwen_reasoning_budget(model: str, effort: str) -> int | None:
+    if "qwen" not in model.lower():
+        return 0 if effort == "off" else None
+    if effort == "off":
+        return 0
+    if effort in {"low", "minimal"}:
+        return 1024
+    if effort in {"medium", "on", ""}:
+        return 3072
+    return None
 
 
 def _reasoning_efforts(model_id: str, supported: bool | None, configured: list[str]) -> list[str]:

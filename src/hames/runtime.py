@@ -238,12 +238,18 @@ class ToolCallAssembly:
             raise ProviderError("malformed_tool_call", "tool call omitted its name")
         try:
             arguments = JSON_OBJECT.validate_json("".join(self.argument_parts) or "{}")
-        except ValueError as exc:
-            raise ProviderError(
-                "malformed_tool_call",
-                "tool call arguments are not valid JSON",
-                retryable=True,
-            ) from exc
+        except ValueError:
+            return ToolInvocation(
+                self.index,
+                new_id(),
+                self.provider_call_id,
+                name,
+                {},
+                argument_error=(
+                    f"{name} arguments were not valid JSON; retry with one smaller, complete "
+                    "scaffold or patch"
+                ),
+            )
         return ToolInvocation(self.index, new_id(), self.provider_call_id, name, arguments)
 
 
@@ -254,6 +260,7 @@ class ToolInvocation:
     provider_call_id: str | None
     name: str
     arguments: dict[str, JsonValue]
+    argument_error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1886,67 +1893,33 @@ class RunManager:
         )
         tool_count = 0
         model_turns = 0
-        consecutive_no_progress = 0
+        continuation_attempts = 0
         while True:
             if model_turns >= limits.max_model_turns_per_user_message:
                 raise RunFailure("model_turn_limit", "run model-turn limit was exhausted")
             model_turns += 1
-            try:
-                turn = await clock.measure(
-                    self._model_turn(
-                        run_id,
-                        session,
-                        skill_event.id
-                        if model_turns == 1 and skill_event is not None
-                        else retrieval_event.id
-                        if model_turns == 1 and retrieval_event is not None
-                        else run_started.id
-                        if model_turns == 1
-                        else None,
-                        memories,
-                        interaction_mode="auto" if healing_run else session.interaction_mode,
-                        healing_run=healing_run,
-                        tool_context=tool_context,
-                        clock=clock,
-                        tool_count=tool_count,
-                        max_tool_calls=limits.max_tool_calls_per_run,
-                        user_requested_memory_maintenance=user_requested_memory_maintenance,
-                    )
+            turn = await clock.measure(
+                self._model_turn(
+                    run_id,
+                    session,
+                    skill_event.id
+                    if model_turns == 1 and skill_event is not None
+                    else retrieval_event.id
+                    if model_turns == 1 and retrieval_event is not None
+                    else run_started.id
+                    if model_turns == 1
+                    else None,
+                    memories,
+                    interaction_mode="auto" if healing_run else session.interaction_mode,
+                    healing_run=healing_run,
+                    tool_context=tool_context,
+                    clock=clock,
+                    tool_count=tool_count,
+                    max_tool_calls=limits.max_tool_calls_per_run,
+                    user_requested_memory_maintenance=user_requested_memory_maintenance,
+                    continuation=model_turns > 1,
                 )
-            except ProviderError as exc:
-                if exc.code != "malformed_tool_call":
-                    raise
-                consecutive_no_progress += 1
-                if consecutive_no_progress > 3:
-                    raise RunFailure(
-                        "malformed_tool_call",
-                        "model emitted invalid tool-call arguments four times",
-                    ) from exc
-                tasks = await asyncio.to_thread(self.session_tasks.current, session.id)
-                failure = next(
-                    event
-                    for event in reversed(
-                        await asyncio.to_thread(self.ledger.list_run_events, run_id)
-                    )
-                    if event.type == "model.response.failed"
-                )
-                await self._append(
-                    session_id=session.id,
-                    run_id=run_id,
-                    agent_id=session.agent_id,
-                    event_type="run.continuation.requested",
-                    payload={
-                        "reason": "malformed_tool_call",
-                        "attempt": consecutive_no_progress,
-                        "task_revision": tasks.revision,
-                        "unfinished_task_count": sum(
-                            item.status != "completed" for item in tasks.items
-                        ),
-                    },
-                    causation_id=failure.id,
-                    correlation_id=run_id,
-                )
-                continue
+            )
             tool_count += turn.inline_tool_count
             if not turn.tool_calls:
                 tasks = await asyncio.to_thread(self.session_tasks.current, session.id)
@@ -1971,16 +1944,7 @@ class RunManager:
                     continuation_reason = "unfinished_execution"
 
                 if continuation_reason is not None:
-                    consecutive_no_progress += 1
-                    if consecutive_no_progress >= 3:
-                        raise RunFailure(
-                            "run_stalled",
-                            "run made no concrete progress across three continuation attempts",
-                            details={
-                                "reason": continuation_reason,
-                                "unfinished_task_count": len(unfinished),
-                            },
-                        )
+                    continuation_attempts += 1
                     await self._append(
                         session_id=session.id,
                         run_id=run_id,
@@ -1988,7 +1952,7 @@ class RunManager:
                         event_type="run.continuation.requested",
                         payload={
                             "reason": continuation_reason,
-                            "attempt": consecutive_no_progress,
+                            "attempt": continuation_attempts,
                             "task_revision": tasks.revision,
                             "unfinished_task_count": len(unfinished),
                         },
@@ -2022,7 +1986,7 @@ class RunManager:
                     correlation_id=run_id,
                 )
                 return
-            consecutive_no_progress = 0
+            continuation_attempts = 0
             for invocation in turn.tool_calls:
                 if tool_count >= limits.max_tool_calls_per_run:
                     raise RunFailure("tool_call_limit", "run tool-call limit was exhausted")
@@ -2124,6 +2088,7 @@ class RunManager:
         tool_count: int,
         max_tool_calls: int,
         user_requested_memory_maintenance: bool,
+        continuation: bool,
     ) -> ModelTurn:
         reasoning_parts: list[str] = []
         answer_parts: list[str] = []
@@ -2263,12 +2228,20 @@ class RunManager:
                         plugin_sources=plugin_sources,
                         plugin_budget_tokens=self.config.plugins.context_budget_tokens,
                     )
+        reasoning_budget_tokens = (
+            512
+            if continuation
+            and self.providers[session.provider].adapter == "llama_cpp"
+            and "qwen" in session.model.lower()
+            else None
+        )
         snapshot = canonical_request_snapshot(
             model=session.model,
             system=context.system,
             messages=context.messages,
             tools=context.tools,
             reasoning_effort=session.reasoning_effort,
+            reasoning_budget_tokens=reasoning_budget_tokens,
             max_tokens=self.config.context.output_reserve_tokens,
         )
         request_hash = await asyncio.to_thread(self.ledger.blob_store.put, snapshot)
@@ -2347,6 +2320,7 @@ class RunManager:
             messages=context.messages,
             system=context.system,
             reasoning_effort=session.reasoning_effort,
+            reasoning_budget_tokens=reasoning_budget_tokens,
             max_tokens=self.config.context.output_reserve_tokens,
             metadata={
                 "purpose": "agent",
@@ -2511,7 +2485,9 @@ class RunManager:
                             "provider_call_id": invocation.provider_call_id,
                             "name": invocation.name,
                             "arguments": invocation.arguments,
-                            "status": "requested",
+                            "status": (
+                                "invalid" if invocation.argument_error is not None else "requested"
+                            ),
                         },
                         causation_id=request_event.id,
                         correlation_id=run_id,
@@ -2722,6 +2698,18 @@ class RunManager:
             },
             correlation_id=run_id,
         )
+        if invocation.argument_error is not None:
+            return await self._persist_tool_result(
+                session,
+                run_id,
+                invocation,
+                ToolResult(
+                    status="failed",
+                    summary=invocation.argument_error,
+                    structured_data={"code": "invalid_tool_arguments"},
+                ),
+                requested.id,
+            )
         try:
             if is_plugin_tool(invocation.name):
                 arguments = PluginToolArguments.model_validate(invocation.arguments)
@@ -3844,6 +3832,19 @@ class RunManager:
                 correlation_id=run_id,
             )
         if answer or status == "completed" or force_message:
+            if answer:
+                previous = next(
+                    (
+                        event
+                        for event in reversed(
+                            await asyncio.to_thread(self.ledger.list_run_events, run_id)
+                        )
+                        if event.type == "assistant.message"
+                    ),
+                    None,
+                )
+                if previous is not None and previous.payload.get("content") == answer:
+                    return
             await self._append(
                 session_id=session.id,
                 run_id=run_id,

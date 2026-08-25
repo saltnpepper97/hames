@@ -45,6 +45,7 @@ class ModelRequest(ProviderBoundary):
     messages: list[ProviderMessage]
     system: str
     reasoning_effort: str = ""
+    reasoning_budget_tokens: int | None = Field(default=None, ge=0)
     max_tokens: int = Field(default=16384, gt=0)
     temperature: float | None = Field(default=None, ge=0, le=2)
     metadata: dict[str, JsonValue] = Field(default_factory=dict)

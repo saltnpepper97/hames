@@ -86,7 +86,8 @@ async def test_llama_cpp_discovers_reasoning_and_streams_separate_channels() -> 
         StreamEventKind.USAGE,
         StreamEventKind.COMPLETED,
     ]
-    assert seen_request["reasoning"] == {"effort": "medium"}
+    assert seen_request["reasoning_budget_tokens"] == 3072
+    assert "reasoning" not in seen_request
     assert seen_request["timings_per_token"] is True
     assert events[-2].usage is not None
     assert events[-2].usage.reasoning_tokens == 2
@@ -390,20 +391,27 @@ async def test_llama_cpp_surfaces_truncated_tool_arguments() -> None:
         )
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    with pytest.raises(ProviderError, match="truncated at the output limit") as raised:
-        _ = [
-            event
-            async for event in LlamaCppProvider("http://llama", client=client).stream(
-                ModelRequest(
-                    model="fixture",
-                    messages=[ProviderMessage(role="user", content="write a game")],
-                    system="",
-                    max_tokens=32,
-                )
+    events = [
+        event
+        async for event in LlamaCppProvider("http://llama", client=client).stream(
+            ModelRequest(
+                model="fixture",
+                messages=[ProviderMessage(role="user", content="write a game")],
+                system="",
+                max_tokens=32,
             )
-        ]
-    assert raised.value.code == "malformed_tool_call"
-    assert raised.value.retryable is True
+        )
+    ]
+    assert [event.kind for event in events] == [
+        StreamEventKind.STARTED,
+        StreamEventKind.TOOL_CALL_DELTA,
+        StreamEventKind.USAGE,
+        StreamEventKind.COMPLETED,
+    ]
+    assert events[1].tool_call is not None
+    assert events[1].tool_call.name == "write_file"
+    assert events[1].tool_call.arguments_delta.endswith('"hello')
+    assert events[-1].finish_reason == "tool_calls"
     await client.aclose()
 
 

@@ -413,8 +413,10 @@ def test_request_snapshot_is_canonical_and_hashable(
         messages=compiled.messages,
         tools=compiled.tools,
         reasoning_effort=session.reasoning_effort,
+        reasoning_budget_tokens=512,
         max_tokens=4_096,
     )
+    assert b'"reasoning_budget_tokens":512' in snapshot
     digest = ledger.blob_store.put(snapshot)
     assert digest == hashlib.sha256(snapshot).hexdigest()
     assert ledger.blob_store.read(digest) == snapshot

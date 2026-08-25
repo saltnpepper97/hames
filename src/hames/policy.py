@@ -343,10 +343,7 @@ def _normalize_plan_python_heredoc(command: str) -> str | None:
     if match is None:
         return None
     source = match.group("source")
-    return (
-        f"{match.group('launch')} -c {shlex.quote(source)}"
-        f"{match.group('suffix')}"
-    )
+    return f"{match.group('launch')} -c {shlex.quote(source)}{match.group('suffix')}"
 
 
 def _plan_shell_clauses(command: str) -> list[str]:

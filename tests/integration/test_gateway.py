@@ -209,8 +209,7 @@ class FalseBlockerProvider:
                 "status": "blocked",
                 "blocked_reason": "current session filesystem is read-only",
                 "text": (
-                    "Create the requested file "
-                    "(blocked: current session filesystem is read-only)."
+                    "Create the requested file (blocked: current session filesystem is read-only)."
                 ),
             }
         else:
@@ -230,6 +229,21 @@ class FalseBlockerProvider:
 
     async def aclose(self) -> None:
         return None
+
+
+class QwenFakeProvider(FakeProvider):
+    adapter = "llama_cpp"
+
+    async def list_models(self) -> list[ProviderModel]:
+        return [
+            ProviderModel(
+                id="qwen3.8-27b",
+                provider=self.profile_id,
+                status="available",
+                reasoning_supported=True,
+                reasoning_efforts=["low", "medium", "xhigh"],
+            )
+        ]
 
 
 class BlockingPostRunObserver:
@@ -835,11 +849,15 @@ async def test_malformed_tool_arguments_retry_without_abandoning_the_run(tmp_pat
     paths = HamesPaths.resolve(root=tmp_path / "home")
     paths.ensure_foundation()
     paths.config_file.write_text("[memory]\nenabled = false\n", encoding="utf-8")
-    fake = FakeProvider(
+    fake = QwenFakeProvider(
         [],
         turns=[
             [
                 StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TEXT_DELTA,
+                    text="Now let me write the file.",
+                ),
                 StreamEvent(
                     kind=StreamEventKind.TOOL_CALL_DELTA,
                     tool_call=ToolCallDelta(
@@ -853,6 +871,10 @@ async def test_malformed_tool_arguments_retry_without_abandoning_the_run(tmp_pat
             ],
             [
                 StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TEXT_DELTA,
+                    text="Now let me write the file.",
+                ),
                 StreamEvent(
                     kind=StreamEventKind.TOOL_CALL_DELTA,
                     tool_call=ToolCallDelta(
@@ -879,7 +901,11 @@ async def test_malformed_tool_arguments_retry_without_abandoning_the_run(tmp_pat
             created = await client.post(
                 "/v1/sessions",
                 headers=headers,
-                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "qwen3.8-27b",
+                },
             )
             session_id = str(response_object(created)["id"])
             await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
@@ -890,19 +916,36 @@ async def test_malformed_tool_arguments_retry_without_abandoning_the_run(tmp_pat
             )
             events = await _wait_for_event(client, headers, session_id, "run.completed")
 
-            failure = next(event for event in events if event["type"] == "model.response.failed")
-            assert failure["payload"]["code"] == "malformed_tool_call"  # type: ignore[index]
-            assert failure["payload"]["retryable"] is True  # type: ignore[index]
-            continuation = next(
-                event for event in events if event["type"] == "run.continuation.requested"
+            failure = next(
+                event
+                for event in events
+                if event["type"] == "tool.failed" and event["payload"]["name"] == "write_file"  # type: ignore[index]
             )
-            assert continuation["payload"]["reason"] == "malformed_tool_call"  # type: ignore[index]
-            assert "emit one complete tool call" in fake.requests[1].system
+            assert failure["payload"]["structured_data"] == {  # type: ignore[index]
+                "code": "invalid_tool_arguments"
+            }
+            assert "smaller, complete scaffold or patch" in failure["payload"]["summary"]  # type: ignore[index]
+            assert not any(event["type"] == "model.response.failed" for event in events)
+            assert not any(event["type"] == "run.continuation.requested" for event in events)
+            assert fake.requests[0].reasoning_budget_tokens is None
+            assert fake.requests[1].reasoning_budget_tokens == 512
+            assert any(
+                message.role == "tool" and "invalid_tool_arguments" in message.content
+                for message in fake.requests[1].messages
+            )
             assert (tmp_path / "recovered.txt").read_text(encoding="utf-8") == "ok"
             assert any(
                 event["type"] == "assistant.message"
                 and event["payload"]["content"] == "Recovered and finished."  # type: ignore[index]
                 for event in events
+            )
+            assert (
+                sum(
+                    event["type"] == "assistant.message"
+                    and event["payload"]["content"] == "Now let me write the file."  # type: ignore[index]
+                    for event in events
+                )
+                == 1
             )
     finally:
         await state.runs.close()
@@ -937,8 +980,7 @@ async def test_task_cannot_be_blocked_by_an_unverified_provider_capability_claim
             rejected = next(
                 event
                 for event in events
-                if event["type"] == "tool.rejected"
-                and event["payload"]["name"] == "task_update"  # type: ignore[index]
+                if event["type"] == "tool.rejected" and event["payload"]["name"] == "task_update"  # type: ignore[index]
             )
             assert "cannot mark a task blocked" in rejected["payload"]["summary"]  # type: ignore[index]
             tasks = response_object(
@@ -984,8 +1026,7 @@ async def test_next_run_repairs_legacy_false_read_only_task_and_memory(tmp_path:
                 session,
                 task.id,
                 text=(
-                    "Create the requested file "
-                    "(blocked: current session filesystem is read-only)."
+                    "Create the requested file (blocked: current session filesystem is read-only)."
                 ),
                 status="blocked",
             )
@@ -1425,12 +1466,15 @@ async def test_truncated_plan_execution_continues_with_reasoning_and_tasks(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_plan_execution_stall_fails_visibly_after_three_no_progress_turns(
+async def test_plan_execution_continues_until_the_configured_model_turn_limit(
     tmp_path: Path,
 ) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     paths.ensure_foundation()
-    paths.config_file.write_text("[memory]\nenabled = false\n", encoding="utf-8")
+    paths.config_file.write_text(
+        "[memory]\nenabled = false\n[runtime]\nmax_model_turns_per_user_message = 4\n",
+        encoding="utf-8",
+    )
     provider = StalledPlanExecutionProvider("# Stalled\n\n## Tasks\n- [ ] Do the work")
     state = GatewayState.create(paths, providers={"fake": provider})
     headers = {"Authorization": f"Bearer {state.token}"}
@@ -1462,8 +1506,12 @@ async def test_plan_execution_stall_fails_visibly_after_three_no_progress_turns(
             run_id = str(response_object(executed)["run_id"])
             run_events = [event for event in events if event.get("run_id") == run_id]
             failure = next(event for event in run_events if event["type"] == "run.failed")
-            assert failure["payload"]["code"] == "run_stalled"  # type: ignore[index]
-            assert sum(event["type"] == "run.continuation.requested" for event in run_events) == 2
+            assert failure["payload"]["code"] == "model_turn_limit"  # type: ignore[index]
+            assert sum(event["type"] == "run.continuation.requested" for event in run_events) == 4
+            assert not any(
+                event["type"] == "run.failed" and event["payload"]["code"] == "run_stalled"  # type: ignore[index]
+                for event in run_events
+            )
             assert not any(event["type"] == "run.completed" for event in run_events)
     finally:
         await state.runs.close()
