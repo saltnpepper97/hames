@@ -2105,8 +2105,11 @@ fn render_question_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         let selected = question.selected == index;
         let supports_note = index < question.custom_index();
         let note_label = "  N add note";
+        let choice_prefix_width = 7;
         let label_width = inner_width
-            .saturating_sub(4 + if supports_note { note_label.width() } else { 0 })
+            .saturating_sub(
+                choice_prefix_width + if supports_note { note_label.width() } else { 0 },
+            )
             .max(1);
         let parts = complete_wrapped_lines(choice, label_width);
         let row = lines.len();
@@ -2115,9 +2118,17 @@ fn render_question_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             let mut spans = vec![
                 Span::styled(
                     if part_index == 0 {
-                        if selected { "  ● " } else { "  ○ " }
+                        format!("  {}. ", index + 1)
                     } else {
-                        "    "
+                        " ".repeat(choice_prefix_width - 2)
+                    },
+                    Style::default().fg(MUTED),
+                ),
+                Span::styled(
+                    if part_index == 0 {
+                        if selected { "● " } else { "○ " }
+                    } else {
+                        "  "
                     },
                     Style::default().fg(if selected { CYAN } else { MUTED }),
                 ),
@@ -2131,7 +2142,7 @@ fn render_question_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 ),
             ];
             if part_index == 0 && supports_note {
-                let note_x = 4 + part.width();
+                let note_x = choice_prefix_width + part.width();
                 spans.push(Span::styled(note_label, Style::default().fg(MUTED)));
                 note_hits.push((index, row, note_x, note_label.width()));
             }
@@ -2236,15 +2247,16 @@ fn render_question_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 
 fn question_required_height(question: &crate::tui::app::QuestionTray, width: usize) -> usize {
     let prompt = complete_wrapped_lines(&question.question, width).len();
+    let choice_prefix_width = 7;
     let option_width = width
-        .saturating_sub(4 + UnicodeWidthStr::width("  N add note"))
+        .saturating_sub(choice_prefix_width + UnicodeWidthStr::width("  N add note"))
         .max(1);
     let options = question
         .options
         .iter()
         .map(|option| complete_wrapped_lines(option, option_width).len())
         .sum::<usize>();
-    let custom_width = width.saturating_sub(4).max(1);
+    let custom_width = width.saturating_sub(choice_prefix_width).max(1);
     let custom = complete_wrapped_lines("Write something else", custom_width).len();
     prompt + options + custom + usize::from(question.input_kind.is_some()) + 2
 }
@@ -5909,7 +5921,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_question_uses_unnumbered_radios_with_distinct_note_and_custom_actions() {
+    fn agent_question_numbers_radios_and_keeps_note_and_custom_actions_distinct() {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(session(), Vec::new(), true);
@@ -5935,8 +5947,9 @@ mod tests {
         assert!(rendered.contains("Which visual direction should Hames use?"));
         assert!(rendered.contains("Write something else"));
         assert!(rendered.contains("Write your answer"));
-        assert!(!rendered.contains("1."));
-        assert!(!rendered.contains("2."));
+        assert!(rendered.contains("1. ○ Subdued"));
+        assert!(rendered.contains("2. ○ High contrast"));
+        assert!(rendered.contains("3. ● Write something else"));
         assert!(
             app.hits
                 .iter()

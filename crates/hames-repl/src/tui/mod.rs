@@ -823,6 +823,13 @@ fn handle_question_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             }
             None
         }
+        KeyCode::Char(value @ '1'..='4') => {
+            let index = usize::from(value as u8 - b'1');
+            if index < choices {
+                question.selected = index;
+            }
+            None
+        }
         KeyCode::Enter if question.selected == question.custom_index() => {
             question.start_custom();
             None
@@ -3398,6 +3405,13 @@ mod tests {
             KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
         );
         assert_eq!(app.question.as_ref().unwrap().input_kind, None);
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.question.as_ref().unwrap().selected, 1);
+        let question = app.question.as_mut().unwrap();
+        question.selected = question.custom_index();
         assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).is_none());
         assert_eq!(
             app.question.as_ref().unwrap().input_kind,

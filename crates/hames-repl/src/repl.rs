@@ -1852,14 +1852,16 @@ async fn handle_question(
     println!();
     println!("{}", style::section("Question"));
     println!("  {question}");
-    for option in &options {
-        println!("  ○ {option}");
+    for (index, option) in options.iter().enumerate() {
+        println!("  {}. ○ {option}", index + 1);
     }
-    println!("  ○ Write something else");
+    let custom_index = options.len() + 1;
+    println!("  {custom_index}. ○ Write something else");
     let (selected_option, note, custom_answer) = loop {
-        let selected = editor.readline("Type an offered answer, or 'other' › ")?;
+        let selected = editor.readline("Choose an answer › ")?;
         let selected = selected.trim();
-        if selected.eq_ignore_ascii_case("other")
+        if selected.parse::<usize>().ok() == Some(custom_index)
+            || selected.eq_ignore_ascii_case("other")
             || selected.eq_ignore_ascii_case("write something else")
             || options.is_empty()
         {
@@ -1870,10 +1872,17 @@ async fn handle_question(
             println!("  Please type an answer.");
             continue;
         }
-        if let Some(option) = options
-            .iter()
-            .find(|option| option.eq_ignore_ascii_case(selected))
-        {
+        let option = selected
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| index.checked_sub(1))
+            .and_then(|index| options.get(index))
+            .or_else(|| {
+                options
+                    .iter()
+                    .find(|option| option.eq_ignore_ascii_case(selected))
+            });
+        if let Some(option) = option {
             let add_note = editor.readline("Enter use as-is · N add note › ")?;
             let note = if add_note.trim().eq_ignore_ascii_case("n") {
                 editor.readline("Note › ")?
@@ -1882,7 +1891,7 @@ async fn handle_question(
             };
             break (Some((*option).to_owned()), note, String::new());
         }
-        println!("  Type one of the offered answers, or 'other'.");
+        println!("  Choose 1-{custom_index}.");
     };
     let resolved = client
         .resolve_question(
