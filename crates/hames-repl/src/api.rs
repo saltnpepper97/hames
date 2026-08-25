@@ -18,9 +18,73 @@ const PROVIDER_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 const SUBMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 const SUBMISSION_RETRY_DELAYS: [Duration; 2] =
     [Duration::from_millis(250), Duration::from_millis(750)];
+const EVENT_RECONNECT_DELAYS: [Duration; 6] = [
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+];
+const MAX_SSE_FRAME_BYTES: usize = 1024 * 1024;
 
 pub fn new_submission_id() -> String {
     Uuid::new_v4().to_string()
+}
+
+pub(crate) fn event_reconnect_delay(attempt: u32) -> Duration {
+    EVENT_RECONNECT_DELAYS[usize::try_from(attempt.saturating_sub(1))
+        .unwrap_or(usize::MAX)
+        .min(EVENT_RECONNECT_DELAYS.len() - 1)]
+}
+
+#[derive(Default)]
+pub(crate) struct SseDecoder {
+    buffer: Vec<u8>,
+}
+
+impl SseDecoder {
+    pub(crate) fn push(&mut self, bytes: &[u8]) -> Result<Vec<String>> {
+        self.buffer.extend_from_slice(bytes);
+        let mut messages = Vec::new();
+        loop {
+            let Some((boundary, delimiter_len)) = sse_frame_boundary(&self.buffer) else {
+                if self.buffer.len() > MAX_SSE_FRAME_BYTES {
+                    bail!("gateway SSE frame exceeded the 1 MiB limit");
+                }
+                break;
+            };
+            if boundary > MAX_SSE_FRAME_BYTES {
+                bail!("gateway SSE frame exceeded the 1 MiB limit");
+            }
+            let frame = self.buffer[..boundary].to_vec();
+            self.buffer.drain(..boundary + delimiter_len);
+            let text = std::str::from_utf8(&frame).context("gateway SSE frame was not UTF-8")?;
+            let mut data = Vec::new();
+            for line in text.split('\n') {
+                let line = line.strip_suffix('\r').unwrap_or(line);
+                if let Some(value) = line.strip_prefix("data:") {
+                    data.push(value.strip_prefix(' ').unwrap_or(value));
+                }
+            }
+            if !data.is_empty() {
+                messages.push(data.join("\n"));
+            }
+        }
+        Ok(messages)
+    }
+}
+
+fn sse_frame_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
+    let lf = buffer.windows(2).position(|bytes| bytes == b"\n\n");
+    let crlf = buffer.windows(4).position(|bytes| bytes == b"\r\n\r\n");
+    match (lf, crlf) {
+        (Some(lf), Some(crlf)) if lf <= crlf => Some((lf, 2)),
+        (Some(_), Some(crlf)) => Some((crlf, 4)),
+        (Some(lf), None) => Some((lf, 2)),
+        (None, Some(crlf)) => Some((crlf, 4)),
+        (None, None) => None,
+    }
 }
 
 #[derive(Clone)]
@@ -691,7 +755,7 @@ pub struct LiveEnvelope {
     pub payload: Option<Value>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct PasteSpan {
     pub start_byte: usize,
     pub end_byte: usize,
@@ -1204,24 +1268,6 @@ impl GatewayClient {
         .await
     }
 
-    pub async fn send_message_now_with_pastes(
-        &self,
-        session_id: &str,
-        content: &str,
-        remember: bool,
-        paste_spans: &[PasteSpan],
-    ) -> Result<MessageAccepted> {
-        let submission_id = new_submission_id();
-        self.send_message_now_with_pastes_id(
-            session_id,
-            &submission_id,
-            content,
-            remember,
-            paste_spans,
-        )
-        .await
-    }
-
     pub async fn send_message_now_with_pastes_id(
         &self,
         session_id: &str,
@@ -1301,17 +1347,6 @@ impl GatewayClient {
         .await
     }
 
-    pub async fn send_plan_note(
-        &self,
-        session_id: &str,
-        content: &str,
-        paste_spans: &[PasteSpan],
-    ) -> Result<MessageAccepted> {
-        let submission_id = new_submission_id();
-        self.send_plan_note_with_id(session_id, &submission_id, content, paste_spans)
-            .await
-    }
-
     pub async fn send_plan_note_with_id(
         &self,
         session_id: &str,
@@ -1337,7 +1372,11 @@ impl GatewayClient {
         submission_id: &str,
         body: &Value,
     ) -> Result<MessageAccepted> {
-        for attempt in 0..=SUBMISSION_RETRY_DELAYS.len() {
+        for retry_delay in SUBMISSION_RETRY_DELAYS
+            .map(Some)
+            .into_iter()
+            .chain(std::iter::once(None))
+        {
             let result = async {
                 let response = self
                     .post(path)
@@ -1350,13 +1389,13 @@ impl GatewayClient {
             .await;
             match result {
                 Ok(accepted) => return Ok(accepted),
-                Err(error)
-                    if attempt < SUBMISSION_RETRY_DELAYS.len()
-                        && submission_error_is_retryable(&error) =>
-                {
-                    tokio::time::sleep(SUBMISSION_RETRY_DELAYS[attempt]).await;
-                }
                 Err(error) => {
+                    if submission_error_is_retryable(&error)
+                        && let Some(delay) = retry_delay
+                    {
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
                     return Err(error).with_context(|| {
                         format!("message submission {submission_id} was not confirmed")
                     });
@@ -1935,4 +1974,43 @@ async fn ensure_success(response: Response) -> Result<Response> {
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
     Err(GatewayStatusError { status, body }.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{SseDecoder, event_reconnect_delay};
+
+    #[test]
+    fn sse_decoder_preserves_split_unicode_and_multiline_crlf_data() {
+        let mut decoder = SseDecoder::default();
+        assert!(
+            decoder
+                .push(b": keepalive\r\ndata: caf\xc3")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            decoder.push(b"\xa9\r\ndata: second line\r\n\r\n").unwrap(),
+            vec!["caf\u{e9}\nsecond line"]
+        );
+    }
+
+    #[test]
+    fn sse_decoder_rejects_invalid_utf8_and_oversized_frames() {
+        let mut invalid = SseDecoder::default();
+        assert!(invalid.push(b"data: \xff\n\n").is_err());
+
+        let mut oversized = SseDecoder::default();
+        assert!(oversized.push(&vec![b'x'; 1024 * 1024 + 1]).is_err());
+    }
+
+    #[test]
+    fn event_reconnect_backoff_caps_at_eight_seconds() {
+        assert_eq!(event_reconnect_delay(1), Duration::from_millis(250));
+        assert_eq!(event_reconnect_delay(2), Duration::from_millis(500));
+        assert_eq!(event_reconnect_delay(6), Duration::from_secs(8));
+        assert_eq!(event_reconnect_delay(100), Duration::from_secs(8));
+    }
 }

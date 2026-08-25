@@ -9,9 +9,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use app::{
-    AgentEditField, AgentEditor, AgentEditorPage, App, GoalModal, HitAction, InlineEditor,
-    InlineEditorKind, MemoryBrowser, MenuAction, MenuOption, Modal, QuestionInputKind, ScarBrowser,
-    ScarEditField, ScarEditor, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind, UsageModal,
+    AgentEditField, AgentEditor, AgentEditorPage, App, ConnectionState, GoalModal, HitAction,
+    InlineEditor, InlineEditorKind, MemoryBrowser, MenuAction, MenuOption, Modal,
+    QuestionInputKind, ScarBrowser, ScarEditField, ScarEditor, ScrollDrag, ScrollTarget, Sheet,
+    SheetKind, ThemeKind, UsageModal,
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -36,7 +37,7 @@ use tokio::task::JoinHandle;
 
 use crate::api::{
     GatewayClient, HEAL_SCARS_PROMPT, LiveEnvelope, PROTOCOL_VERSION, PasteSpan, ProviderModel,
-    ScarUpdate, Session,
+    ScarUpdate, Session, SseDecoder, event_reconnect_delay,
 };
 use crate::local::{LocalPaths, write_private_export};
 use crate::repl::ensure_gateway;
@@ -76,6 +77,7 @@ pub async fn run() -> Result<()> {
         return Ok(());
     }
     let mut app = load_app(&client, session).await?;
+    app.connection_state = ConnectionState::Connecting;
     let configured_theme = paths.configured_theme()?;
     app.theme = ThemeKind::from_config(&configured_theme)
         .with_context(|| format!("unknown theme in ui.toml: {configured_theme}"))?;
@@ -137,6 +139,7 @@ pub async fn run() -> Result<()> {
                             }
                         }
                         StreamPayload::Warning(message) => app.notice = Some(message),
+                        StreamPayload::State(state) => app.connection_state = state,
                     }
                 }
                 None
@@ -158,6 +161,7 @@ pub async fn run() -> Result<()> {
                 let theme = app.theme;
                 let reopen_sessions = app.reopen_sessions_after_switch;
                 app = load_app(&client, session).await?;
+                app.connection_state = ConnectionState::Connecting;
                 app.theme = theme;
                 if reopen_sessions {
                     open_sessions_sheet(&client, &mut app).await?;
@@ -1944,9 +1948,17 @@ async fn apply_effect(
             });
         }
         Effect::Send(content, pastes) => {
+            let submission_id = app.submission_id_for("turn", &content, &pastes);
             let accepted = client
-                .send_message_with_pastes(&app.session.id, &content, false, &pastes)
+                .send_message_with_pastes_id(
+                    &app.session.id,
+                    &submission_id,
+                    &content,
+                    false,
+                    &pastes,
+                )
                 .await?;
+            app.confirm_submission(&submission_id);
             app.composer.clear();
             app.history_index = None;
             app.history_draft = None;
@@ -1955,12 +1967,16 @@ async fn apply_effect(
             } else if let Some(item) = accepted.queued {
                 app.insert_queued_message(item);
             }
-            app.notice = None;
+            app.notice = accepted
+                .replayed
+                .then(|| "Message was already accepted · state restored".to_owned());
         }
         Effect::SendPlanNote(content, pastes) => {
+            let submission_id = app.submission_id_for("plan_note", &content, &pastes);
             let accepted = client
-                .send_plan_note(&app.session.id, &content, &pastes)
+                .send_plan_note_with_id(&app.session.id, &submission_id, &content, &pastes)
                 .await?;
+            app.confirm_submission(&submission_id);
             app.composer.clear();
             app.inline_editor = None;
             app.sheet = None;
@@ -1971,7 +1987,9 @@ async fn apply_effect(
             } else if let Some(item) = accepted.queued {
                 app.insert_queued_message(item);
             }
-            app.notice = None;
+            app.notice = accepted
+                .replayed
+                .then(|| "Plan note was already accepted · state restored".to_owned());
         }
         Effect::ExecutePlanWithNote(content) => {
             let accepted = client
@@ -1987,9 +2005,17 @@ async fn apply_effect(
             app.notice = None;
         }
         Effect::SendNow(content, pastes) => {
+            let submission_id = app.submission_id_for("send_now", &content, &pastes);
             let accepted = client
-                .send_message_now_with_pastes(&app.session.id, &content, false, &pastes)
+                .send_message_now_with_pastes_id(
+                    &app.session.id,
+                    &submission_id,
+                    &content,
+                    false,
+                    &pastes,
+                )
                 .await?;
+            app.confirm_submission(&submission_id);
             let started_immediately = accepted.disposition == "started";
             app.composer.clear();
             app.history_index = None;
@@ -1999,7 +2025,9 @@ async fn apply_effect(
             } else if let Some(item) = accepted.queued {
                 app.insert_queued_message(item);
             }
-            app.notice = Some(if started_immediately {
+            app.notice = Some(if accepted.replayed {
+                "Priority turn was already accepted · state restored".to_owned()
+            } else if started_immediately {
                 "Priority turn started".to_owned()
             } else {
                 "Current work interrupted · priority turn queued".to_owned()
@@ -2782,6 +2810,7 @@ struct StreamMessage {
 
 enum StreamPayload {
     Envelope(Box<LiveEnvelope>),
+    State(ConnectionState),
     Warning(String),
 }
 
@@ -2793,10 +2822,19 @@ fn spawn_event_stream(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         if let Err(error) = stream_events(client, session_id.clone(), after, tx.clone()).await {
+            let reason = format!("{error:#}");
+            let _ = tx
+                .send(StreamMessage {
+                    session_id: session_id.clone(),
+                    payload: StreamPayload::State(ConnectionState::Offline {
+                        reason: reason.clone(),
+                    }),
+                })
+                .await;
             let _ = tx
                 .send(StreamMessage {
                     session_id,
-                    payload: StreamPayload::Warning(format!("Live updates paused: {error:#}")),
+                    payload: StreamPayload::Warning(format!("Live updates paused: {reason}")),
                 })
                 .await;
         }
@@ -2809,19 +2847,39 @@ async fn stream_events(
     mut after: u64,
     tx: mpsc::Sender<StreamMessage>,
 ) -> Result<()> {
-    let mut failures = 0_u8;
+    let mut failures = 0_u32;
+    if tx
+        .send(StreamMessage {
+            session_id: session_id.clone(),
+            payload: StreamPayload::State(ConnectionState::Connecting),
+        })
+        .await
+        .is_err()
+    {
+        return Ok(());
+    }
     loop {
         let response = match client.event_stream(&session_id, after).await {
             Ok(response) => response,
-            Err(error) => {
+            Err(_) => {
                 failures += 1;
-                if failures >= 4 {
-                    return Err(error).context("gateway event stream repeatedly failed");
+                if !send_reconnecting(&tx, &session_id, failures).await {
+                    return Ok(());
                 }
-                tokio::time::sleep(Duration::from_millis(250 * u64::from(failures))).await;
+                tokio::time::sleep(event_reconnect_delay(failures)).await;
                 continue;
             }
         };
+        if tx
+            .send(StreamMessage {
+                session_id: session_id.clone(),
+                payload: StreamPayload::State(ConnectionState::Connected),
+            })
+            .await
+            .is_err()
+        {
+            return Ok(());
+        }
         let mut bytes = response.bytes_stream();
         let mut decoder = SseDecoder::default();
         while let Some(chunk) = bytes.next().await {
@@ -2830,7 +2888,7 @@ async fn stream_events(
                 Err(_) => break,
             };
             failures = 0;
-            for data in decoder.push(&chunk) {
+            for data in decoder.push(&chunk)? {
                 let envelope: LiveEnvelope =
                     serde_json::from_str(&data).context("gateway emitted malformed SSE data")?;
                 if let Some(event) = &envelope.event {
@@ -2849,37 +2907,24 @@ async fn stream_events(
             }
         }
         failures += 1;
-        if failures >= 4 {
-            bail!("gateway event stream repeatedly ended");
+        if !send_reconnecting(&tx, &session_id, failures).await {
+            return Ok(());
         }
-        tokio::time::sleep(Duration::from_millis(250 * u64::from(failures))).await;
+        tokio::time::sleep(event_reconnect_delay(failures)).await;
     }
 }
 
-#[derive(Default)]
-struct SseDecoder {
-    buffer: String,
-}
-
-impl SseDecoder {
-    fn push(&mut self, bytes: &[u8]) -> Vec<String> {
-        self.buffer.push_str(&String::from_utf8_lossy(bytes));
-        self.buffer = self.buffer.replace("\r\n", "\n");
-        let mut frames = Vec::new();
-        while let Some(boundary) = self.buffer.find("\n\n") {
-            let frame = self.buffer[..boundary].to_owned();
-            self.buffer.drain(..boundary + 2);
-            let data = frame
-                .lines()
-                .filter_map(|line| line.strip_prefix("data: "))
-                .collect::<Vec<_>>()
-                .join("\n");
-            if !data.is_empty() {
-                frames.push(data);
-            }
-        }
-        frames
-    }
+async fn send_reconnecting(
+    tx: &mpsc::Sender<StreamMessage>,
+    session_id: &str,
+    attempt: u32,
+) -> bool {
+    tx.send(StreamMessage {
+        session_id: session_id.to_owned(),
+        payload: StreamPayload::State(ConnectionState::Reconnecting { attempt }),
+    })
+    .await
+    .is_ok()
 }
 
 struct TerminalGuard {
@@ -3097,13 +3142,13 @@ mod tests {
     };
 
     use super::{
-        Effect, SseDecoder, action_error_message, agent_source, handle_key, handle_mouse,
+        Effect, action_error_message, agent_source, handle_key, handle_mouse,
         handle_terminal_event, model_efforts, next_mode, next_workspace_trust_choice,
         parse_command, pointer_top, session_exit_notice, terminal_tab_title, workspace_identity,
     };
     use crate::api::{
         Goal, MemoryRecord, PlanRevision, PlanState, ProviderModel, QueuedMessage, Scar, Session,
-        SessionTask, SessionTaskList, SkillSummary,
+        SessionTask, SessionTaskList, SkillSummary, SseDecoder,
     };
     use crate::tui::app::{
         AgentEditor, App, HitAction, HitRegion, InlineEditor, InlineEditorKind, MemoryBrowser,
@@ -3115,9 +3160,9 @@ mod tests {
     #[test]
     fn sse_decoder_handles_fragmented_frames() {
         let mut decoder = SseDecoder::default();
-        assert!(decoder.push(b"data: {\"dur").is_empty());
+        assert!(decoder.push(b"data: {\"dur").unwrap().is_empty());
         assert_eq!(
-            decoder.push(b"able\":true}\n\n"),
+            decoder.push(b"able\":true}\n\n").unwrap(),
             vec!["{\"durable\":true}"]
         );
     }

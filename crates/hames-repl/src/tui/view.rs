@@ -15,9 +15,10 @@ use unicode_width::UnicodeWidthStr;
 
 use super::app::{
     ActivityCategory, ActivityPhase, AgentChoice, AgentEditField, AgentEditor, AgentEditorPage,
-    App, ApprovalModal, Composer, ComposerUnit, DreamPhase, HitAction, HitRegion, MemoryBrowser,
-    MenuAction, Modal, QuestionInputKind, ScarBrowser, ScarEditField, ScarEditor, ScrollTarget,
-    Sheet, SheetKind, ThemeKind, TranscriptItem, TranscriptViewport, UsageModal, task_checkbox,
+    App, ApprovalModal, Composer, ComposerUnit, ConnectionState, DreamPhase, HitAction, HitRegion,
+    MemoryBrowser, MenuAction, Modal, QuestionInputKind, ScarBrowser, ScarEditField, ScarEditor,
+    ScrollTarget, Sheet, SheetKind, ThemeKind, TranscriptItem, TranscriptViewport, UsageModal,
+    task_checkbox,
 };
 
 const MINT: Color = Color::Rgb(116, 226, 192);
@@ -1659,8 +1660,16 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
         app.activity_bar_effect = None;
     }
     let mut right = Vec::new();
+    let (connection_label, connection_color) = match &app.connection_state {
+        ConnectionState::Connecting => ("connecting".to_owned(), GOLD),
+        ConnectionState::Connected => ("connected".to_owned(), MINT),
+        ConnectionState::Reconnecting { attempt } => (format!("reconnecting {attempt}"), GOLD),
+        ConnectionState::Offline { .. } => ("offline".to_owned(), CORAL),
+    };
     if let Some(context) = context_footer(app) {
-        let right_width = UnicodeWidthStr::width(context.as_str()) + 15;
+        let right_width = UnicodeWidthStr::width(context.as_str())
+            + UnicodeWidthStr::width(connection_label.as_str())
+            + 7;
         if left_width + right_width + 2 <= usize::from(area.width) {
             right.push(Span::styled(context, Style::default().fg(MUTED)));
             right.push(Span::styled(" · ", Style::default().fg(MUTED)));
@@ -1668,7 +1677,7 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
     }
     right.extend([
         Span::styled("[", Style::default().fg(MUTED)),
-        Span::styled("connected", Style::default().fg(MINT)),
+        Span::styled(connection_label, Style::default().fg(connection_color)),
         Span::styled("]  ", Style::default().fg(MUTED)),
     ]);
     frame.render_widget(
@@ -4515,9 +4524,9 @@ mod tests {
     };
     use crate::tui::app::{
         ActivityPhase, ActivityRow, AgentEditor, AgentEditorPage, App, ApprovalModal, Composer,
-        DreamPhase, HitAction, InlineEditor, InlineEditorKind, MemoryBrowser, MenuAction,
-        MenuOption, Modal, QuestionInputKind, QuestionOption, QuestionTray, ScarBrowser,
-        ScarEditor, Sheet, SheetKind, TranscriptItem, TranscriptPoint, UsageModal,
+        ConnectionState, DreamPhase, HitAction, InlineEditor, InlineEditorKind, MemoryBrowser,
+        MenuAction, MenuOption, Modal, QuestionInputKind, QuestionOption, QuestionTray,
+        ScarBrowser, ScarEditor, Sheet, SheetKind, TranscriptItem, TranscriptPoint, UsageModal,
     };
 
     fn usage_projection() -> UsageProjection {
@@ -5821,6 +5830,36 @@ mod tests {
             .collect::<String>();
         assert!(!narrow.contains("28.5k (25%)"));
         assert!(narrow.contains("[connected]"));
+    }
+
+    #[test]
+    fn footer_reports_reconnecting_and_offline_states_truthfully() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.connection_state = ConnectionState::Reconnecting { attempt: 4 };
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let reconnecting = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(reconnecting.contains("[reconnecting 4]"));
+
+        app.connection_state = ConnectionState::Offline {
+            reason: "malformed stream".to_owned(),
+        };
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let offline = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(offline.contains("[offline]"));
     }
 
     #[test]

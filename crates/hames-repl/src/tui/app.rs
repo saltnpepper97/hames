@@ -10,7 +10,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::api::{
     ContextUsageProjection, Event, Goal, MemoryRecord, PasteSpan, PlanRevision, PlanState,
     QueueState, QueuedMessage, Scar, Session, SessionTask, SessionTaskList, SkillSummary,
-    UsageProjection,
+    UsageProjection, new_submission_id,
 };
 
 pub const LARGE_PASTE_LINES: usize = 4;
@@ -1138,6 +1138,22 @@ pub struct CopyNotice {
     pub expires_at: Instant,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConnectionState {
+    Connecting,
+    Connected,
+    Reconnecting { attempt: u32 },
+    Offline { reason: String },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingSubmission {
+    pub id: String,
+    purpose: &'static str,
+    content: String,
+    paste_spans: Vec<PasteSpan>,
+}
+
 impl HitRegion {
     pub fn contains(&self, x: u16, y: u16) -> bool {
         x >= self.x
@@ -1166,6 +1182,8 @@ pub struct App {
     pub tasks: SessionTaskList,
     pub skill_commands: Vec<SkillSummary>,
     pub trusted: bool,
+    pub connection_state: ConnectionState,
+    pub pending_submission: Option<PendingSubmission>,
     pub modal: Option<Modal>,
     pub question: Option<QuestionTray>,
     pub sheet: Option<Sheet>,
@@ -1248,6 +1266,8 @@ impl App {
             },
             skill_commands: Vec::new(),
             trusted,
+            connection_state: ConnectionState::Connected,
+            pending_submission: None,
             modal: None,
             question: None,
             sheet: None,
@@ -1303,6 +1323,39 @@ impl App {
     pub fn set_queue(&mut self, state: QueueState) {
         self.queue_paused = state.paused;
         self.queued_messages = state.items;
+    }
+
+    pub fn submission_id_for(
+        &mut self,
+        purpose: &'static str,
+        content: &str,
+        paste_spans: &[PasteSpan],
+    ) -> String {
+        if let Some(pending) = &self.pending_submission
+            && pending.purpose == purpose
+            && pending.content == content
+            && pending.paste_spans == paste_spans
+        {
+            return pending.id.clone();
+        }
+        let id = new_submission_id();
+        self.pending_submission = Some(PendingSubmission {
+            id: id.clone(),
+            purpose,
+            content: content.to_owned(),
+            paste_spans: paste_spans.to_vec(),
+        });
+        id
+    }
+
+    pub fn confirm_submission(&mut self, submission_id: &str) {
+        if self
+            .pending_submission
+            .as_ref()
+            .is_some_and(|pending| pending.id == submission_id)
+        {
+            self.pending_submission = None;
+        }
     }
 
     pub fn set_plan(&mut self, plan: PlanState) {
@@ -3430,6 +3483,19 @@ mod tests {
         TranscriptViewport, task_checkbox,
     };
     use crate::api::{Event, PasteSpan, Session, SessionTask};
+
+    #[test]
+    fn failed_message_retry_reuses_its_submission_id_until_payload_changes() {
+        let mut app = App::new(session(), Vec::new(), true);
+        let first = app.submission_id_for("turn", "hello", &[]);
+        assert_eq!(app.submission_id_for("turn", "hello", &[]), first);
+        assert_ne!(app.submission_id_for("send_now", "hello", &[]), first);
+
+        let changed = app.submission_id_for("turn", "hello again", &[]);
+        assert_ne!(changed, first);
+        app.confirm_submission(&changed);
+        assert!(app.pending_submission.is_none());
+    }
 
     #[test]
     fn large_pastes_are_atomic_and_preserve_exact_message_bytes() {

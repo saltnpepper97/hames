@@ -15,6 +15,7 @@ use crate::api::{
     ContextInspection, Event, GatewayClient, Goal, HEAL_SCARS_PROMPT, LiveEnvelope, MemoryJob,
     MemoryRecord, PROTOCOL_VERSION, PlanState, ProviderModel, ProviderProbe, ProviderProfile,
     RunInspection, Scar, Session, SessionTaskList, SkillJob, SkillSummary, SkillVersion,
+    SseDecoder, event_reconnect_delay,
 };
 use crate::local::{LocalPaths, start_backend, write_private_export};
 use crate::style;
@@ -1758,7 +1759,6 @@ async fn stream_message(
     let mut decoder = SseDecoder::default();
     let mut output = RenderedOutput::default();
     let mut cancelled = false;
-    let mut reconnects = 0_u8;
     let mut sheen = tokio::time::interval(Duration::from_millis(80));
     sheen.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -1770,28 +1770,21 @@ async fn stream_message(
             chunk = stream.next() => {
                 let bytes = match chunk {
                     Some(Ok(bytes)) => bytes,
-                    Some(Err(error)) => {
-                        reconnects += 1;
-                        if reconnects > 3 {
-                            return Err(error).context("gateway event stream repeatedly failed");
-                        }
-                        let response = client.event_stream(&session.id, after).await?;
-                        stream = Box::pin(response.bytes_stream());
-                        decoder = SseDecoder::default();
-                        continue;
-                    }
-                    None => {
-                        reconnects += 1;
-                        if reconnects > 3 {
-                            bail!("gateway event stream repeatedly ended before the run completed");
-                        }
-                        let response = client.event_stream(&session.id, after).await?;
+                    Some(Err(_)) | None => {
+                        let response = reconnect_classic_event_stream(
+                            client,
+                            session,
+                            after,
+                            &run_id,
+                            &mut output,
+                            &mut cancelled,
+                        ).await?;
                         stream = Box::pin(response.bytes_stream());
                         decoder = SseDecoder::default();
                         continue;
                     }
                 };
-                for data in decoder.push(&bytes) {
+                for data in decoder.push(&bytes)? {
                     let envelope: LiveEnvelope = serde_json::from_str(&data)
                         .context("gateway emitted malformed SSE data")?;
                     let finished = process_envelope(&envelope, &run_id, &mut output)?;
@@ -1820,6 +1813,46 @@ async fn stream_message(
                 client.cancel(&run_id).await?;
                 output.cancel_activity()?;
                 output.note_line("cancelling")?;
+            }
+        }
+    }
+}
+
+async fn reconnect_classic_event_stream(
+    client: &GatewayClient,
+    session: &Session,
+    after: u64,
+    run_id: &str,
+    output: &mut RenderedOutput,
+    cancelled: &mut bool,
+) -> Result<reqwest::Response> {
+    output.note_line("connection lost · reconnecting")?;
+    let mut attempt = 0_u32;
+    loop {
+        attempt += 1;
+        let reconnect = async {
+            tokio::time::sleep(event_reconnect_delay(attempt)).await;
+            client.event_stream(&session.id, after).await
+        };
+        tokio::pin!(reconnect);
+        let mut sheen = tokio::time::interval(Duration::from_millis(80));
+        sheen.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                result = &mut reconnect => match result {
+                    Ok(response) => {
+                        output.note_line("reconnected")?;
+                        return Ok(response);
+                    }
+                    Err(_) => break,
+                },
+                _ = sheen.tick() => output.tick_sheen()?,
+                _ = tokio::signal::ctrl_c(), if !*cancelled => {
+                    *cancelled = true;
+                    client.cancel(run_id).await?;
+                    output.cancel_activity()?;
+                    output.note_line("cancelling")?;
+                }
             }
         }
     }
@@ -2518,32 +2551,6 @@ fn context_was_compacted(event: &Event) -> bool {
         })
 }
 
-#[derive(Default)]
-struct SseDecoder {
-    buffer: String,
-}
-
-impl SseDecoder {
-    fn push(&mut self, bytes: &[u8]) -> Vec<String> {
-        self.buffer.push_str(&String::from_utf8_lossy(bytes));
-        self.buffer = self.buffer.replace("\r\n", "\n");
-        let mut frames = Vec::new();
-        while let Some(boundary) = self.buffer.find("\n\n") {
-            let frame = self.buffer[..boundary].to_owned();
-            self.buffer.drain(..boundary + 2);
-            let data = frame
-                .lines()
-                .filter_map(|line| line.strip_prefix("data: "))
-                .collect::<Vec<_>>()
-                .join("\n");
-            if !data.is_empty() {
-                frames.push(data);
-            }
-        }
-        frames
-    }
-}
-
 fn print_help() {
     println!("{}", style::section("Conversation"));
     print_help_rows(&[
@@ -2619,7 +2626,8 @@ fn print_help_rows(rows: &[(&str, &str)]) {
 mod tests {
     use unicode_width::UnicodeWidthStr;
 
-    use super::{SseDecoder, exit_resume_command, heading_repaint_sequence, wrap_body};
+    use super::{exit_resume_command, heading_repaint_sequence, wrap_body};
+    use crate::api::SseDecoder;
 
     #[test]
     fn empty_session_exit_has_no_handoff_message() {
@@ -2633,8 +2641,13 @@ mod tests {
     #[test]
     fn sse_decoder_handles_split_frames() {
         let mut decoder = SseDecoder::default();
-        assert!(decoder.push(b"event: one\ndata: {\"a\":").is_empty());
-        assert_eq!(decoder.push(b"1}\n\n"), vec!["{\"a\":1}"]);
+        assert!(
+            decoder
+                .push(b"event: one\ndata: {\"a\":")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(decoder.push(b"1}\n\n").unwrap(), vec!["{\"a\":1}"]);
     }
 
     #[test]
