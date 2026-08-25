@@ -1,8 +1,8 @@
 # Hames Rewrite — Working Implementation Plan
 
-This directory is the authoritative build plan for Hames. M0 through M9 and the
-[M10 Ratatui slice](M10-TUI.md) are implemented; the M10 web control surface is
-the next execution phase. Later milestones preserve the design
+This directory is the authoritative build plan for Hames. M0 through M9, the
+[M10 Ratatui slice](M10-TUI.md), and its pre-web terminal hardening closure are
+implemented; the M10 web control surface is the next execution phase. Later milestones preserve the design
 inventory but remain subject to refinement as the harness proves its concepts.
 
 Hames is a proper local agent harness built around a small trusted Python kernel,

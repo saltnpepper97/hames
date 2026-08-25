@@ -28,10 +28,11 @@ composer grows to eight visible content rows and then scrolls independently. It
 uses a visible prompt caret, side padding, a right-aligned model/effort/mode label,
 and mode-colored borders without imposing a filled background.
 
-The status row keeps `[connected]` on the right. Its left side shows shortcuts
-while idle and becomes a short, subdued neutral activity rule during a run, with
-the current activity, properly formatted elapsed time, and a truthful
-`Esc interrupt` control.
+The status row keeps the live gateway stream state on the right: `connecting`,
+`connected`, `reconnecting N`, or `offline`. Its left side shows shortcuts while
+idle and becomes a short, subdued neutral activity rule during a run, with the
+current activity, properly formatted elapsed time, and a truthful `Esc interrupt`
+control.
 
 The header identifies Hames, the full current-directory path (with the home
 prefix compacted to `~`), and the Git branch when the directory belongs to a
@@ -104,9 +105,10 @@ does not jump the transcript or composer before the pointer moves.
   create a pending Thought; background memory and workflow model jobs remain out
   of the conversation transcript.
 - Centered modals use square borders in the lighter input gray; semantic accents stay within
-  their content. Selection inside a modal does not dismiss it. Trust and approval
-  decisions use focused modals with inset actions. Approvals preserve the gateway's
-  allow-for-session, allow-once, and deny semantics.
+  their content. Selection inside a modal does not dismiss it. Workspace trust is
+  decided before either client starts its UI, using one shared terminal list with
+  arrow navigation and Enter confirmation; non-terminal input cannot grant trust.
+  Approvals preserve the gateway's allow-for-session, allow-once, and deny semantics.
 - `/memory` is a selectable active-record browser. The focused memory expands its
   full summary and value with independent detail scrolling. Ctrl+D arms a red-row
   confirmation and Ctrl+D again permanently deletes the record while leaving the
@@ -139,6 +141,33 @@ cycling, adaptive rendering, significant Thought duration, and composer scrollin
 The PTY end-to-end test launches an isolated gateway and database, sends a real
 chat turn through the TUI, observes durable reasoning and completion events, quits,
 and verifies terminal cleanup plus the resume handoff.
+
+## Pre-web terminal hardening closure
+
+The 2026-08-25 hardening pass closes the terminal slice before work begins on the
+web control surface:
+
+- Protocol v28 assigns every message admission a UUID submission ID. Migration 17
+  stores durable receipts, exact replays return the original run or queue result,
+  and reuse with a different payload returns a typed conflict. Clients retain the
+  same ID across bounded admission retries and ambiguous TUI retries.
+- Control requests have bounded connect and operation timeouts; provider probes
+  have a separate longer budget; SSE has no total response timeout. Both terminal
+  clients use one strict byte-buffered SSE decoder with CRLF and multiline-data
+  support, a 1 MiB frame cap, and no lossy UTF-8 conversion.
+- Event streams reconnect forever with a capped 250 ms through 8 s backoff and
+  resume from the last durable sequence. Classic REPL cancellation remains usable
+  during reconnect.
+- TUI terminal ownership is staged and reversible. Partial setup failures, normal
+  exit, panic unwinding, SIGTERM, and SIGHUP restore raw mode, alternate screen,
+  mouse/focus/paste modes, keyboard enhancement flags, and cursor visibility before
+  any gateway cleanup is attempted.
+- Repeated key events are accepted only for editing and navigation; commit and
+  action keys do not repeat. Width wrapping and truncation preserve Unicode
+  grapheme clusters.
+- The classic REPL precreates its history with mode `0600`, reports load/save
+  failures as warnings, and appends accepted lines incrementally instead of
+  risking the whole session history at shutdown.
 
 Web search, vision input, the web application, and richer management editors are
 outside this terminal slice. They remain future gateway-backed capabilities; the

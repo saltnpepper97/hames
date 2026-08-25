@@ -122,7 +122,9 @@ redirected invocations retain the classic interface automatically.
 
 Both clients start the Python gateway on demand. Exiting either client leaves it
 running; use `target/debug/hames gateway status` or
-`target/debug/hames gateway stop` to inspect or stop it. A terminal exit also
+`target/debug/hames gateway stop|restart` to inspect or control it. When the
+user service from `contrib/systemd/hames.service` is installed, these lifecycle
+commands delegate to systemd. A terminal exit also
 prints the exact `/resume <session-id>` command needed to continue the
 conversation.
 Empty sessions are discarded on exit and omitted from `/sessions`, so opening
@@ -153,9 +155,10 @@ custom Hames palette and terminal-native colors. The choice is a global client
 preference in `~/.hames/ui.toml`, loaded before the first frame and shared by all
 sessions.
 
-The bottom row keeps a right-aligned `[connected]` badge. While idle it shows the
-shortcut hints on the left; during work those hints become a compact animated
-gray rule with a restrained white sheen, elapsed time, and `Esc interrupt`.
+The bottom row keeps a right-aligned live stream badge: `[connecting]`,
+`[connected]`, `[reconnecting N]`, or `[offline]`. While idle it shows the shortcut
+hints on the left; during work those hints become a compact animated gray rule
+with a restrained white sheen, elapsed time, and `Esc interrupt`.
 Interrupted reasoning settles as a completed `Thought`, followed by a separate
 `Turn interrupted` transcript status.
 
@@ -321,8 +324,10 @@ endpoint, model, reasoning effort, and timeout are translated in memory. Other
 legacy settings remain preserved but inactive until their corresponding milestone
 is implemented; `hames doctor` reports when this compatibility mode is active.
 
-The first time a session uses an exact canonical directory, the REPL asks whether
-to trust and remember it. Trust is persisted in `~/.hames/hames.db`; `/trust`
+The first time a session uses an exact canonical directory, both terminal clients
+pause before opening their UI and show the same two-choice trust list. Use arrows
+and Enter; non-interactive input cannot grant access, and denial removes a newly
+created empty session. Trust is persisted in `~/.hames/hames.db`; `/trust`
 shows the current grant and `/trust revoke` removes it. Trusted roots allow normal
 file changes and ordinary shell work without repetitive prompts. Hames still asks
 for exact one-shot confirmation for deterministic high-risk signatures and denies
