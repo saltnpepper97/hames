@@ -222,7 +222,7 @@ async def test_independent_evaluator_rejects_candidate(
             source_event_id=source.id,
         )
         assert await _wait_for_job(registry, job.id) == "completed"
-        assert registry.visible(session) == []
+        assert registry.visible(session, query="reusable inspection workflow") == []
         with registry.database.connect() as connection:
             status = connection.execute("SELECT status FROM skill_versions").fetchone()[0]
         assert status == "rejected"

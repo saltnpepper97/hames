@@ -46,6 +46,71 @@ def test_skill_schema_is_migration_eight_and_upgrades_m6(tmp_path: Path) -> None
     assert {"skills", "skill_versions", "skill_jobs", "skill_usage"} <= tables
 
 
+def test_builtin_skills_are_discovered_loadable_and_read_only(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    session = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    registry = _registry(hames_paths, ledger)
+
+    expected = {"linux-gui-testing", "visual-verification", "web-app-debugging"}
+    catalog = registry.visible(session)
+    assert expected <= {item.slug for item in catalog}
+
+    for slug in expected:
+        loaded = registry.get_visible(session, slug)
+        metadata, instructions = parse_skill(
+            (Path(loaded.package_path) / "SKILL.md").read_text(encoding="utf-8")
+        )
+        assert loaded.skill_id == f"builtin:{slug}"
+        assert loaded.created_by == "builtin"
+        assert loaded.scope == "global"
+        assert loaded.status == "active"
+        assert not loaded.pinned
+        assert metadata.id == slug
+        assert instructions == loaded.instructions
+        assert registry.get(loaded.id) == loaded
+        assert registry.history(loaded.skill_id) == [loaded]
+
+    wayland = registry.visible(session, query="Wayland compositor")
+    assert wayland[0].slug == "linux-gui-testing"
+
+    web = registry.get_visible(session, "web-app-debugging")
+    registry.record_usage(
+        version_id=web.id,
+        run_id="builtin-run",
+        session_id=session.id,
+        stage="loaded",
+    )
+    with ledger.database.connect() as connection:
+        assert connection.execute("SELECT count(*) FROM skill_usage").fetchone()[0] == 0
+
+    with pytest.raises(ValueError, match="Built-in Skill is read-only"):
+        registry.set_archived(session, "visual-verification", archived=True)
+    with pytest.raises(ValueError, match="Built-in Skill is read-only"):
+        registry.create_draft(
+            session=session,
+            draft=SkillDraft(
+                id="web-app-debugging",
+                name="Replacement",
+                description="Attempt to replace a bundled package.",
+                scope="global",
+                tools=["read_file"],
+                triggers=["web app"],
+                instructions="Replace the bundled package.",
+            ),
+            evidence_event_ids=[],
+            created_by="user",
+            run_id=None,
+            causation_id="fixture",
+        )
+
+
 def test_preempted_skill_job_returns_to_pending_without_spending_an_attempt(
     hames_paths: HamesPaths, tmp_path: Path
 ) -> None:

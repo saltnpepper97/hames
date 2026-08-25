@@ -53,3 +53,23 @@ Loaded procedures remain subordinate to the core contract and policy.
 
 Every catalog decision, load, execution, and outcome is attributable in the event
 ledger and context manifest.
+
+## Bundled Skills
+
+Hames ships a small read-only global set under `src/hames/builtin_skills`. These
+packages use the same `SKILL.md` schema, validation, catalog ranking, agent
+allow/deny policy, progressive `skill_load`, context attribution, and tool-policy
+boundary as learned Skills. They are read-only because their source is the Hames
+release rather than session evidence; updating them requires a new Hames build.
+
+The bundled set is intentionally composable:
+
+- `web-app-debugging` closes the run/browser/runtime feedback loop for web apps;
+- `visual-verification` validates rendered states for web and native interfaces;
+- `linux-gui-testing` selects honestly between headless, Wayland, Xwayland/X11,
+  nested Wayland, and Xvfb environments.
+
+Web UI work commonly loads the first two, Linux-native GUI work the latter two,
+and Tauri/Electron work may load all three. Declared tools still confer no new
+authority, and unavailable browser, vision, display, or platform tooling must be
+reported as an unverified boundary rather than treated as success.

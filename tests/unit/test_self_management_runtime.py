@@ -275,7 +275,7 @@ async def test_runtime_skill_catalog_and_controls_reuse_registry(tmp_path: Path)
             _evidence(state, session.id, "skill-archive"),
         )
         assert archived.status == "completed"
-        assert state.runs.skills.visible(session) == []
+        assert "inspect-carefully" not in {item.slug for item in state.runs.skills.visible(session)}
 
         restored = await state.runs._handle_self_management_tool(
             "run-skill-restore",
@@ -285,6 +285,6 @@ async def test_runtime_skill_catalog_and_controls_reuse_registry(tmp_path: Path)
             _evidence(state, session.id, "skill-restore"),
         )
         assert restored.status == "completed"
-        assert len(state.runs.skills.visible(session)) == 1
+        assert "inspect-carefully" in {item.slug for item in state.runs.skills.visible(session)}
     finally:
         await state.runs.close()

@@ -346,7 +346,10 @@ inspect them, while `jobs` shows autonomous work. `author` and `correct` enqueue
 same autonomous pipeline explicitly. `pin`, `unpin`, `archive`, `restore`, and
 `rollback` are overrides rather than an approval workflow. Script helpers run with
 networking disabled, no real home, a read-only project, and only disposable run
-scratch writable. See [`docs/architecture/skills.md`](docs/architecture/skills.md).
+scratch writable. Hames also bundles the composable `web-app-debugging`,
+`visual-verification`, and `linux-gui-testing` procedures through the same catalog
+and progressive-load path. See
+[`docs/architecture/skills.md`](docs/architecture/skills.md).
 
 Corrections become tests. `/correct <explanation>` records an explicit correction
 linked to the offending event; `/evolution` lists Scars by state (`open`,

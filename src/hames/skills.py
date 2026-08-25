@@ -223,6 +223,7 @@ class SkillRegistry:
         self.available_tools = available_tools | {"skill_load", "skill_run", "skill_author"}
         self.max_package_bytes = max_package_bytes
         self.max_package_files = max_package_files
+        self._builtin_by_slug, self._builtin_by_version = self._load_builtins()
 
     def create_draft(
         self,
@@ -235,6 +236,8 @@ class SkillRegistry:
         causation_id: str,
         target_skill_id: str | None = None,
     ) -> SkillMutation:
+        if draft.id in self._builtin_by_slug:
+            raise ValueError(f"Built-in Skill is read-only: {draft.id}")
         metadata = SkillMetadata(
             id=draft.id,
             name=draft.name,
@@ -343,6 +346,7 @@ class SkillRegistry:
         reason: str = "autonomous_validation_passed",
     ) -> SkillMutation:
         candidate = self.get_visible_version(session, version_id)
+        self._require_mutable(candidate)
         if candidate.status not in {"draft", "verified", "stale", "superseded"}:
             raise ValueError("Skill version is not activatable")
         current = self.active_version(candidate.skill_id)
@@ -779,6 +783,8 @@ class SkillRegistry:
         session_id: str,
         stage: Literal["catalogued", "loaded", "executed"],
     ) -> None:
+        if version_id in self._builtin_by_version:
+            return
         now = utc_now()
         with self.database.connect() as connection:
             connection.execute(
@@ -845,6 +851,7 @@ class SkillRegistry:
 
     def reject(self, session: Session, version_id: str, *, reason: str, causation_id: str) -> Event:
         candidate = self.get_visible_version(session, version_id)
+        self._require_mutable(candidate)
         with self.ledger.transaction_lock, self.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
@@ -870,6 +877,7 @@ class SkillRegistry:
         self, session: Session, version_id: str, *, reason: str, causation_id: str
     ) -> tuple[SkillVersion, tuple[Event, ...]]:
         current = self.get_visible_version(session, version_id)
+        self._require_mutable(current)
         if current.status != "active":
             raise ValueError("only the active Skill version can be quarantined")
         history = [item for item in self.history(current.skill_id) if item.id != current.id]
@@ -932,7 +940,12 @@ class SkillRegistry:
                 ORDER BY v.activated_at DESC, s.slug
                 """
             ).fetchall()
-        values = [self._version_from_row(row) for row in rows]
+        values = list(self._builtin_by_slug.values())
+        values.extend(
+            self._version_from_row(row)
+            for row in rows
+            if str(row["slug"]) not in self._builtin_by_slug
+        )
         values = [item for item in values if self._visible(session, item)]
         query_tokens = set(_tokens(query))
         summaries: list[SkillSummary] = []
@@ -960,6 +973,11 @@ class SkillRegistry:
         return value
 
     def get(self, version_id: str) -> SkillVersion:
+        builtin = self._builtin_by_version.get(version_id)
+        if builtin is not None:
+            if _hash_directory(Path(builtin.package_path)) != builtin.content_hash:
+                raise ValueError(f"Skill package hash mismatch: {version_id}")
+            return builtin
         with self.database.connect() as connection:
             row = connection.execute(
                 "SELECT v.*, s.slug, s.scope, s.scope_key, s.pinned_version_id "
@@ -974,11 +992,21 @@ class SkillRegistry:
         return value
 
     def active_version(self, skill_id: str) -> SkillVersion | None:
+        builtin = next(
+            (item for item in self._builtin_by_slug.values() if item.skill_id == skill_id), None
+        )
+        if builtin is not None:
+            return builtin
         entity = self._entity(skill_id)
         version_id = entity["active_version_id"]
         return None if version_id is None else self.get(str(version_id))
 
     def history(self, skill_id: str) -> list[SkillVersion]:
+        builtin = next(
+            (item for item in self._builtin_by_slug.values() if item.skill_id == skill_id), None
+        )
+        if builtin is not None:
+            return [builtin]
         with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT v.*, s.slug, s.scope, s.scope_key, s.pinned_version_id "
@@ -1009,6 +1037,7 @@ class SkillRegistry:
 
     def set_pinned(self, session: Session, slug: str, *, pinned: bool) -> SkillVersion:
         version = self.get_visible(session, slug)
+        self._require_mutable(version)
         with self.database.connect() as connection:
             connection.execute(
                 "UPDATE skills SET pinned_version_id = ?, updated_at = ? WHERE id = ?",
@@ -1020,6 +1049,7 @@ class SkillRegistry:
         version = (
             self.get_visible(session, slug) if archived else self._latest_visible(session, slug)
         )
+        self._require_mutable(version)
         with self.database.connect() as connection:
             connection.execute(
                 "UPDATE skills SET archived = ?, updated_at = ? WHERE id = ?",
@@ -1028,6 +1058,8 @@ class SkillRegistry:
         return self.get(version.id)
 
     def evidence(self, version_id: str) -> list[str]:
+        if version_id in self._builtin_by_version:
+            return []
         with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT event_id FROM skill_evidence WHERE version_id = ? ORDER BY event_id",
@@ -1036,6 +1068,9 @@ class SkillRegistry:
         return [str(row["event_id"]) for row in rows]
 
     def _latest_visible(self, session: Session, slug: str) -> SkillVersion:
+        builtin = self._builtin_by_slug.get(slug)
+        if builtin is not None:
+            return builtin
         with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT v.*, s.slug, s.scope, s.scope_key, s.pinned_version_id "
@@ -1087,6 +1122,8 @@ class SkillRegistry:
     def _entity_for(
         self, session: Session, slug: str, scope: SkillScope, scope_key: str | None
     ) -> str:
+        if slug in self._builtin_by_slug:
+            raise ValueError(f"Built-in Skill is read-only: {slug}")
         with self.database.connect() as connection:
             rows = connection.execute("SELECT * FROM skills WHERE slug = ?", (slug,)).fetchall()
         for row in rows:
@@ -1131,11 +1168,66 @@ class SkillRegistry:
         return int(row["value"])
 
     def _entity(self, skill_id: str) -> dict[str, object]:
+        if any(item.skill_id == skill_id for item in self._builtin_by_slug.values()):
+            raise ValueError(f"Built-in Skill is read-only: {skill_id.removeprefix('builtin:')}")
         with self.database.connect() as connection:
             row = connection.execute("SELECT * FROM skills WHERE id = ?", (skill_id,)).fetchone()
         if row is None:
             raise KeyError(skill_id)
         return dict(row)
+
+    def _load_builtins(self) -> tuple[dict[str, SkillVersion], dict[str, SkillVersion]]:
+        root = Path(__file__).with_name("builtin_skills")
+        by_slug: dict[str, SkillVersion] = {}
+        by_version: dict[str, SkillVersion] = {}
+        for skill_file in sorted(root.glob("*/SKILL.md")):
+            package_root = skill_file.parent
+            metadata, instructions = parse_skill(skill_file.read_text(encoding="utf-8"))
+            if package_root.name != metadata.id:
+                raise ValueError(f"Built-in Skill directory must match its ID: {package_root.name}")
+            if metadata.scope != "global":
+                raise ValueError(f"Built-in Skill must use global scope: {metadata.id}")
+            files = {
+                str(path.relative_to(package_root)): path.read_text(encoding="utf-8")
+                for path in sorted(package_root.rglob("*"))
+                if path.is_file() and path.name != "SKILL.md"
+            }
+            self._validate_metadata(metadata, files)
+            content_hash = _hash_directory(package_root)
+            skill_id = f"builtin:{metadata.id}"
+            version_id = f"{skill_id}:v{metadata.version}:{content_hash[:12]}"
+            value = SkillVersion(
+                id=version_id,
+                skill_id=skill_id,
+                slug=metadata.id,
+                version=metadata.version,
+                content_hash=content_hash,
+                status="active",
+                scope="global",
+                scope_key=None,
+                name=metadata.name,
+                description=metadata.description,
+                instructions=instructions,
+                metadata=metadata,
+                package_path=str(package_root),
+                base_version_id=None,
+                created_by="builtin",
+                source_session_id="builtin",
+                source_run_id=None,
+                created_at="1970-01-01T00:00:00+00:00",
+                activated_at="1970-01-01T00:00:00+00:00",
+                last_used_at=None,
+                pinned=False,
+            )
+            if metadata.id in by_slug:
+                raise ValueError(f"Duplicate built-in Skill ID: {metadata.id}")
+            by_slug[metadata.id] = value
+            by_version[version_id] = value
+        return by_slug, by_version
+
+    def _require_mutable(self, version: SkillVersion) -> None:
+        if version.id in self._builtin_by_version:
+            raise ValueError(f"Built-in Skill is read-only: {version.slug}")
 
     @staticmethod
     def _version_from_row(row: sqlite3.Row) -> SkillVersion:

@@ -3362,9 +3362,8 @@ async def test_gateway_exposes_skill_inspection_and_lifecycle_controls(tmp_path:
                 json={},
             )
             assert archived.status_code == 200
-            assert (
-                await client.get(f"/v1/sessions/{session_id}/skills", headers=headers)
-            ).json() == []
+            after_archive = await client.get(f"/v1/sessions/{session_id}/skills", headers=headers)
+            assert "inspect-files" not in {item["slug"] for item in after_archive.json()}
             restored = await client.post(
                 f"/v1/sessions/{session_id}/skills/inspect-files/restore",
                 headers=headers,
