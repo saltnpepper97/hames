@@ -193,7 +193,20 @@ class QuestionProvider:
                     arguments_delta=json.dumps(
                         {
                             "question": "Which visual direction should I use?",
-                            "options": ["Subdued", "High contrast", "Terminal native"],
+                            "options": [
+                                {
+                                    "label": "Subdued",
+                                    "description": "Calm contrast.\n\nUse motion sparingly.",
+                                },
+                                {
+                                    "label": "High contrast",
+                                    "description": "Stronger separation between controls.",
+                                },
+                                {
+                                    "label": "Terminal native",
+                                    "description": "Favor the active terminal palette.",
+                                },
+                            ],
                         }
                     ),
                 ),
@@ -205,6 +218,7 @@ class QuestionProvider:
             "question_id": result["structured_data"]["question_id"],
             "answer": "Subdued\nNote: Keep it calm",
             "selected_option": "Subdued",
+            "selected_description": "Calm contrast.\n\nUse motion sparingly.",
             "note": "Keep it calm",
             "custom": False,
         }
@@ -712,7 +726,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 26
+            assert health_body["protocol_version"] == 27
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -982,7 +996,20 @@ async def test_agent_question_pauses_and_resumes_the_same_run(tmp_path: Path) ->
             requested = next(event for event in events if event["type"] == "question.requested")
             assert requested["run_id"] == run_id
             payload = JSON_OBJECT.validate_python(requested["payload"])
-            assert payload["options"] == ["Subdued", "High contrast", "Terminal native"]
+            assert payload["options"] == [
+                {
+                    "label": "Subdued",
+                    "description": "Calm contrast.\n\nUse motion sparingly.",
+                },
+                {
+                    "label": "High contrast",
+                    "description": "Stronger separation between controls.",
+                },
+                {
+                    "label": "Terminal native",
+                    "description": "Favor the active terminal palette.",
+                },
+            ]
             assert not any(event["type"] == "run.completed" for event in events)
 
             resolved = await client.post(
@@ -995,6 +1022,7 @@ async def test_agent_question_pauses_and_resumes_the_same_run(tmp_path: Path) ->
                 "question_id": payload["question_id"],
                 "answer": "Subdued\nNote: Keep it calm",
                 "selected_option": "Subdued",
+                "selected_description": "Calm contrast.\n\nUse motion sparingly.",
                 "note": "Keep it calm",
                 "custom": False,
             }

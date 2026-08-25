@@ -1846,14 +1846,29 @@ async fn handle_question(
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(serde_json::Value::as_str)
+        .filter_map(|option| {
+            if let Some(label) = option.as_str() {
+                return Some((label.to_owned(), String::new()));
+            }
+            Some((
+                option.get("label")?.as_str()?.to_owned(),
+                option
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            ))
+        })
         .take(3)
         .collect::<Vec<_>>();
     println!();
     println!("{}", style::section("Question"));
     println!("  {question}");
-    for (index, option) in options.iter().enumerate() {
-        println!("  {}. ○ {option}", index + 1);
+    for (index, (label, description)) in options.iter().enumerate() {
+        println!("  {}. ○ {label}", index + 1);
+        for line in description.lines() {
+            println!("       {line}");
+        }
     }
     let custom_index = options.len() + 1;
     println!("  {custom_index}. ○ Write something else");
@@ -1880,7 +1895,7 @@ async fn handle_question(
             .or_else(|| {
                 options
                     .iter()
-                    .find(|option| option.eq_ignore_ascii_case(selected))
+                    .find(|(label, _)| label.eq_ignore_ascii_case(selected))
             });
         if let Some(option) = option {
             let add_note = editor.readline("Enter use as-is · N add note › ")?;
@@ -1889,7 +1904,7 @@ async fn handle_question(
             } else {
                 String::new()
             };
-            break (Some((*option).to_owned()), note, String::new());
+            break (Some(option.0.clone()), note, String::new());
         }
         println!("  Choose 1-{custom_index}.");
     };

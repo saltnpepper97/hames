@@ -630,6 +630,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 question,
                 answer,
                 selected_option,
+                selected_description,
                 note,
                 custom,
             } => {
@@ -660,6 +661,15 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     "  Answer  ",
                     Style::default().fg(CYAN),
                 );
+                if !selected_description.is_empty() {
+                    push_wrapped(
+                        &mut lines,
+                        selected_description,
+                        width,
+                        "          ",
+                        Style::default().fg(MUTED),
+                    );
+                }
                 if !note.is_empty() {
                     push_wrapped(
                         &mut lines,
@@ -2097,11 +2107,15 @@ fn render_question_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             ])
         })
         .collect::<Vec<_>>();
-    let mut choices = question.options.clone();
-    choices.push("Write something else".to_owned());
     let mut choice_rows = Vec::new();
     let mut note_hits = Vec::new();
-    for (index, choice) in choices.iter().enumerate() {
+    for index in 0..question.choice_count() {
+        let (label, description) = question
+            .options
+            .get(index)
+            .map_or(("Write something else", ""), |option| {
+                (option.label.as_str(), option.description.as_str())
+            });
         let selected = question.selected == index;
         let supports_note = index < question.custom_index();
         let note_label = "  N add note";
@@ -2111,9 +2125,8 @@ fn render_question_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 choice_prefix_width + if supports_note { note_label.width() } else { 0 },
             )
             .max(1);
-        let parts = complete_wrapped_lines(choice, label_width);
+        let parts = complete_wrapped_lines(label, label_width);
         let row = lines.len();
-        let height = parts.len();
         for (part_index, part) in parts.into_iter().enumerate() {
             let mut spans = vec![
                 Span::styled(
@@ -2148,6 +2161,18 @@ fn render_question_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             }
             lines.push(Line::from(spans));
         }
+        if !description.is_empty() {
+            for part in complete_wrapped_lines(
+                description,
+                inner_width.saturating_sub(choice_prefix_width).max(1),
+            ) {
+                lines.push(Line::from(vec![
+                    Span::raw(" ".repeat(choice_prefix_width)),
+                    Span::styled(part, Style::default().fg(MUTED)),
+                ]));
+            }
+        }
+        let height = lines.len() - row;
         choice_rows.push((index, row, height));
     }
     let mut cursor = None;
@@ -2158,7 +2183,7 @@ fn render_question_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         let placeholder_text = match input_kind {
             QuestionInputKind::Note => question.options.get(question.selected).map_or_else(
                 || "Add a note…".to_owned(),
-                |option| format!("Add a note to {option}…"),
+                |option| format!("Add a note to {}…", option.label),
             ),
             QuestionInputKind::Custom => "Write your answer…".to_owned(),
         };
@@ -2181,7 +2206,16 @@ fn render_question_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         ));
     }
     let available = usize::from(area.height.saturating_sub(2));
-    let start = lines.len().saturating_sub(available);
+    let max_start = lines.len().saturating_sub(available);
+    let start = if question.input_kind.is_some() {
+        max_start
+    } else {
+        choice_rows
+            .iter()
+            .find(|(index, _, _)| *index == question.selected)
+            .map(|(_, row, _)| (*row).min(max_start))
+            .unwrap_or(max_start)
+    };
     let visible = lines.iter().skip(start).cloned().collect::<Vec<_>>();
     for (index, row, height) in choice_rows {
         let visible_start = row.max(start);
@@ -2254,7 +2288,19 @@ fn question_required_height(question: &crate::tui::app::QuestionTray, width: usi
     let options = question
         .options
         .iter()
-        .map(|option| complete_wrapped_lines(option, option_width).len())
+        .map(|option| {
+            let label = complete_wrapped_lines(&option.label, option_width).len();
+            let description = if option.description.is_empty() {
+                0
+            } else {
+                complete_wrapped_lines(
+                    &option.description,
+                    width.saturating_sub(choice_prefix_width).max(1),
+                )
+                .len()
+            };
+            label + description
+        })
         .sum::<usize>();
     let custom_width = width.saturating_sub(choice_prefix_width).max(1);
     let custom = complete_wrapped_lines("Write something else", custom_width).len();
@@ -4519,8 +4565,8 @@ mod tests {
     use crate::tui::app::{
         ActivityPhase, ActivityRow, AgentEditor, AgentEditorPage, App, ApprovalModal, Composer,
         DreamPhase, HitAction, InlineEditor, InlineEditorKind, MemoryBrowser, MenuAction,
-        MenuOption, Modal, QuestionInputKind, QuestionTray, ScarBrowser, ScarEditor, Sheet,
-        SheetKind, TranscriptItem, TranscriptPoint, UsageModal,
+        MenuOption, Modal, QuestionInputKind, QuestionOption, QuestionTray, ScarBrowser,
+        ScarEditor, Sheet, SheetKind, TranscriptItem, TranscriptPoint, UsageModal,
     };
 
     fn usage_projection() -> UsageProjection {
@@ -5930,7 +5976,16 @@ mod tests {
             question_id: "question-1".to_owned(),
             run_id: "run-question".to_owned(),
             question: "Which visual direction should Hames use?".to_owned(),
-            options: vec!["Subdued".to_owned(), "High contrast".to_owned()],
+            options: vec![
+                QuestionOption {
+                    label: "Subdued".to_owned(),
+                    description: "Calm contrast.\nMinimal motion.".to_owned(),
+                },
+                QuestionOption {
+                    label: "High contrast".to_owned(),
+                    description: "Sharper visual separation.".to_owned(),
+                },
+            ],
             selected: 2,
             input_kind: Some(QuestionInputKind::Custom),
             response_input: Composer::default(),
@@ -5949,6 +6004,8 @@ mod tests {
         assert!(rendered.contains("Write your answer"));
         assert!(rendered.contains("1. ○ Subdued"));
         assert!(rendered.contains("2. ○ High contrast"));
+        assert!(rendered.contains("Calm contrast."));
+        assert!(rendered.contains("Minimal motion."));
         assert!(rendered.contains("3. ● Write something else"));
         assert!(
             app.hits

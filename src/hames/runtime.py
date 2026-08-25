@@ -289,6 +289,7 @@ class SubmissionResult:
 class QuestionAnswer:
     answer: str
     selected_option: str | None
+    selected_description: str
     note: str
     custom: bool
 
@@ -336,7 +337,7 @@ class RunManager:
         self._post_terminal_runs: dict[str, set[str]] = {}
         self._approval_waiters: dict[str, asyncio.Future[str]] = {}
         self._question_waiters: dict[str, asyncio.Future[QuestionAnswer]] = {}
-        self._question_runs: dict[str, tuple[str, str, str, tuple[str, ...]]] = {}
+        self._question_runs: dict[str, tuple[str, str, str, tuple[tuple[str, str], ...]]] = {}
         self._question_answering: set[str] = set()
         self._children_by_parent: dict[str, set[str]] = {}
         self._child_count_by_parent: dict[str, int] = {}
@@ -1352,7 +1353,11 @@ class RunManager:
             raise ValueError("question response must not exceed 4000 characters")
         selected = selected_option.strip() if selected_option is not None else None
         canonical = next(
-            (option for option in options if selected and option.casefold() == selected.casefold()),
+            (
+                option
+                for option in options
+                if selected and option[0].casefold() == selected.casefold()
+            ),
             None,
         )
         if normalized_custom:
@@ -1361,16 +1366,19 @@ class RunManager:
             resolved = QuestionAnswer(
                 answer=normalized_custom,
                 selected_option=None,
+                selected_description="",
                 note="",
                 custom=True,
             )
         elif canonical is not None:
-            answer_text = canonical
+            label, description = canonical
+            answer_text = label
             if normalized_note:
-                answer_text = f"{canonical}\nNote: {normalized_note}"
+                answer_text = f"{label}\nNote: {normalized_note}"
             resolved = QuestionAnswer(
                 answer=answer_text,
-                selected_option=canonical,
+                selected_option=label,
+                selected_description=description,
                 note=normalized_note,
                 custom=False,
             )
@@ -1387,6 +1395,7 @@ class RunManager:
                     "question_id": question_id,
                     "answer": resolved.answer,
                     "selected_option": resolved.selected_option,
+                    "selected_description": resolved.selected_description,
                     "note": resolved.note,
                     "custom": resolved.custom,
                 },
@@ -3948,7 +3957,7 @@ class RunManager:
             session.id,
             run_id,
             session.agent_id,
-            tuple(arguments.options),
+            tuple((option.label, option.description) for option in arguments.options),
         )
         await self._append(
             session_id=session.id,
@@ -3959,7 +3968,7 @@ class RunManager:
                 "question_id": question_id,
                 "tool_call_id": invocation.tool_call_id,
                 "question": arguments.question,
-                "options": arguments.options,
+                "options": [option.model_dump(mode="json") for option in arguments.options],
             },
             causation_id=causation_id,
             correlation_id=run_id,
@@ -3982,6 +3991,7 @@ class RunManager:
                     "question_id": question_id,
                     "answer": answer.answer,
                     "selected_option": answer.selected_option,
+                    "selected_description": answer.selected_description,
                     "note": answer.note,
                     "custom": answer.custom,
                 },

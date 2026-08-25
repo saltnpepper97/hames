@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from hames.providers.base import JSON_OBJECT, JsonValue
 
@@ -368,17 +368,40 @@ class ApprovalResolvedPayload(EventPayload):
     approval_scope: str = "once"
 
 
+class QuestionOptionPayload(EventPayload):
+    label: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=2000)
+
+
+def _empty_question_options() -> list[QuestionOptionPayload]:
+    return []
+
+
 class QuestionRequestedPayload(EventPayload):
     question_id: str
     tool_call_id: str
     question: str
-    options: list[str] = Field(default_factory=list, max_length=3)
+    options: list[QuestionOptionPayload] = Field(
+        default_factory=_empty_question_options, max_length=3
+    )
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def accept_legacy_string_options(cls, value: object) -> object:
+        if not isinstance(value, list):
+            return value
+        options = cast(list[object], value)
+        return [
+            {"label": option, "description": ""} if isinstance(option, str) else option
+            for option in options
+        ]
 
 
 class QuestionAnsweredPayload(EventPayload):
     question_id: str
     answer: str = Field(min_length=1, max_length=4200)
     selected_option: str | None = Field(default=None, max_length=160)
+    selected_description: str = Field(default="", max_length=2000)
     note: str = Field(default="", max_length=4000)
     custom: bool = False
 

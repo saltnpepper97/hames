@@ -14,7 +14,14 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import ClassVar, Literal, Protocol, cast
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from hames.blobs import BlobStore
 from hames.config import ToolsConfig
@@ -207,35 +214,70 @@ class SessionTitleArguments(ToolArguments):
     )
 
 
+class AskUserOption(ToolArguments):
+    label: str = Field(
+        min_length=1,
+        max_length=160,
+        description="Concise answer label shown beside its numbered radio",
+    )
+    description: str = Field(
+        default="",
+        max_length=2000,
+        description=(
+            "Optional multiline explanation of this answer's meaning and tradeoffs. "
+            "Preserve useful paragraph breaks."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def normalized(self) -> AskUserOption:
+        self.label = self.label.strip()
+        self.description = self.description.strip()
+        if not self.label:
+            raise ValueError("question option labels must not be empty")
+        return self
+
+
+def _empty_ask_user_options() -> list[AskUserOption]:
+    return []
+
+
 class AskUserArguments(ToolArguments):
     question: str = Field(
         min_length=1,
         max_length=1000,
         description="One clear question that requires the user's input",
     )
-    options: list[str] = Field(
-        default_factory=list,
+    options: list[AskUserOption] = Field(
+        default_factory=_empty_ask_user_options,
         max_length=3,
         description=(
-            "Up to three concise, mutually exclusive suggested answers. "
-            "Hames always lets the user write a different answer."
+            "Up to three mutually exclusive suggested answers. Each has a concise label "
+            "and may include a thorough multiline description. Hames always lets the user "
+            "write a different answer."
         ),
     )
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def accept_legacy_string_options(cls, value: object) -> object:
+        if not isinstance(value, list):
+            return value
+        options = cast(list[object], value)
+        return [
+            {"label": option, "description": ""} if isinstance(option, str) else option
+            for option in options
+        ]
 
     @model_validator(mode="after")
     def valid_options(self) -> AskUserArguments:
         question = self.question.strip()
         if not question:
             raise ValueError("question must not be empty")
-        normalized = [option.strip() for option in self.options]
-        if any(not option for option in normalized):
-            raise ValueError("question options must not be empty")
-        if any(len(option) > 160 for option in normalized):
-            raise ValueError("question options must not exceed 160 characters")
-        if len({option.casefold() for option in normalized}) != len(normalized):
+        labels = [option.label for option in self.options]
+        if len({label.casefold() for label in labels}) != len(labels):
             raise ValueError("question options must be unique")
         self.question = question
-        self.options = normalized
         return self
 
 

@@ -501,6 +501,7 @@ pub enum TranscriptItem {
         question: String,
         answer: String,
         selected_option: Option<String>,
+        selected_description: String,
         note: String,
         custom: bool,
     },
@@ -577,10 +578,16 @@ pub struct QuestionTray {
     pub question_id: String,
     pub run_id: String,
     pub question: String,
-    pub options: Vec<String>,
+    pub options: Vec<QuestionOption>,
     pub selected: usize,
     pub input_kind: Option<QuestionInputKind>,
     pub response_input: Composer,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuestionOption {
+    pub label: String,
+    pub description: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2545,6 +2552,7 @@ impl App {
                             .get("selected_option")
                             .and_then(Value::as_str)
                             .map(str::to_owned),
+                        selected_description: string(&event.payload, "selected_description"),
                         note: string(&event.payload, "note"),
                         custom: event
                             .payload
@@ -3364,9 +3372,22 @@ fn question_from(run_id: &str, payload: &Value) -> QuestionTray {
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .filter_map(Value::as_str)
+            .filter_map(|option| {
+                if let Some(label) = option.as_str() {
+                    return Some(QuestionOption {
+                        label: label.to_owned(),
+                        description: String::new(),
+                    });
+                }
+                let label = option.get("label")?.as_str()?.to_owned();
+                let description = option
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                Some(QuestionOption { label, description })
+            })
             .take(3)
-            .map(str::to_owned)
             .collect(),
         selected: 0,
         input_kind: None,
@@ -4779,7 +4800,14 @@ mod tests {
             false,
         );
         let question = app.question.as_ref().expect("question tray");
-        assert_eq!(question.options, ["Subdued", "Bright"]);
+        assert_eq!(
+            question
+                .options
+                .iter()
+                .map(|option| option.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Subdued", "Bright"]
+        );
         assert_eq!(question.choice_count(), 3);
 
         app.ingest_durable(
@@ -4791,6 +4819,7 @@ mod tests {
                     "question_id": "question-1",
                     "answer": "Subdued",
                     "selected_option": "Subdued",
+                    "selected_description": "A restrained visual direction.",
                     "note": "",
                     "custom": false
                 }),
@@ -4804,11 +4833,13 @@ mod tests {
                 question,
                 answer,
                 selected_option,
+                selected_description,
                 note,
                 custom,
             }) if question == "Which direction?"
                 && answer == "Subdued"
                 && selected_option.as_deref() == Some("Subdued")
+                && selected_description == "A restrained visual direction."
                 && note.is_empty()
                 && !custom
         ));

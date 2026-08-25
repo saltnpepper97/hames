@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 26;
+pub const PROTOCOL_VERSION: u32 = 27;
 pub const HEAL_SCARS_PROMPT: &str = "Heal behavioral scars now.";
 
 #[derive(Clone)]

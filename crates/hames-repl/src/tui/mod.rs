@@ -741,15 +741,15 @@ fn handle_question_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                     return None;
                 }
                 return match input_kind {
-                    QuestionInputKind::Note => question
-                        .options
-                        .get(question.selected)
-                        .cloned()
-                        .map(|selected_option| Effect::ResolveQuestion {
-                            selected_option: Some(selected_option),
-                            note: response,
-                            custom_answer: String::new(),
-                        }),
+                    QuestionInputKind::Note => {
+                        question.options.get(question.selected).map(|option| {
+                            Effect::ResolveQuestion {
+                                selected_option: Some(option.label.clone()),
+                                note: response,
+                                custom_answer: String::new(),
+                            }
+                        })
+                    }
                     QuestionInputKind::Custom => Some(Effect::ResolveQuestion {
                         selected_option: None,
                         note: String::new(),
@@ -834,15 +834,16 @@ fn handle_question_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             question.start_custom();
             None
         }
-        KeyCode::Enter => question
-            .options
-            .get(question.selected)
-            .cloned()
-            .map(|selected_option| Effect::ResolveQuestion {
-                selected_option: Some(selected_option),
-                note: String::new(),
-                custom_answer: String::new(),
-            }),
+        KeyCode::Enter => {
+            question
+                .options
+                .get(question.selected)
+                .map(|option| Effect::ResolveQuestion {
+                    selected_option: Some(option.label.clone()),
+                    note: String::new(),
+                    custom_answer: String::new(),
+                })
+        }
         _ => None,
     }
 }
@@ -1426,13 +1427,14 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                         question.start_custom();
                         None
                     } else {
-                        question.options.get(index).cloned().map(|selected_option| {
-                            Effect::ResolveQuestion {
-                                selected_option: Some(selected_option),
+                        question
+                            .options
+                            .get(index)
+                            .map(|option| Effect::ResolveQuestion {
+                                selected_option: Some(option.label.clone()),
                                 note: String::new(),
                                 custom_answer: String::new(),
-                            }
-                        })
+                            })
                     }
                 }
                 Some(HitAction::QuestionNote(index)) => {
@@ -3019,8 +3021,9 @@ mod tests {
     };
     use crate::tui::app::{
         AgentEditor, App, HitAction, HitRegion, InlineEditor, InlineEditorKind, MemoryBrowser,
-        MenuAction, MenuOption, Modal, QuestionInputKind, QuestionTray, ScarBrowser, ScarEditField,
-        ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind, TranscriptItem, TranscriptViewport,
+        MenuAction, MenuOption, Modal, QuestionInputKind, QuestionOption, QuestionTray,
+        ScarBrowser, ScarEditField, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind,
+        TranscriptItem, TranscriptViewport,
     };
 
     #[test]
@@ -3370,7 +3373,16 @@ mod tests {
             question_id: "question-1".to_owned(),
             run_id: "run-question".to_owned(),
             question: "Which direction?".to_owned(),
-            options: vec!["Subdued".to_owned(), "Bright".to_owned()],
+            options: vec![
+                QuestionOption {
+                    label: "Subdued".to_owned(),
+                    description: "Calm and restrained.".to_owned(),
+                },
+                QuestionOption {
+                    label: "Bright".to_owned(),
+                    description: String::new(),
+                },
+            ],
             selected: 0,
             input_kind: None,
             response_input: Default::default(),

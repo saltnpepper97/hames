@@ -114,7 +114,24 @@ def test_ask_user_schema_limits_and_normalizes_choices() -> None:
     )
     assert isinstance(arguments, AskUserArguments)
     assert arguments.question == "Which direction?"
-    assert arguments.options == ["Keep it", "Replace it"]
+    assert [option.label for option in arguments.options] == ["Keep it", "Replace it"]
+    assert [option.description for option in arguments.options] == ["", ""]
+    described = ToolRegistry().validate(
+        "ask_user",
+        {
+            "question": "Choose an approach",
+            "options": [
+                {
+                    "label": "Careful",
+                    "description": "Verify the current behavior.\n\nThen change it incrementally.",
+                }
+            ],
+        },
+    )
+    assert isinstance(described, AskUserArguments)
+    assert described.options[0].description == (
+        "Verify the current behavior.\n\nThen change it incrementally."
+    )
     with pytest.raises(ValueError, match="at most 3 items"):
         ToolRegistry().validate(
             "ask_user",

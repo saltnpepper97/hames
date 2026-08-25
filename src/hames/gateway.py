@@ -235,6 +235,7 @@ class QuestionResolution(ApiModel):
     question_id: str
     answer: str
     selected_option: str | None
+    selected_description: str
     note: str
     custom: bool
 
@@ -2122,6 +2123,7 @@ def create_app(state: GatewayState) -> FastAPI:
             question_id=question_id,
             answer=answer.answer,
             selected_option=answer.selected_option,
+            selected_description=answer.selected_description,
             note=answer.note,
             custom=answer.custom,
         )
