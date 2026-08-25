@@ -325,6 +325,7 @@ struct RenderLine<'a> {
     line: Line<'a>,
     thought: Option<TranscriptDisclosure>,
     sheen: Option<(u16, u16)>,
+    hover_group: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -339,7 +340,8 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
     let lines = transcript_lines(app, width);
     let height = usize::from(area.height);
     let bottom_start = lines.len().saturating_sub(height);
-    let start = bottom_start.saturating_sub(app.scroll.min(bottom_start));
+    app.scroll = app.scroll.min(bottom_start);
+    let start = bottom_start.saturating_sub(app.scroll);
     let end = (start + height).min(lines.len());
     app.transcript_viewport = TranscriptViewport {
         x: area.x,
@@ -359,6 +361,27 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
             )
         })
         .collect();
+    if let Some(hover_group) = app
+        .hovered_transcript_row
+        .and_then(|hovered| lines.get(hovered))
+        .and_then(|item| item.hover_group)
+    {
+        for (row, _) in lines[start..end]
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.hover_group == Some(hover_group))
+        {
+            frame.render_widget(
+                Block::default().style(Style::default().bg(PANEL_BRIGHT)),
+                Rect::new(
+                    area.x,
+                    area.y.saturating_add(u16::try_from(row).unwrap_or(0)),
+                    area.width.saturating_sub(1),
+                    1,
+                ),
+            );
+        }
+    }
     frame.render_widget(Paragraph::new(visible), area);
     let sheen_regions = lines[start..end]
         .iter()
@@ -409,7 +432,7 @@ fn render_transcript(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
             .end_symbol(None)
-            .track_symbol(Some("░"))
+            .track_symbol(Some("█"))
             .thumb_symbol("█")
             .track_style(Style::default().fg(RULE))
             .thumb_style(Style::default().fg(INPUT));
@@ -484,6 +507,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     line: Line::from(Span::styled("You", Style::default().fg(INPUT).bold())),
                     thought: None,
                     sheen: None,
+                    hover_group: None,
                 });
                 push_markdown(
                     &mut lines,
@@ -537,6 +561,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     },
                     thought: interactive.then_some(TranscriptDisclosure::Thought(index)),
                     sheen: live.then_some((0, 10)),
+                    hover_group: None,
                 });
                 if !*collapsed && !content.is_empty() {
                     push_wrapped(
@@ -556,6 +581,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     )),
                     thought: None,
                     sheen: live.then_some((0, 7)),
+                    hover_group: None,
                 });
                 push_markdown(
                     &mut lines,
@@ -600,6 +626,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     ]),
                     thought: Some(TranscriptDisclosure::Activity(index)),
                     sheen: None,
+                    hover_group: None,
                 });
                 if !*collapsed {
                     if !title.is_empty()
@@ -615,6 +642,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                             )),
                             thought: None,
                             sheen: None,
+                            hover_group: None,
                         });
                     }
                     push_markdown(
@@ -665,6 +693,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     ]),
                     thought: Some(TranscriptDisclosure::Activity(index)),
                     sheen: None,
+                    hover_group: None,
                 });
                 let first_visible_row = if *collapsed {
                     visible_rows.len().saturating_sub(1)
@@ -728,6 +757,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                         thought: None,
                         sheen: active
                             .then_some((4, u16::try_from(row.verb().width()).unwrap_or(0))),
+                        hover_group: None,
                     });
                     if !*collapsed
                         && row.phase == ActivityPhase::Completed
@@ -754,6 +784,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     ]),
                     thought: None,
                     sheen: None,
+                    hover_group: None,
                 });
                 lines.push(RenderLine {
                     line: Line::from(vec![
@@ -762,6 +793,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     ]),
                     thought: None,
                     sheen: None,
+                    hover_group: None,
                 });
             }
             TranscriptItem::Compaction {
@@ -804,6 +836,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     ]),
                     thought: (!*live).then_some(TranscriptDisclosure::Compaction(index)),
                     sheen: live.then_some((2, 18)),
+                    hover_group: None,
                 });
                 if !*live && !*collapsed {
                     push_wrapped(
@@ -839,6 +872,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     line: Line::from(""),
                     thought: None,
                     sheen: None,
+                    hover_group: None,
                 });
                 lines.push(RenderLine {
                     line: Line::from(vec![
@@ -851,6 +885,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     ]),
                     thought: None,
                     sheen: None,
+                    hover_group: None,
                 });
             }
             TranscriptItem::Assistant { .. } => {}
@@ -868,23 +903,19 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     ]),
                     thought: None,
                     sheen: None,
+                    hover_group: None,
                 });
             }
         }
-        let compact_tool_handoff = (matches!(item, TranscriptItem::Assistant { .. })
-            && matches!(
-                app.transcript.get(index + 1),
-                Some(TranscriptItem::Activity { .. })
-            ))
-            || matches!(
-                app.transcript.get(index + 1),
-                Some(TranscriptItem::Worked { .. })
-            );
-        if !compact_tool_handoff {
+        if !matches!(
+            app.transcript.get(index + 1),
+            Some(TranscriptItem::Worked { .. })
+        ) {
             lines.push(RenderLine {
                 line: Line::from(""),
                 thought: None,
                 sheen: None,
+                hover_group: None,
             });
         }
     }
@@ -897,6 +928,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 )),
                 thought: None,
                 sheen: None,
+                hover_group: None,
             },
             RenderLine {
                 line: Line::from(Span::styled(
@@ -905,8 +937,14 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 )),
                 thought: None,
                 sheen: None,
+                hover_group: None,
             },
         ]);
+    }
+    for (index, item) in lines.iter_mut().enumerate() {
+        if item.hover_group.is_none() && !line_text(&item.line).trim().is_empty() {
+            item.hover_group = Some(index);
+        }
     }
     lines
 }
@@ -1246,7 +1284,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
             .end_symbol(None)
-            .track_symbol(Some("░"))
+            .track_symbol(Some("█"))
             .thumb_symbol("█")
             .track_style(Style::default().fg(RULE))
             .thumb_style(Style::default().fg(INPUT));
@@ -1819,7 +1857,7 @@ fn render_approval_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
             .end_symbol(None)
-            .track_symbol(Some("░"))
+            .track_symbol(Some("█"))
             .thumb_symbol("█")
             .track_style(Style::default().fg(RULE))
             .thumb_style(Style::default().fg(INPUT));
@@ -3021,6 +3059,7 @@ fn push_markdown(
                     ]),
                     thought: None,
                     sheen: None,
+                    hover_group: None,
                 });
                 fence = Some(language);
             }
@@ -3045,6 +3084,7 @@ fn push_markdown(
                 line: Line::from(""),
                 thought: None,
                 sheen: None,
+                hover_group: None,
             });
             continue;
         }
@@ -3188,6 +3228,7 @@ fn push_styled_wrapped(
     prefix: &str,
     prefix_style: Style,
 ) {
+    let hover_group = lines.len();
     let prefix_width = UnicodeWidthStr::width(prefix);
     let available = width.saturating_sub(prefix_width).max(1);
     let mut rows: Vec<Vec<Span<'static>>> =
@@ -3224,6 +3265,7 @@ fn push_styled_wrapped(
         line: Line::from(spans),
         thought: None,
         sheen: None,
+        hover_group: Some(hover_group),
     }));
 }
 
@@ -3251,6 +3293,7 @@ fn markdown_rule(width: usize) -> RenderLine<'static> {
         )),
         thought: None,
         sheen: None,
+        hover_group: None,
     }
 }
 
@@ -3283,6 +3326,7 @@ fn push_diff(lines: &mut Vec<RenderLine<'static>>, value: &str, width: usize, tr
         ]),
         thought: None,
         sheen: None,
+        hover_group: None,
     });
     for line in source_lines.iter().take(160) {
         if let Some(line) = line {
@@ -3460,12 +3504,14 @@ fn push_wrapped(
     style: Style,
 ) {
     for raw in value.split('\n') {
+        let hover_group = lines.len();
         let mut remaining = raw;
         if remaining.is_empty() {
             lines.push(RenderLine {
                 line: Line::from(prefix.to_owned()),
                 thought: None,
                 sheen: None,
+                hover_group: Some(hover_group),
             });
             continue;
         }
@@ -3479,6 +3525,7 @@ fn push_wrapped(
                 ]),
                 thought: None,
                 sheen: None,
+                hover_group: Some(hover_group),
             });
             remaining = rest.trim_start_matches(' ');
         }
@@ -4306,6 +4353,28 @@ mod tests {
     }
 
     #[test]
+    fn transcript_overscroll_is_clamped_to_prevent_a_stuck_scroll_offset() {
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        for index in 0..20 {
+            app.transcript.push(TranscriptItem::User {
+                content: format!("message {index}"),
+            });
+        }
+        app.scroll = usize::MAX;
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let clamped = app.scroll;
+        assert!(clamped > 3);
+        assert!(clamped < usize::MAX);
+
+        app.scroll = app.scroll.saturating_sub(3);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.scroll, clamped - 3);
+    }
+
+    #[test]
     fn sent_paste_expands_to_full_markdown_in_the_transcript() {
         let mut app = App::new(session(), Vec::new(), true);
         let content = "before\n```rust\nfn main() {}\n```\nafter";
@@ -4567,7 +4636,7 @@ mod tests {
     }
 
     #[test]
-    fn assistant_preface_hands_directly_to_tool_activity() {
+    fn assistant_preface_keeps_one_blank_row_before_tool_activity() {
         let mut app = App::new(session(), Vec::new(), true);
         app.transcript.push(TranscriptItem::Assistant {
             run_id: "run-handoff".to_owned(),
@@ -4600,7 +4669,8 @@ mod tests {
             .iter()
             .position(|line| line.contains("Next, I'll write it:"))
             .unwrap();
-        assert!(rendered[preface + 1].contains("◆ Work"));
+        assert!(rendered[preface + 1].is_empty());
+        assert!(rendered[preface + 2].contains("◆ Work"));
     }
 
     #[test]
@@ -4840,6 +4910,27 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("Copied to clipboard · 5 characters"));
+    }
+
+    #[test]
+    fn hovered_wrapped_transcript_line_highlights_every_visual_row() {
+        let backend = TestBackend::new(56, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::User {
+            content: "This is one continuous logical transcript line that must wrap across several terminal rows together."
+                .to_owned(),
+        });
+        app.hovered_transcript_row = Some(1);
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let y = app.transcript_viewport.y;
+        assert_eq!(buffer.cell((2, y)).unwrap().bg, Color::Reset);
+        assert_eq!(buffer.cell((2, y + 1)).unwrap().bg, PANEL_BRIGHT);
+        assert_eq!(buffer.cell((50, y + 1)).unwrap().bg, PANEL_BRIGHT);
+        assert_eq!(buffer.cell((2, y + 2)).unwrap().bg, PANEL_BRIGHT);
+        assert_eq!(buffer.cell((50, y + 2)).unwrap().bg, PANEL_BRIGHT);
     }
 
     #[test]

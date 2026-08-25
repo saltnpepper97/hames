@@ -220,7 +220,9 @@ class ToolCallAssembly:
             arguments = JSON_OBJECT.validate_json("".join(self.argument_parts) or "{}")
         except ValueError as exc:
             raise ProviderError(
-                "malformed_tool_call", "tool call arguments are not valid JSON"
+                "malformed_tool_call",
+                "tool call arguments are not valid JSON",
+                retryable=True,
             ) from exc
         return ToolInvocation(self.index, new_id(), self.provider_call_id, name, arguments)
 
@@ -588,12 +590,26 @@ class RunManager:
             execution_note = note.strip()
             if len(execution_note) > 8000:
                 raise ValueError("plan execution note cannot exceed 8000 characters")
+            state = await asyncio.to_thread(self.plans.current, session_id)
+            plan = state.current
             active_run = self._session_runs.get(session_id)
             if active_run is not None:
-                terminal = any(
-                    event.type in {"run.completed", "run.failed", "run.cancelled"}
-                    for event in await asyncio.to_thread(self.ledger.list_run_events, active_run)
-                )
+                terminal_types = {"run.completed", "run.failed", "run.cancelled"}
+                events = await asyncio.to_thread(self.ledger.list_run_events, active_run)
+                terminal = any(event.type in terminal_types for event in events)
+                if (
+                    not terminal
+                    and plan is not None
+                    and plan.status in {"ready", "failed"}
+                    and plan.source_run_id == active_run
+                ):
+                    deadline = asyncio.get_running_loop().time() + 0.5
+                    while not terminal and asyncio.get_running_loop().time() < deadline:
+                        await asyncio.sleep(0.005)
+                        events = await asyncio.to_thread(
+                            self.ledger.list_run_events, active_run
+                        )
+                        terminal = any(event.type in terminal_types for event in events)
                 if terminal:
                     self._mark_post_terminal(active_run, session_id)
                 else:
@@ -1320,6 +1336,11 @@ class RunManager:
             self._mark_post_terminal(run_id, session_id)
             await self._promote_next(session_id)
             await self._advance_goal_after_run(session_id, run_id)
+            planning_only = (
+                session is not None
+                and session.interaction_mode == "plan"
+                and str(user_event.payload.get("purpose", "turn")) != "plan_execution"
+            )
             if self.config.memory.enabled:
                 await self._project_episode(session_id, run_id)
             if self.memory_manager is not None and session is not None:
@@ -1327,11 +1348,11 @@ class RunManager:
                     await self.memory_manager.enqueue_capture(
                         session, str(user_event.payload.get("content", "")), user_event
                     )
-                else:
+                elif not planning_only:
                     await self.memory_manager.enqueue_run(session_id, run_id)
-            if self.skill_manager is not None and session is not None:
+            if self.skill_manager is not None and session is not None and not planning_only:
                 await self.skill_manager.observe_run(session_id, run_id)
-            if self.evolution_manager is not None and session is not None:
+            if self.evolution_manager is not None and session is not None and not planning_only:
                 try:
                     await self.evolution_manager.observe_run(session_id, run_id)
                 except (KeyError, ValueError) as exc:
@@ -1700,20 +1721,55 @@ class RunManager:
             if model_turns >= limits.max_model_turns_per_user_message:
                 raise RunFailure("model_turn_limit", "run model-turn limit was exhausted")
             model_turns += 1
-            turn = await clock.measure(
-                self._model_turn(
-                    run_id,
-                    session,
-                    skill_event.id
-                    if model_turns == 1 and skill_event is not None
-                    else retrieval_event.id
-                    if model_turns == 1 and retrieval_event is not None
-                    else run_started.id
-                    if model_turns == 1
-                    else None,
-                    memories,
+            try:
+                turn = await clock.measure(
+                    self._model_turn(
+                        run_id,
+                        session,
+                        skill_event.id
+                        if model_turns == 1 and skill_event is not None
+                        else retrieval_event.id
+                        if model_turns == 1 and retrieval_event is not None
+                        else run_started.id
+                        if model_turns == 1
+                        else None,
+                        memories,
+                    )
                 )
-            )
+            except ProviderError as exc:
+                if exc.code != "malformed_tool_call":
+                    raise
+                consecutive_no_progress += 1
+                if consecutive_no_progress > 3:
+                    raise RunFailure(
+                        "malformed_tool_call",
+                        "model emitted invalid tool-call arguments four times",
+                    ) from exc
+                tasks = await asyncio.to_thread(self.session_tasks.current, session.id)
+                failure = next(
+                    event
+                    for event in reversed(
+                        await asyncio.to_thread(self.ledger.list_run_events, run_id)
+                    )
+                    if event.type == "model.response.failed"
+                )
+                await self._append(
+                    session_id=session.id,
+                    run_id=run_id,
+                    agent_id=session.agent_id,
+                    event_type="run.continuation.requested",
+                    payload={
+                        "reason": "malformed_tool_call",
+                        "attempt": consecutive_no_progress,
+                        "task_revision": tasks.revision,
+                        "unfinished_task_count": sum(
+                            item.status != "completed" for item in tasks.items
+                        ),
+                    },
+                    causation_id=failure.id,
+                    correlation_id=run_id,
+                )
+                continue
             if not turn.tool_calls:
                 tasks = await asyncio.to_thread(self.session_tasks.current, session.id)
                 plan_state = await asyncio.to_thread(self.plans.current, session.id)

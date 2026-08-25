@@ -301,7 +301,7 @@ class RunCompletedPayload(EventPayload):
 
 
 class RunContinuationPayload(EventPayload):
-    reason: Literal["output_limit", "unfinished_execution"]
+    reason: Literal["output_limit", "unfinished_execution", "malformed_tool_call"]
     attempt: int = Field(ge=1)
     task_revision: int = Field(ge=0)
     unfinished_task_count: int = Field(ge=0)

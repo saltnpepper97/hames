@@ -236,7 +236,7 @@ class PolicyGate:
                         "credential stores are not available to generic tools",
                         "secret",
                     )
-                if arguments.workspace == "home" and interaction_mode != "auto":
+                if arguments.workspace == "home" and interaction_mode == "manual":
                     return PolicyDecision(
                         PolicyDecisionKind.REQUIRE_CONFIRMATION,
                         "tool accesses the user home outside the trusted workspace",
@@ -250,7 +250,7 @@ class PolicyGate:
             for pattern, reason in _CONFIRM_SHELL:
                 if pattern.search(arguments.command):
                     return PolicyDecision(PolicyDecisionKind.REQUIRE_CONFIRMATION, reason, "high")
-            if interaction_mode != "auto":
+            if interaction_mode == "manual":
                 workspace_root = context.root_for(arguments.workspace).resolve(strict=True)
                 for raw_path in _OUTSIDE_PATH.findall(arguments.command):
                     candidate = Path(raw_path).expanduser().resolve(strict=False)
@@ -292,7 +292,11 @@ class PolicyGate:
 
 
 def _plan_shell_allowed(command: str) -> bool:
-    command = re.sub(r"\s+2>&1(?=\s*(?:$|&&|\|\||[;|]))", "", command)
+    command = re.sub(
+        r"\s+(?:[012]?>\s*/dev/null|[012]?>&[012])(?=\s*(?:$|&&|\|\||[;|]))",
+        "",
+        command,
+    )
     if re.search(r"(?:>>?|<)|`|\$\(", command):
         return False
     clauses = _plan_shell_clauses(command)
@@ -383,11 +387,92 @@ def _plan_clause_allowed(clause: str) -> bool:
 _PLAN_PYTHON_PROBE_MODULES = {
     "curses",
     "json",
+    "os",
     "platform",
     "pygame",
     "pty",
     "sys",
 }
+
+_PLAN_PYTHON_SAFE_CALLS = {
+    "abs",
+    "all",
+    "any",
+    "bool",
+    "dict",
+    "enumerate",
+    "float",
+    "int",
+    "isinstance",
+    "len",
+    "list",
+    "max",
+    "min",
+    "print",
+    "range",
+    "repr",
+    "reversed",
+    "round",
+    "set",
+    "sorted",
+    "str",
+    "sum",
+    "tuple",
+    "zip",
+}
+
+_PLAN_PYTHON_SAFE_METHODS = {
+    "append",
+    "copy",
+    "count",
+    "endswith",
+    "format",
+    "get",
+    "index",
+    "items",
+    "join",
+    "keys",
+    "lower",
+    "pop",
+    "remove",
+    "replace",
+    "sort",
+    "split",
+    "startswith",
+    "strip",
+    "upper",
+    "values",
+}
+
+
+def _attribute_root(node: ast.Attribute) -> str | None:
+    value: ast.expr = node
+    while isinstance(value, ast.Attribute):
+        value = value.value
+    return value.id if isinstance(value, ast.Name) else None
+
+
+def _plan_python_call_allowed(call: ast.Call, local_functions: set[str]) -> bool:
+    if isinstance(call.func, ast.Name):
+        return call.func.id in _PLAN_PYTHON_SAFE_CALLS or call.func.id in local_functions
+    if not isinstance(call.func, ast.Attribute) or call.func.attr.startswith("__"):
+        return False
+    root = _attribute_root(call.func)
+    if root == "os":
+        return call.func.attr in {"getcwd", "getenv", "getuid", "getgid"} or (
+            isinstance(call.func.value, ast.Attribute)
+            and call.func.value.attr == "environ"
+            and call.func.attr == "get"
+        )
+    if root == "json":
+        return call.func.attr in {"loads", "dumps"}
+    if root == "platform":
+        return True
+    if root == "pygame":
+        return call.func.attr not in {"save", "set_clipboard_text"}
+    if root in _PLAN_PYTHON_PROBE_MODULES:
+        return False
+    return call.func.attr in _PLAN_PYTHON_SAFE_METHODS
 
 
 def _plan_python_probe_allowed(source: str) -> bool:
@@ -397,33 +482,30 @@ def _plan_python_probe_allowed(source: str) -> bool:
     except SyntaxError:
         return False
 
-    for statement in tree.body:
-        if isinstance(statement, ast.Import):
+    local_functions = {
+        statement.name for statement in tree.body if isinstance(statement, ast.FunctionDef)
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
             if any(
                 alias.name.split(".", 1)[0] not in _PLAN_PYTHON_PROBE_MODULES
-                for alias in statement.names
+                for alias in node.names
             ):
                 return False
             continue
-        if isinstance(statement, ast.ImportFrom):
+        if isinstance(node, ast.ImportFrom):
             if (
-                statement.level
-                or (statement.module or "").split(".", 1)[0] not in _PLAN_PYTHON_PROBE_MODULES
+                node.level
+                or (node.module or "").split(".", 1)[0] not in _PLAN_PYTHON_PROBE_MODULES
             ):
                 return False
             continue
-        if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
-            call = statement.value
-            if not isinstance(call.func, ast.Name) or call.func.id != "print":
+        if isinstance(node, ast.Call) and not _plan_python_call_allowed(node, local_functions):
+            return False
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            name = node.id if isinstance(node, ast.Name) else node.attr
+            if name.startswith("__"):
                 return False
-            if any(
-                isinstance(node, ast.Call)
-                for argument in (*call.args, *[keyword.value for keyword in call.keywords])
-                for node in ast.walk(argument)
-            ):
-                return False
-            continue
-        return False
     return bool(tree.body)
 
 

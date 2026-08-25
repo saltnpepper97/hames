@@ -545,7 +545,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 20
+            assert health_body["protocol_version"] == 21
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -783,6 +783,84 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_malformed_tool_arguments_retry_without_abandoning_the_run(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text("[memory]\nenabled = false\n", encoding="utf-8")
+    fake = FakeProvider(
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="broken-write",
+                        name="write_file",
+                        arguments_delta='{"path":"recovered.txt","content":"ok"',
+                    ),
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="valid-write",
+                        name="write_file",
+                        arguments_delta='{"path":"recovered.txt","content":"ok"}',
+                    ),
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="Recovered and finished."),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
+    )
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Write the file and keep going if a tool call is malformed."},
+            )
+            events = await _wait_for_event(client, headers, session_id, "run.completed")
+
+            failure = next(event for event in events if event["type"] == "model.response.failed")
+            assert failure["payload"]["code"] == "malformed_tool_call"  # type: ignore[index]
+            assert failure["payload"]["retryable"] is True  # type: ignore[index]
+            continuation = next(
+                event for event in events if event["type"] == "run.continuation.requested"
+            )
+            assert continuation["payload"]["reason"] == "malformed_tool_call"  # type: ignore[index]
+            assert "emit one complete tool call" in fake.requests[1].system
+            assert (tmp_path / "recovered.txt").read_text(encoding="utf-8") == "ok"
+            assert any(
+                event["type"] == "assistant.message"
+                and event["payload"]["content"] == "Recovered and finished."  # type: ignore[index]
+                for event in events
+            )
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
 async def test_plan_review_execution_and_session_tasks_lifecycle(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     paths.ensure_foundation()
@@ -993,6 +1071,50 @@ async def test_plan_execution_stall_fails_visibly_after_three_no_progress_turns(
             ) == 2
             assert not any(event["type"] == "run.completed" for event in run_events)
     finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_planning_only_run_does_not_start_post_run_model_work(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text("[memory]\nenabled = false\n", encoding="utf-8")
+    provider = PlanExecutionProvider("# Action plan\n\n## Tasks\n- [ ] Do the work")
+    observer = BlockingPostRunObserver()
+    state = GatewayState.create(paths, providers={"fake": provider})
+    state.runs.evolution_manager = cast(object, observer)  # type: ignore[assignment]
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.put(
+                f"/v1/sessions/{session_id}/mode", headers=headers, json={"mode": "plan"}
+            )
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Plan the work"},
+            )
+            await _wait_for_event(client, headers, session_id, "run.completed")
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(observer.started.wait(), timeout=0.05)
+
+            executed = await client.post(
+                f"/v1/sessions/{session_id}/plans/current/execute",
+                headers=headers,
+                json={"strategy": "keep"},
+            )
+            assert executed.status_code == 202
+            await asyncio.wait_for(observer.started.wait(), timeout=1)
+    finally:
+        observer.release.set()
         await state.runs.close()
 
 
@@ -2831,7 +2953,7 @@ async def _wait_for_event(
     occurrences: int = 1,
 ) -> list[dict[str, JsonValue]]:
     events: list[dict[str, JsonValue]] = []
-    for _ in range(100):
+    for _ in range(1000):
         response = await client.get(f"/v1/sessions/{session_id}/events", headers=headers)
         events = EVENT_LIST.validate_python(cast(object, response.json()))
         if sum(event["type"] == event_type for event in events) >= occurrences:

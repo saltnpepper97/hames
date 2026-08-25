@@ -1021,6 +1021,7 @@ pub struct App {
     pub composer_scroll: Option<usize>,
     pub scroll_drag: Option<ScrollDrag>,
     pub transcript_viewport: TranscriptViewport,
+    pub hovered_transcript_row: Option<usize>,
     pub transcript_selection: Option<TranscriptSelection>,
     pub selecting_transcript: bool,
     pub modal_viewport: TranscriptViewport,
@@ -1100,6 +1101,7 @@ impl App {
             composer_scroll: None,
             scroll_drag: None,
             transcript_viewport: TranscriptViewport::default(),
+            hovered_transcript_row: None,
             transcript_selection: None,
             selecting_transcript: false,
             modal_viewport: TranscriptViewport::default(),
@@ -1222,7 +1224,6 @@ impl App {
         self.active_run = Some(run_id.clone());
         self.run_started_at = Some(Instant::now());
         self.scroll = 0;
-        self.ensure_thought(&run_id, true);
     }
 
     pub fn plan_ready(&self) -> bool {
@@ -2308,16 +2309,27 @@ impl App {
                 {
                     return;
                 }
-                let message = string(&event.payload, "message");
+                let recoverable = event.event_type == "model.response.failed"
+                    && event
+                        .payload
+                        .get("retryable")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                let code = string(&event.payload, "code");
+                let message = if recoverable && code == "malformed_tool_call" {
+                    "Tool call could not be parsed · retrying automatically".to_owned()
+                } else {
+                    string(&event.payload, "message")
+                };
                 self.transcript.push(TranscriptItem::Status {
                     text: if message.is_empty() {
                         event.event_type.replace('.', " ")
                     } else {
                         message
                     },
-                    error: true,
+                    error: !recoverable,
                 });
-                if live {
+                if live && !recoverable {
                     self.modal = Some(Modal::Error(
                         self.transcript
                             .last()
@@ -3159,6 +3171,33 @@ mod tests {
             app.transcript.last(),
             Some(TranscriptItem::Worked { duration_seconds }) if *duration_seconds == 251.0
         ));
+    }
+
+    #[test]
+    fn accepted_foreground_run_waits_for_user_event_before_showing_thought() {
+        let run_id = "run-ordered";
+        let mut app = App::new(session(), Vec::new(), true);
+
+        app.begin_foreground_run(Some(run_id.to_owned()));
+        assert!(app.transcript.is_empty());
+
+        app.ingest_durable(
+            event(
+                1,
+                "user.message",
+                run_id,
+                json!({"content": "Fix the transcript order", "purpose": "turn"}),
+            ),
+            true,
+        );
+        app.ingest_durable(event(2, "run.started", run_id, json!({})), true);
+
+        assert!(
+            matches!(app.transcript.first(), Some(TranscriptItem::User { content }) if content == "Fix the transcript order")
+        );
+        assert!(
+            matches!(app.transcript.get(1), Some(TranscriptItem::Thought { run_id: id, live: true, .. }) if id == run_id)
+        );
     }
 
     #[test]
@@ -4053,6 +4092,35 @@ mod tests {
             item,
             TranscriptItem::Status { text, error: false } if text == "Turn interrupted"
         )));
+    }
+
+    #[test]
+    fn recoverable_malformed_tool_call_stays_inline_and_keeps_run_active() {
+        let run_id = "run-retry";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.begin_foreground_run(Some(run_id.to_owned()));
+        app.ingest_durable(
+            event(
+                1,
+                "model.response.failed",
+                run_id,
+                json!({
+                    "code": "malformed_tool_call",
+                    "message": "tool call arguments are not valid JSON",
+                    "retryable": true,
+                    "details": {}
+                }),
+            ),
+            true,
+        );
+
+        assert!(matches!(
+            app.transcript.last(),
+            Some(TranscriptItem::Status { text, error: false })
+                if text == "Tool call could not be parsed · retrying automatically"
+        ));
+        assert!(app.modal.is_none());
+        assert_eq!(app.active_run.as_deref(), Some(run_id));
     }
 
     fn session() -> Session {

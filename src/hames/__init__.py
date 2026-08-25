@@ -7,6 +7,6 @@ try:
 except PackageNotFoundError:  # pragma: no cover - source tree without installation
     __version__ = "0.0.0"
 
-PROTOCOL_VERSION = 20
+PROTOCOL_VERSION = 21
 
 __all__ = ["PROTOCOL_VERSION", "__version__"]

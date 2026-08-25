@@ -212,6 +212,12 @@ def compile_context(
                 "run. Continue from its exact unfinished state. Do not restart, recap, or "
                 "rewrite the plan; take the next concrete action now."
             )
+        elif reason == "malformed_tool_call":
+            directive = (
+                "The previous tool call could not be parsed because its arguments were not valid "
+                "JSON. Continue the same work now and emit one complete tool call with a valid "
+                "JSON object. Do not abandon, restart, or merely describe the task."
+            )
         else:
             directive = (
                 "The approved execution is still unfinished. Continue with the next incomplete "

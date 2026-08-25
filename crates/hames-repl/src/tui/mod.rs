@@ -16,10 +16,10 @@ use app::{
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
-    EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
-    MouseButton, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -479,6 +479,14 @@ fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
             None
         }
         Event::Mouse(mouse) => handle_mouse(app, mouse),
+        Event::FocusLost => {
+            app.hovered_transcript_row = None;
+            None
+        }
+        Event::Resize(_, _) => {
+            app.hovered_transcript_row = None;
+            None
+        }
         _ => None,
     }
 }
@@ -583,10 +591,12 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         }
         KeyCode::PageUp => {
             app.scroll = app.scroll.saturating_add(8);
+            app.hovered_transcript_row = None;
             None
         }
         KeyCode::PageDown => {
             app.scroll = app.scroll.saturating_sub(8);
+            app.hovered_transcript_row = None;
             None
         }
         KeyCode::Up if app.sheet.is_some() => {
@@ -1103,8 +1113,16 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
 }
 
 fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
+    app.hovered_transcript_row = if app.modal.is_none() {
+        app.transcript_viewport
+            .point(mouse.column, mouse.row)
+            .map(|point| point.row)
+    } else {
+        None
+    };
     match mouse.kind {
         MouseEventKind::ScrollUp => {
+            app.hovered_transcript_row = None;
             if app.modal_viewport.point(mouse.column, mouse.row).is_some()
                 && let Some(Modal::Memory(browser)) = &mut app.modal
             {
@@ -1121,6 +1139,7 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
             None
         }
         MouseEventKind::ScrollDown => {
+            app.hovered_transcript_row = None;
             if app.modal_viewport.point(mouse.column, mouse.row).is_some()
                 && let Some(Modal::Memory(browser)) = &mut app.modal
             {
@@ -2508,6 +2527,7 @@ impl TerminalGuard {
             stdout,
             EnterAlternateScreen,
             EnableMouseCapture,
+            EnableFocusChange,
             EnableBracketedPaste,
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         ) {
@@ -2551,6 +2571,7 @@ impl Drop for TerminalGuard {
         let _ = execute!(
             self.terminal.backend_mut(),
             DisableBracketedPaste,
+            DisableFocusChange,
             DisableMouseCapture,
             PopKeyboardEnhancementFlags,
             LeaveAlternateScreen
@@ -2701,13 +2722,13 @@ fn info(title: &str, lines: Vec<String>) -> Modal {
 #[cfg(test)]
 mod tests {
     use crossterm::event::{
-        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
 
     use super::{
         Effect, SseDecoder, action_error_message, agent_source, handle_key, handle_mouse,
-        model_efforts, next_mode, parse_command, pointer_top, session_exit_notice,
-        terminal_tab_title, workspace_identity,
+        handle_terminal_event, model_efforts, next_mode, parse_command, pointer_top,
+        session_exit_notice, terminal_tab_title, workspace_identity,
     };
     use crate::api::{
         Goal, MemoryRecord, PlanRevision, PlanState, ProviderModel, QueuedMessage, Scar, Session,
@@ -3419,6 +3440,57 @@ mod tests {
             ),
             Some(Effect::Copy(text)) if text == "Hames"
         ));
+    }
+
+    #[test]
+    fn moving_pointer_tracks_the_hovered_transcript_line() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript_viewport = TranscriptViewport {
+            x: 2,
+            y: 3,
+            width: 30,
+            height: 2,
+            line_offset: 4,
+            lines: vec![
+                "first".to_owned(),
+                "second".to_owned(),
+                "third".to_owned(),
+                "fourth".to_owned(),
+                "fifth".to_owned(),
+                "sixth".to_owned(),
+            ],
+        };
+
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 8,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(app.hovered_transcript_row, Some(5));
+
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 8,
+                row: 8,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(app.hovered_transcript_row, None);
+    }
+
+    #[test]
+    fn terminal_focus_loss_clears_transcript_hover() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.hovered_transcript_row = Some(4);
+
+        assert!(handle_terminal_event(&mut app, Event::FocusLost).is_none());
+        assert_eq!(app.hovered_transcript_row, None);
     }
 
     #[test]
