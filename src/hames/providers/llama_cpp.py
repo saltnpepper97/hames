@@ -137,7 +137,7 @@ class LlamaCppProvider:
             # events when this is enabled. The final response also carries the
             # normalized usage object used below.
             "timings_per_token": True,
-            "parallel_tool_calls": False,
+            "parallel_tool_calls": True,
         }
         if request.temperature is not None:
             body["temperature"] = request.temperature
@@ -232,31 +232,26 @@ class LlamaCppProvider:
                                 "malformed_provider_event",
                                 "llama.cpp completion omitted response",
                             )
-                        # A completed output item is authoritative. If a server
-                        # omitted output_item.done, recover it from the final
-                        # response. Never expose an incomplete function call:
-                        # its arguments may be truncated at the token limit.
-                        if event_type == "response.completed":
-                            output = response_object.get("output", [])
-                            if isinstance(output, list):
-                                for value in output:
-                                    if (
-                                        not isinstance(value, dict)
-                                        or value.get("type") != "function_call"
-                                    ):
-                                        continue
-                                    item_id = (
-                                        _optional_str(value.get("id"))
-                                        or f"tool-{next_tool_index}"
-                                    )
-                                    index = tool_indices.get(item_id)
-                                    if index is None:
-                                        index = next_tool_index
-                                        next_tool_index += 1
-                                        tool_indices[item_id] = index
-                                    finalized_tool_items[item_id] = value
-                            for item_id, value in finalized_tool_items.items():
-                                yield _final_tool_call_event(value, tool_indices[item_id])
+                        output = response_object.get("output", [])
+                        if isinstance(output, list):
+                            for value in output:
+                                if (
+                                    not isinstance(value, dict)
+                                    or value.get("type") != "function_call"
+                                ):
+                                    continue
+                                item_id = (
+                                    _optional_str(value.get("id")) or f"tool-{next_tool_index}"
+                                )
+                                index = tool_indices.get(item_id)
+                                if index is None:
+                                    index = next_tool_index
+                                    next_tool_index += 1
+                                    tool_indices[item_id] = index
+                                finalized_tool_items[item_id] = value
+                        for item_id, value in list(finalized_tool_items.items()):
+                            _require_complete_tool_arguments(value)
+                            yield _final_tool_call_event(value, tool_indices[item_id])
                         usage = _usage_from_responses(response_object.get("usage"))
                         if usage is not None:
                             yield StreamEvent(kind=StreamEventKind.USAGE, usage=usage)
@@ -268,9 +263,13 @@ class LlamaCppProvider:
                             kind=StreamEventKind.COMPLETED,
                             finish_reason=(
                                 "length"
-                                if event_type == "response.incomplete"
-                                or (hit_output_limit and not finalized_tool_items)
-                                else "tool_calls" if finalized_tool_items else "stop"
+                                if (
+                                    not finalized_tool_items
+                                    and (event_type == "response.incomplete" or hit_output_limit)
+                                )
+                                else "tool_calls"
+                                if finalized_tool_items
+                                else "stop"
                             ),
                             provider_request_id=provider_request_id,
                         )
@@ -353,9 +352,7 @@ def _response_input(messages: Sequence[object]) -> list[dict[str, object]]:
                     "role": value.role,
                     "content": [
                         {
-                            "type": (
-                                "output_text" if value.role == "assistant" else "input_text"
-                            ),
+                            "type": ("output_text" if value.role == "assistant" else "input_text"),
                             "text": value.content,
                         }
                     ],
@@ -388,6 +385,20 @@ def _http_error(exc: httpx.HTTPStatusError) -> ProviderError:
         message,
         retryable=status == 429 or status >= 500,
     )
+
+
+def _require_complete_tool_arguments(item: dict[str, JsonValue]) -> None:
+    arguments = item.get("arguments", "")
+    text = arguments if isinstance(arguments, str) else json.dumps(arguments, separators=(",", ":"))
+    try:
+        JSON_OBJECT.validate_json(text or "{}")
+    except ValueError as exc:
+        name = _optional_str(item.get("name")) or "tool"
+        raise ProviderError(
+            "malformed_tool_call",
+            f"{name} arguments were truncated at the output limit; write smaller chunks",
+            retryable=True,
+        ) from exc
 
 
 def _final_tool_call_event(item: dict[str, JsonValue], index: int) -> StreamEvent:

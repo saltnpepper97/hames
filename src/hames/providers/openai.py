@@ -127,7 +127,7 @@ class OpenAIProvider:
             "store": False,
             "include": ["reasoning.encrypted_content"],
             "max_output_tokens": request.max_tokens,
-            "parallel_tool_calls": False,
+            "parallel_tool_calls": True,
         }
         if request.temperature is not None:
             body["temperature"] = request.temperature

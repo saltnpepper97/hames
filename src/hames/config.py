@@ -32,7 +32,7 @@ class RuntimeConfig(StrictModel):
 
 class ContextConfig(StrictModel):
     fallback_window_tokens: int = Field(default=32_768, ge=8_192)
-    output_reserve_tokens: int = Field(default=4_096, ge=256)
+    output_reserve_tokens: int = Field(default=16_384, ge=256)
     stable_instruction_limit_tokens: int = Field(default=8_192, ge=1_024)
     agent_identity_limit_tokens: int = Field(default=4_096, ge=512)
     tool_schema_limit_tokens: int = Field(default=8_192, ge=1_024)

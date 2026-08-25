@@ -11,6 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from hames.providers.base import JSON_OBJECT, JsonValue
 
+JSONL_LINE_LIMIT = 16 * 1024 * 1024
+
 BrokerHandler = Callable[[str, dict[str, JsonValue]], Awaitable[dict[str, JsonValue]]]
 
 
@@ -135,7 +137,12 @@ class PluginWorker:
     async def _read_loop(self) -> None:
         try:
             while True:
-                line = await self._stdout.readline()
+                try:
+                    line = await self._stdout.readline()
+                except asyncio.LimitOverrunError as exc:
+                    raise PluginProtocolError(
+                        "plugin JSONL message exceeded the stdio line limit"
+                    ) from exc
                 if not line:
                     break
                 try:
@@ -160,6 +167,13 @@ class PluginWorker:
                     continue
                 future.set_result(JSON_OBJECT.validate_python(result))
         except asyncio.CancelledError:
+            return
+        except PluginProtocolError as exc:
+            error = exc
+            for future in self._pending.values():
+                if not future.done():
+                    future.set_exception(error)
+            self._pending.clear()
             return
         finally:
             error = PluginProtocolError("plugin worker closed")
@@ -200,5 +214,6 @@ async def spawn_worker(
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        limit=JSONL_LINE_LIMIT,
     )
     return PluginWorker(process, timeout_seconds=timeout_seconds, on_broker=on_broker)

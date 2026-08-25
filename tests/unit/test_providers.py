@@ -316,7 +316,7 @@ async def test_llama_cpp_normalizes_streamed_tool_calls() -> None:
     assert tool_events[0].tool_call is not None
     assert tool_events[0].tool_call.name == "read_file"
     assert "tools" in seen_request
-    assert seen_request["parallel_tool_calls"] is False
+    assert seen_request["parallel_tool_calls"] is True
     sent_input = seen_request["input"]
     assert isinstance(sent_input, list)
     assert sent_input[0] == {
@@ -372,6 +372,42 @@ async def test_llama_cpp_treats_saturated_unfinished_output_as_length() -> None:
 
 
 @pytest.mark.asyncio
+async def test_llama_cpp_surfaces_truncated_tool_arguments() -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text="\n".join(
+                [
+                    'data: {"type":"response.created","response":{"id":"one"}}',
+                    'data: {"type":"response.incomplete","response":{"output":['
+                    '{"id":"fc-1","type":"function_call","call_id":"call-1",'
+                    '"name":"write_file",'
+                    '"arguments":"{\\"path\\":\\"game.py\\", \\"content\\": \\"hello"}],'
+                    '"usage":{"input_tokens":10,"output_tokens":32}}}',
+                    "data: [DONE]",
+                ]
+            ),
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(ProviderError, match="truncated at the output limit") as raised:
+        _ = [
+            event
+            async for event in LlamaCppProvider("http://llama", client=client).stream(
+                ModelRequest(
+                    model="fixture",
+                    messages=[ProviderMessage(role="user", content="write a game")],
+                    system="",
+                    max_tokens=32,
+                )
+            )
+        ]
+    assert raised.value.code == "malformed_tool_call"
+    assert raised.value.retryable is True
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_ollama_maps_normalized_tool_history_by_name() -> None:
     seen_request: dict[str, object] = {}
 
@@ -416,6 +452,71 @@ async def test_ollama_maps_normalized_tool_history_by_name() -> None:
     assert isinstance(sent_messages, list)
     assert sent_messages[0]["tool_calls"][0]["function"]["name"] == "read_file"
     assert sent_messages[1]["tool_name"] == "read_file"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_ollama_treats_repeated_tool_calls_as_snapshots() -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text="\n".join(
+                [
+                    json.dumps(
+                        {
+                            "message": {
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "function": {
+                                            "name": "write_file",
+                                            "arguments": {"path": "a.py", "content": "one"},
+                                        }
+                                    }
+                                ],
+                            },
+                            "done": False,
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "message": {
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "function": {
+                                            "name": "write_file",
+                                            "arguments": {"path": "a.py", "content": "two"},
+                                        }
+                                    }
+                                ],
+                            },
+                            "done": True,
+                            "done_reason": "stop",
+                        }
+                    ),
+                ]
+            )
+            + "\n",
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    events = [
+        event
+        async for event in OllamaProvider("http://ollama", client=client).stream(
+            ModelRequest(
+                model="fixture",
+                messages=[ProviderMessage(role="user", content="w")],
+                system="",
+            )
+        )
+    ]
+    tool_events = [event for event in events if event.kind is StreamEventKind.TOOL_CALL_DELTA]
+    assert len(tool_events) == 1
+    assert tool_events[0].tool_call is not None
+    assert tool_events[0].tool_call.name == "write_file"
+    assert '"content":"two"' in tool_events[0].tool_call.arguments_delta
+    assert tool_events[0].tool_call.arguments_delta.count("write_file") == 0
     await client.aclose()
 
 
@@ -578,11 +679,37 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
             import json
             import sys
 
+            pending = []
+
+            def emit_tool(request_id, call_id, tool, arguments):
+                print(json.dumps({
+                    "id": request_id,
+                    "method": "item/tool/call",
+                    "params": {"callId": call_id, "threadId": "thread-1",
+                               "turnId": "turn-1", "tool": tool,
+                               "arguments": arguments},
+                }), flush=True)
+
+            def emit_completed():
+                print(json.dumps({"method": "turn/completed", "params": {
+                    "threadId": "thread-1", "turn": {"id": "turn-1", "items": [],
+                                                    "status": "completed"}}}),
+                      flush=True)
+
             for line in sys.stdin:
                 message = json.loads(line)
                 request_id = message.get("id")
                 method = message.get("method")
                 params = message.get("params", {})
+                if method is None and request_id is not None:
+                    if pending:
+                        action = pending.pop(0)
+                        if action == "tool2":
+                            emit_tool(901, "call-2", "write_file",
+                                      {"path": "b.py", "content": "b"})
+                        elif action == "complete":
+                            emit_completed()
+                    continue
                 if request_id is None:
                     continue
                 if method == "initialize":
@@ -618,14 +745,14 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
                     result = {"turn": {"id": "turn-1"}}
                     print(json.dumps({"id": request_id, "result": result}), flush=True)
                     prompt = params["input"][0]["text"]
-                    if "USE TOOL" in prompt:
-                        print(json.dumps({
-                            "id": 900,
-                            "method": "item/tool/call",
-                            "params": {"callId": "call-1", "threadId": "thread-1",
-                                       "turnId": "turn-1", "tool": "read_file",
-                                       "arguments": {"path": "README.md"}},
-                        }), flush=True)
+                    if "USE TWO TOOLS" in prompt:
+                        emit_tool(900, "call-1", "read_file", {"path": "a.py"})
+                        pending.extend(["tool2", "complete"])
+                    elif "LARGE WRITE" in prompt:
+                        emit_tool(900, "call-1", "write_file",
+                                  {"path": "game.py", "content": "x" * 70000})
+                    elif "USE TOOL" in prompt:
+                        emit_tool(900, "call-1", "read_file", {"path": "README.md"})
                     else:
                         print(json.dumps({"method": "item/reasoning/summaryTextDelta",
                                           "params": {"delta": "consider ", "itemId": "r1",
@@ -643,10 +770,7 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
                                 "total": {"inputTokens": 9, "outputTokens": 4,
                                           "cachedInputTokens": 2, "reasoningOutputTokens": 1,
                                           "totalTokens": 13}}}}), flush=True)
-                        print(json.dumps({"method": "turn/completed", "params": {
-                            "threadId": "thread-1", "turn": {"id": "turn-1", "items": [],
-                                                                  "status": "completed"}}}),
-                              flush=True)
+                        emit_completed()
                     continue
                 else:
                     result = {}
@@ -734,3 +858,85 @@ async def test_codex_dynamic_tools_return_to_the_hames_tool_loop(tmp_path: Path)
     assert events[1].tool_call is not None
     assert events[1].tool_call.name == "read_file"
     assert events[-1].finish_reason == "tool_calls"
+
+
+@pytest.mark.asyncio
+async def test_codex_parses_jsonl_tool_calls_larger_than_the_asyncio_default(
+    tmp_path: Path,
+) -> None:
+    provider = CodexProvider(command=(sys.executable, str(_fake_codex_app_server(tmp_path))))
+    events = [
+        event
+        async for event in provider.stream(
+            ModelRequest(
+                model="gpt-5.4-codex",
+                messages=[ProviderMessage(role="user", content="LARGE WRITE")],
+                system="contract",
+                tools=[
+                    ToolDefinition(
+                        name="write_file",
+                        description="Write one file",
+                        input_schema={"type": "object"},
+                    )
+                ],
+            )
+        )
+    ]
+    assert events[1].tool_call is not None
+    assert events[1].tool_call.name == "write_file"
+    assert events[1].tool_call.arguments_delta.count("x") == 70_000
+    assert events[-1].finish_reason == "tool_calls"
+
+
+@pytest.mark.asyncio
+async def test_codex_answers_dynamic_tools_on_the_same_turn(tmp_path: Path) -> None:
+    calls: list[tuple[str, dict[str, object], str | None]] = []
+
+    class _Result:
+        status = "completed"
+
+        def for_model(self) -> str:
+            return '{"status":"completed"}'
+
+    async def tool_handler(
+        name: str, arguments: dict[str, object], provider_call_id: str | None
+    ) -> _Result:
+        calls.append((name, arguments, provider_call_id))
+        return _Result()
+
+    provider = CodexProvider(command=(sys.executable, str(_fake_codex_app_server(tmp_path))))
+    events = [
+        event
+        async for event in provider.stream(
+            ModelRequest(
+                model="gpt-5.4-codex",
+                messages=[ProviderMessage(role="user", content="USE TWO TOOLS")],
+                system="contract",
+                tools=[
+                    ToolDefinition(
+                        name="read_file",
+                        description="Read one file",
+                        input_schema={"type": "object"},
+                    ),
+                    ToolDefinition(
+                        name="write_file",
+                        description="Write one file",
+                        input_schema={"type": "object"},
+                    ),
+                ],
+                tool_handler=tool_handler,
+            )
+        )
+    ]
+    assert [event.kind for event in events] == [
+        StreamEventKind.STARTED,
+        StreamEventKind.TOOL_CALL_DELTA,
+        StreamEventKind.TOOL_CALL_DELTA,
+        StreamEventKind.COMPLETED,
+    ]
+    assert [call[0] for call in calls] == ["read_file", "write_file"]
+    assert events[1].tool_call is not None
+    assert events[1].tool_call.index == 0
+    assert events[2].tool_call is not None
+    assert events[2].tool_call.index == 1
+    assert events[-1].finish_reason == "stop"

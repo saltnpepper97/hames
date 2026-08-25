@@ -262,6 +262,8 @@ class ModelTurn:
     answer_text: str = ""
     plan_ready: bool = False
     plan_markdown: str = ""
+    tools_executed_inline: bool = False
+    inline_tool_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -1366,8 +1368,7 @@ class RunManager:
             planning_only = (
                 session is not None
                 and session.interaction_mode == "plan"
-                and str(user_event.payload.get("purpose", "turn"))
-                not in {"plan_execution", "heal"}
+                and str(user_event.payload.get("purpose", "turn")) not in {"plan_execution", "heal"}
             )
             if self.config.memory.enabled:
                 await self._project_episode(session_id, run_id)
@@ -1872,6 +1873,12 @@ class RunManager:
             str(user_event.payload.get("content", ""))
         )
         healing_run = str(user_event.payload.get("purpose", "turn")) == "heal"
+        tool_context = ToolContext(
+            project_root=Path(session.working_directory),
+            scratch_root=scratch_root,
+            blobs=self.ledger.blob_store,
+            config=self.config.tools,
+        )
         tool_count = 0
         model_turns = 0
         consecutive_no_progress = 0
@@ -1894,6 +1901,11 @@ class RunManager:
                         memories,
                         interaction_mode="auto" if healing_run else session.interaction_mode,
                         healing_run=healing_run,
+                        tool_context=tool_context,
+                        clock=clock,
+                        tool_count=tool_count,
+                        max_tool_calls=limits.max_tool_calls_per_run,
+                        user_requested_memory_maintenance=user_requested_memory_maintenance,
                     )
                 )
             except ProviderError as exc:
@@ -1930,6 +1942,7 @@ class RunManager:
                     correlation_id=run_id,
                 )
                 continue
+            tool_count += turn.inline_tool_count
             if not turn.tool_calls:
                 tasks = await asyncio.to_thread(self.session_tasks.current, session.id)
                 plan_state = await asyncio.to_thread(self.plans.current, session.id)
@@ -2005,12 +2018,6 @@ class RunManager:
                 )
                 return
             consecutive_no_progress = 0
-            context = ToolContext(
-                project_root=Path(session.working_directory),
-                scratch_root=scratch_root,
-                blobs=self.ledger.blob_store,
-                config=self.config.tools,
-            )
             for invocation in turn.tool_calls:
                 if tool_count >= limits.max_tool_calls_per_run:
                     raise RunFailure("tool_call_limit", "run tool-call limit was exhausted")
@@ -2019,7 +2026,7 @@ class RunManager:
                     run_id,
                     session,
                     invocation,
-                    context,
+                    tool_context,
                     clock,
                     turn.allowed_tools,
                     turn.capsule,
@@ -2046,6 +2053,11 @@ class RunManager:
         *,
         interaction_mode: str,
         healing_run: bool,
+        tool_context: ToolContext,
+        clock: ActiveClock,
+        tool_count: int,
+        max_tool_calls: int,
+        user_requested_memory_maintenance: bool,
     ) -> ModelTurn:
         reasoning_parts: list[str] = []
         answer_parts: list[str] = []
@@ -2220,6 +2232,50 @@ class RunManager:
             causation_id=context_event.id,
             correlation_id=run_id,
         )
+        handled_inline = False
+        inline_tool_count = 0
+
+        async def tool_handler(
+            name: str,
+            arguments: dict[str, JsonValue],
+            provider_call_id: str | None,
+        ) -> ToolResult:
+            nonlocal handled_inline, inline_tool_count
+            handled_inline = True
+            if tool_count + inline_tool_count >= max_tool_calls:
+                raise RunFailure("tool_call_limit", "run tool-call limit was exhausted")
+            invocation = ToolInvocation(
+                inline_tool_count, new_id(), provider_call_id, name, arguments
+            )
+            inline_tool_count += 1
+            await self._append(
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                event_type="model.tool_call",
+                payload={
+                    "index": invocation.index,
+                    "tool_call_id": invocation.tool_call_id,
+                    "provider_call_id": invocation.provider_call_id,
+                    "name": invocation.name,
+                    "arguments": invocation.arguments,
+                    "status": "requested",
+                },
+                causation_id=request_event.id,
+                correlation_id=run_id,
+            )
+            return await self._handle_tool(
+                run_id,
+                session,
+                invocation,
+                tool_context,
+                clock,
+                allowed_tools,
+                capsule,
+                user_requested_memory_maintenance,
+                "auto" if healing_run else None,
+            )
+
         request = ModelRequest(
             model=session.model,
             messages=context.messages,
@@ -2227,6 +2283,7 @@ class RunManager:
             reasoning_effort=session.reasoning_effort,
             max_tokens=self.config.context.output_reserve_tokens,
             tools=context.tools,
+            tool_handler=tool_handler,
         )
         started = completed = usage_seen = False
         finish_reason = "stop"
@@ -2334,11 +2391,12 @@ class RunManager:
             if not completed:
                 raise ProviderError("provider_protocol_error", "provider stream did not complete")
             invocations = [tool_calls[index].invocation() for index in sorted(tool_calls)]
+            pending = [] if handled_inline else invocations
             answer = "".join(answer_parts)
             visible_answer, marker_present = (
                 visible_plan_output(answer) if plan_response else (answer, False)
             )
-            plan_ready = marker_present and not invocations
+            plan_ready = marker_present and not pending
             if plan_response and published_answer_length < len(visible_answer):
                 await self._publish_transient(
                     session.id,
@@ -2348,7 +2406,7 @@ class RunManager:
                         text=visible_answer[published_answer_length:],
                     ),
                 )
-            output_interrupted = bool(invocations) or finish_reason == "length"
+            output_interrupted = bool(pending) or finish_reason == "length"
             await self._persist_output(
                 session,
                 run_id,
@@ -2369,23 +2427,24 @@ class RunManager:
                     causation_id=request_event.id,
                     correlation_id=run_id,
                 )
-            for invocation in invocations:
-                await self._append(
-                    session_id=session.id,
-                    run_id=run_id,
-                    agent_id=session.agent_id,
-                    event_type="model.tool_call",
-                    payload={
-                        "index": invocation.index,
-                        "tool_call_id": invocation.tool_call_id,
-                        "provider_call_id": invocation.provider_call_id,
-                        "name": invocation.name,
-                        "arguments": invocation.arguments,
-                        "status": "requested",
-                    },
-                    causation_id=request_event.id,
-                    correlation_id=run_id,
-                )
+            if not handled_inline:
+                for invocation in pending:
+                    await self._append(
+                        session_id=session.id,
+                        run_id=run_id,
+                        agent_id=session.agent_id,
+                        event_type="model.tool_call",
+                        payload={
+                            "index": invocation.index,
+                            "tool_call_id": invocation.tool_call_id,
+                            "provider_call_id": invocation.provider_call_id,
+                            "name": invocation.name,
+                            "arguments": invocation.arguments,
+                            "status": "requested",
+                        },
+                        causation_id=request_event.id,
+                        correlation_id=run_id,
+                    )
             await self._append(
                 session_id=session.id,
                 run_id=run_id,
@@ -2398,12 +2457,14 @@ class RunManager:
             return ModelTurn(
                 request_event.id,
                 finish_reason,
-                invocations,
+                pending,
                 allowed_tools,
                 capsule,
                 answer_text=visible_answer,
                 plan_ready=plan_ready,
                 plan_markdown=visible_answer if plan_ready else "",
+                tools_executed_inline=handled_inline,
+                inline_tool_count=inline_tool_count,
             )
         except asyncio.CancelledError:
             await self._persist_output(
@@ -2576,7 +2637,7 @@ class RunManager:
         capsule: AgentCapsule,
         user_requested_memory_maintenance: bool,
         forced_interaction_mode: str | None,
-    ) -> None:
+    ) -> ToolResult:
         requested = await self._append(
             session_id=session.id,
             run_id=run_id,
@@ -2596,10 +2657,9 @@ class RunManager:
             else:
                 arguments = self.tools.validate(invocation.name, invocation.arguments)
         except ValueError as exc:
-            await self._persist_tool_result(
+            return await self._persist_tool_result(
                 session, run_id, invocation, _tool_failure(str(exc)), requested.id
             )
-            return
         request_hash = approval_request_hash(
             tool_name=invocation.name,
             arguments=invocation.arguments,
@@ -2655,14 +2715,13 @@ class RunManager:
             correlation_id=run_id,
         )
         if decision.decision is PolicyDecisionKind.DENY:
-            await self._persist_tool_result(
+            return await self._persist_tool_result(
                 session,
                 run_id,
                 invocation,
                 ToolResult(status="rejected", summary=decision.reason),
                 policy_decided.id,
             )
-            return
         if decision.decision is PolicyDecisionKind.REQUIRE_CONFIRMATION:
             approved = await self._request_approval(
                 run_id,
@@ -2674,14 +2733,13 @@ class RunManager:
                 allow_session=decision.risk == "manual_mode",
             )
             if not approved:
-                await self._persist_tool_result(
+                return await self._persist_tool_result(
                     session,
                     run_id,
                     invocation,
                     ToolResult(status="rejected", summary="human denied the requested action"),
                     policy_decided.id,
                 )
-                return
         if invocation.name == "spawn_agent":
             started = await self._append(
                 session_id=session.id,
@@ -2700,8 +2758,7 @@ class RunManager:
                 capsule,
                 started.id,
             )
-            await self._persist_tool_result(session, run_id, invocation, result, started.id)
-            return
+            return await self._persist_tool_result(session, run_id, invocation, result, started.id)
         if invocation.name in {"skill_load", "skill_author", "skill_run"}:
             started = await self._append(
                 session_id=session.id,
@@ -2715,8 +2772,7 @@ class RunManager:
             result = await self._handle_skill_tool(
                 run_id, session, arguments, invocation.name, context, started.id, clock
             )
-            await self._persist_tool_result(session, run_id, invocation, result, started.id)
-            return
+            return await self._persist_tool_result(session, run_id, invocation, result, started.id)
         if invocation.name in SELF_MANAGEMENT_TOOLS:
             started = await self._append(
                 session_id=session.id,
@@ -2730,18 +2786,16 @@ class RunManager:
             result = await self._handle_self_management_tool(
                 run_id, session, arguments, invocation.name, started.id
             )
-            await self._persist_tool_result(session, run_id, invocation, result, started.id)
-            return
+            return await self._persist_tool_result(session, run_id, invocation, result, started.id)
         if is_plugin_tool(invocation.name):
             if self.plugin_manager is None:
-                await self._persist_tool_result(
+                return await self._persist_tool_result(
                     session,
                     run_id,
                     invocation,
                     ToolResult(status="failed", summary="plugins are unavailable"),
                     policy_decided.id,
                 )
-                return
             started = await self._append(
                 session_id=session.id,
                 run_id=run_id,
@@ -2762,8 +2816,7 @@ class RunManager:
                     append=self._append,
                 )
             )
-            await self._persist_tool_result(session, run_id, invocation, result, started.id)
-            return
+            return await self._persist_tool_result(session, run_id, invocation, result, started.id)
         tool = self.tools.get(invocation.name)
         if tool is None:
             raise RuntimeError(f"tool disappeared from registry: {invocation.name}")
@@ -2777,7 +2830,7 @@ class RunManager:
             correlation_id=run_id,
         )
         result = await clock.measure(tool.execute(context, arguments))
-        await self._persist_tool_result(session, run_id, invocation, result, started.id)
+        return await self._persist_tool_result(session, run_id, invocation, result, started.id)
 
     async def _handle_self_management_tool(
         self,
@@ -3660,13 +3713,13 @@ class RunManager:
         invocation: ToolInvocation,
         result: ToolResult,
         causation_id: str,
-    ) -> Event:
+    ) -> ToolResult:
         event_type = {
             "completed": "tool.completed",
             "failed": "tool.failed",
             "rejected": "tool.rejected",
         }[result.status]
-        return await self._append(
+        await self._append(
             session_id=session.id,
             run_id=run_id,
             agent_id=session.agent_id,
@@ -3679,6 +3732,7 @@ class RunManager:
             causation_id=causation_id,
             correlation_id=run_id,
         )
+        return result
 
     async def _persist_output(
         self,

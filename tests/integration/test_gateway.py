@@ -649,7 +649,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             assert hashlib.sha256(snapshot).hexdigest() == context_payload["request_hash"]
             persisted_request = json.loads(snapshot)
             assert persisted_request["messages"][0]["content"] == "Hi"
-            assert persisted_request["max_tokens"] == 4096
+            assert persisted_request["max_tokens"] == 16384
 
             runs_response = await client.get(f"/v1/sessions/{session_id}/runs", headers=headers)
             assert runs_response.status_code == 200

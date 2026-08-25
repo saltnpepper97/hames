@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -45,10 +45,11 @@ class ModelRequest(ProviderBoundary):
     messages: list[ProviderMessage]
     system: str
     reasoning_effort: str = ""
-    max_tokens: int = Field(default=4096, gt=0)
+    max_tokens: int = Field(default=16384, gt=0)
     temperature: float | None = Field(default=None, ge=0, le=2)
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
     tools: list[ToolDefinition] = Field(default_factory=lambda: list[ToolDefinition]())
+    tool_handler: Any = Field(default=None, exclude=True)
 
 
 class ProviderModel(ProviderBoundary):

@@ -138,6 +138,7 @@ class OllamaProvider:
 
         started = False
         finish_reason: str | None = None
+        pending_tool_calls: list[ToolCallDelta] = []
         try:
             async with self.client.stream(
                 "POST", f"{self.base_url}/api/chat", json=body
@@ -170,12 +171,14 @@ class OllamaProvider:
                             )
                         if content:
                             yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text=str(content))
-                        for tool_call in _tool_call_deltas(message.get("tool_calls")):
+                        if message.get("tool_calls"):
+                            pending_tool_calls = _tool_call_deltas(message.get("tool_calls"))
+                    if bool(chunk.get("done", False)):
+                        for tool_call in pending_tool_calls:
                             yield StreamEvent(
                                 kind=StreamEventKind.TOOL_CALL_DELTA,
                                 tool_call=tool_call,
                             )
-                    if bool(chunk.get("done", False)):
                         if finish_reason is not None:
                             raise ProviderError(
                                 "malformed_provider_event",

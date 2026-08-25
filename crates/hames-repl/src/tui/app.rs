@@ -537,6 +537,10 @@ pub enum TranscriptItem {
         text: String,
         error: bool,
     },
+    TaskList {
+        title: String,
+        items: Vec<SessionTask>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1284,6 +1288,23 @@ impl App {
 
     pub fn set_tasks(&mut self, tasks: SessionTaskList) {
         self.tasks = tasks;
+    }
+
+    fn upsert_task_list(&mut self) {
+        let item = TranscriptItem::TaskList {
+            title: self.tasks.title.clone(),
+            items: self.tasks.items.clone(),
+        };
+        if matches!(
+            self.transcript.last(),
+            Some(TranscriptItem::TaskList { .. })
+        ) {
+            if let Some(last) = self.transcript.last_mut() {
+                *last = item;
+            }
+            return;
+        }
+        self.transcript.push(item);
     }
 
     pub fn current_context_usage(&self) -> Option<&ContextUsageProjection> {
@@ -2036,6 +2057,7 @@ impl App {
                     .and_then(|value| serde_json::from_value(value).ok())
                     .unwrap_or_default();
                 self.tasks.updated_at = event.created_at.clone();
+                self.upsert_task_list();
             }
             "task.added" => {
                 if let Some(task) = event
@@ -2044,14 +2066,10 @@ impl App {
                     .cloned()
                     .and_then(|value| serde_json::from_value::<SessionTask>(value).ok())
                 {
-                    let text = task.text.clone();
                     let position = task.position.min(self.tasks.items.len());
                     self.tasks.items.insert(position, task);
                     normalize_task_positions(&mut self.tasks.items);
-                    self.transcript.push(TranscriptItem::Status {
-                        text: format!("Task added · {text}"),
-                        error: false,
-                    });
+                    self.upsert_task_list();
                 }
                 self.tasks.updated_at = event.created_at.clone();
             }
@@ -2079,48 +2097,17 @@ impl App {
                         .and_then(|value| usize::try_from(value).ok())
                         .unwrap_or(index)
                         .min(self.tasks.items.len());
-                    let update = event
-                        .payload
-                        .get("status")
-                        .and_then(Value::as_str)
-                        .map(|status| match status {
-                            "completed" => format!("Task completed · {}", task.text),
-                            "in_progress" => format!("Task started · {}", task.text),
-                            "blocked" => format!("Task blocked · {}", task.text),
-                            _ => format!("Task pending · {}", task.text),
-                        })
-                        .or_else(|| {
-                            event
-                                .payload
-                                .get("text")
-                                .and_then(Value::as_str)
-                                .map(|_| format!("Task updated · {}", task.text))
-                        });
                     self.tasks.items.insert(position, task);
                     normalize_task_positions(&mut self.tasks.items);
-                    if let Some(text) = update {
-                        self.transcript
-                            .push(TranscriptItem::Status { text, error: false });
-                    }
+                    self.upsert_task_list();
                 }
                 self.tasks.updated_at = event.created_at.clone();
             }
             "task.removed" => {
                 let task_id = string(&event.payload, "task_id");
-                let removed = self
-                    .tasks
-                    .items
-                    .iter()
-                    .find(|item| item.id == task_id)
-                    .map(|item| item.text.clone());
                 self.tasks.items.retain(|item| item.id != task_id);
                 normalize_task_positions(&mut self.tasks.items);
-                if let Some(text) = removed {
-                    self.transcript.push(TranscriptItem::Status {
-                        text: format!("Task removed · {text}"),
-                        error: false,
-                    });
-                }
+                self.upsert_task_list();
                 self.tasks.updated_at = event.created_at.clone();
             }
             "goal.created" => {
@@ -2946,7 +2933,7 @@ impl App {
             )
         }) && rows.iter().all(|row| row.phase.terminal())
         {
-            *collapsed = true;
+            *collapsed = should_collapse_activity(rows);
         }
     }
 
@@ -3018,7 +3005,7 @@ impl App {
                     rows,
                     collapsed,
                 } if id == run_id => {
-                    for row in rows {
+                    for row in &mut *rows {
                         if !row.phase.terminal() {
                             row.phase = if cancelled {
                                 ActivityPhase::Cancelled
@@ -3027,7 +3014,7 @@ impl App {
                             };
                         }
                     }
-                    *collapsed = true;
+                    *collapsed = should_collapse_activity(rows);
                 }
                 TranscriptItem::Compaction {
                     run_id: id,
@@ -3146,12 +3133,24 @@ fn option(label: &str, detail: &str, action: MenuAction) -> MenuOption {
     }
 }
 
-fn task_checkbox(task: &SessionTask) -> &'static str {
+pub(crate) fn task_checkbox(task: &SessionTask) -> &'static str {
     match task.status.as_str() {
         "completed" => "[✓]",
+        "in_progress" => "[>]",
         "blocked" => "[!]",
         _ => "[ ]",
     }
+}
+
+fn activity_row_has_diff(row: &ActivityRow) -> bool {
+    row.phase == ActivityPhase::Completed
+        && !row.content.is_empty()
+        && (matches!(row.name.as_str(), "edit_file" | "write_file")
+            || (row.content.contains("--- ") && row.content.contains("+++ ")))
+}
+
+fn should_collapse_activity(rows: &[ActivityRow]) -> bool {
+    rows.iter().all(|row| row.phase.terminal()) && !rows.iter().any(activity_row_has_diff)
 }
 
 fn normalize_task_positions(items: &mut [SessionTask]) {
@@ -3391,7 +3390,7 @@ mod tests {
             created_by: "plan".to_owned(),
         };
         assert_eq!(task_checkbox(&task("pending")), "[ ]");
-        assert_eq!(task_checkbox(&task("in_progress")), "[ ]");
+        assert_eq!(task_checkbox(&task("in_progress")), "[>]");
         assert_eq!(task_checkbox(&task("completed")), "[✓]");
         assert_eq!(task_checkbox(&task("blocked")), "[!]");
     }
@@ -3424,9 +3423,49 @@ mod tests {
 
         assert!(app.transcript.iter().any(|item| matches!(
             item,
-            TranscriptItem::Status { text, error: false }
-                if text == "Task completed · Build the game"
+            TranscriptItem::TaskList { items, .. }
+                if items.iter().any(|task| {
+                    task.status == "completed" && task.text == "Build the game"
+                })
         )));
+    }
+
+    #[test]
+    fn completed_writes_keep_their_diff_expanded() {
+        let run_id = "run-write";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.begin_foreground_run(Some(run_id.to_owned()));
+        app.ingest_durable(
+            event(
+                1,
+                "tool.completed",
+                run_id,
+                json!({
+                    "tool_call_id": "write-1",
+                    "name": "write_file",
+                    "status": "completed",
+                    "summary": "wrote src/game.py",
+                    "content": "--- /dev/null\n+++ b/src/game.py\n@@ -0,0 +1 @@\n+print(1)\n",
+                    "structured_data": {"path": "src/game.py", "created": true, "bytes": 8}
+                }),
+            ),
+            true,
+        );
+        app.ingest_durable(
+            event(2, "run.completed", run_id, json!({"active_seconds": 1.0})),
+            true,
+        );
+        let Some(TranscriptItem::Activity {
+            collapsed, rows, ..
+        }) = app
+            .transcript
+            .iter()
+            .find(|item| matches!(item, TranscriptItem::Activity { .. }))
+        else {
+            panic!("write should remain visible as work");
+        };
+        assert!(!*collapsed);
+        assert!(rows.iter().any(|row| row.content.contains("+print(1)")));
     }
 
     #[test]

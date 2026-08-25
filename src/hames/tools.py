@@ -83,7 +83,7 @@ class ListDirArguments(WorkspaceArguments):
 class WriteFileArguments(WorkspaceArguments):
     path: str
     content: str
-    create_parents: bool = False
+    create_parents: bool = True
 
 
 class EditFileArguments(WorkspaceArguments):
@@ -843,8 +843,10 @@ class ToolRegistry:
         tool = self.get(name)
         if tool is None:
             raise ValueError(f"unknown tool: {name}")
+        allowed = set(tool.arguments_type.model_fields)
+        cleaned = {key: value for key, value in arguments.items() if key in allowed}
         try:
-            return tool.arguments_type.model_validate(arguments)
+            return tool.arguments_type.model_validate(cleaned)
         except ValidationError as exc:
             raise ValueError(f"invalid {name} arguments: {exc}") from exc
 

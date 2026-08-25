@@ -17,7 +17,7 @@ use super::app::{
     ActivityCategory, ActivityPhase, AgentChoice, AgentEditField, AgentEditor, AgentEditorPage,
     App, ApprovalModal, Composer, ComposerUnit, DreamPhase, HitAction, HitRegion, MemoryBrowser,
     MenuAction, Modal, ScarBrowser, ScarEditField, ScarEditor, ScrollTarget, Sheet, SheetKind,
-    ThemeKind, TranscriptItem, TranscriptViewport, UsageModal,
+    ThemeKind, TranscriptItem, TranscriptViewport, UsageModal, task_checkbox,
 };
 
 const MINT: Color = Color::Rgb(116, 226, 192);
@@ -912,6 +912,45 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 });
             }
             TranscriptItem::Assistant { .. } => {}
+            TranscriptItem::TaskList { title, items } => {
+                let completed = items
+                    .iter()
+                    .filter(|item| item.status == "completed")
+                    .count();
+                let mut heading = format!("Tasks · {completed}/{}", items.len());
+                if !title.is_empty() && title != "Tasks" {
+                    heading.push_str(" · ");
+                    heading.push_str(title);
+                }
+                lines.push(RenderLine {
+                    line: Line::from(vec![
+                        Span::styled("◆ ", Style::default().fg(GOLD)),
+                        Span::styled(heading, Style::default().fg(GOLD)),
+                    ]),
+                    thought: None,
+                    sheen: None,
+                    hover_group: None,
+                });
+                for task in items {
+                    let glyph = task_checkbox(task);
+                    let color = match task.status.as_str() {
+                        "completed" => MINT,
+                        "in_progress" => GOLD,
+                        "blocked" => CORAL,
+                        _ => MUTED,
+                    };
+                    push_styled_wrapped(
+                        &mut lines,
+                        vec![
+                            Span::styled(format!("{glyph} "), Style::default().fg(color)),
+                            Span::styled(task.text.clone(), Style::default().fg(color)),
+                        ],
+                        width,
+                        "  ",
+                        Style::default().fg(color),
+                    );
+                }
+            }
             TranscriptItem::Status { text, error } => {
                 lines.push(RenderLine {
                     line: Line::from(vec![
@@ -4147,7 +4186,8 @@ mod tests {
     };
 
     use crate::api::{
-        ContextUsageProjection, Goal, MemoryRecord, QueuedMessage, Scar, Session, UsageProjection,
+        ContextUsageProjection, Goal, MemoryRecord, QueuedMessage, Scar, Session, SessionTask,
+        UsageProjection,
     };
     use crate::tui::app::{
         ActivityPhase, ActivityRow, AgentEditor, AgentEditorPage, App, ApprovalModal, DreamPhase,
@@ -4646,6 +4686,46 @@ mod tests {
                 .iter()
                 .any(|span| span.content.contains("src/main.rs") && span.style.fg == Some(SKY))
         );
+    }
+
+    #[test]
+    fn task_list_renders_started_and_completed_glyphs() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::TaskList {
+            title: "Game".to_owned(),
+            items: vec![
+                SessionTask {
+                    id: "task-1".to_owned(),
+                    text: "Scaffold the game".to_owned(),
+                    status: "in_progress".to_owned(),
+                    position: 0,
+                    created_by: "agent".to_owned(),
+                },
+                SessionTask {
+                    id: "task-2".to_owned(),
+                    text: "Draw the player".to_owned(),
+                    status: "pending".to_owned(),
+                    position: 1,
+                    created_by: "agent".to_owned(),
+                },
+                SessionTask {
+                    id: "task-3".to_owned(),
+                    text: "Create README".to_owned(),
+                    status: "completed".to_owned(),
+                    position: 2,
+                    created_by: "agent".to_owned(),
+                },
+            ],
+        });
+        let rendered = transcript_lines(&app, 80)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("◆ Tasks · 1/3 · Game"));
+        assert!(rendered.contains("[>] Scaffold the game"));
+        assert!(rendered.contains("[ ] Draw the player"));
+        assert!(rendered.contains("[✓] Create README"));
     }
 
     #[test]

@@ -234,7 +234,7 @@ fetch_max_chars = 30000
 
 [context]
 fallback_window_tokens = 32768
-output_reserve_tokens = 4096
+output_reserve_tokens = 16384
 stable_instruction_limit_tokens = 8192
 agent_identity_limit_tokens = 4096
 tool_schema_limit_tokens = 8192

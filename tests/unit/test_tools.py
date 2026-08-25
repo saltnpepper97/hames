@@ -45,7 +45,7 @@ async def test_read_write_and_exact_edit_are_deterministic(tmp_path: Path) -> No
     context = tool_context(tmp_path)
     written = await WriteFileTool().execute(
         context,
-        WriteFileArguments(path="src/value.txt", content="alpha\nbeta\n", create_parents=True),
+        WriteFileArguments(path="src/value.txt", content="alpha\nbeta\n"),
     )
     assert written.status == "completed"
     assert written.structured_data["created"] is True
@@ -90,6 +90,20 @@ async def test_paths_cannot_escape_and_large_results_use_blobs(tmp_path: Path) -
     escaped = await ReadFileTool().execute(context, ReadFileArguments(path="../outside.txt"))
     assert escaped.status == "failed"
     assert "relative" in escaped.summary
+
+
+def test_write_file_ignores_unknown_model_fields() -> None:
+    arguments = ToolRegistry().validate(
+        "write_file",
+        {
+            "path": "src/game.py",
+            "content": "print(1)\n",
+            "explanation": "create the game entrypoint",
+        },
+    )
+    assert isinstance(arguments, WriteFileArguments)
+    assert arguments.path == "src/game.py"
+    assert arguments.create_parents is True
 
 
 @pytest.mark.asyncio

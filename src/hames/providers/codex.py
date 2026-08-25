@@ -23,6 +23,9 @@ from hames.providers.base import (
     Usage,
 )
 
+# asyncio StreamReader defaults to 64KiB. A write_file tool call is one JSONL line.
+JSONL_LINE_LIMIT = 16 * 1024 * 1024
+
 
 class _CodexConnection:
     def __init__(self, command: Sequence[str], timeout_seconds: float) -> None:
@@ -42,6 +45,7 @@ class _CodexConnection:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
+                limit=JSONL_LINE_LIMIT,
             )
         except FileNotFoundError as exc:
             raise ProviderError(
@@ -113,6 +117,11 @@ class _CodexConnection:
             raise ProviderError(
                 "provider_timeout", "Codex app-server timed out", retryable=True
             ) from exc
+        except asyncio.LimitOverrunError as exc:
+            raise ProviderError(
+                "provider_protocol_error",
+                "Codex JSONL message exceeded the stdio line limit",
+            ) from exc
         if not line:
             raise ProviderError(
                 "provider_transport_error",
@@ -131,6 +140,17 @@ class _CodexConnection:
             {
                 "id": request_id,
                 "error": {"code": -32601, "message": message},
+            }
+        )
+
+    async def respond_tool_result(self, request_id: JsonValue, text: str, *, success: bool) -> None:
+        await self._write(
+            {
+                "id": request_id,
+                "result": {
+                    "contentItems": [{"type": "inputText", "text": text}],
+                    "success": success,
+                },
             }
         )
 
@@ -307,6 +327,7 @@ class CodexProvider:
                 provider_request_id=turn_id or thread_id,
             )
 
+            tool_index = 0
             while True:
                 message = await connection.next_message()
                 method = str(message.get("method", ""))
@@ -335,18 +356,26 @@ class CodexProvider:
                     yield StreamEvent(
                         kind=StreamEventKind.TOOL_CALL_DELTA,
                         tool_call=ToolCallDelta(
-                            index=0,
+                            index=tool_index,
                             provider_call_id=call_id,
                             name=tool_name,
                             arguments_delta=json.dumps(arguments, separators=(",", ":")),
                         ),
                     )
-                    yield StreamEvent(
-                        kind=StreamEventKind.COMPLETED,
-                        finish_reason="tool_calls",
-                        provider_request_id=turn_id or thread_id,
-                    )
-                    return
+                    tool_index += 1
+                    handler = request.tool_handler
+                    if handler is None:
+                        yield StreamEvent(
+                            kind=StreamEventKind.COMPLETED,
+                            finish_reason="tool_calls",
+                            provider_request_id=turn_id or thread_id,
+                        )
+                        return
+                    result = await handler(tool_name, arguments, call_id)
+                    text = result.for_model() if hasattr(result, "for_model") else str(result)
+                    success = getattr(result, "status", "completed") == "completed"
+                    await connection.respond_tool_result(message.get("id"), text, success=success)
+                    continue
                 if method in {
                     "item/reasoning/summaryTextDelta",
                     "item/reasoning/textDelta",
