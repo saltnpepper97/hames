@@ -87,6 +87,43 @@ def test_retirement_preserves_capsule_outside_active_registry(hames_paths: Hames
         registry.retire("default")
 
 
+def test_default_agent_can_be_customized_but_keeps_stable_identity(
+    hames_paths: HamesPaths,
+) -> None:
+    hames_paths.ensure_foundation()
+    registry = AgentRegistry(hames_paths.agents)
+
+    updated = registry.update(
+        "default",
+        name="Navigator",
+        instructions="# Role\nGuide the work carefully.",
+    )
+
+    assert updated.metadata.id == "default"
+    assert updated.metadata.name == "Navigator"
+    assert updated.instructions == "# Role\nGuide the work carefully."
+    assert updated.path == hames_paths.default_agent
+    assert updated.path.stat().st_mode & 0o777 == 0o600
+    with pytest.raises(ValueError, match="default"):
+        registry.retire("default")
+
+
+def test_agent_update_rejects_identity_change_without_touching_capsule(
+    hames_paths: HamesPaths,
+) -> None:
+    hames_paths.ensure_foundation()
+    registry = AgentRegistry(hames_paths.agents)
+    original = hames_paths.default_agent.read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError, match="ID cannot be changed"):
+        registry.update(
+            "default",
+            source="---\nid: replacement\nname: Replacement\n---\nTake over.\n",
+        )
+
+    assert hames_paths.default_agent.read_text(encoding="utf-8") == original
+
+
 def test_read_only_and_tool_lists_only_restrict_authority(tmp_path: Path) -> None:
     path = tmp_path / "AGENT.md"
     path.write_text(

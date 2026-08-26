@@ -1,11 +1,11 @@
 # Runtime and policy boundary
 
 The Python runtime is the only component allowed to execute model-requested work.
-Clients send messages and decisions through protocol v28; provider adapters only
+Clients send messages and decisions through protocol v29; provider adapters only
 translate normalized messages and streams. Neither the Rust REPL nor a provider
 adapter directly reads files, writes files, or starts commands.
 
-Every protocol-v28 message admission carries a client-generated UUID. The gateway
+Every protocol-v29 message admission carries a client-generated UUID. The gateway
 stores a durable receipt keyed by session and submission ID before accepting the
 message. Retrying the same payload returns the original run or queue result;
 reusing that ID with different content is rejected. This makes a lost HTTP

@@ -399,7 +399,9 @@ target/debug/hames session fork <session-id> --at <event-id-or-sequence>
 target/debug/hames session export <session-id> --format markdown --output audit.md
 target/debug/hames event verify <event-id>
 target/debug/hames agent list
-target/debug/hames agent create reviewer --authority read-only
+target/debug/hames agent create --name Reviewer --authority read-only
+target/debug/hames agent edit default --name Navigator
+target/debug/hames agent edit default --from ./AGENT.md
 target/debug/hames skill list <session-id>
 target/debug/hames skill show <session-id> <skill-id>
 target/debug/hames skill jobs <session-id>

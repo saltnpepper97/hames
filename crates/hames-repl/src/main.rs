@@ -11,7 +11,7 @@ use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
@@ -60,7 +60,7 @@ enum Command {
         #[command(subcommand)]
         action: SessionAction,
     },
-    /// List, create, or retire portable agent capsules under ~/.hames/agents.
+    /// List, create, edit, or retire portable agent capsules under ~/.hames/agents.
     Agent {
         #[command(subcommand)]
         action: AgentAction,
@@ -128,6 +128,16 @@ enum AgentAction {
         authority: AgentAuthority,
         /// Seed from an AGENT.md file instead of the default body.
         #[arg(long = "from")]
+        from_path: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Change an agent's display name or replace its AGENT.md; its id stays fixed.
+    Edit {
+        id: String,
+        #[arg(long, conflicts_with = "from_path")]
+        name: Option<String>,
+        #[arg(long = "from", conflicts_with = "name")]
         from_path: Option<PathBuf>,
         #[arg(long)]
         json: bool,
@@ -536,10 +546,7 @@ async fn run_agent_command(action: AgentAction) -> Result<()> {
             if json {
                 print_json(&agent)
             } else {
-                println!(
-                    "{}  {}\n{}",
-                    agent.agent.id, agent.agent.authority, agent.instructions
-                );
+                print!("{}", agent.source);
                 Ok(())
             }
         }
@@ -568,6 +575,37 @@ async fn run_agent_command(action: AgentAction) -> Result<()> {
                 print_json(&agent)
             } else {
                 println!("created agent {} ({})", agent.agent.id, agent.agent.name);
+                Ok(())
+            }
+        }
+        AgentAction::Edit {
+            id,
+            name,
+            from_path,
+            json,
+        } => {
+            if name.is_none() && from_path.is_none() {
+                bail!("agent edit requires --name or --from");
+            }
+            let source = from_path
+                .as_ref()
+                .map(fs::read_to_string)
+                .transpose()
+                .with_context(|| {
+                    format!(
+                        "failed to read {}",
+                        from_path
+                            .as_ref()
+                            .map_or(String::new(), |path| path.display().to_string())
+                    )
+                })?;
+            let agent = client
+                .update_agent(&id, name.as_deref(), None, source.as_deref())
+                .await?;
+            if json {
+                print_json(&agent)
+            } else {
+                println!("updated agent {} ({})", agent.agent.id, agent.agent.name);
                 Ok(())
             }
         }

@@ -261,6 +261,20 @@ class AgentCreateRequest(ApiModel):
     source: str | None = Field(default=None, max_length=65_536)
 
 
+class AgentUpdateRequest(ApiModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    instructions: str | None = Field(default=None, min_length=1, max_length=65_536)
+    source: str | None = Field(default=None, min_length=1, max_length=65_536)
+
+    @model_validator(mode="after")
+    def has_one_update_form(self) -> AgentUpdateRequest:
+        if self.source is not None and (self.name is not None or self.instructions is not None):
+            raise ValueError("source cannot be combined with name or instructions")
+        if self.source is None and self.name is None and self.instructions is None:
+            raise ValueError("agent update requires name, instructions, or source")
+        return self
+
+
 class MemoryCaptureRequest(ApiModel):
     content: str = Field(min_length=1, max_length=32_000)
 
@@ -355,6 +369,7 @@ class AgentPublic(ApiModel):
 
 
 class AgentDetail(AgentPublic):
+    source: str
     instructions: str
     tools_allow: list[str]
     tools_deny: list[str]
@@ -807,6 +822,22 @@ def create_app(state: GatewayState) -> FastAPI:
             return _agent_detail(capsule)
         except FileExistsError as exc:
             raise ApiError(409, "agent_exists", str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(400, "invalid_agent", str(exc)) from exc
+
+    @app.patch("/v1/agents/{agent_id}", dependencies=auth, response_model=AgentDetail)
+    async def update_agent(agent_id: str, request: AgentUpdateRequest) -> AgentDetail:
+        try:
+            capsule = await asyncio.to_thread(
+                state.agents.update,
+                agent_id,
+                name=request.name,
+                instructions=request.instructions,
+                source=request.source,
+            )
+            return _agent_detail(capsule)
+        except FileNotFoundError as exc:
+            raise ApiError(404, "agent_not_found", str(exc)) from exc
         except ValueError as exc:
             raise ApiError(400, "invalid_agent", str(exc)) from exc
 
@@ -2297,6 +2328,7 @@ def _agent_detail(capsule: AgentCapsule) -> AgentDetail:
                 content_hash=capsule.content_hash,
             )
         ).model_dump(),
+        source=capsule.path.read_text(encoding="utf-8"),
         instructions=capsule.instructions,
         tools_allow=capsule.metadata.tools.allow,
         tools_deny=capsule.metadata.tools.deny,

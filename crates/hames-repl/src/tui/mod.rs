@@ -514,7 +514,13 @@ enum Effect {
     DeleteMemory(String),
     DeleteScar(String),
     UpdateScar(ScarUpdate),
+    EditAgent(String),
     CreateAgent(String),
+    UpdateAgent {
+        agent_id: String,
+        name: String,
+        instructions: String,
+    },
     DeleteAgent(String),
 }
 
@@ -621,6 +627,17 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('k') {
         return Some(Effect::OpenCommands);
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && key.code == KeyCode::Char('e')
+        && let Some(sheet) = &app.sheet
+        && sheet.kind == SheetKind::Agents
+        && let Some(MenuAction::SetAgent(agent_id)) = sheet
+            .options
+            .get(sheet.selected)
+            .map(|option| &option.action)
+    {
+        return Some(Effect::EditAgent(agent_id.clone()));
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p') {
         if let Some(paste) = app.composer.paste_at_cursor() {
@@ -1169,6 +1186,19 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             if key.modifiers.contains(KeyModifiers::CONTROL)
                 && matches!(key.code, KeyCode::Enter | KeyCode::Char('j'))
             {
+                if let Some(agent_id) = &editor.editing_agent_id {
+                    return match agent_customization(editor) {
+                        Ok((name, instructions)) => Some(Effect::UpdateAgent {
+                            agent_id: agent_id.clone(),
+                            name,
+                            instructions,
+                        }),
+                        Err(message) => {
+                            app.notice = Some(message);
+                            None
+                        }
+                    };
+                }
                 return match agent_source(editor) {
                     Ok(source) => Some(Effect::CreateAgent(source)),
                     Err(message) => {
@@ -1179,7 +1209,7 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             }
             if editor.page == AgentEditorPage::Access {
                 match key.code {
-                    KeyCode::Left | KeyCode::Right => {
+                    KeyCode::Left | KeyCode::Right if !editor.is_editing() => {
                         editor.page = AgentEditorPage::Identity;
                         None
                     }
@@ -1206,19 +1236,19 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                             .modifiers
                             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
                 match key.code {
-                    KeyCode::Left | KeyCode::Right => {
+                    KeyCode::Left | KeyCode::Right if !editor.is_editing() => {
                         editor.page = AgentEditorPage::Access;
                         editor.access_selected = 0;
                     }
-                    KeyCode::Up => editor.field = editor.field.previous(),
-                    KeyCode::Down => editor.field = editor.field.next(),
+                    KeyCode::Up => editor.move_field(true),
+                    KeyCode::Down => editor.move_field(false),
                     KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                        editor.field = editor.field.previous();
+                        editor.move_field(true);
                     }
-                    KeyCode::Tab => editor.field = editor.field.next(),
-                    KeyCode::BackTab => editor.field = editor.field.previous(),
+                    KeyCode::Tab => editor.move_field(false),
+                    KeyCode::BackTab => editor.move_field(true),
                     KeyCode::Enter if editor.field != AgentEditField::Instructions => {
-                        editor.field = editor.field.next();
+                        editor.move_field(false);
                     }
                     KeyCode::Enter => editor.instructions.insert_text("\n"),
                     KeyCode::Backspace => editor.active_text_mut().backspace(),
@@ -2117,6 +2147,16 @@ async fn apply_effect(
             app.modal = Some(Modal::Scars(browser));
             app.notice = Some("Scar changes saved".to_owned());
         }
+        Effect::EditAgent(agent_id) => {
+            app.notice = Some("Loading agent capsule…".to_owned());
+            let agent = client.agent(&agent_id).await?;
+            app.modal = Some(Modal::AgentEdit(AgentEditor::edit(
+                agent.agent.id,
+                &agent.agent.name,
+                &agent.instructions,
+            )));
+            app.notice = None;
+        }
         Effect::CreateAgent(source) => {
             app.notice = Some("Creating agent capsule…".to_owned());
             let created = client.create_agent(None, "standard", Some(&source)).await?;
@@ -2131,6 +2171,30 @@ async fn apply_effect(
             }
             app.notice = Some(format!("Agent {} created", created.agent.name));
         }
+        Effect::UpdateAgent {
+            agent_id,
+            name,
+            instructions,
+        } => {
+            app.notice = Some("Saving agent capsule…".to_owned());
+            let updated = client
+                .update_agent(&agent_id, Some(&name), Some(&instructions), None)
+                .await?;
+            app.modal = None;
+            refresh_agents_sheet(client, app).await?;
+            if let Some(sheet) = &mut app.sheet {
+                sheet.selected = sheet
+                    .options
+                    .iter()
+                    .position(|option| matches!(&option.action, MenuAction::SetAgent(id) if id == &agent_id))
+                    .unwrap_or(0);
+            }
+            if app.session.agent_id == agent_id {
+                app.agent_name = updated.agent.name.clone();
+                app.context_usage = None;
+            }
+            app.notice = Some(format!("Agent {} updated", updated.agent.name));
+        }
         Effect::DeleteAgent(agent_id) => {
             if agent_id == "default" {
                 app.notice = Some("The default Hames agent cannot be deleted".to_owned());
@@ -2140,7 +2204,7 @@ async fn apply_effect(
                 app.session = client
                     .update_session_agent(&app.session.id, "default")
                     .await?;
-                app.agent_name = "Hames".to_owned();
+                app.agent_name = client.agent("default").await?.agent.name;
                 app.context_usage = None;
             }
             client.retire_agent(&agent_id).await?;
@@ -3162,6 +3226,18 @@ fn agent_source(editor: &AgentEditor) -> std::result::Result<String, String> {
     ))
 }
 
+fn agent_customization(editor: &AgentEditor) -> std::result::Result<(String, String), String> {
+    let name = editor.name.text().trim().to_owned();
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err("Agent name must be between 1 and 80 characters".to_owned());
+    }
+    let instructions = editor.instructions.text().trim().to_owned();
+    if instructions.is_empty() {
+        return Err("AGENT.md instructions cannot be empty".to_owned());
+    }
+    Ok((name, instructions))
+}
+
 fn compact_home(value: &str) -> String {
     env::var("HOME")
         .ok()
@@ -3837,6 +3913,30 @@ mod tests {
     }
 
     #[test]
+    fn agent_sheet_ctrl_e_opens_editing_for_default() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.sheet = Some(Sheet {
+            kind: SheetKind::Agents,
+            title: "Agents".to_owned(),
+            options: vec![MenuOption {
+                label: "Hames".to_owned(),
+                detail: "standard · default".to_owned(),
+                action: MenuAction::SetAgent("default".to_owned()),
+            }],
+            selected: 0,
+            pending_delete: None,
+        });
+
+        assert!(matches!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL)
+            ),
+            Some(Effect::EditAgent(agent_id)) if agent_id == "default"
+        ));
+    }
+
+    #[test]
     fn new_agent_source_explicitly_records_selected_and_denied_capabilities() {
         let mut editor = AgentEditor::new(
             vec!["read_file".to_owned(), "write_file".to_owned()],
@@ -3885,6 +3985,35 @@ mod tests {
                 KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)
             ),
             Some(Effect::CreateAgent(source)) if source.contains("\"id\": \"reviewer\"")
+        ));
+    }
+
+    #[test]
+    fn existing_agent_editor_keeps_id_fixed_and_saves_name_and_instructions() {
+        let editor = AgentEditor::edit(
+            "default".to_owned(),
+            "Navigator",
+            "# Role\nGuide carefully.",
+        );
+        let mut app = App::new(session(), Vec::new(), true);
+        app.modal = Some(Modal::AgentEdit(editor));
+
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)).is_none());
+        assert!(matches!(
+            &app.modal,
+            Some(Modal::AgentEdit(editor))
+                if editor.page == crate::tui::app::AgentEditorPage::Identity
+                    && editor.slug.text() == "default"
+        ));
+        assert!(matches!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)
+            ),
+            Some(Effect::UpdateAgent { agent_id, name, instructions })
+                if agent_id == "default"
+                    && name == "Navigator"
+                    && instructions == "# Role\nGuide carefully."
         ));
     }
 

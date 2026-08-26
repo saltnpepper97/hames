@@ -1747,6 +1747,8 @@ fn sheet_shortcuts(app: &App) -> Line<'static> {
         spans.extend([
             Span::styled("Ctrl+N", Style::default().fg(INPUT).bold()),
             Span::styled(" new · ", Style::default().fg(MUTED)),
+            Span::styled("Ctrl+E", Style::default().fg(INPUT).bold()),
+            Span::styled(" edit · ", Style::default().fg(MUTED)),
         ]);
         let selected_is_default = sheet
             .options
@@ -2530,7 +2532,16 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         Modal::Memory(browser) => ("Memory", memory_browser_body(browser), 92, 23),
         Modal::Scars(browser) => ("Scars and evolution", scar_browser_body(browser), 94, 25),
         Modal::ScarEdit(editor) => ("Edit Scar", scar_editor_body(editor), 94, 25),
-        Modal::AgentEdit(editor) => ("New Agent", agent_editor_body(editor), 96, 27),
+        Modal::AgentEdit(editor) => (
+            if editor.is_editing() {
+                "Edit Agent"
+            } else {
+                "New Agent"
+            },
+            agent_editor_body(editor),
+            96,
+            27,
+        ),
         Modal::PastePreview(value) => {
             let mut lines = vec![
                 Line::from(Span::styled(
@@ -3048,14 +3059,15 @@ fn agent_editor_body(editor: &AgentEditor) -> Vec<Line<'static>> {
 }
 
 fn agent_identity_body(editor: &AgentEditor) -> Vec<Line<'static>> {
+    let mode_hint = if editor.is_editing() {
+        "  1 / 1 · id is permanent; name and instructions are customizable"
+    } else {
+        "  1 / 2 · AGENT.md is stored as portable Markdown"
+    };
     let mut lines = vec![
         Line::from(vec![
             Span::styled("Identity", Style::default().fg(INPUT).bold()),
-            Span::styled("  1 / 2", Style::default().fg(MUTED)),
-            Span::styled(
-                " · AGENT.md is stored as portable Markdown",
-                Style::default().fg(MUTED),
-            ),
+            Span::styled(mode_hint, Style::default().fg(MUTED)),
         ]),
         Line::from(""),
     ];
@@ -3091,10 +3103,23 @@ fn agent_identity_body(editor: &AgentEditor) -> Vec<Line<'static>> {
     lines.push(Line::from(vec![
         Span::styled("↑↓", Style::default().fg(INPUT).bold()),
         Span::styled(" field · ", Style::default().fg(MUTED)),
-        Span::styled("←→", Style::default().fg(INPUT).bold()),
-        Span::styled(" page · ", Style::default().fg(MUTED)),
+        Span::styled(
+            if editor.is_editing() { "" } else { "←→" },
+            Style::default().fg(INPUT).bold(),
+        ),
+        Span::styled(
+            if editor.is_editing() { "" } else { " page · " },
+            Style::default().fg(MUTED),
+        ),
         Span::styled("Ctrl+Enter", Style::default().fg(INPUT).bold()),
-        Span::styled(" create · ", Style::default().fg(MUTED)),
+        Span::styled(
+            if editor.is_editing() {
+                " save · "
+            } else {
+                " create · "
+            },
+            Style::default().fg(MUTED),
+        ),
         Span::styled("Esc", Style::default().fg(INPUT).bold()),
         Span::styled(" cancel", Style::default().fg(MUTED)),
     ]));

@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import shutil
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -278,9 +279,48 @@ class AgentRegistry:
         shutil.move(str(source), destination)
         return destination
 
+    def update(
+        self,
+        agent_id: str,
+        *,
+        name: str | None = None,
+        instructions: str | None = None,
+        source: str | None = None,
+    ) -> AgentCapsule:
+        """Atomically update a capsule without changing its stable identity."""
+
+        current = self.load(agent_id)
+        if source is not None:
+            if name is not None or instructions is not None:
+                raise ValueError("source cannot be combined with name or instructions")
+            raw = source
+        else:
+            if name is None and instructions is None:
+                raise ValueError("agent update requires name, instructions, or source")
+            metadata_raw, current_instructions = _split_agent_markdown(
+                current.path.read_text(encoding="utf-8"), origin=str(current.path)
+            )
+            if name is not None:
+                stripped_name = name.strip()
+                if not stripped_name:
+                    raise ValueError("agent name cannot be empty")
+                metadata_raw["name"] = stripped_name
+            body = current_instructions if instructions is None else instructions.strip()
+            raw = f"---\n{yaml.safe_dump(metadata_raw, sort_keys=False)}---\n{body}\n"
+
+        candidate = _load_agent_source(raw, current.path)
+        if candidate.metadata.id != agent_id:
+            raise ValueError("agent ID cannot be changed")
+        _atomic_replace(current.path, raw)
+        return self.load(agent_id)
+
 
 def load_agent(path: Path) -> AgentCapsule:
     raw = path.read_text(encoding="utf-8")
+    return _load_agent_source(raw, path)
+
+
+def _load_agent_source(raw: str, path: Path) -> AgentCapsule:
     metadata_raw, instructions = _split_agent_markdown(raw, origin=str(path))
     metadata = AgentMetadata.model_validate(metadata_raw)
     if not instructions:
@@ -291,6 +331,26 @@ def load_agent(path: Path) -> AgentCapsule:
         content_hash=hashlib.sha256(raw.encode()).hexdigest(),
         path=path,
     )
+
+
+def _atomic_replace(path: Path, raw: str) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".AGENT.md.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def slugify_agent_name(name: str) -> str:

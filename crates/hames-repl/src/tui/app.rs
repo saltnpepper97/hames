@@ -716,6 +716,7 @@ pub struct AgentChoice {
 
 #[derive(Clone, Debug)]
 pub struct AgentEditor {
+    pub editing_agent_id: Option<String>,
     pub page: AgentEditorPage,
     pub field: AgentEditField,
     pub name: Composer,
@@ -730,6 +731,7 @@ pub struct AgentEditor {
 impl AgentEditor {
     pub fn new(tools: Vec<String>, skills: Vec<(String, String, String)>) -> Self {
         Self {
+            editing_agent_id: None,
             page: AgentEditorPage::Identity,
             field: AgentEditField::Name,
             name: Composer::default(),
@@ -758,6 +760,20 @@ impl AgentEditor {
         }
     }
 
+    pub fn edit(agent_id: String, name: &str, instructions: &str) -> Self {
+        let mut editor = Self::new(Vec::new(), Vec::new());
+        editor.editing_agent_id = Some(agent_id.clone());
+        editor.name.insert_text(name);
+        editor.slug.insert_text(&agent_id);
+        editor.instructions.insert_text(instructions);
+        editor.slug_manual = true;
+        editor
+    }
+
+    pub fn is_editing(&self) -> bool {
+        self.editing_agent_id.is_some()
+    }
+
     pub fn active_text_mut(&mut self) -> &mut Composer {
         match self.field {
             AgentEditField::Name => &mut self.name,
@@ -767,7 +783,7 @@ impl AgentEditor {
     }
 
     pub fn sync_slug(&mut self) {
-        if self.slug_manual {
+        if self.slug_manual || self.is_editing() {
             return;
         }
         self.slug.clear();
@@ -800,6 +816,19 @@ impl AgentEditor {
         } else if let Some(skill) = self.skills.get_mut(index.saturating_sub(self.tools.len())) {
             skill.selected = !skill.selected;
         }
+    }
+
+    pub fn move_field(&mut self, backwards: bool) {
+        self.field = if self.is_editing() {
+            match self.field {
+                AgentEditField::Name => AgentEditField::Instructions,
+                AgentEditField::Slug | AgentEditField::Instructions => AgentEditField::Name,
+            }
+        } else if backwards {
+            self.field.previous()
+        } else {
+            self.field.next()
+        };
     }
 }
 

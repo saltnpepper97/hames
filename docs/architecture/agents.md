@@ -44,6 +44,22 @@ A new capsule is immediately useful: every tool the surrounding policy already
 allows, Skills discoverable through the catalog (not all loaded), default
 instructions. Specialization is optional YAML on the same file.
 
+## Customize
+
+Every capsule, including `default`, can change its display name and Markdown
+instructions. The terminal UI exposes this with `Ctrl+E` in the Agents sheet;
+the CLI can update the name or replace the complete capsule:
+
+```text
+hames agent edit default --name Navigator
+hames agent edit default --from ./AGENT.md
+```
+
+The directory id and frontmatter `id` are permanent. Replacing `AGENT.md` is
+validated and written atomically, so an invalid replacement leaves the current
+capsule untouched. The `default` capsule may be customized but never retired or
+deleted.
+
 ## Tools vs Skills vs plugins
 
 | | Tools | Skills | Plugins |

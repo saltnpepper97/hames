@@ -814,7 +814,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 28
+            assert health_body["protocol_version"] == 29
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -2426,6 +2426,39 @@ Review changes carefully.
         assert protected.status_code == 409
         assert retired.status_code == 200
         assert [agent["id"] for agent in listed.json()] == ["default"]
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_customizes_default_agent_without_making_it_deletable(
+    tmp_path: Path,
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            updated = await client.patch(
+                "/v1/agents/default",
+                headers=headers,
+                json={
+                    "name": "Navigator",
+                    "instructions": "# Role\nGuide the work carefully.",
+                },
+            )
+            listed = await client.get("/v1/agents", headers=headers)
+            protected = await client.delete("/v1/agents/default", headers=headers)
+
+        assert updated.status_code == 200
+        assert updated.json()["id"] == "default"
+        assert updated.json()["name"] == "Navigator"
+        assert updated.json()["instructions"] == "# Role\nGuide the work carefully."
+        assert "name: Navigator" in updated.json()["source"]
+        assert listed.json()[0]["name"] == "Navigator"
+        assert protected.status_code == 409
+        assert paths.default_agent.is_file()
     finally:
         await state.runs.close()
 

@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 28;
+pub const PROTOCOL_VERSION: u32 = 29;
 pub const HEAL_SCARS_PROMPT: &str = "Heal behavioral scars now.";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -212,6 +212,7 @@ pub struct Agent {
 pub struct AgentDetail {
     #[serde(flatten)]
     pub agent: Agent,
+    pub source: String,
     pub instructions: String,
     pub tools_allow: Vec<String>,
     pub tools_deny: Vec<String>,
@@ -813,6 +814,16 @@ struct CreateAgent<'a> {
 }
 
 #[derive(Serialize)]
+struct UpdateAgent<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instructions: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<&'a str>,
+}
+
+#[derive(Serialize)]
 struct PluginPath<'a> {
     path: &'a str,
 }
@@ -1046,6 +1057,28 @@ impl GatewayClient {
     pub async fn validate_agent(&self, id: &str) -> Result<AgentDetail> {
         decode(
             self.post(&format!("/v1/agents/{id}/validate"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn update_agent(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        instructions: Option<&str>,
+        source: Option<&str>,
+    ) -> Result<AgentDetail> {
+        decode(
+            self.http
+                .patch(format!("{}/v1/agents/{id}", self.base_url))
+                .bearer_auth(&self.token)
+                .json(&UpdateAgent {
+                    name,
+                    instructions,
+                    source,
+                })
                 .send()
                 .await?,
         )
