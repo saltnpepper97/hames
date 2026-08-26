@@ -113,6 +113,11 @@ Do not start with a fuzzy model-controlled patch engine.
 - bounded output with blob spill;
 - exit code and duration.
 
+The implemented interface also accepts `background: true`. It returns a terminal
+ID without blocking the model loop, emits durable start/completion/failure/stop
+events, and is controlled by the authenticated session `/stop` action. Background
+calls use project or confirmed home workspaces rather than per-run scratch.
+
 The initial interface accepts one command string and executes it with explicit
 `/bin/bash -lc` semantics. Multiple model-requested calls execute sequentially,
 even when a provider returns them together.

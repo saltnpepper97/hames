@@ -814,7 +814,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 29
+            assert health_body["protocol_version"] == 30
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -3914,6 +3914,159 @@ Teach $ARGUMENTS with one example.
             loaded = next(event for event in events if event["type"] == "skill.loaded")
             assert loaded["payload"]["reason"] == "user_selected"  # type: ignore[index]
             assert "Teach finite state machines with one example." in fake.requests[0].system
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_background_shell_is_listed_and_stop_closes_it_with_transcript_events(
+    tmp_path: Path,
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text(
+        "[memory]\nenabled = false\n[skills]\nenabled = false\n[evolution]\nenabled = false\n",
+        encoding="utf-8",
+    )
+    provider = FakeProvider(
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="background-shell",
+                        name="shell",
+                        arguments_delta=json.dumps({"command": "sleep 30", "background": True}),
+                    ),
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TEXT_DELTA,
+                    text="The background terminal is running.",
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
+    )
+    state = GatewayState.create(paths, providers={"fake": provider})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Start the watcher in the background."},
+            )
+            await _wait_for_event(client, headers, session_id, "run.completed")
+
+            listed = await client.get(f"/v1/sessions/{session_id}/terminals", headers=headers)
+            terminals = cast(list[dict[str, JsonValue]], listed.json())
+            assert len(terminals) == 1
+            assert terminals[0]["command"] == "sleep 30"
+            assert terminals[0]["status"] == "running"
+            health = response_object(await client.get("/v1/health"))
+            assert health["active_terminals"] == 1
+
+            stopped = await client.delete(f"/v1/sessions/{session_id}/terminals", headers=headers)
+            assert response_object(stopped) == {"closed": 1}
+            events = await _wait_for_event(client, headers, session_id, "terminal.stopped")
+            terminal_event = next(event for event in events if event["type"] == "terminal.stopped")
+            assert terminal_event["payload"]["reason"] == "user_stop"  # type: ignore[index]
+            notices: list[str] = []
+            for event in events:
+                if event["type"] != "runtime.notice":
+                    continue
+                payload = JSON_OBJECT.validate_python(event["payload"])
+                if payload.get("code") not in {
+                    "background_terminals.closing",
+                    "background_terminals.closed",
+                }:
+                    continue
+                message = payload.get("message")
+                assert isinstance(message, str)
+                notices.append(message)
+            assert notices == [
+                "Closing 1 background terminal…",
+                "Closed 1 background terminal.",
+            ]
+            assert response_object(await client.get("/v1/health"))["active_terminals"] == 0
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_background_shell_natural_exit_captures_output_and_clears_active_state(
+    tmp_path: Path,
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text(
+        "[memory]\nenabled = false\n[skills]\nenabled = false\n[evolution]\nenabled = false\n",
+        encoding="utf-8",
+    )
+    provider = FakeProvider(
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="short-background-shell",
+                        name="shell",
+                        arguments_delta=json.dumps(
+                            {"command": "sleep 0.05; printf ready", "background": True}
+                        ),
+                    ),
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="Started."),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
+    )
+    state = GatewayState.create(paths, providers={"fake": provider})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Run the short task in the background."},
+            )
+            events = await _wait_for_event(client, headers, session_id, "terminal.completed")
+            completed = next(event for event in events if event["type"] == "terminal.completed")
+            assert completed["payload"]["exit_code"] == 0  # type: ignore[index]
+            assert completed["payload"]["stdout"] == "ready"  # type: ignore[index]
+            assert completed["payload"]["reason"] == "exit"  # type: ignore[index]
+            listed = await client.get(f"/v1/sessions/{session_id}/terminals", headers=headers)
+            assert listed.json() == []
     finally:
         await state.runs.close()
 

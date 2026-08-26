@@ -749,6 +749,21 @@ async fn handle_command(
             "{}",
             style::empty("No active run; press Ctrl-C while a run is active to cancel it")
         ),
+        "/stop" => {
+            let stopped = client.stop_background_terminals(&session.id).await?;
+            println!(
+                "{}",
+                if stopped.closed == 0 {
+                    style::empty("No background terminals are running")
+                } else {
+                    style::success(&format!(
+                        "Closed {} background terminal{}",
+                        stopped.closed,
+                        if stopped.closed == 1 { "" } else { "s" }
+                    ))
+                }
+            );
+        }
         "/trust" => match parts.get(1).copied() {
             None | Some("status") => print_trust(client, session).await?,
             Some("revoke") => {
@@ -891,6 +906,10 @@ async fn print_statuses(client: &GatewayClient) -> Result<()> {
         style::key_value("Default provider", &health.default_provider)
     );
     println!("{}", style::key_value("Active runs", health.active_runs));
+    println!(
+        "{}",
+        style::key_value("Background terminals", health.active_terminals)
+    );
     if let Some(search) = &health.search {
         println!("{}", style::key_value("Web search", &search.mcp_status));
         if !search.protocol_version.is_empty() {
@@ -2646,6 +2665,7 @@ fn print_help() {
             "Audit a run or context",
         ),
         ("/cancel", "Use Ctrl-C during an active run"),
+        ("/stop", "Close every background terminal in this session"),
     ]);
     println!();
     println!("{}", style::section("Knowledge"));

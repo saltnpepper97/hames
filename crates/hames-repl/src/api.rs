@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 29;
+pub const PROTOCOL_VERSION: u32 = 30;
 pub const HEAL_SCARS_PROMPT: &str = "Heal behavioral scars now.";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -125,7 +125,26 @@ pub struct Health {
     pub default_provider: String,
     pub active_runs: u64,
     #[serde(default)]
+    pub active_terminals: u64,
+    #[serde(default)]
     pub search: Option<SearchRuntimeStatus>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BackgroundTerminal {
+    pub id: String,
+    pub session_id: String,
+    pub command: String,
+    pub workspace: String,
+    pub pid: u64,
+    pub status: String,
+    pub started_at: String,
+    pub timeout_seconds: Option<f64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BackgroundTerminalsStopped {
+    pub closed: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1182,6 +1201,32 @@ impl GatewayClient {
     pub async fn history(&self, session_id: &str) -> Result<Vec<Event>> {
         decode(
             self.get(&format!("/v1/sessions/{session_id}/history"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn background_terminals(&self, session_id: &str) -> Result<Vec<BackgroundTerminal>> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/terminals"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn stop_background_terminals(
+        &self,
+        session_id: &str,
+    ) -> Result<BackgroundTerminalsStopped> {
+        decode(
+            self.http
+                .delete(format!(
+                    "{}/v1/sessions/{session_id}/terminals",
+                    self.base_url
+                ))
+                .bearer_auth(&self.token)
                 .send()
                 .await?,
         )

@@ -424,14 +424,15 @@ async fn refresh_agents_sheet(client: &GatewayClient, app: &mut App) -> Result<(
 
 async fn load_app(client: &GatewayClient, session: Session) -> Result<App> {
     let agent_id = session.agent_id.clone();
-    let (events, trust, queue, goals, plan, tasks, skills) = tokio::try_join!(
+    let (events, trust, queue, goals, plan, tasks, skills, terminals) = tokio::try_join!(
         client.history(&session.id),
         client.trust_status(&session.id),
         client.queue_state(&session.id),
         client.goals(&session.id),
         client.current_plan(&session.id),
         client.tasks(&session.id),
-        client.skills(&session.id, "")
+        client.skills(&session.id, ""),
+        client.background_terminals(&session.id)
     )?;
     let agent = client.agent(&agent_id).await.ok();
     let mut app = App::new(session, events, trust.trusted);
@@ -439,6 +440,7 @@ async fn load_app(client: &GatewayClient, session: Session) -> Result<App> {
     app.workspace_name = workspace_name;
     app.git_ref = git_ref;
     app.set_queue(queue);
+    app.set_background_terminals(terminals);
     app.goal = goals.last().cloned();
     app.set_plan(plan);
     app.set_tasks(tasks);
@@ -1878,6 +1880,7 @@ fn parse_command(value: &str) -> Option<MenuAction> {
             .map(|id| MenuAction::Resume(id.to_owned()))
             .or(Some(MenuAction::OpenSessions)),
         "/cancel" => Some(MenuAction::CancelRun),
+        "/stop" => Some(MenuAction::StopTerminals),
         "/help" => Some(MenuAction::Help),
         "/quit" | "/exit" => Some(MenuAction::Quit),
         _ => None,
@@ -2552,6 +2555,7 @@ async fn apply_menu_action(
                     }
                 ),
                 format!("Active runs  {}", health.active_runs),
+                format!("Terminals    {}", health.active_terminals),
                 format!("Provider     {}", health.default_provider),
             ];
             if let Some(search) = health.search {
@@ -2704,6 +2708,14 @@ async fn apply_menu_action(
                 )
             }));
             app.modal = Some(info("Plugins", lines));
+        }
+        MenuAction::StopTerminals => {
+            let stopped = client.stop_background_terminals(&app.session.id).await?;
+            if stopped.closed == 0 {
+                app.notice = Some("No background terminals are running".to_owned());
+            } else {
+                app.notice = None;
+            }
         }
         MenuAction::Trust => {
             let trust = client.trust_status(&app.session.id).await?;
@@ -3467,6 +3479,10 @@ mod tests {
             Some(MenuAction::Memory)
         ));
         assert!(matches!(parse_command("/heal"), Some(MenuAction::Heal)));
+        assert!(matches!(
+            parse_command("/stop"),
+            Some(MenuAction::StopTerminals)
+        ));
         assert!(matches!(
             parse_command("/effort xhigh"),
             Some(MenuAction::SetEffort(effort)) if effort == "xhigh"

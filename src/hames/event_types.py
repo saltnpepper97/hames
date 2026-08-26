@@ -428,6 +428,26 @@ class RuntimeNoticePayload(EventPayload):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class TerminalStartedPayload(EventPayload):
+    terminal_id: str
+    command: str
+    workspace: Literal["project", "home"]
+    pid: int = Field(gt=0)
+    timeout_seconds: float | None = Field(default=None, gt=0)
+
+
+class TerminalFinishedPayload(EventPayload):
+    terminal_id: str
+    command: str
+    workspace: Literal["project", "home"]
+    exit_code: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+    truncated: bool = False
+    duration_seconds: float = Field(default=0.0, ge=0)
+    reason: Literal["exit", "timeout", "user_stop", "session_closed", "gateway_shutdown"]
+
+
 class DelegationEvidencePayload(EventPayload):
     event_id: str
     event_type: str
@@ -873,6 +893,10 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "trust.revoked": TrustPayload,
     "runtime.error": FailurePayload,
     "runtime.notice": RuntimeNoticePayload,
+    "terminal.started": TerminalStartedPayload,
+    "terminal.completed": TerminalFinishedPayload,
+    "terminal.failed": TerminalFinishedPayload,
+    "terminal.stopped": TerminalFinishedPayload,
     "delegation.requested": DelegationRequestedPayload,
     "delegation.task_card": DelegationTaskCardPayload,
     "delegation.completed": DelegationTerminalPayload,

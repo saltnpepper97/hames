@@ -133,6 +133,11 @@ the client without sending anything does not create resumable clutter.
 The TUI keeps the transcript, activity continuity, and an expanding composer on
 one screen. The composer grows through eight visible content rows and then
 scrolls. Enter sends; Alt+Enter, Shift+Enter, or Ctrl+J inserts a new line.
+Long-running shell work can continue in background terminals while the agent
+moves on. A running terminal appears on the composer's top border; multiple
+terminals show as a count there. `/stop` closes every background terminal in the
+current session and records both the closing request and its completion in the
+durable transcript.
 Agent questions appear in a lower tray above the composer. Each answer is
 numbered before its radio, and an optional multiline explanation renders below
 its label. Use Up/Down, a number key, and Enter—or click an offered answer—to
@@ -342,6 +347,13 @@ model-specific choices; `default`, `off`, `on`, and
 advertised named levels can be selected. A trailing `\` continues input on the
 next line. Ctrl-C during a model run requests cancellation; Ctrl-D or `/quit`
 exits the client.
+
+The model starts a background terminal through the normal policy-gated `shell`
+tool with `background: true`. Without an explicit `timeout_seconds`, it remains
+alive until the command exits, the session closes, the gateway shuts down, or the
+user runs `/stop`. Background terminals use the project or confirmed home
+workspace; per-run scratch cannot outlive its run. Output remains bounded and its
+terminal event is stored in the ledger when the process exits.
 
 After a completed answer, `/fork` creates a branch and switches to it. `/agent`
 lists portable capsules; `/agent <id>` changes the selected agent for the next

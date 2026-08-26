@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import shutil
+import signal
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -92,6 +93,9 @@ from hames.tools import (
     ToolContext,
     ToolRegistry,
     ToolResult,
+    capture_stream,
+    kill_process_group,
+    shell_environment,
 )
 
 SELF_MANAGEMENT_TOOLS = frozenset(
@@ -344,6 +348,24 @@ class QuestionAnswer:
     custom: bool
 
 
+@dataclass(slots=True)
+class _BackgroundTerminal:
+    id: str
+    session_id: str
+    run_id: str
+    agent_id: str
+    command: str
+    workspace: Literal["project", "home"]
+    process: asyncio.subprocess.Process
+    stdout_task: asyncio.Task[tuple[bytes, bool]]
+    stderr_task: asyncio.Task[tuple[bytes, bool]]
+    started_at: str
+    started_monotonic: float
+    timeout_seconds: float | None
+    task: asyncio.Task[None] | None = None
+    stop_reason: Literal["user_stop", "session_closed", "gateway_shutdown"] | None = None
+
+
 class RunManager:
     def __init__(
         self,
@@ -402,6 +424,8 @@ class RunManager:
         self._submission_locks: dict[str, asyncio.Lock] = {}
         self._auto_compacted_runs: set[str] = set()
         self._dream_tasks: dict[str, asyncio.Task[None]] = {}
+        self._background_terminals: dict[str, _BackgroundTerminal] = {}
+        self._background_terminal_lock = asyncio.Lock()
         self._closing = False
         self._prune_scratch()
 
@@ -1448,6 +1472,102 @@ class RunManager:
     def active_run_count(self) -> int:
         return len(self._session_runs)
 
+    def background_terminals(self, session_id: str) -> list[dict[str, object]]:
+        return [
+            {
+                "id": terminal.id,
+                "session_id": terminal.session_id,
+                "command": terminal.command,
+                "workspace": terminal.workspace,
+                "pid": terminal.process.pid,
+                "status": "stopping" if terminal.stop_reason is not None else "running",
+                "started_at": terminal.started_at,
+                "timeout_seconds": terminal.timeout_seconds,
+            }
+            for terminal in self._background_terminals.values()
+            if terminal.session_id == session_id and terminal.process.returncode is None
+        ]
+
+    @property
+    def active_background_terminal_count(self) -> int:
+        return sum(
+            terminal.process.returncode is None for terminal in self._background_terminals.values()
+        )
+
+    async def stop_background_terminals(
+        self,
+        session_id: str,
+        *,
+        reason: Literal["user_stop", "session_closed", "gateway_shutdown"] = "user_stop",
+        announce: bool = True,
+    ) -> int:
+        async with self._background_terminal_lock:
+            terminals = [
+                terminal
+                for terminal in self._background_terminals.values()
+                if terminal.session_id == session_id and terminal.process.returncode is None
+            ]
+            if not terminals:
+                return 0
+            session = await asyncio.to_thread(self.ledger.get_session, session_id)
+            count = len(terminals)
+            if announce:
+                await self._append(
+                    session_id=session_id,
+                    agent_id=session.agent_id,
+                    event_type="runtime.notice",
+                    payload={
+                        "code": "background_terminals.closing",
+                        "message": (
+                            "Closing 1 background terminal…"
+                            if count == 1
+                            else f"Closing {count} background terminals…"
+                        ),
+                        "details": {
+                            "count": count,
+                            "terminal_ids": [item.id for item in terminals],
+                        },
+                    },
+                )
+            for terminal in terminals:
+                terminal.stop_reason = reason
+                kill_process_group(terminal.process, signal.SIGTERM)
+            tasks = [terminal.task for terminal in terminals if terminal.task is not None]
+            if tasks:
+                _, pending = await asyncio.wait(tasks, timeout=2)
+                for terminal in terminals:
+                    if terminal.task in pending and terminal.process.returncode is None:
+                        kill_process_group(terminal.process)
+                await asyncio.gather(*tasks, return_exceptions=True)
+            if announce:
+                await self._append(
+                    session_id=session_id,
+                    agent_id=session.agent_id,
+                    event_type="runtime.notice",
+                    payload={
+                        "code": "background_terminals.closed",
+                        "message": (
+                            "Closed 1 background terminal."
+                            if count == 1
+                            else f"Closed {count} background terminals."
+                        ),
+                        "details": {
+                            "count": count,
+                            "terminal_ids": [item.id for item in terminals],
+                        },
+                    },
+                )
+            return count
+
+    async def settle_background_terminals(self, session_id: str) -> None:
+        tasks = [
+            terminal.task
+            for terminal in tuple(self._background_terminals.values())
+            if terminal.session_id == session_id and terminal.task is not None
+        ]
+        if tasks:
+            await asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True)
+
     async def cancel(self, run_id: str) -> bool:
         if run_id not in self._session_runs.values():
             return False
@@ -1574,6 +1694,14 @@ class RunManager:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        terminal_sessions = {
+            terminal.session_id for terminal in self._background_terminals.values()
+        }
+        for session_id in terminal_sessions:
+            await self.stop_background_terminals(
+                session_id, reason="gateway_shutdown", announce=False
+            )
+            await self.settle_background_terminals(session_id)
         if self.memory_manager is not None:
             await self.memory_manager.close()
         if self.skill_manager is not None:
@@ -3000,6 +3128,187 @@ class RunManager:
                 correlation_id=run_id,
             )
 
+    async def _start_background_terminal(
+        self,
+        session: Session,
+        run_id: str,
+        arguments: ShellArguments,
+        context: ToolContext,
+        *,
+        causation_id: str,
+    ) -> ToolResult:
+        started = time.monotonic()
+        if arguments.workspace == "scratch":
+            return ToolResult(
+                status="failed",
+                summary="background shell requires the project or home workspace",
+                structured_data={"code": "background_scratch_unsupported"},
+                duration_seconds=time.monotonic() - started,
+            )
+        if (
+            arguments.timeout_seconds is not None
+            and arguments.timeout_seconds > context.config.shell_max_timeout_seconds
+        ):
+            return ToolResult(
+                status="failed",
+                summary=(
+                    "shell failed: timeout exceeds "
+                    f"{context.config.shell_max_timeout_seconds} seconds"
+                ),
+                structured_data={"code": "invalid_timeout"},
+                duration_seconds=time.monotonic() - started,
+            )
+        cwd = context.root_for(arguments.workspace).resolve(strict=True)
+        async with self._background_terminal_lock:
+            if self._closing:
+                return ToolResult(
+                    status="failed",
+                    summary="gateway is shutting down",
+                    structured_data={"code": "gateway_closing"},
+                    duration_seconds=time.monotonic() - started,
+                )
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    "/bin/bash",
+                    "-lc",
+                    arguments.command,
+                    cwd=cwd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    start_new_session=True,
+                    env=shell_environment(),
+                )
+            except OSError as exc:
+                return ToolResult(
+                    status="failed",
+                    summary=f"shell failed: {exc}",
+                    structured_data={"error": type(exc).__name__, "message": str(exc)},
+                    duration_seconds=time.monotonic() - started,
+                )
+            if process.stdout is None or process.stderr is None:  # pragma: no cover
+                kill_process_group(process)
+                await process.wait()
+                return ToolResult(status="failed", summary="shell pipes were not created")
+            stdout_task = asyncio.create_task(
+                capture_stream(process.stdout, context.config.capture_byte_limit)
+            )
+            stderr_task = asyncio.create_task(
+                capture_stream(process.stderr, context.config.capture_byte_limit)
+            )
+            terminal = _BackgroundTerminal(
+                id=new_id(),
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                command=arguments.command,
+                workspace=arguments.workspace,
+                process=process,
+                stdout_task=stdout_task,
+                stderr_task=stderr_task,
+                started_at=datetime.now(UTC).isoformat(),
+                started_monotonic=started,
+                timeout_seconds=arguments.timeout_seconds,
+            )
+            try:
+                launched = await self._append(
+                    session_id=session.id,
+                    run_id=run_id,
+                    agent_id=session.agent_id,
+                    event_type="terminal.started",
+                    payload={
+                        "terminal_id": terminal.id,
+                        "command": terminal.command,
+                        "workspace": terminal.workspace,
+                        "pid": process.pid,
+                        "timeout_seconds": terminal.timeout_seconds,
+                    },
+                    causation_id=causation_id,
+                    correlation_id=terminal.id,
+                )
+            except BaseException:
+                kill_process_group(process)
+                await process.wait()
+                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+                raise
+            self._background_terminals[terminal.id] = terminal
+            terminal.task = asyncio.create_task(
+                self._watch_background_terminal(terminal, launched.id),
+                name=f"hames-terminal-{terminal.id}",
+            )
+        return ToolResult(
+            status="completed",
+            summary=f"background terminal started: {terminal.id}",
+            content=(
+                "The command is still running in the background. Its exit will appear in the "
+                "session transcript; the user can close all background terminals with /stop."
+            ),
+            structured_data={
+                "terminal_id": terminal.id,
+                "background": True,
+                "status": "running",
+                "pid": process.pid,
+                "command": terminal.command,
+                "workspace": terminal.workspace,
+                "timeout_seconds": terminal.timeout_seconds,
+            },
+            duration_seconds=time.monotonic() - started,
+        )
+
+    async def _watch_background_terminal(
+        self, terminal: _BackgroundTerminal, causation_id: str
+    ) -> None:
+        timed_out = False
+        try:
+            if terminal.timeout_seconds is None:
+                exit_code = await terminal.process.wait()
+            else:
+                try:
+                    async with asyncio.timeout(terminal.timeout_seconds):
+                        exit_code = await terminal.process.wait()
+                except TimeoutError:
+                    timed_out = True
+                    kill_process_group(terminal.process)
+                    exit_code = await terminal.process.wait()
+            stdout_raw, stdout_truncated = await terminal.stdout_task
+            stderr_raw, stderr_truncated = await terminal.stderr_task
+            stdout = stdout_raw.decode("utf-8", errors="replace")
+            stderr = stderr_raw.decode("utf-8", errors="replace")
+            reason = terminal.stop_reason or ("timeout" if timed_out else "exit")
+            event_type = (
+                "terminal.stopped"
+                if terminal.stop_reason is not None
+                else "terminal.completed"
+                if exit_code == 0 and not timed_out
+                else "terminal.failed"
+            )
+            await self._append(
+                session_id=terminal.session_id,
+                run_id=terminal.run_id,
+                agent_id=terminal.agent_id,
+                event_type=event_type,
+                payload={
+                    "terminal_id": terminal.id,
+                    "command": terminal.command,
+                    "workspace": terminal.workspace,
+                    "exit_code": exit_code,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "truncated": stdout_truncated or stderr_truncated,
+                    "duration_seconds": time.monotonic() - terminal.started_monotonic,
+                    "reason": reason,
+                },
+                causation_id=causation_id,
+                correlation_id=terminal.id,
+            )
+        except asyncio.CancelledError:
+            if terminal.process.returncode is None:
+                kill_process_group(terminal.process)
+                await terminal.process.wait()
+            await asyncio.gather(terminal.stdout_task, terminal.stderr_task, return_exceptions=True)
+            raise
+        finally:
+            self._background_terminals.pop(terminal.id, None)
+
     async def _handle_tool(
         self,
         run_id: str,
@@ -3232,6 +3541,15 @@ class RunManager:
             causation_id=policy_decided.id,
             correlation_id=run_id,
         )
+        if isinstance(arguments, ShellArguments) and arguments.background:
+            result = await self._start_background_terminal(
+                session,
+                run_id,
+                arguments,
+                context,
+                causation_id=started.id,
+            )
+            return await self._persist_tool_result(session, run_id, invocation, result, started.id)
         result = await clock.measure(tool.execute(context, arguments))
         return await self._persist_tool_result(session, run_id, invocation, result, started.id)
 

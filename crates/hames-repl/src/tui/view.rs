@@ -1427,12 +1427,29 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         ),
     ])
     .right_aligned();
-    let block = Block::default()
-        .title(title)
+    let mut block = Block::default()
+        .title_top(title)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .padding(Padding::horizontal(1))
         .border_style(Style::default().fg(mode_outline(&app.session.interaction_mode)));
+    if !app.background_terminals.is_empty() {
+        let label = if app.background_terminals.len() == 1 {
+            let command = app.background_terminals[0]
+                .command
+                .replace(['\r', '\n'], " ");
+            format!(
+                " ◐ Terminal · {} ",
+                fit(&command, usize::from(area.width.saturating_sub(34)).max(10))
+            )
+        } else {
+            format!(" ◐ {} terminals · /stop ", app.background_terminals.len())
+        };
+        block = block.title_top(Line::from(Span::styled(
+            label,
+            Style::default().fg(GOLD).bold(),
+        )));
+    }
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.hits.push(HitRegion {
@@ -5294,6 +5311,35 @@ mod tests {
         assert!(rendered.contains("Message Hames"));
         assert!(rendered.contains("─ fixture (medium) · Auto"));
         assert!(rendered.contains("A fresh canvas"));
+    }
+
+    #[test]
+    fn running_background_terminal_is_visible_on_the_composer_bar() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.background_terminals
+            .push(crate::api::BackgroundTerminal {
+                id: "terminal-1".to_owned(),
+                session_id: app.session.id.clone(),
+                command: "cargo watch -x test".to_owned(),
+                workspace: "project".to_owned(),
+                pid: 1234,
+                status: "running".to_owned(),
+                started_at: "2026-08-26T00:00:00Z".to_owned(),
+                timeout_seconds: None,
+            });
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("◐ Terminal · cargo watch -x test"));
+        assert!(rendered.contains("fixture (medium) · Auto"));
     }
 
     #[test]

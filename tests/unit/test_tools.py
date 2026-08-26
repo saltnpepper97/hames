@@ -234,6 +234,15 @@ def test_policy_classifies_safe_dangerous_and_protected_actions(tmp_path: Path) 
         is PolicyDecisionKind.ALLOW
     )
     assert (
+        gate.decide(
+            "shell",
+            ShellArguments(command="cargo test", background=True),
+            context,
+            interaction_mode="plan",
+        ).decision
+        is PolicyDecisionKind.DENY
+    )
+    assert (
         gate.decide("shell", ShellArguments(command="rm -rf target"), context).decision
         is PolicyDecisionKind.REQUIRE_CONFIRMATION
     )

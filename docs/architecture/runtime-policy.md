@@ -1,11 +1,11 @@
 # Runtime and policy boundary
 
 The Python runtime is the only component allowed to execute model-requested work.
-Clients send messages and decisions through protocol v29; provider adapters only
+Clients send messages and decisions through protocol v30; provider adapters only
 translate normalized messages and streams. Neither the Rust REPL nor a provider
 adapter directly reads files, writes files, or starts commands.
 
-Every protocol-v29 message admission carries a client-generated UUID. The gateway
+Every protocol-v30 message admission carries a client-generated UUID. The gateway
 stores a durable receipt keyed by session and submission ID before accepting the
 message. Retrying the same payload returns the original run or queue result;
 reusing that ID with different content is rejected. This makes a lost HTTP
@@ -35,10 +35,16 @@ canonical launch directory. Scratch is created lazily at
 File operations reject absolute paths, parent traversal, and symlink escape.
 Writes and exact single-match edits use a private temporary file, `fsync`, and an
 atomic replacement. Shell uses `/bin/bash -lc`, a fixed workspace, separate
-bounded stdout/stderr capture, a timeout, and process-group cancellation. Large
-results use the existing content-addressed blob store while the model receives a
-bounded preview. The child environment omits variables whose names identify
-tokens, passwords, authentication, credentials, cookies, or API keys.
+bounded stdout/stderr capture, and process-group cancellation. Foreground calls
+use the configured default timeout. A `background: true` call returns its terminal
+ID immediately; an omitted timeout leaves it running until exit or authenticated
+session control closes it. Background terminals are limited to project or confirmed
+home workspaces because per-run scratch is removed at the run terminal. Their
+start and terminal states are durable events, and `/stop` records closing and
+closed notices around process-group termination. Large results use the existing
+content-addressed blob store while the model receives a bounded preview. The child
+environment omits variables whose names identify tokens, passwords,
+authentication, credentials, cookies, or API keys.
 
 ## Trust, classification, and approvals
 

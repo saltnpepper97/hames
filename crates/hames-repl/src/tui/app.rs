@@ -8,9 +8,9 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::api::{
-    ContextUsageProjection, Event, Goal, MemoryRecord, PasteSpan, PlanRevision, PlanState,
-    QueueState, QueuedMessage, Scar, Session, SessionTask, SessionTaskList, SkillSummary,
-    UsageProjection, new_submission_id,
+    BackgroundTerminal, ContextUsageProjection, Event, Goal, MemoryRecord, PasteSpan, PlanRevision,
+    PlanState, QueueState, QueuedMessage, Scar, Session, SessionTask, SessionTaskList,
+    SkillSummary, UsageProjection, new_submission_id,
 };
 
 pub const LARGE_PASTE_LINES: usize = 4;
@@ -966,6 +966,7 @@ pub enum MenuAction {
     Scars,
     Heal,
     Plugins,
+    StopTerminals,
     Trust,
     RevokeTrust,
     Export {
@@ -1217,6 +1218,7 @@ pub struct App {
     pub transcript: Vec<TranscriptItem>,
     pub composer: Composer,
     pub queued_messages: Vec<QueuedMessage>,
+    pub background_terminals: Vec<BackgroundTerminal>,
     pub queue_paused: bool,
     pub message_history: Vec<String>,
     pub history_index: Option<usize>,
@@ -1291,6 +1293,7 @@ impl App {
             transcript: Vec::new(),
             composer: Composer::default(),
             queued_messages: Vec::new(),
+            background_terminals: Vec::new(),
             queue_paused: false,
             message_history: Vec::new(),
             history_index: None,
@@ -1369,6 +1372,10 @@ impl App {
     pub fn set_queue(&mut self, state: QueueState) {
         self.queue_paused = state.paused;
         self.queued_messages = state.items;
+    }
+
+    pub fn set_background_terminals(&mut self, terminals: Vec<BackgroundTerminal>) {
+        self.background_terminals = terminals;
     }
 
     pub fn submission_id_for(
@@ -1821,6 +1828,11 @@ impl App {
             option("/plugins", "installed capabilities", MenuAction::Plugins),
             option("/help", "keyboard and mouse guide", MenuAction::Help),
             option("/cancel", "stop current work", MenuAction::CancelRun),
+            option(
+                "/stop",
+                "close every background terminal",
+                MenuAction::StopTerminals,
+            ),
             option("/quit", "leave the gateway running", MenuAction::Quit),
         ];
         options.extend(
@@ -2092,6 +2104,56 @@ impl App {
             }
             "session.title.changed" => {
                 self.session.title = Some(string(&event.payload, "title"));
+            }
+            "terminal.started" => {
+                let terminal_id = string(&event.payload, "terminal_id");
+                self.background_terminals
+                    .retain(|terminal| terminal.id != terminal_id);
+                self.background_terminals.push(BackgroundTerminal {
+                    id: terminal_id,
+                    session_id: self.session.id.clone(),
+                    command: string(&event.payload, "command"),
+                    workspace: string(&event.payload, "workspace"),
+                    pid: u64_value(&event.payload, "pid"),
+                    status: "running".to_owned(),
+                    started_at: event.created_at.clone(),
+                    timeout_seconds: event.payload.get("timeout_seconds").and_then(Value::as_f64),
+                });
+            }
+            "terminal.completed" | "terminal.failed" | "terminal.stopped" => {
+                let terminal_id = string(&event.payload, "terminal_id");
+                self.background_terminals
+                    .retain(|terminal| terminal.id != terminal_id);
+                if event.event_type != "terminal.stopped" {
+                    let command = string(&event.payload, "command");
+                    let exit_code = event.payload.get("exit_code").and_then(Value::as_i64);
+                    let label = if event.event_type == "terminal.completed" {
+                        "Background terminal finished"
+                    } else if string(&event.payload, "reason") == "timeout" {
+                        "Background terminal timed out"
+                    } else {
+                        "Background terminal failed"
+                    };
+                    self.transcript.push(TranscriptItem::Status {
+                        text: format!(
+                            "{label} · {command}{}",
+                            exit_code.map_or_else(String::new, |code| format!(" · exit {code}"))
+                        ),
+                        error: event.event_type == "terminal.failed",
+                    });
+                }
+            }
+            "runtime.notice" => {
+                let code = string(&event.payload, "code");
+                if matches!(
+                    code.as_str(),
+                    "background_terminals.closing" | "background_terminals.closed"
+                ) {
+                    self.transcript.push(TranscriptItem::Status {
+                        text: string(&event.payload, "message"),
+                        error: false,
+                    });
+                }
             }
             "plan.proposed" => {
                 for item in &mut self.transcript {
@@ -5057,6 +5119,81 @@ mod tests {
             delegation_depth: 0,
             interaction_mode: "auto".to_owned(),
         }
+    }
+
+    #[test]
+    fn background_terminal_events_drive_bar_state_and_stop_transcript() {
+        let events = vec![
+            event(
+                1,
+                "terminal.started",
+                "run-terminal",
+                json!({
+                    "terminal_id": "terminal-1",
+                    "command": "cargo watch",
+                    "workspace": "project",
+                    "pid": 1234,
+                    "timeout_seconds": null
+                }),
+            ),
+            event(
+                2,
+                "runtime.notice",
+                "",
+                json!({
+                    "code": "background_terminals.closing",
+                    "message": "Closing 1 background terminal…",
+                    "details": {"count": 1, "terminal_ids": ["terminal-1"]}
+                }),
+            ),
+            event(
+                3,
+                "terminal.stopped",
+                "run-terminal",
+                json!({
+                    "terminal_id": "terminal-1",
+                    "command": "cargo watch",
+                    "workspace": "project",
+                    "exit_code": -15,
+                    "stdout": "",
+                    "stderr": "",
+                    "truncated": false,
+                    "duration_seconds": 2.0,
+                    "reason": "user_stop"
+                }),
+            ),
+            event(
+                4,
+                "runtime.notice",
+                "",
+                json!({
+                    "code": "background_terminals.closed",
+                    "message": "Closed 1 background terminal.",
+                    "details": {"count": 1, "terminal_ids": ["terminal-1"]}
+                }),
+            ),
+        ];
+        let mut app = App::new(session(), vec![events[0].clone()], true);
+        assert_eq!(app.background_terminals.len(), 1);
+        for event in events.into_iter().skip(1) {
+            app.ingest_durable(event, true);
+        }
+        assert!(app.background_terminals.is_empty());
+        let statuses = app
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Status { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            statuses,
+            [
+                "Closing 1 background terminal…",
+                "Closed 1 background terminal."
+            ]
+        );
     }
 
     fn event(sequence: u64, event_type: &str, run_id: &str, payload: serde_json::Value) -> Event {

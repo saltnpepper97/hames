@@ -413,7 +413,23 @@ class Health(ApiModel):
     provider_profiles: list[str]
     default_provider: str
     active_runs: int
+    active_terminals: int
     search: SearchRuntimeStatus
+
+
+class BackgroundTerminal(ApiModel):
+    id: str
+    session_id: str
+    command: str
+    workspace: Literal["project", "home"]
+    pid: int
+    status: Literal["running", "stopping"]
+    started_at: str
+    timeout_seconds: float | None = None
+
+
+class BackgroundTerminalsStopped(ApiModel):
+    closed: int
 
 
 class ApiError(Exception):
@@ -614,6 +630,7 @@ def create_app(state: GatewayState) -> FastAPI:
             provider_profiles=sorted(state.providers),
             default_provider=state.config.runtime.default_provider,
             active_runs=state.runs.active_run_count,
+            active_terminals=state.runs.active_background_terminal_count,
             search=state.search.status(),
         )
 
@@ -941,6 +958,34 @@ def create_app(state: GatewayState) -> FastAPI:
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
 
+    @app.get(
+        "/v1/sessions/{session_id}/terminals",
+        dependencies=auth,
+        response_model=list[BackgroundTerminal],
+    )
+    async def background_terminals(session_id: str) -> list[BackgroundTerminal]:
+        try:
+            await asyncio.to_thread(state.ledger.get_session, session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+        return [
+            BackgroundTerminal.model_validate(item)
+            for item in state.runs.background_terminals(session_id)
+        ]
+
+    @app.delete(
+        "/v1/sessions/{session_id}/terminals",
+        dependencies=auth,
+        response_model=BackgroundTerminalsStopped,
+    )
+    async def stop_background_terminals(session_id: str) -> BackgroundTerminalsStopped:
+        try:
+            await asyncio.to_thread(state.ledger.get_session, session_id)
+            count = await state.runs.stop_background_terminals(session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+        return BackgroundTerminalsStopped(closed=count)
+
     @app.delete("/v1/sessions/{session_id}", dependencies=auth, response_model=Session)
     async def close_session(session_id: str) -> Session:
         if not await state.runs.finish_terminal_session(session_id):
@@ -951,6 +996,10 @@ def create_app(state: GatewayState) -> FastAPI:
             )
         try:
             await state.runs.clear_queue(session_id)
+            await state.runs.stop_background_terminals(
+                session_id, reason="session_closed", announce=False
+            )
+            await state.runs.settle_background_terminals(session_id)
             return await asyncio.to_thread(state.ledger.close_session, session_id)
         except KeyError as exc:
             try:

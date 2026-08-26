@@ -159,11 +159,15 @@ class PolicyGate:
         if (
             interaction_mode == "plan"
             and isinstance(arguments, ShellArguments)
-            and not _plan_shell_allowed(arguments.command)
+            and (arguments.background or not _plan_shell_allowed(arguments.command))
         ):
             return PolicyDecision(
                 PolicyDecisionKind.DENY,
-                "plan mode permits only inspection and test commands",
+                (
+                    "plan mode does not permit persistent background terminals"
+                    if arguments.background
+                    else "plan mode permits only inspection and test commands"
+                ),
                 "plan_mode",
             )
         if isinstance(arguments, MemoryForgetArguments):

@@ -102,6 +102,13 @@ class EditFileArguments(WorkspaceArguments):
 class ShellArguments(WorkspaceArguments):
     command: str = Field(min_length=1)
     timeout_seconds: float | None = Field(default=None, gt=0)
+    background: bool = Field(
+        default=False,
+        description=(
+            "Run without blocking the agent turn. When true, an omitted timeout keeps the "
+            "terminal alive until the command exits or the user runs /stop."
+        ),
+    )
 
 
 class SpawnAgentArguments(ToolArguments):
@@ -609,7 +616,10 @@ class ShellTool(ToolBase):
     name = "shell"
     description = (
         "Run a Bash command in the project, confirmed user home, or disposable scratch "
-        "workspace. Use workspace home when the requested path is elsewhere below the user's home."
+        "workspace. Use workspace home when the requested path is elsewhere below the user's home. "
+        "Set background true for a long-running command that should continue while the agent "
+        "works; Hames returns its terminal ID immediately and the user can close all background "
+        "terminals with /stop."
     )
     side_effect_class = "shell"
     arguments_type: ClassVar[type[ToolArguments]] = ShellArguments
@@ -635,21 +645,21 @@ class ShellTool(ToolBase):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
-                env=_shell_environment(),
+                env=shell_environment(),
             )
             if process.stdout is None or process.stderr is None:  # pragma: no cover
                 raise RuntimeError("shell pipes were not created")
             stdout_task = asyncio.create_task(
-                _capture_stream(process.stdout, context.config.capture_byte_limit)
+                capture_stream(process.stdout, context.config.capture_byte_limit)
             )
             stderr_task = asyncio.create_task(
-                _capture_stream(process.stderr, context.config.capture_byte_limit)
+                capture_stream(process.stderr, context.config.capture_byte_limit)
             )
             try:
                 async with asyncio.timeout(timeout):
                     exit_code = await process.wait()
             except TimeoutError:
-                _kill_process_group(process)
+                kill_process_group(process)
                 await process.wait()
                 await asyncio.gather(stdout_task, stderr_task)
                 raise TimeoutError(f"shell command timed out after {timeout:g} seconds") from None
@@ -678,7 +688,7 @@ class ShellTool(ToolBase):
             )
         except asyncio.CancelledError:
             if process is not None and process.returncode is None:
-                _kill_process_group(process)
+                kill_process_group(process)
                 await process.wait()
             raise
         except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
@@ -946,7 +956,7 @@ class ToolRegistry:
             raise ValueError(f"invalid {name} arguments: {exc}") from exc
 
 
-async def _capture_stream(stream: asyncio.StreamReader, limit: int) -> tuple[bytes, bool]:
+async def capture_stream(stream: asyncio.StreamReader, limit: int) -> tuple[bytes, bool]:
     chunks: list[bytes] = []
     retained = 0
     truncated = False
@@ -961,14 +971,16 @@ async def _capture_stream(stream: asyncio.StreamReader, limit: int) -> tuple[byt
     return b"".join(chunks), truncated
 
 
-def _kill_process_group(process: asyncio.subprocess.Process) -> None:
+def kill_process_group(
+    process: asyncio.subprocess.Process, signal_number: int = signal.SIGKILL
+) -> None:
     try:
-        os.killpg(process.pid, signal.SIGKILL)
+        os.killpg(process.pid, signal_number)
     except ProcessLookupError:
         pass
 
 
-def _shell_environment() -> dict[str, str]:
+def shell_environment() -> dict[str, str]:
     secret_markers = (
         "TOKEN",
         "SECRET",
