@@ -2774,12 +2774,17 @@ async fn apply_menu_action(
             if !matches!(mode.as_str(), "manual" | "auto" | "plan") {
                 bail!("mode must be manual, auto, or plan");
             }
+            let approving_plan = mode == "auto" && app.plan_ready();
             app.session = client.update_session_mode(&app.session.id, &mode).await?;
             app.context_usage = None;
-            app.notice = Some(match mode.as_str() {
-                "manual" => "Manual mode · ask before every edit".to_owned(),
-                "plan" => "Plan mode · inspect and test without code writes".to_owned(),
-                _ => "Auto mode · ask only for dangerous actions".to_owned(),
+            app.notice = Some(if approving_plan {
+                "Plan approved · implementing now…".to_owned()
+            } else {
+                match mode.as_str() {
+                    "manual" => "Manual mode · ask before every edit".to_owned(),
+                    "plan" => "Plan mode · inspect and test without code writes".to_owned(),
+                    _ => "Auto mode · ask only for dangerous actions".to_owned(),
+                }
             });
         }
         MenuAction::SetEffort(effort) => {

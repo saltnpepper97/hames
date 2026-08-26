@@ -1057,11 +1057,19 @@ def create_app(state: GatewayState) -> FastAPI:
     @app.put("/v1/sessions/{session_id}/mode", dependencies=auth, response_model=Session)
     async def update_session_mode(session_id: str, request: UpdateSessionModeRequest) -> Session:
         try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            if session.interaction_mode == "plan" and request.mode == "auto":
+                plan = await state.runs.current_plan(session_id)
+                if plan.current is not None and plan.current.status in {"ready", "failed"}:
+                    await state.runs.execute_plan(session_id, strategy="keep")
+                    return await asyncio.to_thread(state.ledger.get_session, session_id)
             return await asyncio.to_thread(
                 state.ledger.update_session_mode, session_id, mode=request.mode
             )
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+        except ValueError as exc:
+            raise ApiError(409, "mode_change_rejected", str(exc)) from exc
 
     @app.put("/v1/sessions/{session_id}/title", dependencies=auth, response_model=Session)
     async def update_session_title(session_id: str, request: UpdateSessionTitleRequest) -> Session:

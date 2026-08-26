@@ -1616,6 +1616,7 @@ async def test_plan_review_execution_and_session_tasks_lifecycle(tmp_path: Path)
             assistant = next(event for event in events if event["type"] == "assistant.message")
             assert assistant["payload"]["content"] == plan_markdown  # type: ignore[index]
             assert PLAN_READY_MARKER not in str(assistant["payload"])  # type: ignore[index]
+            assert "task_update" not in {tool.name for tool in fake.requests[0].tools}
 
             plan = response_object(
                 await client.get(f"/v1/sessions/{session_id}/plans/current", headers=headers)
@@ -1625,6 +1626,10 @@ async def test_plan_review_execution_and_session_tasks_lifecycle(tmp_path: Path)
             assert current["status"] == "ready"
             assert current["tasks"] == ["Implement lifecycle", "Verify behavior"]
             await _wait_for_event(client, headers, session_id, "run.completed")
+            unapproved_tasks = response_object(
+                await client.get(f"/v1/sessions/{session_id}/tasks", headers=headers)
+            )
+            assert unapproved_tasks["items"] == []
 
             executed = await client.post(
                 f"/v1/sessions/{session_id}/plans/current/execute",
@@ -1684,6 +1689,66 @@ async def test_plan_review_execution_and_session_tasks_lifecycle(tmp_path: Path)
                 item["id"] != task_id
                 for item in response_object(removed)["items"]  # type: ignore[union-attr]
             )
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_switching_ready_plan_to_auto_approves_and_starts_execution(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text("[memory]\nenabled = false\n", encoding="utf-8")
+    plan_markdown = (
+        "# Continue automatically\n\n## Tasks\n- [ ] Implement change\n- [ ] Verify change"
+    )
+    provider = PlanExecutionProvider(plan_markdown)
+    state = GatewayState.create(paths, providers={"fake": provider})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.put(
+                f"/v1/sessions/{session_id}/mode", headers=headers, json={"mode": "plan"}
+            )
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Plan this change"},
+            )
+            await _wait_for_event(client, headers, session_id, "run.completed")
+
+            before = response_object(
+                await client.get(f"/v1/sessions/{session_id}/tasks", headers=headers)
+            )
+            assert before["items"] == []
+
+            changed = await client.put(
+                f"/v1/sessions/{session_id}/mode",
+                headers=headers,
+                json={"mode": "auto"},
+            )
+            assert changed.status_code == 200
+            assert response_object(changed)["interaction_mode"] == "auto"
+
+            await _wait_for_event(client, headers, session_id, "plan.execution.completed")
+            after = response_object(
+                await client.get(f"/v1/sessions/{session_id}/tasks", headers=headers)
+            )
+            after_items = after["items"]
+            assert isinstance(after_items, list)
+            assert [item["text"] for item in after_items] == [  # type: ignore[index]
+                "Implement change",
+                "Verify change",
+            ]
+            assert len(provider.requests) >= 2
+            assert plan_markdown in provider.requests[1].system
     finally:
         await state.runs.close()
 

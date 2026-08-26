@@ -170,8 +170,9 @@ MODE_POLICY_SUMMARIES = {
         "prefixes, and Python inspection probes are supported. Do not write, edit, delete, "
         "install, change packages, control processes or services, access the network, delegate, or "
         "mutate durable agent state. If a command is rejected, do not retry equivalent spellings "
-        "of it; "
-        "continue with available evidence. Develop a decision-complete implementation plan. A plan "
+        "of it; continue with available evidence. Do not create or update the session task "
+        "checklist while planning; Hames creates that checklist only after the user approves the "
+        "plan. Develop a decision-complete implementation plan. A plan "
         "that is ready for approval must contain a '## Tasks' section whose actionable steps use "
         "Markdown '- [ ]' checkboxes, then end with the exact marker "
         f"{PLAN_READY_MARKER}. Use that marker only when the plan is complete; omit it when asking "
@@ -2316,7 +2317,11 @@ class RunManager:
                     turn.allowed_tools,
                     turn.capsule,
                     user_requested_memory_maintenance,
-                    "auto" if healing_run else None,
+                    "auto"
+                    if healing_run
+                    else "plan"
+                    if session.interaction_mode == "plan"
+                    else None,
                 )
 
     async def _repair_legacy_provider_state(
@@ -2422,6 +2427,10 @@ class RunManager:
             or session.delegation_depth >= self.config.runtime.max_delegation_depth
         ):
             allowed_tools = frozenset(allowed_tools - {"spawn_agent"})
+        if interaction_mode == "plan":
+            # Planning produces a reviewable plan, not the execution checklist. The latter is
+            # seeded atomically by _prepare_plan_execution only after human approval.
+            allowed_tools = frozenset(allowed_tools - {"task_update"})
         definitions = self.tools.definitions(allowed_tools)
         if self.plugin_manager is not None:
             definitions = [*definitions, *self.plugin_manager.definitions(allowed_tools)]
@@ -2628,7 +2637,7 @@ class RunManager:
                 allowed_tools,
                 capsule,
                 user_requested_memory_maintenance,
-                "auto" if healing_run else None,
+                "auto" if healing_run else "plan" if interaction_mode == "plan" else None,
             )
 
         request = ModelRequest(
