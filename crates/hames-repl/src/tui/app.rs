@@ -3001,23 +3001,6 @@ impl App {
         self.transcript.len() - 1
     }
 
-    fn ensure_activity(&mut self, run_id: &str) -> usize {
-        if let Some(index) = self.transcript.len().checked_sub(1)
-            && matches!(
-                &self.transcript[index],
-                TranscriptItem::Activity { run_id: id, .. } if id == run_id
-            )
-        {
-            return index;
-        }
-        self.transcript.push(TranscriptItem::Activity {
-            run_id: run_id.to_owned(),
-            rows: Vec::new(),
-            collapsed: false,
-        });
-        self.transcript.len() - 1
-    }
-
     fn ensure_activity_row(
         &mut self,
         run_id: &str,
@@ -3055,6 +3038,17 @@ impl App {
                                 })
                                 .flatten()
                         })
+                        .or_else(|| {
+                            (call_id.is_none() && activity_index + 1 == self.transcript.len())
+                                .then(|| {
+                                    rows.iter().position(|row| {
+                                        row.tool_call_id.is_none()
+                                            && row.index == index
+                                            && !row.phase.terminal()
+                                    })
+                                })
+                                .flatten()
+                        })
                         .map(|row_index| (activity_index, row_index))
                 });
         if let Some((activity_index, row_index)) = existing {
@@ -3066,7 +3060,15 @@ impl App {
             }
             return &mut rows[row_index];
         }
-        let activity_index = self.ensure_activity(run_id);
+        // A Work item is one tool call. Keeping neighboring calls in distinct transcript
+        // items preserves their event order, gives every edit its own diff, and prevents
+        // later assistant prose from appearing to belong to one run-wide Work bucket.
+        self.transcript.push(TranscriptItem::Activity {
+            run_id: run_id.to_owned(),
+            rows: Vec::new(),
+            collapsed: false,
+        });
+        let activity_index = self.transcript.len() - 1;
         let TranscriptItem::Activity { rows, .. } = &mut self.transcript[activity_index] else {
             unreachable!();
         };
@@ -3899,6 +3901,88 @@ mod tests {
         assert_eq!(positions[0].1, "I will edit it.");
         assert_eq!(positions[1].1, "The edit is done.");
         assert!(positions[0].0 < activity && activity < positions[1].0);
+    }
+
+    #[test]
+    fn consecutive_tools_each_get_their_own_work_item_and_diff() {
+        let run_id = "run-separate-work";
+        let events = vec![
+            event(
+                1,
+                "model.tool_call",
+                run_id,
+                json!({
+                    "index": 0,
+                    "tool_call_id": "edit-1",
+                    "name": "edit_file",
+                    "arguments": {"path": "src/one.rs", "old_text": "old", "new_text": "one"}
+                }),
+            ),
+            event(
+                2,
+                "tool.completed",
+                run_id,
+                json!({
+                    "index": 0,
+                    "tool_call_id": "edit-1",
+                    "name": "edit_file",
+                    "content": "--- a/src/one.rs\n+++ b/src/one.rs\n-old\n+one\n"
+                }),
+            ),
+            event(
+                3,
+                "model.tool_call",
+                run_id,
+                json!({
+                    "index": 1,
+                    "tool_call_id": "edit-2",
+                    "name": "edit_file",
+                    "arguments": {"path": "src/two.rs", "old_text": "old", "new_text": "two"}
+                }),
+            ),
+            event(
+                4,
+                "tool.completed",
+                run_id,
+                json!({
+                    "index": 1,
+                    "tool_call_id": "edit-2",
+                    "name": "edit_file",
+                    "content": "--- a/src/two.rs\n+++ b/src/two.rs\n-old\n+two\n"
+                }),
+            ),
+            event(
+                5,
+                "assistant.message",
+                run_id,
+                json!({"content": "Both edits are complete.", "status": "completed"}),
+            ),
+            event(6, "run.completed", run_id, json!({})),
+        ];
+
+        let app = App::new(session(), events, true);
+        let items = app
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Activity { rows, .. } => Some(("work", rows.as_slice(), "")),
+                TranscriptItem::Assistant { content, .. } => {
+                    Some(("assistant", &[][..], content.as_str()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].0, "work");
+        assert_eq!(items[0].1.len(), 1);
+        assert!(items[0].1[0].content.contains("src/one.rs"));
+        assert_eq!(items[1].0, "work");
+        assert_eq!(items[1].1.len(), 1);
+        assert!(items[1].1[0].content.contains("src/two.rs"));
+        assert_eq!(items[2].0, "assistant");
+        assert!(items[2].1.is_empty());
+        assert_eq!(items[2].2, "Both edits are complete.");
     }
 
     #[test]
