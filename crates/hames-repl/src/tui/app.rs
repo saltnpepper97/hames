@@ -277,6 +277,7 @@ pub enum ActivityCategory {
     Memory,
     Scars,
     Plugin,
+    Tasks,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -364,7 +365,7 @@ impl ActivityRow {
         let read = matches!(self.name.as_str(), "read_file" | "list_dir");
         if self.name == "web_search" {
             return match self.phase {
-                ActivityPhase::Preparing => "Preparing search",
+                ActivityPhase::Preparing => "Searching",
                 ActivityPhase::Checking => "Checking access",
                 ActivityPhase::Approval => "Awaiting permission",
                 ActivityPhase::Running => "Searching",
@@ -376,7 +377,7 @@ impl ActivityRow {
         }
         if self.name == "web_fetch" {
             return match self.phase {
-                ActivityPhase::Preparing => "Preparing fetch",
+                ActivityPhase::Preparing => "Fetching",
                 ActivityPhase::Checking => "Checking access",
                 ActivityPhase::Approval => "Awaiting permission",
                 ActivityPhase::Running => "Fetching",
@@ -388,7 +389,7 @@ impl ActivityRow {
         }
         if self.name == "memory_forget" {
             return match self.phase {
-                ActivityPhase::Preparing => "Preparing",
+                ActivityPhase::Preparing => "Forgetting",
                 ActivityPhase::Checking => "Checking",
                 ActivityPhase::Approval => "Awaiting permission",
                 ActivityPhase::Running => "Forgetting",
@@ -400,7 +401,7 @@ impl ActivityRow {
         }
         if self.name == "memory_add" {
             return match self.phase {
-                ActivityPhase::Preparing => "Preparing",
+                ActivityPhase::Preparing => "Remembering",
                 ActivityPhase::Checking => "Checking",
                 ActivityPhase::Approval => "Awaiting permission",
                 ActivityPhase::Running => "Remembering",
@@ -412,7 +413,7 @@ impl ActivityRow {
         }
         if self.name == "memory_edit" {
             return match self.phase {
-                ActivityPhase::Preparing => "Preparing",
+                ActivityPhase::Preparing => "Updating",
                 ActivityPhase::Checking => "Checking",
                 ActivityPhase::Approval => "Awaiting permission",
                 ActivityPhase::Running => "Updating",
@@ -435,7 +436,7 @@ impl ActivityRow {
                 (ActivityPhase::Completed, "dismiss") => "Dismissed",
                 (ActivityPhase::Running, "open") => "Opening",
                 (ActivityPhase::Completed, "open") => "Opened",
-                (ActivityPhase::Preparing, _) => "Preparing",
+                (ActivityPhase::Preparing, _) => "Updating",
                 (ActivityPhase::Checking, _) => "Checking",
                 (ActivityPhase::Approval, _) => "Awaiting permission",
                 (ActivityPhase::Running, _) => "Updating",
@@ -449,9 +450,20 @@ impl ActivityRow {
             return match self.phase {
                 ActivityPhase::Running => "Recording",
                 ActivityPhase::Completed => "Recorded",
-                ActivityPhase::Preparing => "Preparing",
+                ActivityPhase::Preparing => "Recording",
                 ActivityPhase::Checking => "Checking",
                 ActivityPhase::Approval => "Awaiting permission",
+                ActivityPhase::Failed => "Failed",
+                ActivityPhase::Rejected => "Rejected",
+                ActivityPhase::Cancelled => "Cancelled",
+            };
+        }
+        if matches!(self.name.as_str(), "task_update" | "task_list") {
+            return match self.phase {
+                ActivityPhase::Preparing | ActivityPhase::Running => "Updating tasks",
+                ActivityPhase::Checking => "Checking",
+                ActivityPhase::Approval => "Awaiting permission",
+                ActivityPhase::Completed => "Updated tasks",
                 ActivityPhase::Failed => "Failed",
                 ActivityPhase::Rejected => "Rejected",
                 ActivityPhase::Cancelled => "Cancelled",
@@ -460,7 +472,7 @@ impl ActivityRow {
         match (self.phase, write, read) {
             (ActivityPhase::Preparing, true, _) => "Preparing write",
             (ActivityPhase::Preparing, _, true) => "Exploring",
-            (ActivityPhase::Preparing, _, _) => "Preparing",
+            (ActivityPhase::Preparing, _, _) => "Running",
             (ActivityPhase::Checking, true, _) => "Checking write",
             (ActivityPhase::Checking, _, true) => "Checking access",
             (ActivityPhase::Checking, _, _) => "Checking",
@@ -2039,7 +2051,7 @@ impl App {
                     return;
                 }
                 let index = payload.get("index").and_then(Value::as_u64).unwrap_or(0);
-                let row = self.ensure_activity_row(run_id, index, None);
+                let row = self.ensure_activity_row(run_id, index, None, name);
                 if !name.is_empty() {
                     row.name.push_str(name);
                 }
@@ -2438,7 +2450,6 @@ impl App {
             }
             "run.started" => {
                 if self.active_run.as_deref() == Some(run_id.as_str()) {
-                    self.ensure_thought(&run_id, true);
                     self.run_started_at.get_or_insert_with(Instant::now);
                 } else {
                     self.begin_foreground_run(Some(run_id));
@@ -2509,6 +2520,7 @@ impl App {
                     .unwrap_or(event.event_type == "queue.paused");
             }
             "context.compaction.started" => {
+                self.withdraw_empty_live_thought(&run_id);
                 self.transcript.push(TranscriptItem::Compaction {
                     run_id: run_id.clone(),
                     summary: String::new(),
@@ -2586,12 +2598,6 @@ impl App {
                     self.error_notice = Some(string(&event.payload, "message"));
                 }
             }
-            "model.requested"
-                if self.active_run.as_deref() == Some(run_id.as_str())
-                    && string(&event.payload, "purpose") != "context_compaction" =>
-            {
-                self.ensure_thought(&run_id, true);
-            }
             "model.response.started" => {
                 if let Some(job_id) = event.correlation_id.as_deref() {
                     self.start_dream(job_id);
@@ -2650,7 +2656,16 @@ impl App {
                     .get("tool_call_id")
                     .and_then(Value::as_str)
                     .map(str::to_owned);
-                let row = self.ensure_activity_row(&run_id, index, call_id);
+                let row = self.ensure_activity_row(
+                    &run_id,
+                    index,
+                    call_id,
+                    event
+                        .payload
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                );
                 row.name = string(&event.payload, "name");
                 row.arguments = event
                     .payload
@@ -2999,6 +3014,37 @@ impl App {
         }
     }
 
+    fn withdraw_empty_live_thought(&mut self, run_id: &str) {
+        let Some(index) = self.transcript.iter().rposition(|item| {
+            matches!(
+                item,
+                TranscriptItem::Thought {
+                    run_id: id,
+                    live: true,
+                    content,
+                    ..
+                } if id == run_id && content.is_empty()
+            )
+        }) else {
+            return;
+        };
+        self.transcript.remove(index);
+        if self.focused_thought == Some(index) {
+            self.focused_thought = None;
+        } else if let Some(focused) = self.focused_thought
+            && focused > index
+        {
+            self.focused_thought = Some(focused - 1);
+        }
+        if self.pending_thought_toggle == Some(index) {
+            self.pending_thought_toggle = None;
+        } else if let Some(pending) = self.pending_thought_toggle
+            && pending > index
+        {
+            self.pending_thought_toggle = Some(pending - 1);
+        }
+    }
+
     fn ensure_thought(&mut self, run_id: &str, live: bool) -> usize {
         if let Some(index) = self.transcript.iter().rposition(|item| match item {
             TranscriptItem::Thought { run_id: id, .. } => id == run_id,
@@ -3008,7 +3054,10 @@ impl App {
                 &self.transcript[index],
                 TranscriptItem::Thought { live: true, .. }
             );
-            if !live || existing_live {
+            if existing_live {
+                return index;
+            }
+            if !live && index + 1 == self.transcript.len() {
                 return index;
             }
         }
@@ -3044,11 +3093,28 @@ impl App {
         self.transcript.len() - 1
     }
 
+    fn can_clump_activity(&self, run_id: &str, name: &str) -> bool {
+        let Some(TranscriptItem::Activity {
+            run_id: id, rows, ..
+        }) = self.transcript.last()
+        else {
+            return false;
+        };
+        if id != run_id {
+            return false;
+        }
+        let Some(previous) = rows.iter().rev().find(|row| !row.name.is_empty()) else {
+            return true;
+        };
+        is_task_tool(&previous.name) == is_task_tool(name)
+    }
+
     fn ensure_activity_row(
         &mut self,
         run_id: &str,
         index: u64,
         call_id: Option<String>,
+        name: &str,
     ) -> &mut ActivityRow {
         let existing =
             self.transcript
@@ -3103,13 +3169,9 @@ impl App {
             }
             return &mut rows[row_index];
         }
-        // Consecutive tools stay in one Work item until thought or assistant prose
-        // splits the transcript. That keeps a pre-thought burst as one block without
-        // folding thinking into Work.
-        let activity_index = if matches!(
-            self.transcript.last(),
-            Some(TranscriptItem::Activity { run_id: id, .. }) if id == run_id
-        ) {
+        // Consecutive tools stay in one Work item until thought, assistant prose,
+        // or a task-list update splits the transcript.
+        let activity_index = if self.can_clump_activity(run_id, name) {
             let index = self.transcript.len() - 1;
             if let TranscriptItem::Activity { collapsed, .. } = &mut self.transcript[index] {
                 *collapsed = false;
@@ -3154,7 +3216,12 @@ impl App {
             .and_then(Value::as_u64)
             .unwrap_or(u64::MAX);
         {
-            let row = self.ensure_activity_row(run_id, index, call_id.clone());
+            let row = self.ensure_activity_row(
+                run_id,
+                index,
+                call_id.clone(),
+                payload.get("name").and_then(Value::as_str).unwrap_or(""),
+            );
             let name = string(payload, "name");
             if !name.is_empty() {
                 row.name = name;
@@ -3560,9 +3627,14 @@ fn category_for_tool(name: &str) -> ActivityCategory {
             ActivityCategory::Memory
         }
         "scar_list" | "scar_record" | "scar_control" => ActivityCategory::Scars,
+        "task_update" | "task_list" => ActivityCategory::Tasks,
         value if value.contains('.') => ActivityCategory::Plugin,
         _ => ActivityCategory::Run,
     }
+}
+
+fn is_task_tool(name: &str) -> bool {
+    matches!(name, "task_update" | "task_list")
 }
 
 fn display_path(value: &str) -> String {
@@ -3817,14 +3889,11 @@ mod tests {
         ];
         let mut app = App::new(session, events, true);
         assert_eq!(app.active_run.as_deref(), Some(run_id));
-        assert!(matches!(
-            app.transcript.last(),
-            Some(TranscriptItem::Thought {
-                live: true,
-                collapsed: true,
-                ..
-            })
-        ));
+        assert!(
+            !app.transcript
+                .iter()
+                .any(|item| matches!(item, TranscriptItem::Thought { .. }))
+        );
 
         app.ingest_durable(
             event(
@@ -3887,7 +3956,9 @@ mod tests {
             matches!(app.transcript.first(), Some(TranscriptItem::User { content }) if content == "Fix the transcript order")
         );
         assert!(
-            matches!(app.transcript.get(1), Some(TranscriptItem::Thought { run_id: id, live: true, .. }) if id == run_id)
+            !app.transcript
+                .iter()
+                .any(|item| matches!(item, TranscriptItem::Thought { .. }))
         );
     }
 
@@ -4038,6 +4109,49 @@ mod tests {
     }
 
     #[test]
+    fn task_updates_do_not_clump_with_file_writes() {
+        let run_id = "run-write-then-tasks";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_durable(
+            event(
+                1,
+                "model.tool_call",
+                run_id,
+                json!({
+                    "index": 0,
+                    "tool_call_id": "write-1",
+                    "name": "write_file",
+                    "arguments": {"path": "src/main.rs"}
+                }),
+            ),
+            true,
+        );
+        app.ingest_durable(
+            event(
+                2,
+                "model.tool_call",
+                run_id,
+                json!({
+                    "index": 1,
+                    "tool_call_id": "task-1",
+                    "name": "task_update",
+                    "arguments": {"action": "add", "text": "Verify the change"}
+                }),
+            ),
+            true,
+        );
+        let cards: Vec<(&str, usize)> = app
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Activity { rows, .. } => Some((rows[0].name.as_str(), rows.len())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cards, vec![("write_file", 1), ("task_update", 1)]);
+    }
+
+    #[test]
     fn thought_splits_work_clumps_without_joining_them() {
         let run_id = "run-clump-then-think";
         let mut app = App::new(session(), Vec::new(), true);
@@ -4172,12 +4286,11 @@ mod tests {
             .filter(|item| matches!(item, TranscriptItem::Assistant { .. }))
             .count();
 
-        assert_eq!(thoughts.len(), 3);
+        assert_eq!(thoughts.len(), 2);
         assert_eq!(thoughts[0].0, "first check");
         assert_eq!(*thoughts[0].1, 1.0);
         assert_eq!(thoughts[1].0, "second check");
         assert_eq!(*thoughts[1].1, 2.0);
-        assert!(thoughts[2].0.is_empty());
         assert_eq!(activities.len(), 2);
         assert_eq!(activities[0].0.len(), 1);
         assert_eq!(activities[1].0.len(), 1);
@@ -4194,10 +4307,7 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(
-            kinds,
-            ["thought", "work", "thought", "work", "thought", "answer"]
-        );
+        assert_eq!(kinds, ["thought", "work", "thought", "work", "answer"]);
     }
 
     #[test]
@@ -4442,7 +4552,7 @@ mod tests {
                 )
             })
             .count();
-        assert_eq!(execution_thoughts, 1);
+        assert_eq!(execution_thoughts, 0);
         assert_eq!(app.active_run.as_deref(), Some("run-execution"));
         assert_eq!(app.scroll, 0);
     }
@@ -4960,6 +5070,99 @@ mod tests {
     }
 
     #[test]
+    fn automatic_compaction_holds_thinking_until_after_the_summary() {
+        let run_id = "run-compact-then-think";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.begin_foreground_run(Some(run_id.to_owned()));
+        app.ingest_durable(event(1, "run.started", run_id, json!({})), true);
+        assert!(app.transcript.is_empty());
+
+        app.ingest_durable(
+            event(
+                2,
+                "context.compaction.started",
+                run_id,
+                json!({"trigger": "automatic"}),
+            ),
+            true,
+        );
+        assert!(
+            !app.transcript
+                .iter()
+                .any(|item| matches!(item, TranscriptItem::Thought { .. }))
+        );
+        assert!(matches!(
+            app.transcript.last(),
+            Some(TranscriptItem::Compaction {
+                live: true,
+                trigger,
+                ..
+            }) if trigger == "automatic"
+        ));
+
+        app.ingest_durable(
+            event(
+                3,
+                "model.requested",
+                run_id,
+                json!({"purpose": "context_compaction"}),
+            ),
+            true,
+        );
+        assert!(
+            !app.transcript
+                .iter()
+                .any(|item| matches!(item, TranscriptItem::Thought { .. }))
+        );
+
+        app.ingest_durable(
+            event(
+                4,
+                "context.compaction.completed",
+                run_id,
+                json!({
+                    "trigger": "automatic",
+                    "summary": "Earlier work.",
+                    "provider": "fake",
+                    "model": "fixture",
+                    "turns_compacted": 3,
+                    "before_tokens": 80_000,
+                    "after_tokens": 1_200,
+                    "passes": 1,
+                    "partial": false
+                }),
+            ),
+            true,
+        );
+        app.ingest_durable(
+            event(5, "model.requested", run_id, json!({"purpose": "agent"})),
+            true,
+        );
+        assert!(
+            !app.transcript
+                .iter()
+                .any(|item| matches!(item, TranscriptItem::Thought { .. }))
+        );
+        app.ingest_transient(
+            run_id,
+            "response.reasoning_delta",
+            &json!({"text": "next steps"}),
+        );
+
+        let kinds: Vec<&str> = app
+            .transcript
+            .iter()
+            .map(|item| match item {
+                TranscriptItem::Compaction { live: false, .. } => "compacted",
+                TranscriptItem::Thought { live: true, .. } => "thinking",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, vec!["compacted", "thinking"]);
+        assert_eq!(app.active_run.as_deref(), Some(run_id));
+    }
+
+    #[test]
     fn transcript_selection_extracts_visible_text_across_lines() {
         let mut app = App::new(session(), Vec::new(), true);
         app.transcript_viewport = TranscriptViewport {
@@ -5017,6 +5220,11 @@ mod tests {
         let mut app = App::new(session(), Vec::new(), true);
         app.ingest_durable(event(1, "run.started", run_id, json!({})), true);
         app.ingest_durable(event(2, "model.requested", run_id, json!({})), true);
+        app.ingest_transient(
+            run_id,
+            "response.reasoning_delta",
+            &json!({"text": "started thinking"}),
+        );
         app.ingest_durable(event(3, "run.cancelled", run_id, json!({})), true);
 
         assert!(app.active_run.is_none());

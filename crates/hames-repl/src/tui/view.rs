@@ -197,7 +197,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    let activity = current_activity(app);
     let workspace = compact_home(&app.workspace_name);
     let mut left_spans = vec![
         Span::styled(" ◈ Hames", Style::default().fg(MINT).bold()),
@@ -215,15 +214,7 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             app.session.title.as_deref().unwrap_or("New session"),
             Style::default().fg(INPUT).bold(),
         ),
-        Span::styled(" · ", Style::default().fg(MUTED)),
-        Span::styled(
-            format!("{activity}  "),
-            Style::default().fg(if app.active_run.is_some() {
-                GOLD
-            } else {
-                MUTED
-            }),
-        ),
+        Span::styled("  ", Style::default().fg(MUTED)),
     ])
     .right_aligned();
     let block = Block::default()
@@ -330,13 +321,14 @@ pub(super) fn current_activity(app: &App) -> &'static str {
                         ActivityCategory::Memory => "Memory",
                         ActivityCategory::Scars => "Scars",
                         ActivityCategory::Plugin => "Plugin",
+                        ActivityCategory::Tasks => "Updating tasks",
                     };
                 }
             }
             _ => {}
         }
     }
-    "Working"
+    "Waiting"
 }
 
 struct RenderLine<'a> {
@@ -518,6 +510,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
     for (index, item) in app.transcript.iter().enumerate() {
         match item {
             TranscriptItem::User { content } => {
+                let start = lines.len();
                 lines.push(RenderLine {
                     line: Line::from(Span::styled("You", Style::default().fg(INPUT).bold())),
                     thought: None,
@@ -526,9 +519,10 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 push_markdown(
                     &mut lines,
                     content,
-                    width,
+                    width.saturating_sub(2).max(1),
                     Style::default().fg(Color::White),
                 );
+                style_padded_block(&mut lines, start, width, PANEL_BRIGHT, 1, 2);
             }
             TranscriptItem::Thought {
                 content,
@@ -588,17 +582,17 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
             }
             TranscriptItem::Assistant { content, live, .. } if !content.trim().is_empty() => {
                 lines.push(RenderLine {
-                    line: Line::from(Span::styled(
-                        app.agent_name.clone(),
-                        Style::default().fg(MINT).bold(),
-                    )),
+                    line: Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(app.agent_name.clone(), Style::default().fg(MINT).bold()),
+                    ]),
                     thought: None,
-                    sheen: live.then_some((0, 7)),
+                    sheen: live.then_some((2, 7)),
                 });
                 push_markdown(
                     &mut lines,
                     content,
-                    width,
+                    width.saturating_sub(2).max(1),
                     Style::default().fg(Color::White),
                 );
             }
@@ -746,10 +740,15 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 } else {
                     String::new()
                 };
+                let heading = if visible_rows.iter().all(|row| is_task_tool(&row.name)) {
+                    "Tasks"
+                } else {
+                    "Work"
+                };
                 lines.push(RenderLine {
                     line: Line::from(vec![
                         Span::styled("◆ ", Style::default().fg(INPUT)),
-                        Span::styled("Work", Style::default().fg(INPUT).bold()),
+                        Span::styled(heading, Style::default().fg(INPUT).bold()),
                         Span::styled(
                             format!(
                                 " · {count} {} · {state}{disclosure}",
@@ -969,6 +968,9 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
             }
             TranscriptItem::Assistant { .. } => {}
             TranscriptItem::TaskList { title, items } => {
+                if !task_list_visible(app) {
+                    continue;
+                }
                 let completed = items
                     .iter()
                     .filter(|item| item.status == "completed")
@@ -1741,26 +1743,18 @@ fn sheet_shortcuts(app: &App) -> Line<'static> {
 }
 
 fn activity_bar(app: &App) -> Line<'static> {
+    let activity = current_activity(app);
     let mut spans = vec![
         Span::raw("  "),
         Span::styled("──────", Style::default().fg(MUTED)),
+        Span::styled(format!("  {activity}"), Style::default().fg(GOLD)),
     ];
-    let activity = current_activity(app);
-    if activity != "Thinking" {
-        spans.push(Span::styled(
-            format!("  {activity}"),
-            Style::default().fg(INPUT),
-        ));
-    }
     let elapsed = app
         .run_started_at
         .map(|started| format_elapsed(started.elapsed().as_secs()))
         .unwrap_or_else(|| "0s".to_owned());
     spans.push(Span::styled(
-        format!(
-            "{} {elapsed}",
-            if activity == "Thinking" { " " } else { " ·" }
-        ),
+        format!(" · {elapsed}"),
         Style::default().fg(MUTED),
     ));
 
@@ -1819,7 +1813,7 @@ fn highlight_line(line: &Line<'_>, (start, end): (usize, usize)) -> Line<'static
             let next = column + UnicodeWidthStr::width(grapheme);
             let selected = next > start && column < end;
             let style = if selected {
-                span.style.fg(Color::White).bg(PANEL_BRIGHT)
+                span.style.fg(Color::Black).bg(Color::White)
             } else {
                 span.style
             };
@@ -3865,6 +3859,66 @@ fn push_diff_source_line(lines: &mut Vec<RenderLine<'static>>, value: &str, widt
     push_diff_source_line_with_prefix(lines, value, width, "");
 }
 
+fn is_task_tool(name: &str) -> bool {
+    matches!(name, "task_update" | "task_list")
+}
+
+fn style_padded_block(
+    lines: &mut Vec<RenderLine<'static>>,
+    start: usize,
+    width: usize,
+    background: Color,
+    vpad: usize,
+    hpad: usize,
+) {
+    let pad = " ".repeat(hpad);
+    let pad_style = Style::default().bg(background);
+    for item in &mut lines[start..] {
+        if hpad > 0 {
+            let mut spans = vec![Span::styled(pad.clone(), pad_style)];
+            spans.append(&mut item.line.spans);
+            item.line = Line::from(spans);
+        }
+        fill_line_background(&mut item.line, width, background);
+    }
+    let blank = || {
+        let mut line = Line::from("");
+        fill_line_background(&mut line, width, background);
+        RenderLine {
+            line,
+            thought: None,
+            sheen: None,
+        }
+    };
+    for _ in 0..vpad {
+        lines.insert(start, blank());
+    }
+    for _ in 0..vpad {
+        lines.push(blank());
+    }
+}
+
+fn task_list_visible(app: &App) -> bool {
+    match app.plan.current.as_ref().map(|plan| plan.status.as_str()) {
+        Some("ready") => false,
+        Some("approved" | "executing" | "completed" | "requested" | "failed") => true,
+        _ => app.session.interaction_mode != "plan",
+    }
+}
+
+fn fill_line_background(line: &mut Line<'_>, width: usize, background: Color) {
+    for span in &mut line.spans {
+        span.style = span.style.bg(background);
+    }
+    let used = line.width();
+    if used < width {
+        line.spans.push(Span::styled(
+            " ".repeat(width - used),
+            Style::default().bg(background),
+        ));
+    }
+}
+
 fn push_diff_source_line_with_prefix(
     lines: &mut Vec<RenderLine<'static>>,
     value: &str,
@@ -4057,7 +4111,10 @@ fn apply_theme(frame: &mut Frame<'_>, area: Rect, theme: ThemeKind) {
                 continue;
             };
             cell.fg = terminal_color(cell.fg);
-            cell.bg = terminal_color(cell.bg);
+            cell.bg = match cell.bg {
+                Color::White => Color::White,
+                other => terminal_color(other),
+            };
         }
     }
 }
@@ -4513,8 +4570,8 @@ mod tests {
     };
 
     use crate::api::{
-        ContextUsageProjection, Goal, MemoryRecord, QueuedMessage, Scar, Session, SessionTask,
-        UsageProjection,
+        ContextUsageProjection, Goal, MemoryRecord, PlanRevision, QueuedMessage, Scar, Session,
+        SessionTask, UsageProjection,
     };
     use crate::tui::app::{
         ActivityPhase, ActivityRow, AgentEditor, AgentEditorPage, App, ApprovalModal, Composer,
@@ -4644,6 +4701,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("Thinking"));
+        assert!(!rendered.contains("Waiting…"));
         assert!(!rendered.contains("Working…"));
     }
 
@@ -4842,12 +4900,24 @@ mod tests {
         let user_row = (0..buffer.area.height)
             .find(|y| {
                 buffer
-                    .cell((1, *y))
+                    .cell((3, *y))
                     .is_some_and(|cell| cell.symbol() == "Y")
             })
             .expect("user heading should be rendered in the transcript");
         assert_eq!(buffer.cell((0, user_row)).unwrap().symbol(), " ");
-        assert_eq!(buffer.cell((1, user_row)).unwrap().symbol(), "Y");
+        assert_eq!(buffer.cell((1, user_row)).unwrap().symbol(), " ");
+        assert_eq!(buffer.cell((2, user_row)).unwrap().symbol(), " ");
+        assert_eq!(buffer.cell((3, user_row)).unwrap().symbol(), "Y");
+        assert_eq!(buffer.cell((1, user_row)).unwrap().bg, PANEL_BRIGHT);
+        assert_eq!(buffer.cell((3, user_row)).unwrap().bg, PANEL_BRIGHT);
+        assert_eq!(
+            buffer.cell((1, user_row.saturating_sub(1))).unwrap().bg,
+            PANEL_BRIGHT
+        );
+        assert_eq!(
+            buffer.cell((1, user_row.saturating_add(2))).unwrap().bg,
+            PANEL_BRIGHT
+        );
     }
 
     #[test]
@@ -4866,13 +4936,12 @@ mod tests {
         assert!(rendered.contains("── rust"));
         assert!(!rendered.contains("Pasted Text"));
         assert!(!rendered.contains("```"));
-        assert_eq!(
-            rendered
-                .lines()
-                .find(|line| line.contains("fn main() {}"))
-                .unwrap(),
-            "fn main() {}"
-        );
+        let code_line = rendered
+            .lines()
+            .find(|line| line.contains("fn main() {}"))
+            .unwrap();
+        assert!(code_line.starts_with(' '));
+        assert!(code_line.contains("fn main() {}"));
     }
 
     #[test]
@@ -5111,6 +5180,120 @@ mod tests {
     }
 
     #[test]
+    fn sent_user_messages_use_a_padded_background() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::User {
+            content: "hello".to_owned(),
+        });
+        let lines = transcript_lines(&app, 40);
+        let you = lines
+            .iter()
+            .find(|item| line_text(&item.line).contains("You"))
+            .unwrap();
+        assert!(
+            you.line
+                .spans
+                .iter()
+                .all(|span| span.style.bg == Some(PANEL_BRIGHT))
+        );
+        assert!(line_text(&you.line).starts_with(' '));
+        let you_index = lines
+            .iter()
+            .position(|item| line_text(&item.line).contains("You"))
+            .unwrap();
+        assert!(you_index > 0);
+        assert!(
+            lines[you_index - 1]
+                .line
+                .spans
+                .iter()
+                .all(|span| span.style.bg == Some(PANEL_BRIGHT))
+        );
+        assert!(line_text(&lines[you_index - 1].line).trim().is_empty());
+        let hello = lines
+            .iter()
+            .find(|item| line_text(&item.line).contains("hello"))
+            .unwrap();
+        assert!(line_text(&hello.line).starts_with(' '));
+        assert!(
+            hello
+                .line
+                .spans
+                .iter()
+                .all(|span| span.style.bg == Some(PANEL_BRIGHT))
+        );
+        let hello_index = lines
+            .iter()
+            .position(|item| line_text(&item.line).contains("hello"))
+            .unwrap();
+        assert!(
+            lines[hello_index + 1]
+                .line
+                .spans
+                .iter()
+                .all(|span| span.style.bg == Some(PANEL_BRIGHT))
+        );
+        assert!(line_text(&lines[hello_index + 1].line).trim().is_empty());
+    }
+
+    #[test]
+    fn task_lists_are_hidden_while_a_plan_is_waiting_for_approval() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.plan.current = Some(PlanRevision {
+            id: "plan-1".to_owned(),
+            session_id: app.session.id.clone(),
+            revision: 1,
+            title: "Ship it".to_owned(),
+            markdown: "# Ship it".to_owned(),
+            tasks: Vec::new(),
+            source_run_id: "run-plan".to_owned(),
+            supersedes_plan_id: None,
+            status: "ready".to_owned(),
+            strategy: None,
+            execution_run_id: None,
+            execution_note: String::new(),
+            error: String::new(),
+            created_at: "2026-08-24T00:00:00Z".to_owned(),
+            updated_at: "2026-08-24T00:00:00Z".to_owned(),
+        });
+        app.transcript.push(TranscriptItem::TaskList {
+            title: "Game".to_owned(),
+            items: vec![SessionTask {
+                id: "task-1".to_owned(),
+                text: "Scaffold the game".to_owned(),
+                status: "pending".to_owned(),
+                position: 0,
+                created_by: "agent".to_owned(),
+            }],
+        });
+        let hidden = transcript_lines(&app, 80)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!hidden.contains("Scaffold the game"));
+        assert!(!hidden.contains("Tasks ·"));
+
+        app.plan.current.as_mut().unwrap().status = "approved".to_owned();
+        let shown = transcript_lines(&app, 80)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(shown.contains("◆ Tasks · 0/1 · Game"));
+        assert!(shown.contains("[ ] Scaffold the game"));
+
+        app.plan.current = None;
+        app.session.interaction_mode = "plan".to_owned();
+        let planning = transcript_lines(&app, 80)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!planning.contains("Scaffold the game"));
+    }
+
+    #[test]
     fn nearby_diff_edits_share_context_without_a_duplicate_gap() {
         let compact = compact_diff_lines(concat!(
             "--- a/file.py\n",
@@ -5252,7 +5435,8 @@ mod tests {
         assert!(rendered.contains("◈ Hames"));
         assert!(rendered.contains("/tmp/project · main"));
         assert!(!rendered.contains("· default"));
-        assert!(rendered.contains("New session · Ready"));
+        assert!(rendered.contains("New session"));
+        assert!(!rendered.contains("New session · Ready"));
         assert!(rendered.contains("[connected]"));
         assert!(rendered.contains("Message Hames"));
         assert!(rendered.contains("─ fixture (medium) · Auto"));
@@ -5366,7 +5550,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("──────"));
-        assert!(rendered.contains("Working · 12s · Esc interrupt"));
+        assert!(rendered.contains("Waiting · 12s · Esc interrupt"));
         assert!(!rendered.contains("Enter queue"));
         assert!(!rendered.contains("Alt+↑ send now"));
         assert!(rendered.contains("[connected]"));
@@ -5453,7 +5637,7 @@ mod tests {
                     .symbol()
             })
             .collect::<String>();
-        assert!(!footer.contains("Thinking"));
+        assert!(footer.contains("Thinking"));
         assert!(footer.contains("4s · Esc interrupt"));
     }
 
@@ -5517,13 +5701,11 @@ mod tests {
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(
-            buffer
-                .cell((app.transcript_viewport.x + 2, transcript_y))
-                .unwrap()
-                .bg,
-            PANEL_BRIGHT
-        );
+        let selected = buffer
+            .cell((app.transcript_viewport.x + 2, transcript_y))
+            .unwrap();
+        assert_eq!(selected.bg, Color::White);
+        assert_eq!(selected.fg, Color::Black);
         let rendered = buffer
             .content()
             .iter()

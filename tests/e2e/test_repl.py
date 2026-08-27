@@ -448,7 +448,6 @@ async def test_repl_preserves_tool_preparation_through_completion(tmp_path: Path
         assert "Writing" in output
         assert "Wrote" in output
         assert "◈ Explore" in output
-        assert "Preparing read" in output
         assert "Reading" in output
         assert "Read" in output
         assert "Tool continuity complete." in output
@@ -536,7 +535,7 @@ async def test_repl_resolves_tilde_without_auto_mode_approval(
         )
         output = stdout.decode()
         assert process.returncode == 0, stderr.decode()
-        assert "Preparing read" in output
+        assert "Reading" in output
         assert "~/.zshrc" in output
         assert "Awaiting approval" not in output
         assert "Reading" in output

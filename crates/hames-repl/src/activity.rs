@@ -148,17 +148,13 @@ impl ToolKind {
 
     fn verb(self, phase: ActivityPhase) -> &'static str {
         match (self, phase) {
-            (Self::Read, ActivityPhase::Preparing) => "Preparing read",
-            (Self::Read, ActivityPhase::Running) => "Reading",
+            (Self::Read, ActivityPhase::Preparing | ActivityPhase::Running) => "Reading",
             (Self::Read, ActivityPhase::Completed) => "Read",
-            (Self::List, ActivityPhase::Preparing) => "Preparing list",
-            (Self::List, ActivityPhase::Running) => "Listing",
+            (Self::List, ActivityPhase::Preparing | ActivityPhase::Running) => "Listing",
             (Self::List, ActivityPhase::Completed) => "Listed",
-            (Self::WebSearch, ActivityPhase::Preparing) => "Preparing search",
-            (Self::WebSearch, ActivityPhase::Running) => "Searching",
+            (Self::WebSearch, ActivityPhase::Preparing | ActivityPhase::Running) => "Searching",
             (Self::WebSearch, ActivityPhase::Completed) => "Searched",
-            (Self::WebFetch, ActivityPhase::Preparing) => "Preparing fetch",
-            (Self::WebFetch, ActivityPhase::Running) => "Fetching",
+            (Self::WebFetch, ActivityPhase::Preparing | ActivityPhase::Running) => "Fetching",
             (Self::WebFetch, ActivityPhase::Completed) => "Fetched",
             (Self::Write, ActivityPhase::Preparing) => "Preparing write",
             (Self::Write, ActivityPhase::Running) => "Writing",
@@ -166,53 +162,51 @@ impl ToolKind {
             (Self::Edit, ActivityPhase::Preparing) => "Preparing edit",
             (Self::Edit, ActivityPhase::Running) => "Editing",
             (Self::Edit, ActivityPhase::Completed) => "Edited",
-            (Self::Command, ActivityPhase::Preparing) => "Preparing command",
-            (Self::Command, ActivityPhase::Running) => "Running",
+            (Self::Command, ActivityPhase::Preparing | ActivityPhase::Running) => "Running",
             (Self::Command, ActivityPhase::Completed) => "Ran",
-            (Self::Delegate, ActivityPhase::Preparing) => "Preparing delegation",
-            (Self::Delegate, ActivityPhase::Running) => "Delegating",
+            (Self::Delegate, ActivityPhase::Preparing | ActivityPhase::Running) => "Delegating",
             (Self::Delegate, ActivityPhase::Completed) => "Delegated",
-            (Self::SkillLoad, ActivityPhase::Preparing) => "Preparing skill",
-            (Self::SkillLoad, ActivityPhase::Running) => "Loading",
+            (Self::SkillLoad, ActivityPhase::Preparing | ActivityPhase::Running) => "Loading",
             (Self::SkillLoad, ActivityPhase::Completed) => "Loaded",
-            (Self::SkillAuthor, ActivityPhase::Preparing) => "Preparing skill",
-            (Self::SkillAuthor, ActivityPhase::Running) => "Authoring",
+            (Self::SkillAuthor, ActivityPhase::Preparing | ActivityPhase::Running) => "Authoring",
             (Self::SkillAuthor, ActivityPhase::Completed) => "Authored",
-            (Self::SkillRun, ActivityPhase::Preparing) => "Preparing script",
-            (Self::SkillRun, ActivityPhase::Running) => "Running",
+            (Self::SkillRun, ActivityPhase::Preparing | ActivityPhase::Running) => "Running",
             (Self::SkillRun, ActivityPhase::Completed) => "Ran",
-            (Self::MemorySearch, ActivityPhase::Preparing) => "Preparing memory search",
-            (Self::MemorySearch, ActivityPhase::Running) => "Searching memories",
+            (Self::MemorySearch, ActivityPhase::Preparing | ActivityPhase::Running) => {
+                "Searching memories"
+            }
             (Self::MemorySearch, ActivityPhase::Completed) => "Searched memories",
-            (Self::MemoryAdd, ActivityPhase::Preparing) => "Preparing memory",
-            (Self::MemoryAdd, ActivityPhase::Running) => "Remembering",
+            (Self::MemoryAdd, ActivityPhase::Preparing | ActivityPhase::Running) => "Remembering",
             (Self::MemoryAdd, ActivityPhase::Completed) => "Remembered",
-            (Self::MemoryEdit, ActivityPhase::Preparing) => "Preparing memory update",
-            (Self::MemoryEdit, ActivityPhase::Running) => "Updating memory",
+            (Self::MemoryEdit, ActivityPhase::Preparing | ActivityPhase::Running) => {
+                "Updating memory"
+            }
             (Self::MemoryEdit, ActivityPhase::Completed) => "Updated memory",
-            (Self::MemoryForget, ActivityPhase::Preparing) => "Preparing forget",
-            (Self::MemoryForget, ActivityPhase::Running) => "Forgetting",
+            (Self::MemoryForget, ActivityPhase::Preparing | ActivityPhase::Running) => "Forgetting",
             (Self::MemoryForget, ActivityPhase::Completed) => "Forgot",
-            (Self::ScarList, ActivityPhase::Preparing) => "Preparing scar review",
-            (Self::ScarList, ActivityPhase::Running) => "Reviewing scars",
+            (Self::ScarList, ActivityPhase::Preparing | ActivityPhase::Running) => {
+                "Reviewing scars"
+            }
             (Self::ScarList, ActivityPhase::Completed) => "Reviewed scars",
-            (Self::ScarRecord, ActivityPhase::Preparing) => "Preparing scar",
-            (Self::ScarRecord, ActivityPhase::Running) => "Recording scar",
+            (Self::ScarRecord, ActivityPhase::Preparing | ActivityPhase::Running) => {
+                "Recording scar"
+            }
             (Self::ScarRecord, ActivityPhase::Completed) => "Recorded scar",
-            (Self::ScarControl, ActivityPhase::Preparing) => "Preparing scar update",
-            (Self::ScarControl, ActivityPhase::Running) => "Updating scar",
+            (Self::ScarControl, ActivityPhase::Preparing | ActivityPhase::Running) => {
+                "Updating scar"
+            }
             (Self::ScarControl, ActivityPhase::Completed) => "Updated scar",
-            (Self::SkillCatalog, ActivityPhase::Preparing) => "Preparing skill search",
-            (Self::SkillCatalog, ActivityPhase::Running) => "Searching skills",
+            (Self::SkillCatalog, ActivityPhase::Preparing | ActivityPhase::Running) => {
+                "Searching skills"
+            }
             (Self::SkillCatalog, ActivityPhase::Completed) => "Searched skills",
-            (Self::SkillControl, ActivityPhase::Preparing) => "Preparing skill update",
-            (Self::SkillControl, ActivityPhase::Running) => "Updating skill",
+            (Self::SkillControl, ActivityPhase::Preparing | ActivityPhase::Running) => {
+                "Updating skill"
+            }
             (Self::SkillControl, ActivityPhase::Completed) => "Updated skill",
-            (Self::Plugin, ActivityPhase::Preparing) => "Preparing plugin",
-            (Self::Plugin, ActivityPhase::Running) => "Using plugin",
+            (Self::Plugin, ActivityPhase::Preparing | ActivityPhase::Running) => "Using plugin",
             (Self::Plugin, ActivityPhase::Completed) => "Used plugin",
-            (Self::Unknown, ActivityPhase::Preparing) => "Preparing action",
-            (Self::Unknown, ActivityPhase::Running) => "Working",
+            (Self::Unknown, ActivityPhase::Preparing | ActivityPhase::Running) => "Working",
             (Self::Unknown, ActivityPhase::Completed) => "Completed",
             (_, ActivityPhase::Checking) => "Checking policy",
             (_, ActivityPhase::AwaitingApproval) => "Awaiting approval",
@@ -697,7 +691,7 @@ mod tests {
             "arguments_delta": "{\"path\":\"src/"
         }));
         let partial = board.row_line(0, 80).unwrap();
-        assert!(partial.contains("Preparing action"));
+        assert!(partial.contains("Working"));
         assert!(!partial.contains("src/"));
 
         board.transient_delta(&json!({
@@ -764,15 +758,11 @@ mod tests {
         }
         let lines = board.render_lines(100, false);
         assert!(lines.iter().any(|line| line.contains("Memory")));
-        assert!(lines.iter().any(|line| line.contains("Preparing memory")));
+        assert!(lines.iter().any(|line| line.contains("Remembering")));
         assert!(lines.iter().any(|line| line.contains("Scars")));
-        assert!(lines.iter().any(|line| line.contains("Preparing scar")));
+        assert!(lines.iter().any(|line| line.contains("Recording scar")));
         assert!(lines.iter().any(|line| line.contains("Skills")));
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("Preparing skill update"))
-        );
+        assert!(lines.iter().any(|line| line.contains("Updating skill")));
     }
 
     #[test]
