@@ -292,7 +292,7 @@ pub enum ActivityPhase {
     Cancelled,
 }
 
-const MAX_ACTIVITY_ROWS_PER_GROUP: usize = 10;
+const MAX_ACTIVITY_ROWS_PER_GROUP: usize = 20;
 
 impl ActivityPhase {
     pub fn terminal(self) -> bool {
@@ -4639,11 +4639,11 @@ mod tests {
     }
 
     #[test]
-    fn work_groups_are_capped_at_ten_rows() {
+    fn work_groups_are_capped_at_twenty_rows() {
         let run_id = "run-bounded-umbrella";
         let mut app = App::new(session(), Vec::new(), true);
         app.begin_foreground_run(Some(run_id.to_owned()));
-        for index in 0..11_u64 {
+        for index in 0..21_u64 {
             app.ingest_durable(
                 event(
                     index + 1,
@@ -4670,7 +4670,7 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(groups, [(10, true), (1, false)]);
+        assert_eq!(groups, [(20, true), (1, false)]);
     }
 
     #[test]
