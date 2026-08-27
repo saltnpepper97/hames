@@ -48,6 +48,8 @@ const TEXT_IDLE: Duration = Duration::from_millis(350);
 const TEXT_SWEEP: Duration = Duration::from_millis(2_200);
 const ACTIVITY_IDLE: Duration = Duration::from_millis(3_500);
 const ACTIVITY_SWEEP: Duration = Duration::from_millis(1_600);
+const TRANSCRIPT_GUTTER: &str = "  ";
+const ASSISTANT_BODY_INDENT: &str = "  ";
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     app.hits.clear();
@@ -583,18 +585,22 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
             TranscriptItem::Assistant { content, live, .. } if !content.trim().is_empty() => {
                 lines.push(RenderLine {
                     line: Line::from(vec![
-                        Span::raw("  "),
+                        Span::raw(TRANSCRIPT_GUTTER),
                         Span::styled(app.agent_name.clone(), Style::default().fg(MINT).bold()),
                     ]),
                     thought: None,
                     sheen: live.then_some((2, 7)),
                 });
+                let body_start = lines.len();
                 push_markdown(
                     &mut lines,
                     content,
-                    width.saturating_sub(2).max(1),
+                    width
+                        .saturating_sub(TRANSCRIPT_GUTTER.len() + ASSISTANT_BODY_INDENT.len())
+                        .max(1),
                     Style::default().fg(Color::White),
                 );
+                indent_render_lines(&mut lines[body_start..], ASSISTANT_BODY_INDENT);
             }
             TranscriptItem::Question {
                 question,
@@ -783,7 +789,14 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                             .get("memory_id")
                             .and_then(serde_json::Value::as_str)
                             .is_some_and(|id| row.summary.contains(id));
-                    if !row.summary.is_empty() && row.summary != detail && !summary_is_redundant {
+                    if is_task_tool(&row.name) {
+                        if detail.is_empty() {
+                            detail = row.summary.replace('\n', " ");
+                        }
+                    } else if !row.summary.is_empty()
+                        && row.summary != detail
+                        && !summary_is_redundant
+                    {
                         detail.push_str(" · ");
                         detail.push_str(&row.summary.replace('\n', " "));
                     }
@@ -3863,6 +3876,20 @@ fn is_task_tool(name: &str) -> bool {
     matches!(name, "task_update" | "task_list")
 }
 
+fn indent_render_lines(lines: &mut [RenderLine<'static>], indent: &str) {
+    if indent.is_empty() {
+        return;
+    }
+    for item in lines {
+        if item.line.width() == 0 {
+            continue;
+        }
+        let mut spans = vec![Span::raw(indent.to_owned())];
+        spans.append(&mut item.line.spans);
+        item.line = Line::from(spans);
+    }
+}
+
 fn style_padded_block(
     lines: &mut Vec<RenderLine<'static>>,
     start: usize,
@@ -4921,6 +4948,52 @@ mod tests {
     }
 
     #[test]
+    fn assistant_message_is_tabbed_past_the_agent_name() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.agent_name = "Hames".to_owned();
+        app.transcript.push(TranscriptItem::User {
+            content: "hello".to_owned(),
+        });
+        app.transcript.push(TranscriptItem::Assistant {
+            run_id: "run-align".to_owned(),
+            content: "reply".to_owned(),
+            live: false,
+            durable: true,
+        });
+        let lines = transcript_lines(&app, 40);
+        let you = lines
+            .iter()
+            .map(|item| line_text(&item.line))
+            .find(|line| line.contains("You"))
+            .unwrap();
+        let hello = lines
+            .iter()
+            .map(|item| line_text(&item.line))
+            .find(|line| line.contains("hello"))
+            .unwrap();
+        let agent = lines
+            .iter()
+            .map(|item| line_text(&item.line))
+            .find(|line| line.contains("Hames"))
+            .unwrap();
+        let reply = lines
+            .iter()
+            .map(|item| line_text(&item.line))
+            .find(|line| line.contains("reply"))
+            .unwrap();
+        let leading = |value: &str| {
+            value
+                .chars()
+                .take_while(|character| *character == ' ')
+                .count()
+        };
+        assert_eq!(leading(&you), leading(&agent));
+        assert!(leading(&hello) > leading(&you));
+        assert!(leading(&reply) > leading(&agent));
+        assert_eq!(leading(&hello), leading(&reply));
+    }
+
+    #[test]
     fn sent_paste_expands_to_full_markdown_in_the_transcript() {
         let mut app = App::new(session(), Vec::new(), true);
         let content = "before\n```rust\nfn main() {}\n```\nafter";
@@ -4970,10 +5043,10 @@ mod tests {
             .join("\n");
         assert!(rendered.contains("Careful Reviewer"));
         assert!(!rendered.contains("✦ Careful Reviewer"));
-        assert!(rendered.contains("  Result"));
-        assert!(rendered.contains("  • Bold and code"));
-        assert!(rendered.contains("  │ quoted"));
-        assert!(rendered.contains("  1. Docs (https://example.test)"));
+        assert!(rendered.contains("    Result"));
+        assert!(rendered.contains("    • Bold and code"));
+        assert!(rendered.contains("    │ quoted"));
+        assert!(rendered.contains("    1. Docs (https://example.test)"));
         assert!(!rendered.contains("**"));
         assert!(!rendered.contains("`code`"));
     }
@@ -5033,7 +5106,7 @@ mod tests {
         assert_eq!(UnicodeWidthStr::width(worked.as_str()), 96);
         let worked_index = rendered.iter().position(|line| line == worked).unwrap();
         assert_eq!(rendered[worked_index - 1], "");
-        assert_eq!(rendered[worked_index - 2], "  Done.");
+        assert_eq!(rendered[worked_index - 2], "    Done.");
     }
 
     #[test]

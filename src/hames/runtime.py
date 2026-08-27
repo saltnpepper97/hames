@@ -3719,9 +3719,24 @@ class RunManager:
                         causation_id=causation_id,
                     )
                 await self._publish_store_events((event,))
+                label = (arguments.text or "").strip()
+                if not label and arguments.task_id:
+                    label = next(
+                        (item.text for item in task_list.items if item.id == arguments.task_id),
+                        "",
+                    )
+                if arguments.action == "add":
+                    summary = f"added {label}" if label else "added a task"
+                elif arguments.action == "remove":
+                    summary = f"removed {label}" if label else "removed a task"
+                elif arguments.status:
+                    status = arguments.status.replace("_", " ")
+                    summary = f"marked {label} {status}" if label else f"marked {status}"
+                else:
+                    summary = f"updated {label}" if label else "updated a task"
                 return ToolResult(
                     status="completed",
-                    summary=f"task {arguments.action} completed",
+                    summary=summary,
                     structured_data={"task_list": task_list.model_dump(mode="json")},
                 )
             if isinstance(arguments, MemorySearchArguments):

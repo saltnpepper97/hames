@@ -338,6 +338,9 @@ impl ActivityRow {
     }
 
     pub fn target(&self) -> String {
+        if matches!(self.name.as_str(), "task_update" | "task_list") {
+            return task_target(&self.arguments);
+        }
         if let Some(memory_id) = self.arguments.get("memory_id").and_then(Value::as_str) {
             return format!("memory {}", memory_id.get(..8).unwrap_or(memory_id));
         }
@@ -1445,13 +1448,12 @@ impl App {
             title: self.tasks.title.clone(),
             items: self.tasks.items.clone(),
         };
-        if matches!(
-            self.transcript.last(),
-            Some(TranscriptItem::TaskList { .. })
-        ) {
-            if let Some(last) = self.transcript.last_mut() {
-                *last = item;
-            }
+        if let Some(index) = self
+            .transcript
+            .iter()
+            .rposition(|entry| matches!(entry, TranscriptItem::TaskList { .. }))
+        {
+            self.transcript[index] = item;
             return;
         }
         self.transcript.push(item);
@@ -2052,9 +2054,7 @@ impl App {
                 }
                 let index = payload.get("index").and_then(Value::as_u64).unwrap_or(0);
                 let row = self.ensure_activity_row(run_id, index, None, name);
-                if !name.is_empty() {
-                    row.name.push_str(name);
-                }
+                merge_tool_name(&mut row.name, name);
                 if !arguments.is_empty() {
                     row.argument_parts.push_str(arguments);
                     if let Ok(value) = serde_json::from_str(&row.argument_parts) {
@@ -3106,6 +3106,9 @@ impl App {
         let Some(previous) = rows.iter().rev().find(|row| !row.name.is_empty()) else {
             return true;
         };
+        if name.is_empty() {
+            return false;
+        }
         is_task_tool(&previous.name) == is_task_tool(name)
     }
 
@@ -3138,25 +3141,12 @@ impl App {
                                 .is_some_and(|id| row.tool_call_id.as_ref() == Some(id))
                         })
                         .or_else(|| {
-                            call_id
-                                .is_some()
-                                .then(|| {
-                                    rows.iter().position(|row| {
-                                        row.tool_call_id.is_none() && row.index == index
-                                    })
-                                })
-                                .flatten()
-                        })
-                        .or_else(|| {
-                            (call_id.is_none() && activity_index + 1 == self.transcript.len())
-                                .then(|| {
-                                    rows.iter().position(|row| {
-                                        row.tool_call_id.is_none()
-                                            && row.index == index
-                                            && !row.phase.terminal()
-                                    })
-                                })
-                                .flatten()
+                            rows.iter().position(|row| {
+                                row.tool_call_id.is_none()
+                                    && row.index == index
+                                    && (call_id.is_some() || !row.phase.terminal())
+                                    && tool_names_compatible(&row.name, name)
+                            })
                         })
                         .map(|row_index| (activity_index, row_index))
                 });
@@ -3170,7 +3160,7 @@ impl App {
             return &mut rows[row_index];
         }
         // Consecutive tools stay in one Work item until thought, assistant prose,
-        // or a task-list update splits the transcript.
+        // or a task/non-task split.
         let activity_index = if self.can_clump_activity(run_id, name) {
             let index = self.transcript.len() - 1;
             if let TranscriptItem::Activity { collapsed, .. } = &mut self.transcript[index] {
@@ -3635,6 +3625,54 @@ fn category_for_tool(name: &str) -> ActivityCategory {
 
 fn is_task_tool(name: &str) -> bool {
     matches!(name, "task_update" | "task_list")
+}
+
+fn tool_names_compatible(existing: &str, incoming: &str) -> bool {
+    incoming.is_empty()
+        || existing.is_empty()
+        || existing == incoming
+        || incoming.starts_with(existing)
+        || existing.starts_with(incoming)
+}
+
+fn merge_tool_name(current: &mut String, incoming: &str) {
+    if incoming.is_empty() {
+        return;
+    }
+    if current.is_empty() || incoming.starts_with(current.as_str()) {
+        current.clear();
+        current.push_str(incoming);
+        return;
+    }
+    if current.contains(incoming) {
+        return;
+    }
+    current.push_str(incoming);
+}
+
+fn task_target(arguments: &Value) -> String {
+    let text = arguments
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if !text.is_empty() {
+        return text.to_owned();
+    }
+    match arguments
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+    {
+        "remove" => "removed".to_owned(),
+        "add" => "new task".to_owned(),
+        "update" => match arguments.get("status").and_then(Value::as_str) {
+            Some("in_progress") => "in progress".to_owned(),
+            Some(status) => status.replace('_', " "),
+            None => String::new(),
+        },
+        _ => String::new(),
+    }
 }
 
 fn display_path(value: &str) -> String {
@@ -4149,6 +4187,193 @@ mod tests {
             })
             .collect();
         assert_eq!(cards, vec![("write_file", 1), ("task_update", 1)]);
+    }
+
+    #[test]
+    fn late_task_update_deltas_do_not_clone_into_later_work() {
+        let run_id = "run-task-then-goal";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_transient(
+            run_id,
+            "response.tool_call_delta",
+            &json!({
+                "index": 0,
+                "name": "task_update",
+                "arguments_delta": "{\"action\":\"update\",\"text\":\"Ship zoom\""
+            }),
+        );
+        app.ingest_transient(
+            run_id,
+            "response.tool_call_delta",
+            &json!({
+                "index": 1,
+                "name": "goal_report",
+                "arguments_delta": "{\"status\":\"progress\"}"
+            }),
+        );
+        app.ingest_transient(
+            run_id,
+            "response.tool_call_delta",
+            &json!({
+                "index": 0,
+                "name": "",
+                "arguments_delta": ",\"status\":\"completed\"}"
+            }),
+        );
+        app.ingest_durable(
+            event(
+                1,
+                "model.tool_call",
+                run_id,
+                json!({
+                    "index": 0,
+                    "tool_call_id": "task-1",
+                    "name": "task_update",
+                    "arguments": {
+                        "action": "update",
+                        "text": "Ship zoom",
+                        "status": "completed"
+                    }
+                }),
+            ),
+            true,
+        );
+        app.ingest_durable(
+            event(
+                2,
+                "tool.completed",
+                run_id,
+                json!({
+                    "index": 0,
+                    "tool_call_id": "task-1",
+                    "name": "task_update",
+                    "summary": "marked Ship zoom completed",
+                    "arguments": {
+                        "action": "update",
+                        "text": "Ship zoom",
+                        "status": "completed"
+                    }
+                }),
+            ),
+            true,
+        );
+        app.ingest_durable(
+            event(
+                3,
+                "tool.rejected",
+                run_id,
+                json!({
+                    "index": 1,
+                    "tool_call_id": "goal-1",
+                    "name": "goal_report",
+                    "summary": "goal_report rejected: goal_report requires the active goal step"
+                }),
+            ),
+            true,
+        );
+
+        let cards: Vec<(Vec<&str>, Vec<ActivityPhase>)> = app
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Activity { rows, .. } => Some((
+                    rows.iter().map(|row| row.name.as_str()).collect(),
+                    rows.iter().map(|row| row.phase).collect(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            cards,
+            vec![
+                (vec!["task_update"], vec![ActivityPhase::Completed]),
+                (vec!["goal_report"], vec![ActivityPhase::Rejected]),
+            ]
+        );
+        let row = match &app.transcript[0] {
+            TranscriptItem::Activity { rows, .. } => &rows[0],
+            _ => panic!("expected task activity"),
+        };
+        assert_eq!(row.target(), "Ship zoom");
+        assert_eq!(row.verb(), "Updated tasks");
+    }
+
+    #[test]
+    fn task_list_updates_do_not_split_a_live_task_tool() {
+        let run_id = "run-task-list-split";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.tasks.items.push(SessionTask {
+            id: "task-1".to_owned(),
+            text: "Ship zoom".to_owned(),
+            status: "in_progress".to_owned(),
+            position: 0,
+            created_by: "plan".to_owned(),
+        });
+        app.ingest_transient(
+            run_id,
+            "response.tool_call_delta",
+            &json!({
+                "index": 0,
+                "name": "task_update",
+                "arguments_delta": "{\"action\":\"update\",\"task_id\":\"task-1\""
+            }),
+        );
+        app.ingest_durable(
+            event(
+                1,
+                "task.updated",
+                run_id,
+                json!({
+                    "task_id": "task-1",
+                    "status": "completed",
+                    "text": null,
+                    "position": null
+                }),
+            ),
+            true,
+        );
+        app.ingest_durable(
+            event(
+                2,
+                "tool.completed",
+                run_id,
+                json!({
+                    "index": 0,
+                    "tool_call_id": "task-1",
+                    "name": "task_update",
+                    "summary": "marked Ship zoom completed",
+                    "arguments": {
+                        "action": "update",
+                        "task_id": "task-1",
+                        "status": "completed"
+                    }
+                }),
+            ),
+            true,
+        );
+
+        let activities = app
+            .transcript
+            .iter()
+            .filter(|item| matches!(item, TranscriptItem::Activity { .. }))
+            .count();
+        let lists = app
+            .transcript
+            .iter()
+            .filter(|item| matches!(item, TranscriptItem::TaskList { .. }))
+            .count();
+        assert_eq!(activities, 1);
+        assert_eq!(lists, 1);
+        let Some(TranscriptItem::Activity { rows, .. }) = app
+            .transcript
+            .iter()
+            .find(|item| matches!(item, TranscriptItem::Activity { .. }))
+        else {
+            panic!("expected one task activity");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].phase, ActivityPhase::Completed);
+        assert_eq!(rows[0].name, "task_update");
     }
 
     #[test]
