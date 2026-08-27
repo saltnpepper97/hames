@@ -10,8 +10,11 @@ from hames.config import ContextConfig
 from hames.context import (
     ContextBudgetError,
     PluginContextItem,
+    ThinkTagSplitter,
     canonical_request_snapshot,
     compile_context,
+    conversation_compaction_candidates,
+    split_think_document,
 )
 from hames.ledger import Ledger, Session
 from hames.memory import MemoryCandidate, MemoryStore, canonical_memory_context
@@ -102,6 +105,56 @@ def test_context_is_deterministic_and_omits_completed_reasoning(
     omitted = {source.source_id: source for source in first_compile.manifest.omitted_sources}
     assert omitted[f"reasoning.{reasoning.id}"].visibility == "audit"
     assert omitted[f"reasoning.{reasoning.id}"].reason == "completed-run-reasoning"
+
+
+def test_think_tags_are_split_from_visible_assistant_text() -> None:
+    reasoning, visible = split_think_document("<think>plan the edit</think>\n\nDone.\n</think>")
+    assert "plan the edit" in reasoning
+    assert "Done." in visible
+    assert "</think>" not in visible
+    assert "<think>" not in visible
+
+    splitter = ThinkTagSplitter()
+    first_r, first_v = splitter.feed("<thi")
+    second_r, second_v = splitter.feed("nk>hidden</th")
+    third_r, third_v = splitter.feed("ink>\nVisible")
+    flush_r, flush_v = splitter.flush()
+    assert first_r == first_v == ""
+    assert "hidden" in second_r + third_r + flush_r
+    assert "Visible" in second_v + third_v + flush_v
+
+
+def test_compaction_candidates_still_fold_short_histories(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger, session_value, _capsule = _fixture(hames_paths, tmp_path)
+    session = ledger.get_session(session_value.id)
+    for index in range(3):
+        ledger.append(
+            session_id=session.id,
+            event_type="user.message",
+            payload={"content": f"turn {index}"},
+        )
+    _, short = conversation_compaction_candidates(
+        ledger.replay(session.id), preserve_recent_turns=4
+    )
+    assert len(short) == 2
+
+    lone = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    ledger.append(
+        session_id=lone.id,
+        event_type="user.message",
+        payload={"content": "only"},
+    )
+    _, empty = conversation_compaction_candidates(
+        ledger.list_events(lone.id), preserve_recent_turns=4
+    )
+    assert empty == []
 
 
 def test_completed_compaction_replaces_only_the_prefix_in_model_context(

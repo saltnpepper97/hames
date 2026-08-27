@@ -26,6 +26,10 @@ def test_ready_marker_is_hidden_and_plan_tasks_are_parsed() -> None:
     assert ready is True
     assert visible == markdown
     assert parse_plan(visible) == ("Improve search", ["Add routing", "Verify fallback"])
+    assert parse_plan("# Approach only\n\nReuse existing search helpers.") == (
+        "Approach only",
+        [],
+    )
 
 
 def test_plan_projection_keeps_revisions_and_tracks_execution(

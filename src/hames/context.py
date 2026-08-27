@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
@@ -242,8 +243,9 @@ def compile_context(
         )
         plan_part = (
             f"plan.{approved_plan.id}",
-            "Approved implementation plan. Execute this exact plan and keep its session task "
-            f"checklist current:\n{approved_plan.markdown}{execution_note}",
+            "Approved implementation plan. Execute this exact plan. Create the session task "
+            "checklist if it is empty, then keep it current:\n"
+            f"{approved_plan.markdown}{execution_note}",
         )
     task_list = project_tasks(session.id, session_events)
     task_part: tuple[str, str] | None = None
@@ -651,13 +653,14 @@ def conversation_compaction_candidates(
     )
     cutoff = int(previous.payload.get("cutoff_sequence", 0)) if previous is not None else 0
     turns, _ = _conversation_turns([event for event in events if event.sequence > cutoff], "")
-    eligible = (
-        turns
-        if preserve_recent_turns == 0
-        else turns[:-preserve_recent_turns]
-        if len(turns) > preserve_recent_turns
-        else []
-    )
+    if preserve_recent_turns <= 0:
+        eligible = turns
+    elif len(turns) > preserve_recent_turns:
+        eligible = turns[:-preserve_recent_turns]
+    elif len(turns) > 1:
+        eligible = turns[:-1]
+    else:
+        eligible = []
     by_id = {event.id: event for event in events}
     result: list[CompactionTurn] = []
     for turn in eligible:
@@ -863,6 +866,71 @@ def _estimate_messages(messages: list[ProviderMessage]) -> int:
 
 def _estimate_text(content: str) -> int:
     return max(1, (len(content.encode()) + 3) // 4)
+
+
+_THINK_OPEN = re.compile(r"<think\b[^>]*>", re.IGNORECASE)
+_THINK_CLOSE = re.compile(r"</think\s*>", re.IGNORECASE)
+
+
+def _hold_partial_tag(text: str, prefix: str) -> tuple[str, str]:
+    lower = text.lower()
+    needle = prefix.lower()
+    for size in range(1, len(needle)):
+        if lower.endswith(needle[:size]):
+            return text[:-size], text[-size:]
+    return text, ""
+
+
+class ThinkTagSplitter:
+    """Split streamed Qwen-style <think> regions out of visible assistant text."""
+
+    def __init__(self) -> None:
+        self._in_think = False
+        self._hold = ""
+
+    def feed(self, chunk: str) -> tuple[str, str]:
+        data = self._hold + chunk
+        self._hold = ""
+        reasoning: list[str] = []
+        visible: list[str] = []
+        while data:
+            if self._in_think:
+                match = _THINK_CLOSE.search(data)
+                if match is None:
+                    safe, hold = _hold_partial_tag(data, "</think>")
+                    if safe:
+                        reasoning.append(safe)
+                    self._hold = hold
+                    break
+                reasoning.append(data[: match.start()])
+                data = data[match.end() :]
+                self._in_think = False
+                continue
+            match = _THINK_OPEN.search(data)
+            if match is None:
+                safe, hold = _hold_partial_tag(data, "<think")
+                if safe:
+                    visible.append(safe)
+                self._hold = hold
+                break
+            visible.append(data[: match.start()])
+            data = data[match.end() :]
+            self._in_think = True
+        return "".join(reasoning), _THINK_CLOSE.sub("", "".join(visible))
+
+    def flush(self) -> tuple[str, str]:
+        leftover = self._hold
+        self._hold = ""
+        if self._in_think:
+            return leftover, ""
+        return "", _THINK_CLOSE.sub("", leftover)
+
+
+def split_think_document(text: str) -> tuple[str, str]:
+    splitter = ThinkTagSplitter()
+    reasoning, visible = splitter.feed(text)
+    extra_reasoning, extra_visible = splitter.flush()
+    return reasoning + extra_reasoning, visible + extra_visible
 
 
 def _canonical_json(value: object) -> str:

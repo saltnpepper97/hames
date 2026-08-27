@@ -2849,6 +2849,7 @@ async def test_manual_compaction_uses_active_provider_and_records_a_durable_cuto
     fake = FakeProvider(
         [
             StreamEvent(kind=StreamEventKind.STARTED, provider_request_id="compact-request"),
+            StreamEvent(kind=StreamEventKind.REASONING_DELTA, text="planning the summary"),
             StreamEvent(
                 kind=StreamEventKind.TEXT_DELTA,
                 text="Keep the earlier requirements and completed verification.",
@@ -2896,6 +2897,8 @@ async def test_manual_compaction_uses_active_provider_and_records_a_durable_cuto
             assert payload["provider"] == "fake"
             assert fake.requests[0].metadata == {"purpose": "context_compaction"}
             assert fake.requests[0].tools == []
+            assert fake.requests[0].reasoning_effort == "off"
+            assert fake.requests[0].reasoning_budget_tokens == 0
             requested = next(
                 event
                 for event in events
@@ -2965,6 +2968,84 @@ async def test_automatic_compaction_runs_before_an_over_budget_agent_request(
             assert fake.requests[0].metadata == {"purpose": "context_compaction"}
             assert fake.requests[1].metadata == {"purpose": "context_compaction"}
             assert fake.requests[2].metadata == {
+                "purpose": "agent",
+                "workspace_path": str(tmp_path),
+                "interaction_mode": "auto",
+            }
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_automatic_compaction_honors_an_absolute_token_threshold(
+    tmp_path: Path,
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text(
+        "\n".join(
+            [
+                "[context]",
+                "fallback_window_tokens = 131072",
+                "output_reserve_tokens = 16384",
+                "compaction_auto_threshold_ratio = 0.95",
+                "compaction_auto_threshold_tokens = 4096",
+                "compaction_preserve_recent_turns = 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def response(text: str) -> list[StreamEvent]:
+        return [
+            StreamEvent(kind=StreamEventKind.STARTED),
+            StreamEvent(kind=StreamEventKind.TEXT_DELTA, text=text),
+            StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+        ]
+
+    fake = FakeProvider(
+        [],
+        turns=[response("rolling summary"), response("done")],
+    )
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            for index in range(3):
+                state.ledger.append(
+                    session_id=session_id,
+                    event_type="user.message",
+                    payload={"content": f"old-{index}-" + ("x" * 8_000)},
+                )
+
+            sent = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "continue"},
+            )
+            assert sent.status_code == 202
+            events = await _wait_for_event(client, headers, session_id, "run.completed")
+            compacted = next(
+                event for event in events if event["type"] == "context.compaction.completed"
+            )
+            payload = JSON_OBJECT.validate_python(compacted["payload"])
+            assert payload["trigger"] == "automatic"
+            assert fake.requests[0].metadata == {"purpose": "context_compaction"}
+            assert fake.requests[0].reasoning_effort == "off"
+            assert fake.requests[-1].metadata == {
                 "purpose": "agent",
                 "workspace_path": str(tmp_path),
                 "interaction_mode": "auto",

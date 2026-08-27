@@ -40,10 +40,18 @@ class ContextConfig(StrictModel):
     agent_identity_limit_tokens: int = Field(default=4_096, ge=512)
     tool_schema_limit_tokens: int = Field(default=8_192, ge=1_024)
     retrieved_context_limit_tokens: int = Field(default=2_048, ge=0)
-    compaction_auto_threshold_ratio: float = Field(default=0.80, ge=0.50, le=0.95)
+    compaction_auto_threshold_ratio: float = Field(default=0.80, ge=0.20, le=0.95)
+    compaction_auto_threshold_tokens: int | None = Field(default=None, ge=1_024)
     compaction_preserve_recent_turns: int = Field(default=4, ge=1, le=16)
     compaction_summary_max_tokens: int = Field(default=2_048, ge=256, le=8_192)
     compaction_max_passes: int = Field(default=3, ge=1, le=8)
+
+    def auto_compaction_threshold_tokens(self, input_budget_tokens: int) -> int:
+        return _auto_compaction_threshold(
+            input_budget_tokens,
+            self.compaction_auto_threshold_ratio,
+            self.compaction_auto_threshold_tokens,
+        )
 
     @model_validator(mode="after")
     def reserve_fits_fallback(self) -> ContextConfig:
@@ -268,6 +276,15 @@ class HamesConfig(StrictModel):
                 f"default provider profile is not configured: {self.runtime.default_provider}"
             )
         return self
+
+
+def _auto_compaction_threshold(
+    input_budget_tokens: int, ratio: float, token_cap: int | None
+) -> int:
+    ratio_limit = int(input_budget_tokens * ratio)
+    if token_cap is None:
+        return ratio_limit
+    return min(ratio_limit, token_cap)
 
 
 def _environment_overrides(environ: Mapping[str, str]) -> dict[str, Any]:

@@ -74,8 +74,6 @@ def parse_plan(markdown: str) -> tuple[str, list[str]]:
             text = " ".join(task.group(1).strip().split())
             if text and text not in tasks:
                 tasks.append(text[:500])
-    if not tasks:
-        tasks = ["Implement and verify the approved plan"]
     return title, tasks
 
 

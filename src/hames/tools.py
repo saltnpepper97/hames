@@ -828,7 +828,8 @@ class TaskUpdateTool(ToolBase):
     name = "task_update"
     description = (
         "Add discovered work to the current session checklist, update task text/order/status, "
-        "or remove an obsolete task. Keep the checklist current while implementing work."
+        "or remove an obsolete task. Use this after a plan is approved, or when implementing "
+        "work that has no pending plan. Do not build a checklist while planning."
     )
     side_effect_class = "session_tasks"
     arguments_type: ClassVar[type[ToolArguments]] = TaskUpdateArguments

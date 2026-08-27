@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from hames import __version__
 from hames.agent import load_agent
 from hames.cli import main
-from hames.config import RuntimeConfig, load_config
+from hames.config import ContextConfig, RuntimeConfig, load_config
 from hames.context import CORE_CONTRACT
 from hames.doctor import run_doctor
 from hames.paths import HamesPaths
@@ -40,6 +40,19 @@ def test_foundation_is_private_and_does_not_overwrite(hames_paths: HamesPaths) -
     assert hames_paths.default_agent.stat().st_mode & 0o777 == 0o600
     assert hames_paths.gateway_token.stat().st_mode & 0o777 == 0o600
     assert load_agent(hames_paths.default_agent).metadata.id == "default"
+
+
+def test_auto_compaction_threshold_uses_the_sooner_of_ratio_and_token_cap() -> None:
+    default = ContextConfig()
+    assert default.auto_compaction_threshold_tokens(100_000) == 80_000
+    capped = ContextConfig(
+        compaction_auto_threshold_ratio=0.80,
+        compaction_auto_threshold_tokens=32_768,
+    )
+    assert capped.auto_compaction_threshold_tokens(114_688) == 32_768
+    assert capped.auto_compaction_threshold_tokens(20_000) == 16_000
+    early = ContextConfig(compaction_auto_threshold_ratio=0.25)
+    assert early.auto_compaction_threshold_tokens(100_000) == 25_000
 
 
 def test_strict_config_and_environment_override(hames_paths: HamesPaths) -> None:

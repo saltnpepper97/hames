@@ -264,6 +264,13 @@ stable_instruction_limit_tokens = 8192
 agent_identity_limit_tokens = 4096
 tool_schema_limit_tokens = 8192
 retrieved_context_limit_tokens = 2048
+# Compact when estimated input reaches this fraction of the compiled input budget.
+compaction_auto_threshold_ratio = 0.80
+# Optional absolute cap. Compaction uses the sooner of the ratio and this cap.
+# compaction_auto_threshold_tokens = 110000
+compaction_preserve_recent_turns = 4
+compaction_summary_max_tokens = 2048
+compaction_max_passes = 3
 
 [memory]
 enabled = true
