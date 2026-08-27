@@ -28,6 +28,9 @@ class BlockingProvider:
     async def list_models(self) -> list[ProviderModel]:
         return []
 
+    async def account_rate_limits(self) -> dict[str, object]:
+        return {"weekly_window": {"used": 12, "remaining": 88}}
+
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
         purpose = str(request.metadata["purpose"])
         self.started.append(purpose)
@@ -92,3 +95,17 @@ async def test_foreground_preempts_long_running_maintenance_after_a_short_grace(
 
     foreground_release.set()
     await foreground
+
+
+@pytest.mark.asyncio
+async def test_account_limits_do_not_wait_for_an_active_model_stream() -> None:
+    inner = BlockingProvider()
+    provider = SerializedProvider(inner)
+    model = asyncio.create_task(_consume(provider, "agent"))
+    release = await inner.releases.get()
+
+    limits = await asyncio.wait_for(provider.account_rate_limits(), timeout=0.1)
+    assert limits == {"weekly_window": {"used": 12, "remaining": 88}}
+
+    release.set()
+    await model

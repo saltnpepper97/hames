@@ -292,6 +292,8 @@ pub enum ActivityPhase {
     Cancelled,
 }
 
+const MAX_ACTIVITY_ROWS_PER_GROUP: usize = 10;
+
 impl ActivityPhase {
     pub fn terminal(self) -> bool {
         matches!(
@@ -3093,23 +3095,31 @@ impl App {
         self.transcript.len() - 1
     }
 
-    fn can_clump_activity(&self, run_id: &str, name: &str) -> bool {
-        let Some(TranscriptItem::Activity {
-            run_id: id, rows, ..
-        }) = self.transcript.last()
-        else {
-            return false;
-        };
-        if id != run_id {
-            return false;
-        }
-        let Some(previous) = rows.iter().rev().find(|row| !row.name.is_empty()) else {
-            return true;
-        };
+    fn activity_group(&self, run_id: &str, name: &str) -> Option<usize> {
         if name.is_empty() {
-            return false;
+            return None;
         }
-        is_task_tool(&previous.name) == is_task_tool(name)
+        self.transcript
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, item)| {
+                let TranscriptItem::Activity {
+                    run_id: id, rows, ..
+                } = item
+                else {
+                    return None;
+                };
+                if id != run_id || rows.len() >= MAX_ACTIVITY_ROWS_PER_GROUP {
+                    return None;
+                }
+                let same_kind = rows
+                    .iter()
+                    .rev()
+                    .find(|row| !row.name.is_empty())
+                    .is_none_or(|previous| same_activity_kind(&previous.name, name));
+                same_kind.then_some(index)
+            })
     }
 
     fn ensure_activity_row(
@@ -3159,10 +3169,9 @@ impl App {
             }
             return &mut rows[row_index];
         }
-        // Consecutive tools stay in one Work item until thought, assistant prose,
-        // or a task/non-task split.
-        let activity_index = if self.can_clump_activity(run_id, name) {
-            let index = self.transcript.len() - 1;
+        // Tool work stays under a run-scoped umbrella across model cycles. Task
+        // updates remain separate, and groups are bounded so long runs stay legible.
+        let activity_index = if let Some(index) = self.activity_group(run_id, name) {
             if let TranscriptItem::Activity { collapsed, .. } = &mut self.transcript[index] {
                 *collapsed = false;
             }
@@ -3266,7 +3275,8 @@ impl App {
                             row.tool_call_id.as_ref() == Some(call_id)
                         }))
             )
-        }) && rows.iter().all(|row| row.phase.terminal())
+        }) && rows.len() >= MAX_ACTIVITY_ROWS_PER_GROUP
+            && rows.iter().all(|row| row.phase.terminal())
         {
             *collapsed = should_collapse_activity(rows);
         }
@@ -3477,15 +3487,8 @@ pub(crate) fn task_checkbox(task: &SessionTask) -> &'static str {
     }
 }
 
-fn activity_row_has_diff(row: &ActivityRow) -> bool {
-    row.phase == ActivityPhase::Completed
-        && !row.content.is_empty()
-        && (matches!(row.name.as_str(), "edit_file" | "write_file")
-            || (row.content.contains("--- ") && row.content.contains("+++ ")))
-}
-
 fn should_collapse_activity(rows: &[ActivityRow]) -> bool {
-    rows.iter().all(|row| row.phase.terminal()) && !rows.iter().any(activity_row_has_diff)
+    rows.iter().all(|row| row.phase.terminal())
 }
 
 fn normalize_task_positions(items: &mut [SessionTask]) {
@@ -3625,6 +3628,15 @@ fn category_for_tool(name: &str) -> ActivityCategory {
 
 fn is_task_tool(name: &str) -> bool {
     matches!(name, "task_update" | "task_list")
+}
+
+fn is_diff_write_tool(name: &str) -> bool {
+    matches!(name, "edit_file" | "write_file")
+}
+
+fn same_activity_kind(left: &str, right: &str) -> bool {
+    is_task_tool(left) == is_task_tool(right)
+        && is_diff_write_tool(left) == is_diff_write_tool(right)
 }
 
 fn tool_names_compatible(existing: &str, incoming: &str) -> bool {
@@ -3865,7 +3877,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_writes_keep_their_diff_expanded() {
+    fn completed_writes_collapse_with_the_finished_work_group() {
         let run_id = "run-write";
         let mut app = App::new(session(), Vec::new(), true);
         app.begin_foreground_run(Some(run_id.to_owned()));
@@ -3898,7 +3910,7 @@ mod tests {
         else {
             panic!("write should remain visible as work");
         };
-        assert!(!*collapsed);
+        assert!(*collapsed);
         assert!(rows.iter().any(|row| row.content.contains("+print(1)")));
     }
 
@@ -4190,6 +4202,37 @@ mod tests {
     }
 
     #[test]
+    fn diff_writes_do_not_share_a_group_with_regular_work() {
+        let run_id = "run-work-then-change";
+        let mut app = App::new(session(), Vec::new(), true);
+        for (sequence, name, call_id) in [(1, "read_file", "read-1"), (2, "edit_file", "edit-1")] {
+            app.ingest_durable(
+                event(
+                    sequence,
+                    "model.tool_call",
+                    run_id,
+                    json!({
+                        "index": sequence - 1,
+                        "tool_call_id": call_id,
+                        "name": name,
+                        "arguments": {"path": "src/main.rs"}
+                    }),
+                ),
+                true,
+            );
+        }
+        let cards = app
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Activity { rows, .. } => Some(rows[0].name.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(cards, ["read_file", "edit_file"]);
+    }
+
+    #[test]
     fn late_task_update_deltas_do_not_clone_into_later_work() {
         let run_id = "run-task-then-goal";
         let mut app = App::new(session(), Vec::new(), true);
@@ -4377,7 +4420,7 @@ mod tests {
     }
 
     #[test]
-    fn thought_splits_work_clumps_without_joining_them() {
+    fn thought_keeps_work_in_the_same_run_scoped_group() {
         let run_id = "run-clump-then-think";
         let mut app = App::new(session(), Vec::new(), true);
         app.ingest_transient(
@@ -4402,7 +4445,7 @@ mod tests {
         app.ingest_transient(
             run_id,
             "response.tool_call_delta",
-            &json!({"index": 2, "name": "write_file", "arguments_delta": "{\"path\":\"b.rs\"}"}),
+            &json!({"index": 2, "name": "read_file", "arguments_delta": "{\"path\":\"b.rs\"}"}),
         );
 
         let kinds = app
@@ -4414,7 +4457,7 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(kinds, [("work", 2), ("thought", 0), ("work", 1)]);
+        assert_eq!(kinds, [("work", 3), ("thought", 0)]);
     }
 
     #[test]
@@ -4516,9 +4559,8 @@ mod tests {
         assert_eq!(*thoughts[0].1, 1.0);
         assert_eq!(thoughts[1].0, "second check");
         assert_eq!(*thoughts[1].1, 2.0);
-        assert_eq!(activities.len(), 2);
-        assert_eq!(activities[0].0.len(), 1);
-        assert_eq!(activities[1].0.len(), 1);
+        assert_eq!(activities.len(), 1);
+        assert_eq!(activities[0].0.len(), 2);
         assert!(activities.iter().all(|(_, collapsed)| **collapsed));
         assert_eq!(assistants, 1);
 
@@ -4532,7 +4574,76 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(kinds, ["thought", "work", "thought", "work", "answer"]);
+        assert_eq!(kinds, ["thought", "work", "thought", "answer"]);
+    }
+
+    #[test]
+    fn active_work_group_stays_expanded_until_the_run_finishes() {
+        let run_id = "run-live-umbrella";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.begin_foreground_run(Some(run_id.to_owned()));
+        app.ingest_durable(
+            event(
+                1,
+                "tool.completed",
+                run_id,
+                json!({
+                    "index": 0,
+                    "tool_call_id": "read-1",
+                    "name": "read_file",
+                    "summary": "read source"
+                }),
+            ),
+            true,
+        );
+
+        let collapsed = app.transcript.iter().find_map(|item| match item {
+            TranscriptItem::Activity { collapsed, .. } => Some(*collapsed),
+            _ => None,
+        });
+        assert_eq!(collapsed, Some(false));
+
+        app.ingest_durable(event(2, "run.completed", run_id, json!({})), true);
+        let collapsed = app.transcript.iter().find_map(|item| match item {
+            TranscriptItem::Activity { collapsed, .. } => Some(*collapsed),
+            _ => None,
+        });
+        assert_eq!(collapsed, Some(true));
+    }
+
+    #[test]
+    fn work_groups_are_capped_at_ten_rows() {
+        let run_id = "run-bounded-umbrella";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.begin_foreground_run(Some(run_id.to_owned()));
+        for index in 0..11_u64 {
+            app.ingest_durable(
+                event(
+                    index + 1,
+                    "tool.completed",
+                    run_id,
+                    json!({
+                        "index": index,
+                        "tool_call_id": format!("read-{index}"),
+                        "name": "read_file",
+                        "summary": format!("read item {index}")
+                    }),
+                ),
+                true,
+            );
+        }
+
+        let groups = app
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Activity {
+                    rows, collapsed, ..
+                } => Some((rows.len(), *collapsed)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(groups, [(10, true), (1, false)]);
     }
 
     #[test]

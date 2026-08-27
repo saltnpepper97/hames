@@ -54,11 +54,10 @@ class SerializedProvider:
         reader = getattr(self.inner, "account_rate_limits", None)
         if reader is None:
             return None
-        await self._acquire(maintenance=False)
-        try:
-            return await reader()
-        finally:
-            await self._release()
+        # Codex serves account limits over a separate, short-lived app-server
+        # connection. Do not queue this read behind a potentially long model turn:
+        # /usage must remain available while that turn is streaming.
+        return await reader()
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
         maintenance = str(request.metadata.get("purpose", "agent")) in MAINTENANCE_PURPOSES

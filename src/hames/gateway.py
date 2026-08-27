@@ -1786,10 +1786,7 @@ def create_app(state: GatewayState) -> FastAPI:
                 cached = getattr(provider, "cached_account_rate_limits", lambda: None)()
                 reader = getattr(provider, "account_rate_limits", None)
                 try:
-                    if state.runs.is_session_active(session_id):
-                        if cached is not None:
-                            usage.account_rate_limits = cached
-                    elif reader is not None:
+                    if reader is not None:
                         usage.account_rate_limits = await asyncio.wait_for(reader(), timeout=1.5)
                 except TimeoutError:
                     if cached is not None:

@@ -769,8 +769,10 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 };
                 let heading = if visible_rows.iter().all(|row| is_task_tool(&row.name)) {
                     "Tasks"
-                } else {
+                } else if visible_rows.iter().all(|row| is_diff_write_tool(&row.name)) {
                     "Work"
+                } else {
+                    "Explore"
                 };
                 lines.push(RenderLine {
                     line: Line::from(vec![
@@ -3880,6 +3882,10 @@ fn is_task_tool(name: &str) -> bool {
     matches!(name, "task_update" | "task_list")
 }
 
+fn is_diff_write_tool(name: &str) -> bool {
+    matches!(name, "edit_file" | "write_file")
+}
+
 fn indent_render_lines(lines: &mut [RenderLine<'static>], indent: &str) {
     if indent.is_empty() {
         return;
@@ -6523,7 +6529,7 @@ mod tests {
             .map(|item| line_text(&item.line))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains("◆ Work"));
+        assert!(rendered.contains("◆ Explore"));
         assert!(rendered.contains("1 action · Completed"));
         assert!(!rendered.contains("1 action · Completed  ▾"));
         assert!(rendered.contains("✓ Forgot  memory 8f9b40f1"));
@@ -6537,7 +6543,7 @@ mod tests {
             .map(|item| line_text(&item.line))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(!still_single.contains("◆ Work · 1 action · Completed  ▸"));
+        assert!(!still_single.contains("◆ Explore · 1 action · Completed  ▸"));
         assert!(still_single.contains("✓ Forgot  memory 8f9b40f1"));
     }
 
@@ -6582,7 +6588,7 @@ mod tests {
             .map(|item| line_text(&item.line))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(collapsed.contains("◆ Work · 2 actions · Completed  ▸"));
+        assert!(collapsed.contains("◆ Explore · 2 actions · Completed  ▸"));
         assert!(collapsed.contains("✓ Completed  cargo test · 108 tests passed"));
         assert!(!collapsed.contains("src/old.rs"));
 
@@ -6592,9 +6598,39 @@ mod tests {
             .map(|item| line_text(&item.line))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(expanded.contains("◆ Work · 2 actions · Completed  ▾"));
+        assert!(expanded.contains("◆ Explore · 2 actions · Completed  ▾"));
         assert!(expanded.contains("src/old.rs"));
         assert!(expanded.contains("✓ Completed  cargo test · 108 tests passed"));
+    }
+
+    #[test]
+    fn diff_write_groups_use_the_work_header() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::Activity {
+            run_id: "run-change".to_owned(),
+            collapsed: false,
+            rows: vec![ActivityRow {
+                index: 0,
+                tool_call_id: Some("edit-1".to_owned()),
+                name: "edit_file".to_owned(),
+                arguments: json!({"path": "src/main.rs"}),
+                argument_parts: String::new(),
+                phase: ActivityPhase::Completed,
+                summary: "edited src/main.rs".to_owned(),
+                content: "--- a/src/main.rs\n+++ b/src/main.rs\n-old\n+new\n".to_owned(),
+                structured_data: json!(null),
+                truncated: false,
+                duration_seconds: 0.1,
+            }],
+        });
+
+        let rendered = transcript_lines(&app, 90)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("◆ Work · 1 action · Completed"));
+        assert!(!rendered.contains("◆ Explore"));
     }
 
     #[test]

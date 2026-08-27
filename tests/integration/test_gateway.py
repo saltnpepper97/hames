@@ -800,6 +800,66 @@ class SlowAccountUsageProvider(AccountUsageProvider):
         return await super().account_rate_limits()
 
 
+class ActiveAccountUsageProvider(AccountUsageProvider):
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+        del request
+        yield StreamEvent(kind=StreamEventKind.STARTED)
+        self.started.set()
+        await self.release.wait()
+        yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="done")
+        yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
+
+
+@pytest.mark.asyncio
+async def test_usage_reads_codex_account_limits_during_an_active_turn(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    provider = ActiveAccountUsageProvider()
+    state = GatewayState.create(paths, providers={"codex-fixture": provider})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "codex-fixture",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            submitted = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "keep working"},
+            )
+            assert submitted.status_code == 202
+            await asyncio.wait_for(provider.started.wait(), timeout=1)
+            assert state.runs.is_session_active(session_id)
+
+            usage = response_object(
+                await client.get(f"/v1/sessions/{session_id}/usage", headers=headers)
+            )
+            account = usage["account_rate_limits"]
+            assert isinstance(account, dict)
+            weekly = account["weekly_window"]
+            assert isinstance(weekly, dict)
+            assert weekly["used"] == 58
+            assert weekly["remaining"] == 42
+
+            provider.release.set()
+            await _wait_for_event(client, headers, session_id, "run.completed")
+    finally:
+        provider.release.set()
+        await state.runs.close()
+
+
 @pytest.mark.asyncio
 async def test_usage_returns_session_totals_when_codex_account_metrics_hang(
     tmp_path: Path,
