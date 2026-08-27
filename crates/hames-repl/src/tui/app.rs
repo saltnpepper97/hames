@@ -3642,9 +3642,14 @@ fn is_diff_write_tool(name: &str) -> bool {
     matches!(name, "edit_file" | "write_file")
 }
 
+fn is_run_tool(name: &str) -> bool {
+    matches!(name, "shell" | "skill_run" | "terminal_stop")
+}
+
 fn same_activity_kind(left: &str, right: &str) -> bool {
     is_task_tool(left) == is_task_tool(right)
         && is_diff_write_tool(left) == is_diff_write_tool(right)
+        && is_run_tool(left) == is_run_tool(right)
 }
 
 fn tool_names_compatible(existing: &str, incoming: &str) -> bool {
@@ -4260,6 +4265,41 @@ mod tests {
     }
 
     #[test]
+    fn run_commands_do_not_share_a_group_with_exploration() {
+        let run_id = "run-explore-then-command";
+        let mut app = App::new(session(), Vec::new(), true);
+        for (sequence, name, call_id) in [(1, "read_file", "read-1"), (2, "shell", "shell-1")] {
+            app.ingest_durable(
+                event(
+                    sequence,
+                    "model.tool_call",
+                    run_id,
+                    json!({
+                        "index": sequence - 1,
+                        "tool_call_id": call_id,
+                        "name": name,
+                        "arguments": if name == "shell" {
+                            json!({"command": "cargo test"})
+                        } else {
+                            json!({"path": "src/main.rs"})
+                        }
+                    }),
+                ),
+                true,
+            );
+        }
+        let cards = app
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Activity { rows, .. } => Some(rows[0].name.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(cards, ["read_file", "shell"]);
+    }
+
+    #[test]
     fn late_task_update_deltas_do_not_clone_into_later_work() {
         let run_id = "run-task-then-goal";
         let mut app = App::new(session(), Vec::new(), true);
@@ -4458,7 +4498,7 @@ mod tests {
         app.ingest_transient(
             run_id,
             "response.tool_call_delta",
-            &json!({"index": 1, "name": "shell", "arguments_delta": "{\"command\":\"ls\"}"}),
+            &json!({"index": 1, "name": "list_dir", "arguments_delta": "{\"path\":\"src\"}"}),
         );
         app.ingest_durable(
             event(

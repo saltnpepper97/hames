@@ -773,6 +773,8 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     "Tasks"
                 } else if visible_rows.iter().all(|row| is_diff_write_tool(&row.name)) {
                     "Work"
+                } else if visible_rows.iter().all(|row| is_run_tool(&row.name)) {
+                    "Run"
                 } else {
                     "Explore"
                 };
@@ -3892,6 +3894,10 @@ fn is_diff_write_tool(name: &str) -> bool {
     matches!(name, "edit_file" | "write_file")
 }
 
+fn is_run_tool(name: &str) -> bool {
+    matches!(name, "shell" | "skill_run" | "terminal_stop")
+}
+
 fn indent_render_lines(lines: &mut [RenderLine<'static>], indent: &str) {
     if indent.is_empty() {
         return;
@@ -6686,6 +6692,36 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(rendered.contains("◆ Work · 1 action · Completed"));
+        assert!(!rendered.contains("◆ Explore"));
+    }
+
+    #[test]
+    fn command_groups_use_the_run_header() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::Activity {
+            run_id: "run-command".to_owned(),
+            collapsed: false,
+            rows: vec![ActivityRow {
+                index: 0,
+                tool_call_id: Some("shell-1".to_owned()),
+                name: "shell".to_owned(),
+                arguments: json!({"command": "cargo test"}),
+                argument_parts: String::new(),
+                phase: ActivityPhase::Completed,
+                summary: "180 tests passed".to_owned(),
+                content: String::new(),
+                structured_data: json!(null),
+                truncated: false,
+                duration_seconds: 1.0,
+            }],
+        });
+
+        let rendered = transcript_lines(&app, 90)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("◆ Run · 1 action · Completed"));
         assert!(!rendered.contains("◆ Explore"));
     }
 
