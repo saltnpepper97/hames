@@ -42,8 +42,8 @@ const RULE_LIGHT: Color = Color::Rgb(82, 90, 105);
 const DELETE_BG: Color = Color::Rgb(78, 31, 39);
 const ADDITION_BG: Color = Color::Rgb(20, 50, 40);
 const REMOVAL_BG: Color = Color::Rgb(58, 31, 36);
-const TASK_DONE_BG: Color = Color::Rgb(18, 62, 43);
-const TASK_CURRENT_BG: Color = Color::Rgb(67, 52, 22);
+const TASK_DONE_BG: Color = Color::Rgb(63, 170, 117);
+const TASK_CURRENT_BG: Color = Color::Rgb(220, 167, 61);
 const PANEL: Color = Color::Rgb(19, 23, 31);
 const PANEL_BRIGHT: Color = Color::Rgb(29, 35, 46);
 const TEXT_IDLE: Duration = Duration::from_millis(350);
@@ -1224,10 +1224,8 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         };
         let row_color = if deleting {
             CORAL
-        } else if completed_task {
-            MINT_LIGHT
-        } else if current_task {
-            GOLD_LIGHT
+        } else if completed_task || current_task {
+            Color::Black
         } else if selected {
             sheet_text_color(app.theme)
         } else {
@@ -5331,6 +5329,16 @@ mod tests {
             .unwrap();
         assert_eq!(buffer.cell((1, done_y)).unwrap().bg, TASK_DONE_BG);
         assert_eq!(buffer.cell((1, current_y)).unwrap().bg, TASK_CURRENT_BG);
+        let done_row = row_text(done_y);
+        let current_row = row_text(current_y);
+        let done_x = UnicodeWidthStr::width(&done_row[..done_row.find("Inspect").unwrap()]) as u16;
+        let current_x =
+            UnicodeWidthStr::width(&current_row[..current_row.find("Implement").unwrap()]) as u16;
+        assert_eq!(buffer.cell((done_x, done_y)).unwrap().fg, Color::Black);
+        assert_eq!(
+            buffer.cell((current_x, current_y)).unwrap().fg,
+            Color::Black
+        );
     }
 
     #[test]
