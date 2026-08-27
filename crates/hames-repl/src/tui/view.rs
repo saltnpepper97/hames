@@ -42,6 +42,8 @@ const RULE_LIGHT: Color = Color::Rgb(82, 90, 105);
 const DELETE_BG: Color = Color::Rgb(78, 31, 39);
 const ADDITION_BG: Color = Color::Rgb(20, 50, 40);
 const REMOVAL_BG: Color = Color::Rgb(58, 31, 36);
+const TASK_DONE_BG: Color = Color::Rgb(18, 62, 43);
+const TASK_CURRENT_BG: Color = Color::Rgb(67, 52, 22);
 const PANEL: Color = Color::Rgb(19, 23, 31);
 const PANEL_BRIGHT: Color = Color::Rgb(29, 35, 46);
 const TEXT_IDLE: Duration = Duration::from_millis(350);
@@ -1004,9 +1006,6 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
             }
             TranscriptItem::Assistant { .. } => {}
             TranscriptItem::TaskList { title, items } => {
-                if !task_list_visible(app) {
-                    continue;
-                }
                 let completed = items
                     .iter()
                     .filter(|item| item.status == "completed")
@@ -1199,12 +1198,29 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         let option = &sheet.options[offset];
         let selected = offset == sheet.selected;
         let deleting = sheet.pending_delete == Some(offset);
+        let completed_task = sheet.kind == SheetKind::Tasks && option.label == "[✓]";
+        let current_task = sheet.kind == SheetKind::Tasks && option.label == "[>]";
         let row_style = if deleting {
             Style::default().bg(DELETE_BG)
+        } else if completed_task {
+            Style::default().bg(TASK_DONE_BG)
+        } else if current_task {
+            Style::default().bg(TASK_CURRENT_BG)
         } else if selected {
             Style::default().bg(PANEL_BRIGHT)
         } else {
             Style::default()
+        };
+        let row_color = if deleting {
+            CORAL
+        } else if completed_task {
+            MINT_LIGHT
+        } else if current_task {
+            GOLD_LIGHT
+        } else if selected {
+            sheet_text_color(app.theme)
+        } else {
+            MUTED
         };
         let plan_review = sheet.kind == SheetKind::PlanReview;
         let mut spans = vec![Span::styled(
@@ -1215,15 +1231,7 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             } else {
                 "   "
             },
-            Style::default()
-                .fg(if deleting {
-                    CORAL
-                } else if selected {
-                    sheet_text_color(app.theme)
-                } else {
-                    MUTED
-                })
-                .patch(row_style),
+            Style::default().fg(row_color).patch(row_style),
         )];
         if deleting {
             let prompt = " Press Ctrl+D again to delete this entry";
@@ -1258,8 +1266,12 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             spans.push(Span::styled(
                 label_field.clone(),
                 Style::default()
-                    .fg(sheet_text_color(app.theme))
-                    .add_modifier(if selected {
+                    .fg(if completed_task || current_task {
+                        row_color
+                    } else {
+                        sheet_text_color(app.theme)
+                    })
+                    .add_modifier(if selected || current_task {
                         Modifier::BOLD
                     } else {
                         Modifier::empty()
@@ -1269,13 +1281,7 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         }
         spans.push(Span::styled(
             format!(" {}", option.detail),
-            Style::default()
-                .fg(if selected {
-                    sheet_text_color(app.theme)
-                } else {
-                    MUTED
-                })
-                .patch(row_style),
+            Style::default().fg(row_color).patch(row_style),
         ));
         let used = 4
             + UnicodeWidthStr::width(label_field.as_str())
@@ -3935,14 +3941,6 @@ fn style_padded_block(
     }
 }
 
-fn task_list_visible(app: &App) -> bool {
-    match app.plan.current.as_ref().map(|plan| plan.status.as_str()) {
-        Some("ready") => false,
-        Some("approved" | "executing" | "completed" | "requested" | "failed") => true,
-        _ => app.session.interaction_mode != "plan",
-    }
-}
-
 fn fill_line_background(line: &mut Line<'_>, width: usize, background: Color) {
     for span in &mut line.spans {
         span.style = span.style.bg(background);
@@ -4178,6 +4176,8 @@ fn terminal_color(color: Color) -> Color {
         DELETE_BG => Color::Red,
         ADDITION_BG => Color::DarkGray,
         REMOVAL_BG => Color::DarkGray,
+        TASK_DONE_BG => Color::Green,
+        TASK_CURRENT_BG => Color::Yellow,
         Color::White => Color::Reset,
         Color::Rgb(_, _, _) => Color::Reset,
         value => value,
@@ -4598,12 +4598,13 @@ mod tests {
 
     use super::{
         ADDITION_BG, CORAL, CYAN, DELETE_BG, GOLD, INPUT, INPUT_LIGHT, MINT, MINT_LIGHT, MUTED,
-        PANEL_BRIGHT, REMOVAL_BG, SKY, agent_access_body, agent_identity_body,
-        approval_detail_lines, compact_diff_lines, compact_home, composer_caret_color,
-        context_footer, context_percent, draw, format_elapsed, format_token_count, goal_elapsed,
-        help_body, line_text, memory_browser_body, mode_color, mode_outline, scar_browser_body,
-        scar_editor_body, scrollbar_position, sheet_text_color, single_line_editor, split_width,
-        thought_label, transcript_lines, traveling_sheen, usage_body,
+        PANEL_BRIGHT, REMOVAL_BG, SKY, TASK_CURRENT_BG, TASK_DONE_BG, agent_access_body,
+        agent_identity_body, approval_detail_lines, compact_diff_lines, compact_home,
+        composer_caret_color, context_footer, context_percent, draw, format_elapsed,
+        format_token_count, goal_elapsed, help_body, line_text, memory_browser_body, mode_color,
+        mode_outline, scar_browser_body, scar_editor_body, scrollbar_position, sheet_text_color,
+        single_line_editor, split_width, thought_label, transcript_lines, traveling_sheen,
+        usage_body,
     };
 
     use crate::api::{
@@ -5263,6 +5264,61 @@ mod tests {
     }
 
     #[test]
+    fn task_sheet_colors_completed_rows_and_highlights_the_current_task() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.set_tasks(crate::api::SessionTaskList {
+            session_id: app.session.id.clone(),
+            title: "Ship it".to_owned(),
+            revision: 1,
+            items: vec![
+                SessionTask {
+                    id: "done".to_owned(),
+                    text: "Inspect".to_owned(),
+                    status: "completed".to_owned(),
+                    position: 0,
+                    created_by: "agent".to_owned(),
+                },
+                SessionTask {
+                    id: "current".to_owned(),
+                    text: "Implement".to_owned(),
+                    status: "in_progress".to_owned(),
+                    position: 1,
+                    created_by: "agent".to_owned(),
+                },
+                SessionTask {
+                    id: "next".to_owned(),
+                    text: "Verify".to_owned(),
+                    status: "pending".to_owned(),
+                    position: 2,
+                    created_by: "agent".to_owned(),
+                },
+            ],
+            updated_at: "now".to_owned(),
+        });
+        app.open_tasks();
+        assert_eq!(app.sheet.as_ref().unwrap().selected, 1);
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row_text = |y| {
+            (0..buffer.area.width)
+                .filter_map(|x| buffer.cell((x, y)))
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        };
+        let done_y = (0..buffer.area.height)
+            .find(|y| row_text(*y).contains("Inspect"))
+            .unwrap();
+        let current_y = (0..buffer.area.height)
+            .find(|y| row_text(*y).contains("Implement"))
+            .unwrap();
+        assert_eq!(buffer.cell((1, done_y)).unwrap().bg, TASK_DONE_BG);
+        assert_eq!(buffer.cell((1, current_y)).unwrap().bg, TASK_CURRENT_BG);
+    }
+
+    #[test]
     fn sent_user_messages_use_a_padded_background() {
         let mut app = App::new(session(), Vec::new(), true);
         app.transcript.push(TranscriptItem::User {
@@ -5320,7 +5376,7 @@ mod tests {
     }
 
     #[test]
-    fn task_lists_are_hidden_while_a_plan_is_waiting_for_approval() {
+    fn task_lists_stay_visible_while_a_plan_is_waiting_for_approval() {
         let mut app = App::new(session(), Vec::new(), true);
         app.plan.current = Some(PlanRevision {
             id: "plan-1".to_owned(),
@@ -5349,13 +5405,13 @@ mod tests {
                 created_by: "agent".to_owned(),
             }],
         });
-        let hidden = transcript_lines(&app, 80)
+        let ready = transcript_lines(&app, 80)
             .iter()
             .map(|item| line_text(&item.line))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(!hidden.contains("Scaffold the game"));
-        assert!(!hidden.contains("Tasks ·"));
+        assert!(ready.contains("Scaffold the game"));
+        assert!(ready.contains("Tasks ·"));
 
         app.plan.current.as_mut().unwrap().status = "approved".to_owned();
         let shown = transcript_lines(&app, 80)
@@ -5373,7 +5429,7 @@ mod tests {
             .map(|item| line_text(&item.line))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(!planning.contains("Scaffold the game"));
+        assert!(planning.contains("Scaffold the game"));
     }
 
     #[test]

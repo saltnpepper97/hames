@@ -1450,14 +1450,10 @@ impl App {
             title: self.tasks.title.clone(),
             items: self.tasks.items.clone(),
         };
-        if let Some(index) = self
-            .transcript
-            .iter()
-            .rposition(|entry| matches!(entry, TranscriptItem::TaskList { .. }))
-        {
-            self.transcript[index] = item;
-            return;
-        }
+        // Keep one authoritative checklist, but move it to the point where the
+        // latest task change happened so progress remains in the foreground.
+        self.transcript
+            .retain(|entry| !matches!(entry, TranscriptItem::TaskList { .. }));
         self.transcript.push(item);
     }
 
@@ -1551,6 +1547,18 @@ impl App {
             .iter()
             .filter(|item| item.status == "completed")
             .count();
+        let selected = self
+            .tasks
+            .items
+            .iter()
+            .position(|item| item.status == "in_progress")
+            .or_else(|| {
+                self.tasks
+                    .items
+                    .iter()
+                    .position(|item| item.status != "completed")
+            })
+            .unwrap_or(0);
         self.sheet = Some(Sheet {
             kind: SheetKind::Tasks,
             title: format!(
@@ -1568,7 +1576,7 @@ impl App {
                     action: MenuAction::OpenTasks,
                 })
                 .collect(),
-            selected: 0,
+            selected,
             pending_delete: None,
         });
         self.inline_editor = None;
@@ -3851,6 +3859,14 @@ mod tests {
             position: 0,
             created_by: "plan".to_owned(),
         });
+        app.transcript.push(TranscriptItem::TaskList {
+            title: "Old tasks".to_owned(),
+            items: Vec::new(),
+        });
+        app.transcript.push(TranscriptItem::Status {
+            text: "Work continued".to_owned(),
+            error: false,
+        });
 
         app.ingest_durable(
             event(
@@ -3874,6 +3890,17 @@ mod tests {
                     task.status == "completed" && task.text == "Build the game"
                 })
         )));
+        assert_eq!(
+            app.transcript
+                .iter()
+                .filter(|item| matches!(item, TranscriptItem::TaskList { .. }))
+                .count(),
+            1
+        );
+        assert!(matches!(
+            app.transcript.last(),
+            Some(TranscriptItem::TaskList { .. })
+        ));
     }
 
     #[test]

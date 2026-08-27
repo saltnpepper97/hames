@@ -3599,17 +3599,34 @@ mod tests {
             session_id: "session-1".to_owned(),
             title: "Approved plan".to_owned(),
             revision: 1,
-            items: vec![SessionTask {
-                id: "task-1".to_owned(),
-                text: "Implement it".to_owned(),
-                status: "pending".to_owned(),
-                position: 0,
-                created_by: "plan".to_owned(),
-            }],
+            items: vec![
+                SessionTask {
+                    id: "task-1".to_owned(),
+                    text: "Inspect it".to_owned(),
+                    status: "completed".to_owned(),
+                    position: 0,
+                    created_by: "plan".to_owned(),
+                },
+                SessionTask {
+                    id: "task-2".to_owned(),
+                    text: "Implement it".to_owned(),
+                    status: "in_progress".to_owned(),
+                    position: 1,
+                    created_by: "plan".to_owned(),
+                },
+                SessionTask {
+                    id: "task-3".to_owned(),
+                    text: "Verify it".to_owned(),
+                    status: "pending".to_owned(),
+                    position: 2,
+                    created_by: "plan".to_owned(),
+                },
+            ],
             updated_at: "now".to_owned(),
         });
         app.open_tasks();
-        assert_eq!(app.sheet.as_ref().unwrap().options[0].label, "[ ]");
+        assert_eq!(app.sheet.as_ref().unwrap().options[0].label, "[✓]");
+        assert_eq!(app.sheet.as_ref().unwrap().selected, 1);
         assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).is_none());
         assert!(app.sheet.is_some());
         assert!(
