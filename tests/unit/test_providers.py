@@ -829,6 +829,7 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
                         "id": "fixture-id",
                         "model": "gpt-5.4-codex",
                         "hidden": False,
+                        "maxContextWindow": 272000,
                         "inputModalities": ["text", "image"],
                         "supportedReasoningEfforts": [
                             {"reasoningEffort": "medium", "description": "balanced"},
@@ -868,6 +869,11 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
                         continue
                     result = {"thread": {"id": "thread-1"}}
                 elif method == "turn/start":
+                    if params.get("effort") == "off":
+                        print(json.dumps({"id": request_id, "error": {
+                            "code": -4, "message": "[ReasoningEffortParam] Invalid value: 'off'"
+                        }}), flush=True)
+                        continue
                     if params.get("sandboxPolicy", {}).get("type") != "externalSandbox":
                         print(json.dumps({"id": request_id, "error": {
                             "code": -3, "message": "external sandbox missing"}}), flush=True)
@@ -920,6 +926,7 @@ async def test_codex_subscription_discovers_models_and_normalizes_app_server_str
     models = await provider.list_models()
     assert [model.id for model in models] == ["gpt-5.4-codex"]
     assert models[0].input_modalities == ["text", "image"]
+    assert models[0].context_length == 272000
     assert models[0].reasoning_efforts == ["medium", "high"]
 
     events = [
@@ -962,6 +969,31 @@ async def test_codex_subscription_discovers_models_and_normalizes_app_server_str
     assert isinstance(weekly, dict)
     assert five_hour["used"] == 25
     assert weekly["remaining"] == 40
+
+
+@pytest.mark.asyncio
+async def test_codex_maps_disabled_reasoning_to_none(tmp_path: Path) -> None:
+    provider = CodexProvider(command=(sys.executable, str(_fake_codex_app_server(tmp_path))))
+    events = [
+        event
+        async for event in provider.stream(
+            ModelRequest(
+                model="gpt-5.4-codex",
+                messages=[ProviderMessage(role="user", content="ANSWER")],
+                system="contract",
+                reasoning_effort="off",
+                metadata={"workspace_path": str(tmp_path)},
+                tools=[
+                    ToolDefinition(
+                        name="read_file",
+                        description="Read one file",
+                        input_schema={"type": "object"},
+                    )
+                ],
+            )
+        )
+    ]
+    assert events[-1].kind is StreamEventKind.COMPLETED
 
 
 @pytest.mark.asyncio

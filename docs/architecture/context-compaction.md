@@ -17,8 +17,9 @@ compiled input budget (default 80 percent), or sooner if
 `context.compaction_auto_threshold_tokens` is set, or when conversation was
 omitted for budget. Recent turns stay verbatim; if the session has fewer turns
 than that preserve count, compaction still folds every turn except the latest.
-Summary generation is capped at 2,048 output tokens, with reasoning disabled so
-local thinking models still emit a usable summary, and three rolling passes, so
+Summary generation is capped at 2,048 output tokens, with reasoning disabled
+(`off`, mapped to Codex `none`) so local thinking models still emit a usable
+summary, and three rolling passes, so
 a large history is processed in bounded batches without silently dropping an
 oversized turn. Failure is durable and the foreground request continues with the
 compiler's existing bounded context; cancellation records a distinct cancelled

@@ -8,6 +8,7 @@ import pytest
 
 from hames.gateway import GatewayState
 from hames.paths import HamesPaths
+from hames.providers.codex import CODEX_DEFAULT_CONTEXT_TOKENS
 from hames.providers.fake import FakeProvider
 from hames.runtime import _explicit_memory_maintenance_request
 from hames.skills import SkillDraft
@@ -22,6 +23,7 @@ from hames.tools import (
     SessionTitleArguments,
     SkillCatalogArguments,
     SkillControlArguments,
+    TerminalStopArguments,
 )
 
 
@@ -70,6 +72,16 @@ async def test_runtime_self_management_memory_and_scar_lifecycles(tmp_path: Path
         )
         assert titled.status == "completed"
         assert state.ledger.get_session(session.id).title == "Memory and scar controls"
+
+        stopped = await state.runs._handle_self_management_tool(
+            "run-stop",
+            session,
+            TerminalStopArguments(),
+            "terminal_stop",
+            _evidence(state, session.id, "terminal-stop"),
+        )
+        assert stopped.status == "completed"
+        assert stopped.structured_data["closed"] == 0
 
         added = await state.runs._handle_self_management_tool(
             "run-add",
@@ -286,5 +298,35 @@ async def test_runtime_skill_catalog_and_controls_reuse_registry(tmp_path: Path)
         )
         assert restored.status == "completed"
         assert "inspect-carefully" in {item.slug for item in state.runs.skills.visible(session)}
+    finally:
+        await state.runs.close()
+
+
+class _CodexWindowStub:
+    profile_id = "codex"
+    adapter = "codex"
+    base_url = "app-server://codex"
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_codex_fallback_context_window_is_raised_before_compaction(
+    tmp_path: Path,
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"codex": _CodexWindowStub()})  # type: ignore[arg-type]
+    session = state.ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="codex",
+        model="gpt-5.6-luna",
+    )
+    try:
+        assert session.context_window_source == "fallback"
+        refreshed = await state.runs._ensure_provider_context_window(session)
+        assert refreshed.context_window_tokens == CODEX_DEFAULT_CONTEXT_TOKENS
+        assert refreshed.context_window_source == "provider"
     finally:
         await state.runs.close()

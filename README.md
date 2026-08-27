@@ -357,10 +357,11 @@ exits the client.
 
 The model starts a background terminal through the normal policy-gated `shell`
 tool with `background: true`. Without an explicit `timeout_seconds`, it remains
-alive until the command exits, the session closes, the gateway shuts down, or the
-user runs `/stop`. Background terminals use the project or confirmed home
-workspace; per-run scratch cannot outlive its run. Output remains bounded and its
-terminal event is stored in the ledger when the process exits.
+alive until the command exits, the session closes, the gateway shuts down, the
+model calls `terminal_stop`, or the user runs `/stop`. Background terminals use
+the project or confirmed home workspace; per-run scratch cannot outlive its run.
+Output remains bounded and its terminal event is stored in the ledger when the
+process exits.
 
 After a completed answer, `/fork` creates a branch and switches to it. `/agent`
 lists portable capsules; `/agent <id>` changes the selected agent for the next

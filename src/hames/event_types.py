@@ -445,7 +445,9 @@ class TerminalFinishedPayload(EventPayload):
     stderr: str = ""
     truncated: bool = False
     duration_seconds: float = Field(default=0.0, ge=0)
-    reason: Literal["exit", "timeout", "user_stop", "session_closed", "gateway_shutdown"]
+    reason: Literal[
+        "exit", "timeout", "user_stop", "agent_stop", "session_closed", "gateway_shutdown"
+    ]
 
 
 class DelegationEvidencePayload(EventPayload):

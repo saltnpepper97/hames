@@ -23,6 +23,7 @@ from hames.tools import (
     ShellTool,
     SkillControlArguments,
     TaskUpdateArguments,
+    TerminalStopArguments,
     ToolContext,
     ToolRegistry,
     WriteFileArguments,
@@ -241,6 +242,19 @@ def test_policy_classifies_safe_dangerous_and_protected_actions(tmp_path: Path) 
             interaction_mode="plan",
         ).decision
         is PolicyDecisionKind.DENY
+    )
+    assert (
+        gate.decide("terminal_stop", TerminalStopArguments(), context).decision
+        is PolicyDecisionKind.ALLOW
+    )
+    assert (
+        gate.decide(
+            "terminal_stop",
+            TerminalStopArguments(),
+            context,
+            interaction_mode="plan",
+        ).decision
+        is PolicyDecisionKind.ALLOW
     )
     assert (
         gate.decide("shell", ShellArguments(command="rm -rf target"), context).decision
@@ -469,6 +483,7 @@ def test_self_management_tools_are_typed_and_destructive_controls_confirm(
         "skill_catalog",
         "skill_control",
         "session_title_set",
+        "terminal_stop",
     } <= registry.names()
     with pytest.raises(ValueError, match="replacement field"):
         registry.validate("memory_edit", {"memory_id": "memory-1"})

@@ -1783,13 +1783,27 @@ def create_app(state: GatewayState) -> FastAPI:
             session = await asyncio.to_thread(state.ledger.get_session, session_id)
             provider = state.providers.get(session.provider)
             if provider is not None and provider.adapter == "codex":
+                cached = getattr(provider, "cached_account_rate_limits", lambda: None)()
+                reader = getattr(provider, "account_rate_limits", None)
                 try:
-                    reader = getattr(provider, "account_rate_limits", None)
-                    if reader is not None:
-                        usage.account_rate_limits = await reader()
+                    if state.runs.is_session_active(session_id):
+                        if cached is not None:
+                            usage.account_rate_limits = cached
+                    elif reader is not None:
+                        usage.account_rate_limits = await asyncio.wait_for(reader(), timeout=1.5)
+                except TimeoutError:
+                    if cached is not None:
+                        usage.account_rate_limits = cached
+                    else:
+                        usage.account_rate_limits_error = (
+                            "Codex account usage unavailable: timed out"
+                        )
                 # Optional account metrics must never make the local session totals unavailable.
                 except Exception as exc:
-                    usage.account_rate_limits_error = f"Codex account usage unavailable: {exc}"
+                    if cached is not None:
+                        usage.account_rate_limits = cached
+                    else:
+                        usage.account_rate_limits_error = f"Codex account usage unavailable: {exc}"
             return usage
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc

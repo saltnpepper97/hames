@@ -67,6 +67,7 @@ from hames.providers import (
     StreamEventKind,
 )
 from hames.providers.base import JSON_OBJECT, JsonValue
+from hames.providers.codex import CODEX_DEFAULT_CONTEXT_TOKENS
 from hames.rules import ContextRuleStore, PolicyRuleStore
 from hames.search_runtime import SearchMcpManager
 from hames.skills import SkillRegistry, SkillSummary, SkillVersion, render_skill_invocation
@@ -91,6 +92,7 @@ from hames.tools import (
     SpawnAgentArguments,
     TaskListArguments,
     TaskUpdateArguments,
+    TerminalStopArguments,
     ToolArguments,
     ToolContext,
     ToolRegistry,
@@ -112,6 +114,7 @@ SELF_MANAGEMENT_TOOLS = frozenset(
         "skill_catalog",
         "skill_control",
         "session_title_set",
+        "terminal_stop",
         "goal_report",
         "task_list",
         "task_update",
@@ -366,7 +369,9 @@ class _BackgroundTerminal:
     started_monotonic: float
     timeout_seconds: float | None
     task: asyncio.Task[None] | None = None
-    stop_reason: Literal["user_stop", "session_closed", "gateway_shutdown"] | None = None
+    stop_reason: Literal["user_stop", "agent_stop", "session_closed", "gateway_shutdown"] | None = (
+        None
+    )
 
 
 class RunManager:
@@ -1450,6 +1455,24 @@ class RunManager:
     def is_session_active(self, session_id: str) -> bool:
         return session_id in self._session_runs
 
+    async def _ensure_provider_context_window(self, session: Session) -> Session:
+        provider = self.providers.get(session.provider)
+        if (
+            provider is None
+            or provider.adapter != "codex"
+            or session.context_window_source != "fallback"
+        ):
+            return session
+        return await asyncio.to_thread(
+            self.ledger.update_session_settings,
+            session.id,
+            provider=session.provider,
+            model=session.model,
+            reasoning_effort=session.reasoning_effort,
+            context_window_tokens=CODEX_DEFAULT_CONTEXT_TOKENS,
+            context_window_source="provider",
+        )
+
     async def finish_terminal_session(self, session_id: str) -> bool:
         """Wait for post-terminal bookkeeping, but never wait on a live model/tool run."""
 
@@ -1507,14 +1530,20 @@ class RunManager:
         self,
         session_id: str,
         *,
-        reason: Literal["user_stop", "session_closed", "gateway_shutdown"] = "user_stop",
+        reason: Literal["user_stop", "agent_stop", "session_closed", "gateway_shutdown"] = (
+            "user_stop"
+        ),
         announce: bool = True,
+        terminal_ids: list[str] | None = None,
     ) -> int:
+        wanted = set(terminal_ids) if terminal_ids else None
         async with self._background_terminal_lock:
             terminals = [
                 terminal
                 for terminal in self._background_terminals.values()
-                if terminal.session_id == session_id and terminal.process.returncode is None
+                if terminal.session_id == session_id
+                and terminal.process.returncode is None
+                and (wanted is None or terminal.id in wanted)
             ]
             if not terminals:
                 return 0
@@ -2565,6 +2594,7 @@ class RunManager:
         reasoning_parts: list[str] = []
         answer_parts: list[str] = []
         tool_calls: dict[int, ToolCallAssembly] = {}
+        session = await self._ensure_provider_context_window(session)
         capsule = await asyncio.to_thread(
             load_agent, self.paths.agents / session.agent_id / "AGENT.md"
         )
@@ -3290,7 +3320,8 @@ class RunManager:
             summary=f"background terminal started: {terminal.id}",
             content=(
                 "The command is still running in the background. Its exit will appear in the "
-                "session transcript; the user can close all background terminals with /stop."
+                "session transcript. Call terminal_stop with this terminal ID when the work is "
+                "finished; the user can also close every background terminal with /stop."
             ),
             structured_data={
                 "terminal_id": terminal.id,
@@ -3775,6 +3806,34 @@ class RunManager:
                     status="completed",
                     summary=f"session titled {title}",
                     structured_data={"title": title},
+                )
+            if isinstance(arguments, TerminalStopArguments):
+                wanted = [item.strip() for item in arguments.terminal_ids if item.strip()]
+                closed = await self.stop_background_terminals(
+                    session.id,
+                    reason="agent_stop",
+                    announce=False,
+                    terminal_ids=wanted or None,
+                )
+                remaining = self.background_terminals(session.id)
+                if closed == 0:
+                    summary = (
+                        "no matching background terminals were running"
+                        if wanted
+                        else "no background terminals are running"
+                    )
+                elif closed == 1:
+                    summary = "closed 1 background terminal"
+                else:
+                    summary = f"closed {closed} background terminals"
+                return ToolResult(
+                    status="completed",
+                    summary=summary,
+                    structured_data={
+                        "closed": closed,
+                        "terminal_ids": wanted,
+                        "remaining": remaining,
+                    },
                 )
             if isinstance(arguments, MemoryAddArguments):
                 candidate = MemoryCandidate(

@@ -3608,7 +3608,7 @@ fn category_for_tool(name: &str) -> ActivityCategory {
     match name {
         "read_file" | "list_dir" | "web_search" | "web_fetch" => ActivityCategory::Explore,
         "write_file" | "edit_file" | "session_title_set" => ActivityCategory::Change,
-        "shell" | "skill_run" => ActivityCategory::Run,
+        "shell" | "terminal_stop" | "skill_run" => ActivityCategory::Run,
         "spawn_agent" => ActivityCategory::Delegate,
         "skill_load" | "skill_author" | "skill_catalog" | "skill_control" => {
             ActivityCategory::Skills

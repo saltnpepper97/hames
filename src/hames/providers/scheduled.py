@@ -44,6 +44,12 @@ class SerializedProvider:
         finally:
             await self._release()
 
+    def cached_account_rate_limits(self) -> dict[str, JsonValue] | None:
+        reader = getattr(self.inner, "cached_account_rate_limits", None)
+        if reader is None:
+            return None
+        return reader()
+
     async def account_rate_limits(self) -> dict[str, JsonValue] | None:
         reader = getattr(self.inner, "account_rate_limits", None)
         if reader is None:

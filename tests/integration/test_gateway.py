@@ -794,6 +794,45 @@ async def test_usage_includes_codex_account_progress_when_available(tmp_path: Pa
         await state.runs.close()
 
 
+class SlowAccountUsageProvider(AccountUsageProvider):
+    async def account_rate_limits(self) -> dict[str, JsonValue]:
+        await asyncio.sleep(30)
+        return await super().account_rate_limits()
+
+
+@pytest.mark.asyncio
+async def test_usage_returns_session_totals_when_codex_account_metrics_hang(
+    tmp_path: Path,
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"codex-fixture": SlowAccountUsageProvider()})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "codex-fixture",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            started = asyncio.get_running_loop().time()
+            usage = response_object(
+                await client.get(f"/v1/sessions/{session_id}/usage", headers=headers)
+            )
+            elapsed = asyncio.get_running_loop().time() - started
+            assert elapsed < 5
+            assert usage["model_requests"] == 0
+            assert usage["account_rate_limits"] is None
+            assert "timed out" in str(usage["account_rate_limits_error"])
+    finally:
+        await state.runs.close()
+
+
 @pytest.mark.asyncio
 async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
@@ -4084,6 +4123,93 @@ async def test_background_shell_is_listed_and_stop_closes_it_with_transcript_eve
                 "Closing 1 background terminal…",
                 "Closed 1 background terminal.",
             ]
+            assert response_object(await client.get("/v1/health"))["active_terminals"] == 0
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_can_stop_background_terminals_it_started(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text(
+        "[memory]\nenabled = false\n[skills]\nenabled = false\n[evolution]\nenabled = false\n",
+        encoding="utf-8",
+    )
+    provider = FakeProvider(
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="background-shell",
+                        name="shell",
+                        arguments_delta=json.dumps({"command": "sleep 30", "background": True}),
+                    ),
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TEXT_DELTA,
+                    text="The background terminal is running.",
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="stop-terminals",
+                        name="terminal_stop",
+                        arguments_delta="{}",
+                    ),
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="Closed the watcher."),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
+    )
+    state = GatewayState.create(paths, providers={"fake": provider})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Start the watcher in the background."},
+            )
+            await _wait_for_event(client, headers, session_id, "run.completed")
+            listed = await client.get(f"/v1/sessions/{session_id}/terminals", headers=headers)
+            assert len(cast(list[object], listed.json())) == 1
+
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "The watcher is finished; close it."},
+            )
+            events = await _wait_for_event(client, headers, session_id, "terminal.stopped")
+            terminal_event = next(event for event in events if event["type"] == "terminal.stopped")
+            assert terminal_event["payload"]["reason"] == "agent_stop"  # type: ignore[index]
+            await _wait_for_event(client, headers, session_id, "run.completed", occurrences=2)
             assert response_object(await client.get("/v1/health"))["active_terminals"] == 0
     finally:
         await state.runs.close()

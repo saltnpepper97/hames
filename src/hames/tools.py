@@ -221,6 +221,16 @@ class SessionTitleArguments(ToolArguments):
     )
 
 
+class TerminalStopArguments(ToolArguments):
+    terminal_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Background terminal IDs to close. Omit or pass an empty list to close every "
+            "background terminal in this session."
+        ),
+    )
+
+
 class AskUserOption(ToolArguments):
     label: str = Field(
         min_length=1,
@@ -618,8 +628,9 @@ class ShellTool(ToolBase):
         "Run a Bash command in the project, confirmed user home, or disposable scratch "
         "workspace. Use workspace home when the requested path is elsewhere below the user's home. "
         "Set background true for a long-running command that should continue while the agent "
-        "works; Hames returns its terminal ID immediately and the user can close all background "
-        "terminals with /stop."
+        "works; Hames returns its terminal ID immediately. Call terminal_stop when that bounded "
+        "work finishes. Leave a terminal running only if the user still needs it; they can also "
+        "close every background terminal with /stop."
     )
     side_effect_class = "shell"
     arguments_type: ClassVar[type[ToolArguments]] = ShellArguments
@@ -801,11 +812,21 @@ class SkillControlTool(ToolBase):
 class SessionTitleTool(ToolBase):
     name = "session_title_set"
     description = (
-        "Set a concise session title that summarizes the conversation. Use it early and update "
-        "it only when the conversation's purpose materially changes."
+        "Set a concise session title that summarizes the conversation. Call it once the purpose "
+        "is clear, and update it when that purpose materially changes."
     )
     side_effect_class = "session_metadata"
     arguments_type: ClassVar[type[ToolArguments]] = SessionTitleArguments
+
+
+class TerminalStopTool(ToolBase):
+    name = "terminal_stop"
+    description = (
+        "Close background terminals started in this session. Call it when the work those "
+        "terminals were doing is finished, or pass specific IDs from a prior background shell."
+    )
+    side_effect_class = "shell"
+    arguments_type: ClassVar[type[ToolArguments]] = TerminalStopArguments
 
 
 class GoalReportTool(ToolBase):
@@ -924,6 +945,7 @@ class ToolRegistry:
             SkillCatalogTool(),
             SkillControlTool(),
             SessionTitleTool(),
+            TerminalStopTool(),
             GoalReportTool(),
             TaskListTool(),
             TaskUpdateTool(),

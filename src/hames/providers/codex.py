@@ -24,6 +24,7 @@ from hames.providers.base import (
 
 # asyncio StreamReader defaults to 64KiB. A write_file tool call is one JSONL line.
 JSONL_LINE_LIMIT = 16 * 1024 * 1024
+CODEX_DEFAULT_CONTEXT_TOKENS = 272_000
 
 
 class _CodexConnection:
@@ -188,6 +189,11 @@ class CodexProvider:
         self._rate_limits_cached_at = 0.0
         self._rate_limits_lock = asyncio.Lock()
 
+    def cached_account_rate_limits(self) -> dict[str, JsonValue] | None:
+        if self._rate_limits_cache is None:
+            return None
+        return dict(self._rate_limits_cache)
+
     async def aclose(self) -> None:
         return None
 
@@ -233,6 +239,7 @@ class CodexProvider:
                             id=model_id,
                             provider=self.profile_id,
                             status="available",
+                            context_length=_codex_context_length(raw),
                             input_modalities=modalities,
                             output_modalities=["text"],
                             reasoning_supported=bool(efforts),
@@ -320,7 +327,7 @@ class CodexProvider:
                     "threadId": thread_id,
                     "input": [{"type": "text", "text": _codex_input(request.messages)}],
                     "model": request.model,
-                    "effort": request.reasoning_effort or None,
+                    "effort": _codex_wire_effort(request.reasoning_effort),
                     "approvalPolicy": "never",
                     # Hames is the external sandbox. Codex native tools are disabled below;
                     # every model-visible side effect must arrive as an item/tool/call request.
@@ -519,6 +526,25 @@ def _codex_input(messages: list[ProviderMessage]) -> str:
             )
     sections.append("Continue from the final transcript entry.")
     return "\n\n".join(sections)
+
+
+def _codex_wire_effort(value: str) -> str | None:
+    effort = value.strip()
+    if not effort or effort in {"on", "default"}:
+        return None
+    if effort in {"off", "disabled"}:
+        return "none"
+    return effort
+
+
+def _codex_context_length(raw: Mapping[str, JsonValue]) -> int:
+    for key in ("maxContextWindow", "max_context_window", "contextWindow", "context_length"):
+        value = raw.get(key)
+        if isinstance(value, int) and value >= 8_192:
+            return value
+        if isinstance(value, float) and value >= 8_192:
+            return int(value)
+    return CODEX_DEFAULT_CONTEXT_TOKENS
 
 
 def _codex_efforts(value: JsonValue) -> list[str]:

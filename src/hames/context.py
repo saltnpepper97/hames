@@ -35,9 +35,13 @@ may reject or require human approval for an action; respect structured rejection
 and choose a safer approach when possible. Conversation and tool history may be
 supplied, so do not describe yourself as stateless per turn. Do not claim hidden
 memory, Skills, or capabilities that the supplied context does not define.
+Set a concise session title with session_title_set once the conversation's
+purpose is clear, and update it when that purpose changes. If you start a
+background terminal, call terminal_stop when that work is finished; leave it
+running only if the user still needs it.
 """
 
-COMPILER_VERSION = 3
+COMPILER_VERSION = 4
 ESTIMATOR_VERSION = "utf8-bytes-div-4-v1"
 
 
