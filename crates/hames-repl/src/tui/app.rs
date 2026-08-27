@@ -3107,27 +3107,21 @@ impl App {
         if name.is_empty() {
             return None;
         }
-        self.transcript
-            .iter()
-            .enumerate()
+        let index = self.transcript.len().checked_sub(1)?;
+        let TranscriptItem::Activity {
+            run_id: id, rows, ..
+        } = &self.transcript[index]
+        else {
+            return None;
+        };
+        if id != run_id || rows.len() >= MAX_ACTIVITY_ROWS_PER_GROUP {
+            return None;
+        }
+        rows.iter()
             .rev()
-            .find_map(|(index, item)| {
-                let TranscriptItem::Activity {
-                    run_id: id, rows, ..
-                } = item
-                else {
-                    return None;
-                };
-                if id != run_id || rows.len() >= MAX_ACTIVITY_ROWS_PER_GROUP {
-                    return None;
-                }
-                let same_kind = rows
-                    .iter()
-                    .rev()
-                    .find(|row| !row.name.is_empty())
-                    .is_none_or(|previous| same_activity_kind(&previous.name, name));
-                same_kind.then_some(index)
-            })
+            .find(|row| !row.name.is_empty())
+            .is_none_or(|previous| same_activity_kind(&previous.name, name))
+            .then_some(index)
     }
 
     fn ensure_activity_row(
@@ -3177,8 +3171,8 @@ impl App {
             }
             return &mut rows[row_index];
         }
-        // Tool work stays under a run-scoped umbrella across model cycles. Task
-        // updates remain separate, and groups are bounded so long runs stay legible.
+        // Only adjacent tools of the same kind share an umbrella. This preserves
+        // the visible timeline when reasoning, prose, or another tool kind intervenes.
         let activity_index = if let Some(index) = self.activity_group(run_id, name) {
             if let TranscriptItem::Activity { collapsed, .. } = &mut self.transcript[index] {
                 *collapsed = false;
@@ -3283,8 +3277,7 @@ impl App {
                             row.tool_call_id.as_ref() == Some(call_id)
                         }))
             )
-        }) && rows.len() >= MAX_ACTIVITY_ROWS_PER_GROUP
-            && rows.iter().all(|row| row.phase.terminal())
+        }) && rows.iter().all(|row| row.phase.terminal())
         {
             *collapsed = should_collapse_activity(rows);
         }
@@ -4268,7 +4261,11 @@ mod tests {
     fn run_commands_do_not_share_a_group_with_exploration() {
         let run_id = "run-explore-then-command";
         let mut app = App::new(session(), Vec::new(), true);
-        for (sequence, name, call_id) in [(1, "read_file", "read-1"), (2, "shell", "shell-1")] {
+        for (sequence, name, call_id) in [
+            (1, "read_file", "read-1"),
+            (2, "shell", "shell-1"),
+            (3, "read_file", "read-2"),
+        ] {
             app.ingest_durable(
                 event(
                     sequence,
@@ -4296,7 +4293,7 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(cards, ["read_file", "shell"]);
+        assert_eq!(cards, ["read_file", "shell", "read_file"]);
     }
 
     #[test]
@@ -4487,7 +4484,7 @@ mod tests {
     }
 
     #[test]
-    fn thought_keeps_work_in_the_same_run_scoped_group() {
+    fn thought_keeps_later_work_in_chronological_order() {
         let run_id = "run-clump-then-think";
         let mut app = App::new(session(), Vec::new(), true);
         app.ingest_transient(
@@ -4524,7 +4521,7 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(kinds, [("work", 3), ("thought", 0)]);
+        assert_eq!(kinds, [("work", 2), ("thought", 0), ("work", 1)]);
     }
 
     #[test]
@@ -4626,8 +4623,9 @@ mod tests {
         assert_eq!(*thoughts[0].1, 1.0);
         assert_eq!(thoughts[1].0, "second check");
         assert_eq!(*thoughts[1].1, 2.0);
-        assert_eq!(activities.len(), 1);
-        assert_eq!(activities[0].0.len(), 2);
+        assert_eq!(activities.len(), 2);
+        assert_eq!(activities[0].0.len(), 1);
+        assert_eq!(activities[1].0.len(), 1);
         assert!(activities.iter().all(|(_, collapsed)| **collapsed));
         assert_eq!(assistants, 1);
 
@@ -4641,11 +4639,11 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(kinds, ["thought", "work", "thought", "answer"]);
+        assert_eq!(kinds, ["thought", "work", "thought", "work", "answer"]);
     }
 
     #[test]
-    fn active_work_group_stays_expanded_until_the_run_finishes() {
+    fn completed_work_group_collapses_without_waiting_for_the_run() {
         let run_id = "run-live-umbrella";
         let mut app = App::new(session(), Vec::new(), true);
         app.begin_foreground_run(Some(run_id.to_owned()));
@@ -4668,7 +4666,7 @@ mod tests {
             TranscriptItem::Activity { collapsed, .. } => Some(*collapsed),
             _ => None,
         });
-        assert_eq!(collapsed, Some(false));
+        assert_eq!(collapsed, Some(true));
 
         app.ingest_durable(event(2, "run.completed", run_id, json!({})), true);
         let collapsed = app.transcript.iter().find_map(|item| match item {
@@ -4710,7 +4708,7 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(groups, [(20, true), (1, false)]);
+        assert_eq!(groups, [(20, true), (1, true)]);
     }
 
     #[test]

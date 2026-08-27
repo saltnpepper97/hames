@@ -1213,21 +1213,21 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         let current_task = sheet.kind == SheetKind::Tasks && option.label == "[>]";
         let row_style = if deleting {
             Style::default().bg(DELETE_BG)
+        } else if selected {
+            Style::default().bg(PANEL_BRIGHT)
         } else if completed_task {
             Style::default().bg(TASK_DONE_BG)
         } else if current_task {
             Style::default().bg(TASK_CURRENT_BG)
-        } else if selected {
-            Style::default().bg(PANEL_BRIGHT)
         } else {
             Style::default()
         };
         let row_color = if deleting {
             CORAL
-        } else if completed_task || current_task {
-            Color::Black
         } else if selected {
             sheet_text_color(app.theme)
+        } else if completed_task || current_task {
+            Color::Black
         } else {
             MUTED
         };
@@ -5277,7 +5277,7 @@ mod tests {
     }
 
     #[test]
-    fn task_sheet_colors_completed_rows_and_highlights_the_current_task() {
+    fn task_sheet_status_colors_yield_to_the_gray_cursor_highlight() {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(session(), Vec::new(), true);
@@ -5328,13 +5328,31 @@ mod tests {
             .find(|y| row_text(*y).contains("Implement"))
             .unwrap();
         assert_eq!(buffer.cell((1, done_y)).unwrap().bg, TASK_DONE_BG);
-        assert_eq!(buffer.cell((1, current_y)).unwrap().bg, TASK_CURRENT_BG);
+        assert_eq!(buffer.cell((1, current_y)).unwrap().bg, PANEL_BRIGHT);
         let done_row = row_text(done_y);
-        let current_row = row_text(current_y);
         let done_x = UnicodeWidthStr::width(&done_row[..done_row.find("Inspect").unwrap()]) as u16;
+        assert_eq!(buffer.cell((done_x, done_y)).unwrap().fg, Color::Black);
+
+        app.sheet.as_mut().unwrap().selected = 0;
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row_text = |y| {
+            (0..buffer.area.width)
+                .filter_map(|x| buffer.cell((x, y)))
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        };
+        let done_y = (0..buffer.area.height)
+            .find(|y| row_text(*y).contains("Inspect"))
+            .unwrap();
+        let current_y = (0..buffer.area.height)
+            .find(|y| row_text(*y).contains("Implement"))
+            .unwrap();
+        assert_eq!(buffer.cell((1, done_y)).unwrap().bg, PANEL_BRIGHT);
+        assert_eq!(buffer.cell((1, current_y)).unwrap().bg, TASK_CURRENT_BG);
+        let current_row = row_text(current_y);
         let current_x =
             UnicodeWidthStr::width(&current_row[..current_row.find("Implement").unwrap()]) as u16;
-        assert_eq!(buffer.cell((done_x, done_y)).unwrap().fg, Color::Black);
         assert_eq!(
             buffer.cell((current_x, current_y)).unwrap().fg,
             Color::Black
