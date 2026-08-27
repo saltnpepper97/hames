@@ -147,7 +147,7 @@ class LlamaCppProvider:
                     "type": "function",
                     "name": tool.name,
                     "description": tool.description,
-                    "parameters": tool.input_schema,
+                    "parameters": _schema_for_llama_cpp(tool.input_schema),
                 }
                 for tool in request.tools
             ]
@@ -167,7 +167,7 @@ class LlamaCppProvider:
             async with self.client.stream(
                 "POST", f"{self.base_url}/v1/responses", json=body
             ) as response:
-                response.raise_for_status()
+                await _raise_for_status(response)
                 started = False
                 completed = False
                 provider_request_id: str | None = None
@@ -329,6 +329,33 @@ class LlamaCppProvider:
             raise ProviderError("provider_transport_error", str(exc), retryable=True) from exc
 
 
+# llama.cpp's json-schema-to-grammar emitter produces unparseable GBNF when a
+# nested string maxLength is >= 2000, or when an object schema has empty
+# properties. One bad tool schema fails the entire request.
+_LLAMA_CPP_MAX_STRING_LENGTH = 1023
+
+
+def _schema_for_llama_cpp(schema: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    rewritten = _rewrite_llama_cpp_schema(schema)
+    return rewritten if isinstance(rewritten, dict) else schema
+
+
+def _rewrite_llama_cpp_schema(node: JsonValue) -> JsonValue:
+    if isinstance(node, list):
+        return [_rewrite_llama_cpp_schema(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    rewritten: dict[str, JsonValue] = {
+        key: _rewrite_llama_cpp_schema(value) for key, value in node.items()
+    }
+    max_length = rewritten.get("maxLength")
+    if isinstance(max_length, int) and max_length >= 2000:
+        rewritten["maxLength"] = _LLAMA_CPP_MAX_STRING_LENGTH
+    if rewritten.get("properties") == {}:
+        rewritten.pop("properties")
+    return rewritten
+
+
 def _usage_from_responses(value: JsonValue) -> Usage | None:
     if not isinstance(value, dict):
         return None
@@ -391,6 +418,12 @@ def _response_input(messages: Sequence[object]) -> list[dict[str, object]]:
     return result
 
 
+async def _raise_for_status(response: httpx.Response) -> None:
+    if response.is_error:
+        await response.aread()
+    response.raise_for_status()
+
+
 def _http_error(exc: httpx.HTTPStatusError) -> ProviderError:
     status = exc.response.status_code
     message = str(exc)
@@ -399,7 +432,7 @@ def _http_error(exc: httpx.HTTPStatusError) -> ProviderError:
         error_value = body.get("error")
         if isinstance(error_value, dict):
             message = str(error_value.get("message", message))
-    except ValueError:
+    except (ValueError, httpx.ResponseNotRead, httpx.StreamClosed, httpx.StreamConsumed):
         pass
     return ProviderError(
         "provider_http_error",

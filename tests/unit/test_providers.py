@@ -20,6 +20,18 @@ from hames.providers.codex import CodexProvider
 from hames.providers.llama_cpp import LlamaCppProvider
 from hames.providers.ollama import OllamaProvider
 from hames.providers.openai import OpenAIProvider
+from hames.tools import AskUserArguments
+
+
+def _streamed_json_response(
+    status: int, payload: dict[str, object], request: httpx.Request
+) -> httpx.Response:
+    return httpx.Response(
+        status,
+        request=request,
+        headers={"Content-Type": "application/json"},
+        stream=httpx.ByteStream(json.dumps(payload).encode()),
+    )
 
 
 @pytest.mark.asyncio
@@ -558,16 +570,16 @@ async def test_llama_cpp_timeout_is_typed() -> None:
 @pytest.mark.asyncio
 async def test_llama_cpp_surfaces_responses_error_message() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
+        return _streamed_json_response(
             400,
-            request=request,
-            json={
+            {
                 "error": {
                     "code": 400,
                     "message": "Cannot determine type of 'item'",
                     "type": "invalid_request_error",
                 }
             },
+            request,
         )
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -578,6 +590,90 @@ async def test_llama_cpp_surfaces_responses_error_message() -> None:
             async for event in provider.stream(
                 ModelRequest(
                     model="fixture",
+                    messages=[ProviderMessage(role="user", content="hello")],
+                    system="",
+                )
+            )
+        ]
+    assert raised.value.code == "provider_http_error"
+    assert raised.value.retryable is False
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_llama_cpp_caps_nested_string_max_length_for_grammar() -> None:
+    seen_request: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_request.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            text="\n".join(
+                [
+                    'data: {"type":"response.created","response":{"id":"one"}}',
+                    'data: {"type":"response.completed","response":{"output":[],'
+                    '"usage":{"input_tokens":1,"output_tokens":1}}}',
+                    "data: [DONE]",
+                ]
+            ),
+        )
+
+    schema = AskUserArguments.model_json_schema()
+    nested = schema["$defs"]["AskUserOption"]["properties"]["description"]["maxLength"]
+    assert nested == 2000
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    _ = [
+        event
+        async for event in LlamaCppProvider("http://llama", client=client).stream(
+            ModelRequest(
+                model="fixture",
+                messages=[ProviderMessage(role="user", content="ask")],
+                system="",
+                tools=[
+                    ToolDefinition(
+                        name="ask_user",
+                        description="question",
+                        input_schema=schema,
+                    )
+                ],
+            )
+        )
+    ]
+    tools = seen_request["tools"]
+    assert isinstance(tools, list)
+    parameters = tools[0]["parameters"]
+    description = parameters["$defs"]["AskUserOption"]["properties"]["description"]
+    assert description["maxLength"] == 1023
+    assert parameters["properties"]["question"]["maxLength"] == 1000
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_openai_surfaces_streamed_http_error_message() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _streamed_json_response(
+            400,
+            {
+                "error": {
+                    "message": "Invalid reasoning effort",
+                    "type": "invalid_request_error",
+                }
+            },
+            request,
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = OpenAIProvider(
+        "https://api.openai.test/v1",
+        environ={"OPENAI_API_KEY": "fixture-key"},
+        client=client,
+    )
+    with pytest.raises(ProviderError, match="Invalid reasoning effort") as raised:
+        _ = [
+            event
+            async for event in provider.stream(
+                ModelRequest(
+                    model="gpt-5.4",
                     messages=[ProviderMessage(role="user", content="hello")],
                     system="",
                 )

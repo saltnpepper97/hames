@@ -162,7 +162,7 @@ class OpenAIProvider:
                 headers={**self._headers(), "Accept": "text/event-stream"},
                 json=body,
             ) as response:
-                response.raise_for_status()
+                await _raise_for_status(response)
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -343,6 +343,12 @@ def _usage(value: JsonValue) -> Usage | None:
     )
 
 
+async def _raise_for_status(response: httpx.Response) -> None:
+    if response.is_error:
+        await response.aread()
+    response.raise_for_status()
+
+
 def _http_error(exc: httpx.HTTPStatusError) -> ProviderError:
     status = exc.response.status_code
     code = "provider_authentication_failed" if status in {401, 403} else "provider_http_error"
@@ -353,7 +359,7 @@ def _http_error(exc: httpx.HTTPStatusError) -> ProviderError:
         if isinstance(error_value, dict):
             error = cast(dict[str, JsonValue], error_value)
             message = str(error.get("message", message))
-    except ValueError:
+    except (ValueError, httpx.ResponseNotRead, httpx.StreamClosed, httpx.StreamConsumed):
         pass
     return ProviderError(code, message, retryable=status == 429 or status >= 500)
 

@@ -143,6 +143,8 @@ class OllamaProvider:
             async with self.client.stream(
                 "POST", f"{self.base_url}/api/chat", json=body
             ) as response:
+                if response.is_error:
+                    await response.aread()
                 response.raise_for_status()
                 async for line in response.aiter_lines():
                     if not line.strip():
