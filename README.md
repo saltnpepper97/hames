@@ -134,10 +134,10 @@ The TUI keeps the transcript, activity continuity, and an expanding composer on
 one screen. The composer grows through eight visible content rows and then
 scrolls. Enter sends; Alt+Enter, Shift+Enter, or Ctrl+J inserts a new line.
 Long-running shell work can continue in background terminals while the agent
-moves on. A running terminal appears on the composer's top border; multiple
-terminals show as a count there. `/stop` closes every background terminal in the
-current session and records both the closing request and its completion in the
-durable transcript.
+moves on. A short line immediately above the composer shows how many are
+running and that `/stop` closes them; queued turns sit above that line.
+`/stop` closes every background terminal in the current session and records
+both the closing request and its completion in the durable transcript.
 Agent questions appear in a lower tray above the composer. Each answer is
 numbered before its radio, and an optional multiline explanation renders below
 its label. Use Up/Down, a number key, and Enter—or click an offered answer—to

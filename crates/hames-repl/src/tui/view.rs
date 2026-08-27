@@ -94,6 +94,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .or_else(|| app.notice.clone().map(|message| (message, false)));
     let notice_height = u16::from(notice.is_some());
     let queue_height = u16::try_from(app.queued_messages.len()).unwrap_or(2).min(2);
+    let terminals_height = u16::from(!app.background_terminals.is_empty());
     let sheet_height = app
         .sheet
         .as_ref()
@@ -122,7 +123,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .unwrap_or(u16::MAX);
         let available = area
             .height
-            .saturating_sub(header_height + composer_height + notice_height + 2);
+            .saturating_sub(header_height + composer_height + notice_height + terminals_height + 2);
         required.min(available.max(3))
     } else {
         0
@@ -133,7 +134,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             u16::try_from(question_required_height(question, prompt_width)).unwrap_or(u16::MAX);
         let available = area
             .height
-            .saturating_sub(header_height + composer_height + notice_height + 2);
+            .saturating_sub(header_height + composer_height + notice_height + terminals_height + 2);
         required.min(available.max(4))
     });
     let inline_height = if app.inline_editor.is_some() && !plan_note_in_sheet {
@@ -145,7 +146,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .max(approval_height)
         .max(question_height)
         .max(inline_height);
-    let bottom = composer_height + notice_height + queue_height + tray_height + 1;
+    let bottom =
+        composer_height + notice_height + queue_height + terminals_height + tray_height + 1;
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -161,8 +163,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(tray_height),
-            Constraint::Length(notice_height),
             Constraint::Length(queue_height),
+            Constraint::Length(notice_height),
+            Constraint::Length(terminals_height),
             Constraint::Length(composer_height),
             Constraint::Length(1),
         ])
@@ -176,6 +179,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     } else if sheet_height > 0 {
         render_sheet(frame, app, footer[0]);
     }
+    render_queue(frame, app, footer[1]);
     if let Some((notice, error)) = notice {
         frame.render_widget(
             Paragraph::new(Line::from(vec![
@@ -188,12 +192,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
                     Style::default().fg(if error { CORAL } else { MUTED }),
                 ),
             ])),
-            footer[1],
+            footer[2],
         );
     }
-    render_queue(frame, app, footer[2]);
-    render_composer(frame, app, footer[3]);
-    render_status_bar(frame, app, footer[4], fx_delta);
+    render_background_terminals(frame, app, footer[3]);
+    render_composer(frame, app, footer[4]);
+    render_status_bar(frame, app, footer[5], fx_delta);
     render_modal(frame, app, area);
     apply_theme(frame, area, app.theme);
 }
@@ -295,6 +299,23 @@ fn render_queue(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             action: HitAction::QueuedMessage(item.id.clone()),
         });
     }
+}
+
+fn render_background_terminals(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    let count = app.background_terminals.len();
+    let noun = if count == 1 { "terminal" } else { "terminals" };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(format!("{count} {noun}"), Style::default().fg(INPUT)),
+            Span::styled(" · ", Style::default().fg(MUTED)),
+            Span::styled("/stop", Style::default().fg(INPUT).bold()),
+        ])),
+        area,
+    );
 }
 
 pub(super) fn current_activity(app: &App) -> &'static str {
@@ -1397,29 +1418,12 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         ),
     ])
     .right_aligned();
-    let mut block = Block::default()
+    let block = Block::default()
         .title_top(title)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .padding(Padding::horizontal(1))
         .border_style(Style::default().fg(mode_outline(&app.session.interaction_mode)));
-    if !app.background_terminals.is_empty() {
-        let label = if app.background_terminals.len() == 1 {
-            let command = app.background_terminals[0]
-                .command
-                .replace(['\r', '\n'], " ");
-            format!(
-                " ◐ Terminal · {} ",
-                fit(&command, usize::from(area.width.saturating_sub(34)).max(10))
-            )
-        } else {
-            format!(" ◐ {} terminals · /stop ", app.background_terminals.len())
-        };
-        block = block.title_top(Line::from(Span::styled(
-            label,
-            Style::default().fg(GOLD).bold(),
-        )));
-    }
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.hits.push(HitRegion {
@@ -1760,7 +1764,7 @@ fn activity_bar(app: &App) -> Line<'static> {
     let mut spans = vec![
         Span::raw("  "),
         Span::styled("──────", Style::default().fg(MUTED)),
-        Span::styled(format!("  {activity}"), Style::default().fg(GOLD)),
+        Span::styled(format!("  {activity}"), Style::default().fg(INPUT)),
     ];
     let elapsed = app
         .run_started_at
@@ -5517,32 +5521,86 @@ mod tests {
     }
 
     #[test]
-    fn running_background_terminal_is_visible_on_the_composer_bar() {
+    fn running_background_terminals_sit_above_the_composer() {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(session(), Vec::new(), true);
         app.background_terminals
-            .push(crate::api::BackgroundTerminal {
-                id: "terminal-1".to_owned(),
-                session_id: app.session.id.clone(),
-                command: "cargo watch -x test".to_owned(),
-                workspace: "project".to_owned(),
-                pid: 1234,
-                status: "running".to_owned(),
-                started_at: "2026-08-26T00:00:00Z".to_owned(),
-                timeout_seconds: None,
-            });
+            .push(background_terminal("terminal-1", "cargo watch -x test"));
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let rendered = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(rendered.contains("◐ Terminal · cargo watch -x test"));
-        assert!(rendered.contains("fixture (medium) · Auto"));
+        let width = terminal.size().unwrap().width;
+        {
+            let composer_y = composer_top(&app);
+            let buffer = terminal.backend().buffer();
+            let status_y = composer_y - 1;
+            let status = row_text(buffer, width, status_y);
+            assert!(status.contains("1 terminal · /stop"));
+            assert!(!status.contains("cargo watch"));
+            let count_x =
+                UnicodeWidthStr::width(&status[..status.find("1 terminal").unwrap()]) as u16;
+            let stop_x = UnicodeWidthStr::width(&status[..status.find("/stop").unwrap()]) as u16;
+            assert_eq!(buffer.cell((count_x, status_y)).unwrap().fg, INPUT);
+            assert_eq!(buffer.cell((stop_x, status_y)).unwrap().fg, INPUT);
+            assert!((0..width).all(|x| buffer.cell((x, status_y)).unwrap().fg != GOLD));
+            let rendered = buffer
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(rendered.contains("fixture (medium) · Auto"));
+            assert!(!rendered.contains("◐ Terminal"));
+        }
+        app.background_terminals
+            .push(background_terminal("terminal-2", "npm run dev"));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let composer_y = composer_top(&app);
+        let buffer = terminal.backend().buffer();
+        let status = row_text(buffer, width, composer_y - 1);
+        assert!(status.contains("2 terminals · /stop"));
+        assert!(!status.contains("npm run"));
+    }
+
+    #[test]
+    fn queued_turns_sit_above_copy_notice_and_running_terminals() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.queued_messages = vec![queued_message("queue-1", "first queued request", 1)];
+        app.background_terminals
+            .push(background_terminal("terminal-1", "cargo watch -x test"));
+        app.show_copy_notice(5);
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let composer_y = composer_top(&app);
+        let width = terminal.size().unwrap().width;
+        let height = terminal.size().unwrap().height;
+        let buffer = terminal.backend().buffer();
+        let mut queue_y = None;
+        let mut copy_y = None;
+        let mut terminals_y = None;
+        for y in 0..height {
+            let row = row_text(buffer, width, y);
+            if row.contains("Queued 1/1  first queued request") {
+                queue_y = Some(y);
+            }
+            if row.contains("Copied to clipboard · 5 characters") {
+                copy_y = Some(y);
+            }
+            if row.contains("1 terminal · /stop") {
+                terminals_y = Some(y);
+            }
+        }
+        let queue_y = queue_y.expect("queued turn");
+        let copy_y = copy_y.expect("copy notice");
+        let terminals_y = terminals_y.expect("running terminals");
+        assert!(queue_y < copy_y);
+        assert!(copy_y < terminals_y);
+        assert_eq!(terminals_y, composer_y - 1);
+        assert!(app.hits.iter().any(|region| matches!(
+            &region.action,
+            HitAction::QueuedMessage(id) if id == "queue-1"
+        )));
     }
 
     #[test]
@@ -5632,6 +5690,13 @@ mod tests {
         let buffer = terminal.backend().buffer();
         assert!((2..8).all(|x| buffer.cell((x, footer_y)).unwrap().fg == MUTED));
         assert_eq!(buffer.cell((4, footer_y)).unwrap().fg, MUTED);
+        let footer = (0..terminal.size().unwrap().width)
+            .map(|x| buffer.cell((x, footer_y)).unwrap().symbol())
+            .collect::<String>();
+        let waiting_x = UnicodeWidthStr::width(&footer[..footer.find("Waiting").unwrap()]) as u16;
+        let escape_x = UnicodeWidthStr::width(&footer[..footer.find("Esc").unwrap()]) as u16;
+        assert_eq!(buffer.cell((waiting_x, footer_y)).unwrap().fg, INPUT);
+        assert_eq!(buffer.cell((escape_x, footer_y)).unwrap().fg, INPUT);
     }
 
     #[test]
@@ -6688,5 +6753,32 @@ mod tests {
             created_at: "2026-08-24T00:00:00Z".to_owned(),
             position,
         }
+    }
+
+    fn background_terminal(id: &str, command: &str) -> crate::api::BackgroundTerminal {
+        crate::api::BackgroundTerminal {
+            id: id.to_owned(),
+            session_id: "session-123456789".to_owned(),
+            command: command.to_owned(),
+            workspace: "project".to_owned(),
+            pid: 1234,
+            status: "running".to_owned(),
+            started_at: "2026-08-26T00:00:00Z".to_owned(),
+            timeout_seconds: None,
+        }
+    }
+
+    fn composer_top(app: &App) -> u16 {
+        app.hits
+            .iter()
+            .find(|region| matches!(region.action, HitAction::FocusComposer))
+            .expect("composer")
+            .y
+    }
+
+    fn row_text(buffer: &Buffer, width: u16, y: u16) -> String {
+        (0..width)
+            .map(|x| buffer.cell((x, y)).unwrap().symbol())
+            .collect()
     }
 }
