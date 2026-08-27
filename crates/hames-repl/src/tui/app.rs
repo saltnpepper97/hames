@@ -1446,6 +1446,7 @@ impl App {
     }
 
     fn upsert_task_list(&mut self) {
+        self.collapse_trailing_activity();
         let item = TranscriptItem::TaskList {
             title: self.tasks.title.clone(),
             items: self.tasks.items.clone(),
@@ -3071,6 +3072,7 @@ impl App {
                 return index;
             }
         }
+        self.collapse_trailing_activity();
         self.transcript.push(TranscriptItem::Thought {
             run_id: run_id.to_owned(),
             content: String::new(),
@@ -3094,6 +3096,7 @@ impl App {
         }) {
             return index;
         }
+        self.collapse_trailing_activity();
         self.transcript.push(TranscriptItem::Assistant {
             run_id: run_id.to_owned(),
             content: String::new(),
@@ -3179,6 +3182,7 @@ impl App {
             }
             index
         } else {
+            self.collapse_trailing_activity();
             self.transcript.push(TranscriptItem::Activity {
                 run_id: run_id.to_owned(),
                 rows: Vec::new(),
@@ -3266,9 +3270,7 @@ impl App {
         if matches!(
             event_type,
             "tool.completed" | "tool.failed" | "tool.rejected"
-        ) && let Some(TranscriptItem::Activity {
-            rows, collapsed, ..
-        }) = self.transcript.iter_mut().rev().find(|item| {
+        ) && let Some(activity_index) = self.transcript.iter().rposition(|item| {
             matches!(
                 item,
                 TranscriptItem::Activity { run_id: id, rows, .. }
@@ -3277,7 +3279,21 @@ impl App {
                             row.tool_call_id.as_ref() == Some(call_id)
                         }))
             )
-        }) && rows.iter().all(|row| row.phase.terminal())
+        }) && activity_index + 1 < self.transcript.len()
+            && let TranscriptItem::Activity {
+                rows, collapsed, ..
+            } = &mut self.transcript[activity_index]
+            && rows.iter().all(|row| row.phase.terminal())
+        {
+            *collapsed = should_collapse_activity(rows);
+        }
+    }
+
+    fn collapse_trailing_activity(&mut self) {
+        if let Some(TranscriptItem::Activity {
+            rows, collapsed, ..
+        }) = self.transcript.last_mut()
+            && rows.iter().all(|row| row.phase.terminal())
         {
             *collapsed = should_collapse_activity(rows);
         }
@@ -4643,7 +4659,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_work_group_collapses_without_waiting_for_the_run() {
+    fn completed_work_group_stays_open_until_a_real_boundary() {
         let run_id = "run-live-umbrella";
         let mut app = App::new(session(), Vec::new(), true);
         app.begin_foreground_run(Some(run_id.to_owned()));
@@ -4666,14 +4682,20 @@ mod tests {
             TranscriptItem::Activity { collapsed, .. } => Some(*collapsed),
             _ => None,
         });
-        assert_eq!(collapsed, Some(true));
+        assert_eq!(collapsed, Some(false));
 
-        app.ingest_durable(event(2, "run.completed", run_id, json!({})), true);
+        app.ingest_transient(
+            run_id,
+            "response.reasoning_delta",
+            &json!({"text": "deciding what comes next"}),
+        );
         let collapsed = app.transcript.iter().find_map(|item| match item {
             TranscriptItem::Activity { collapsed, .. } => Some(*collapsed),
             _ => None,
         });
         assert_eq!(collapsed, Some(true));
+
+        app.ingest_durable(event(2, "run.completed", run_id, json!({})), true);
     }
 
     #[test]
@@ -4708,7 +4730,7 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(groups, [(20, true), (1, true)]);
+        assert_eq!(groups, [(20, true), (1, false)]);
     }
 
     #[test]
