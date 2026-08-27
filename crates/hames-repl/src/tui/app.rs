@@ -459,7 +459,7 @@ impl ActivityRow {
         }
         match (self.phase, write, read) {
             (ActivityPhase::Preparing, true, _) => "Preparing write",
-            (ActivityPhase::Preparing, _, true) => "Preparing explore",
+            (ActivityPhase::Preparing, _, true) => "Exploring",
             (ActivityPhase::Preparing, _, _) => "Preparing",
             (ActivityPhase::Checking, true, _) => "Checking write",
             (ActivityPhase::Checking, _, true) => "Checking access",
@@ -3122,15 +3122,26 @@ impl App {
             }
             return &mut rows[row_index];
         }
-        // A Work item is one tool call. Keeping neighboring calls in distinct transcript
-        // items preserves their event order, gives every edit its own diff, and prevents
-        // later assistant prose from appearing to belong to one run-wide Work bucket.
-        self.transcript.push(TranscriptItem::Activity {
-            run_id: run_id.to_owned(),
-            rows: Vec::new(),
-            collapsed: false,
-        });
-        let activity_index = self.transcript.len() - 1;
+        // Consecutive tools stay in one Work item until thought or assistant prose
+        // splits the transcript. That keeps a pre-thought burst as one block without
+        // folding thinking into Work.
+        let activity_index = if matches!(
+            self.transcript.last(),
+            Some(TranscriptItem::Activity { run_id: id, .. }) if id == run_id
+        ) {
+            let index = self.transcript.len() - 1;
+            if let TranscriptItem::Activity { collapsed, .. } = &mut self.transcript[index] {
+                *collapsed = false;
+            }
+            index
+        } else {
+            self.transcript.push(TranscriptItem::Activity {
+                run_id: run_id.to_owned(),
+                rows: Vec::new(),
+                collapsed: false,
+            });
+            self.transcript.len() - 1
+        };
         let TranscriptItem::Activity { rows, .. } = &mut self.transcript[activity_index] else {
             unreachable!();
         };
@@ -3966,8 +3977,8 @@ mod tests {
     }
 
     #[test]
-    fn consecutive_tools_each_get_their_own_work_item_and_diff() {
-        let run_id = "run-separate-work";
+    fn consecutive_tools_clump_into_one_work_item() {
+        let run_id = "run-clumped-work";
         let events = vec![
             event(
                 1,
@@ -4035,16 +4046,55 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(items.len(), 3);
+        assert_eq!(items.len(), 2);
         assert_eq!(items[0].0, "work");
-        assert_eq!(items[0].1.len(), 1);
+        assert_eq!(items[0].1.len(), 2);
         assert!(items[0].1[0].content.contains("src/one.rs"));
-        assert_eq!(items[1].0, "work");
-        assert_eq!(items[1].1.len(), 1);
-        assert!(items[1].1[0].content.contains("src/two.rs"));
-        assert_eq!(items[2].0, "assistant");
-        assert!(items[2].1.is_empty());
-        assert_eq!(items[2].2, "Both edits are complete.");
+        assert!(items[0].1[1].content.contains("src/two.rs"));
+        assert_eq!(items[1].0, "assistant");
+        assert!(items[1].1.is_empty());
+        assert_eq!(items[1].2, "Both edits are complete.");
+    }
+
+    #[test]
+    fn thought_splits_work_clumps_without_joining_them() {
+        let run_id = "run-clump-then-think";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_transient(
+            run_id,
+            "response.tool_call_delta",
+            &json!({"index": 0, "name": "read_file", "arguments_delta": "{\"path\":\"a.rs\"}"}),
+        );
+        app.ingest_transient(
+            run_id,
+            "response.tool_call_delta",
+            &json!({"index": 1, "name": "shell", "arguments_delta": "{\"command\":\"ls\"}"}),
+        );
+        app.ingest_durable(
+            event(
+                1,
+                "assistant.reasoning",
+                run_id,
+                json!({"content": "now write it", "status": "interrupted"}),
+            ),
+            true,
+        );
+        app.ingest_transient(
+            run_id,
+            "response.tool_call_delta",
+            &json!({"index": 2, "name": "write_file", "arguments_delta": "{\"path\":\"b.rs\"}"}),
+        );
+
+        let kinds = app
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Activity { rows, .. } => Some(("work", rows.len())),
+                TranscriptItem::Thought { .. } => Some(("thought", 0)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, [("work", 2), ("thought", 0), ("work", 1)]);
     }
 
     #[test]
@@ -4760,7 +4810,35 @@ mod tests {
                 && rows[0].name == "write_file"
                 && rows[0].phase == ActivityPhase::Preparing
                 && rows[0].argument_parts.is_empty()
+                && rows[0].verb() == "Preparing write"
         ));
+    }
+
+    #[test]
+    fn read_tools_do_not_announce_preparing_explore() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_transient(
+            "run-read",
+            "response.tool_call_delta",
+            &json!({"index": 0, "name": "read_file", "arguments_delta": ""}),
+        );
+        let Some(TranscriptItem::Activity { rows, .. }) = app.transcript.last() else {
+            panic!("expected activity");
+        };
+        assert_eq!(rows[0].name, "read_file");
+        assert_eq!(rows[0].phase, ActivityPhase::Preparing);
+        assert_eq!(rows[0].verb(), "Exploring");
+
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_transient(
+            "run-list",
+            "response.tool_call_delta",
+            &json!({"index": 0, "name": "list_dir", "arguments_delta": ""}),
+        );
+        let Some(TranscriptItem::Activity { rows, .. }) = app.transcript.last() else {
+            panic!("expected activity");
+        };
+        assert_eq!(rows[0].verb(), "Exploring");
     }
 
     #[test]
