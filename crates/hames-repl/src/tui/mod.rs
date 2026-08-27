@@ -106,7 +106,6 @@ pub async fn run() -> Result<()> {
     let mut shutdown_signals = ShutdownSignals::new()?;
     let mut input = EventStream::new();
     let mut dirty = true;
-    let mut last_hover_repaint = Instant::now() - Duration::from_millis(20);
 
     loop {
         if dirty {
@@ -123,15 +122,10 @@ pub async fn run() -> Result<()> {
                 match event {
                     Some(Ok(event)) => {
                         let pointer_moved = matches!(&event, Event::Mouse(MouseEvent { kind: MouseEventKind::Moved, .. }));
-                        let previous_hovered_row = app.hovered_transcript_row;
                         app.error_notice = None;
                         let effect = handle_terminal_event(&mut app, event);
                         if pointer_moved {
-                            suppress_redraw = previous_hovered_row == app.hovered_transcript_row
-                                && last_hover_repaint.elapsed() < Duration::from_millis(16);
-                            if !suppress_redraw {
-                                last_hover_repaint = Instant::now();
-                            }
+                            suppress_redraw = true;
                         }
                         effect
                     }
@@ -565,14 +559,8 @@ fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
             None
         }
         Event::Mouse(mouse) => handle_mouse(app, mouse),
-        Event::FocusLost => {
-            app.hovered_transcript_row = None;
-            None
-        }
-        Event::Resize(_, _) => {
-            app.hovered_transcript_row = None;
-            None
-        }
+        Event::FocusLost => None,
+        Event::Resize(_, _) => None,
         _ => None,
     }
 }
@@ -723,12 +711,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
         }
         KeyCode::PageUp => {
             app.scroll = app.scroll.saturating_add(8);
-            app.hovered_transcript_row = None;
             None
         }
         KeyCode::PageDown => {
             app.scroll = app.scroll.saturating_sub(8);
-            app.hovered_transcript_row = None;
             None
         }
         KeyCode::Up if app.sheet.is_some() => {
@@ -1382,17 +1368,8 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
 }
 
 fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
-    if matches!(mouse.kind, MouseEventKind::Moved) {
-        app.hovered_transcript_row = if app.modal.is_none() {
-            app.transcript_viewport
-                .hoverable_row(mouse.column, mouse.row)
-        } else {
-            None
-        };
-    }
     match mouse.kind {
         MouseEventKind::ScrollUp => {
-            app.hovered_transcript_row = None;
             if app.modal_viewport.point(mouse.column, mouse.row).is_some()
                 && let Some(Modal::Memory(browser)) = &mut app.modal
             {
@@ -1409,7 +1386,6 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
             None
         }
         MouseEventKind::ScrollDown => {
-            app.hovered_transcript_row = None;
             if app.modal_viewport.point(mouse.column, mouse.row).is_some()
                 && let Some(Modal::Memory(browser)) = &mut app.modal
             {
@@ -4263,145 +4239,6 @@ mod tests {
             ),
             Some(Effect::Copy(text)) if text == "Hames"
         ));
-    }
-
-    #[test]
-    fn moving_pointer_tracks_the_hovered_transcript_line() {
-        let mut app = App::new(session(), Vec::new(), true);
-        app.transcript_viewport = TranscriptViewport {
-            x: 2,
-            y: 3,
-            width: 30,
-            height: 2,
-            line_offset: 4,
-            lines: vec![
-                "first".to_owned(),
-                "second".to_owned(),
-                "third".to_owned(),
-                "fourth".to_owned(),
-                "fifth".to_owned(),
-                "sixth".to_owned(),
-            ],
-        };
-
-        handle_mouse(
-            &mut app,
-            MouseEvent {
-                kind: MouseEventKind::Moved,
-                column: 8,
-                row: 4,
-                modifiers: KeyModifiers::NONE,
-            },
-        );
-        assert_eq!(app.hovered_transcript_row, Some(5));
-
-        handle_mouse(
-            &mut app,
-            MouseEvent {
-                kind: MouseEventKind::Moved,
-                column: 8,
-                row: 8,
-                modifiers: KeyModifiers::NONE,
-            },
-        );
-        assert_eq!(app.hovered_transcript_row, None);
-    }
-
-    #[test]
-    fn moving_pointer_off_highlightable_content_clears_transcript_hover() {
-        let mut app = App::new(session(), Vec::new(), true);
-        app.transcript_viewport = TranscriptViewport {
-            x: 2,
-            y: 3,
-            width: 30,
-            height: 4,
-            line_offset: 0,
-            lines: vec!["first".to_owned(), String::new()],
-        };
-
-        handle_mouse(
-            &mut app,
-            MouseEvent {
-                kind: MouseEventKind::Moved,
-                column: 8,
-                row: 3,
-                modifiers: KeyModifiers::NONE,
-            },
-        );
-        assert_eq!(app.hovered_transcript_row, Some(0));
-
-        handle_mouse(
-            &mut app,
-            MouseEvent {
-                kind: MouseEventKind::Moved,
-                column: 8,
-                row: 4,
-                modifiers: KeyModifiers::NONE,
-            },
-        );
-        assert_eq!(app.hovered_transcript_row, None);
-
-        app.hovered_transcript_row = Some(0);
-        handle_mouse(
-            &mut app,
-            MouseEvent {
-                kind: MouseEventKind::Moved,
-                column: 8,
-                row: 5,
-                modifiers: KeyModifiers::NONE,
-            },
-        );
-        assert_eq!(app.hovered_transcript_row, None);
-    }
-
-    #[test]
-    fn terminal_focus_loss_clears_transcript_hover() {
-        let mut app = App::new(session(), Vec::new(), true);
-        app.hovered_transcript_row = Some(4);
-
-        assert!(handle_terminal_event(&mut app, Event::FocusLost).is_none());
-        assert_eq!(app.hovered_transcript_row, None);
-    }
-
-    #[test]
-    fn still_pointer_keeps_transcript_hover() {
-        let mut app = App::new(session(), Vec::new(), true);
-        app.transcript_viewport = TranscriptViewport {
-            x: 2,
-            y: 3,
-            width: 30,
-            height: 2,
-            line_offset: 4,
-            lines: vec![
-                "first".to_owned(),
-                "second".to_owned(),
-                "third".to_owned(),
-                "fourth".to_owned(),
-                "fifth".to_owned(),
-                "sixth".to_owned(),
-            ],
-        };
-        handle_mouse(
-            &mut app,
-            MouseEvent {
-                kind: MouseEventKind::Moved,
-                column: 8,
-                row: 4,
-                modifiers: KeyModifiers::NONE,
-            },
-        );
-        assert_eq!(app.hovered_transcript_row, Some(5));
-
-        handle_mouse(
-            &mut app,
-            MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column: 8,
-                row: 4,
-                modifiers: KeyModifiers::NONE,
-            },
-        );
-        assert_eq!(app.hovered_transcript_row, Some(5));
     }
 
     #[test]

@@ -1127,23 +1127,6 @@ pub struct TranscriptViewport {
 }
 
 impl TranscriptViewport {
-    pub fn hoverable_row(&self, x: u16, y: u16) -> Option<usize> {
-        if x < self.x
-            || x >= self.x.saturating_add(self.width)
-            || y < self.y
-            || y >= self.y.saturating_add(self.height)
-        {
-            return None;
-        }
-        let row = self
-            .line_offset
-            .saturating_add(usize::from(y.saturating_sub(self.y)));
-        self.lines
-            .get(row)
-            .filter(|line| !line.trim().is_empty())
-            .map(|_| row)
-    }
-
     pub fn point(&self, x: u16, y: u16) -> Option<TranscriptPoint> {
         if self.lines.is_empty()
             || x < self.x
@@ -1242,7 +1225,6 @@ pub struct App {
     pub composer_scroll: Option<usize>,
     pub scroll_drag: Option<ScrollDrag>,
     pub transcript_viewport: TranscriptViewport,
-    pub hovered_transcript_row: Option<usize>,
     pub transcript_selection: Option<TranscriptSelection>,
     pub selecting_transcript: bool,
     pub modal_viewport: TranscriptViewport,
@@ -1327,7 +1309,6 @@ impl App {
             composer_scroll: None,
             scroll_drag: None,
             transcript_viewport: TranscriptViewport::default(),
-            hovered_transcript_row: None,
             transcript_selection: None,
             selecting_transcript: false,
             modal_viewport: TranscriptViewport::default(),
