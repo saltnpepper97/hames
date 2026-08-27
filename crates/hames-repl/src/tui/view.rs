@@ -94,9 +94,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .map(|message| (message.to_owned(), false))
         .or_else(|| app.error_notice.clone().map(|message| (message, true)))
         .or_else(|| app.notice.clone().map(|message| (message, false)));
-    let notice_height = u16::from(notice.is_some());
+    let has_terminals = !app.background_terminals.is_empty();
+    let notice_replaces_terminals = notice.is_some() && has_terminals;
+    let notice_height = u16::from(notice.is_some() && !has_terminals);
     let queue_height = u16::try_from(app.queued_messages.len()).unwrap_or(2).min(2);
-    let terminals_height = u16::from(!app.background_terminals.is_empty());
+    let terminals_height = u16::from(has_terminals);
     let sheet_height = app
         .sheet
         .as_ref()
@@ -183,6 +185,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     }
     render_queue(frame, app, footer[1]);
     if let Some((notice, error)) = notice {
+        let area = if notice_replaces_terminals {
+            footer[3]
+        } else {
+            footer[2]
+        };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
@@ -194,10 +201,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
                     Style::default().fg(if error { CORAL } else { MUTED }),
                 ),
             ])),
-            footer[2],
+            area,
         );
     }
-    render_background_terminals(frame, app, footer[3]);
+    if !notice_replaces_terminals {
+        render_background_terminals(frame, app, footer[3]);
+    }
     render_composer(frame, app, footer[4]);
     render_status_bar(frame, app, footer[5], fx_delta);
     render_modal(frame, app, area);
@@ -5630,7 +5639,7 @@ mod tests {
     }
 
     #[test]
-    fn queued_turns_sit_above_copy_notice_and_running_terminals() {
+    fn copy_notice_temporarily_replaces_the_terminal_status_row() {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(session(), Vec::new(), true);
@@ -5646,7 +5655,6 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let mut queue_y = None;
         let mut copy_y = None;
-        let mut terminals_y = None;
         for y in 0..height {
             let row = row_text(buffer, width, y);
             if row.contains("Queued 1/1  first queued request") {
@@ -5655,20 +5663,31 @@ mod tests {
             if row.contains("Copied to clipboard · 5 characters") {
                 copy_y = Some(y);
             }
-            if row.contains("1 terminal · /stop") {
-                terminals_y = Some(y);
-            }
         }
         let queue_y = queue_y.expect("queued turn");
         let copy_y = copy_y.expect("copy notice");
-        let terminals_y = terminals_y.expect("running terminals");
         assert!(queue_y < copy_y);
-        assert!(copy_y < terminals_y);
-        assert_eq!(terminals_y, composer_y - 1);
+        assert_eq!(copy_y, composer_y - 1);
+        assert!(!(0..height).any(|y| row_text(buffer, width, y).contains("1 terminal · /stop")));
         assert!(app.hits.iter().any(|region| matches!(
             &region.action,
             HitAction::QueuedMessage(id) if id == "queue-1"
         )));
+
+        app.copy_notice.as_mut().unwrap().expires_at = Instant::now() - Duration::from_millis(1);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let returned_composer_y = composer_top(&app);
+        let buffer = terminal.backend().buffer();
+        assert_eq!(returned_composer_y, composer_y);
+        assert!(row_text(buffer, width, composer_y - 1).contains("1 terminal · /stop"));
+        assert!(
+            !buffer
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .contains("Copied to clipboard")
+        );
     }
 
     #[test]
