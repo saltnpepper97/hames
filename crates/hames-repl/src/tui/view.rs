@@ -3072,7 +3072,7 @@ fn agent_editor_body(editor: &AgentEditor) -> Vec<Line<'static>> {
 
 fn agent_identity_body(editor: &AgentEditor) -> Vec<Line<'static>> {
     let mode_hint = if editor.is_editing() {
-        "  1 / 1 · id is permanent; name and instructions are customizable"
+        "  1 / 2 · id is permanent; name, instructions, and access are customizable"
     } else {
         "  1 / 2 · AGENT.md is stored as portable Markdown"
     };
@@ -3117,18 +3117,8 @@ fn agent_identity_body(editor: &AgentEditor) -> Vec<Line<'static>> {
         Span::styled(" field · ", Style::default().fg(MUTED)),
         Span::styled("Arrows/PgUp/PgDn", Style::default().fg(INPUT).bold()),
         Span::styled(" edit · ", Style::default().fg(MUTED)),
-        Span::styled(
-            if editor.is_editing() {
-                ""
-            } else {
-                "Ctrl+←→"
-            },
-            Style::default().fg(INPUT).bold(),
-        ),
-        Span::styled(
-            if editor.is_editing() { "" } else { " page · " },
-            Style::default().fg(MUTED),
-        ),
+        Span::styled("Ctrl+←→", Style::default().fg(INPUT).bold()),
+        Span::styled(" page · ", Style::default().fg(MUTED)),
         Span::styled("Ctrl+Enter", Style::default().fg(INPUT).bold()),
         Span::styled(
             if editor.is_editing() {
@@ -3328,7 +3318,14 @@ fn agent_access_body(editor: &AgentEditor) -> Vec<Line<'static>> {
         Span::styled("Space", Style::default().fg(INPUT).bold()),
         Span::styled(" toggle · ", Style::default().fg(MUTED)),
         Span::styled("Ctrl+Enter", Style::default().fg(INPUT).bold()),
-        Span::styled(" create · ", Style::default().fg(MUTED)),
+        Span::styled(
+            if editor.is_editing() {
+                " save · "
+            } else {
+                " create · "
+            },
+            Style::default().fg(MUTED),
+        ),
         Span::styled("Esc", Style::default().fg(INPUT).bold()),
         Span::styled(" cancel", Style::default().fg(MUTED)),
     ]));

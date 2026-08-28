@@ -743,6 +743,7 @@ pub struct AgentEditor {
     pub slug_manual: bool,
     pub tools: Vec<AgentChoice>,
     pub skills: Vec<AgentChoice>,
+    pub skill_pins: Vec<String>,
     pub access_selected: usize,
 }
 
@@ -774,17 +775,51 @@ impl AgentEditor {
                     selected: true,
                 })
                 .collect(),
+            skill_pins: Vec::new(),
             access_selected: 0,
         }
     }
 
-    pub fn edit(agent_id: String, name: &str, instructions: &str) -> Self {
-        let mut editor = Self::new(Vec::new(), Vec::new());
+    #[allow(clippy::too_many_arguments)]
+    pub fn edit(
+        agent_id: String,
+        name: &str,
+        instructions: &str,
+        mut tools: Vec<String>,
+        mut skills: Vec<(String, String, String)>,
+        tools_allow: &[String],
+        tools_deny: &[String],
+        skills_allow: &[String],
+        skills_deny: &[String],
+        skills_pin: Vec<String>,
+    ) -> Self {
+        for id in tools_allow.iter().chain(tools_deny) {
+            if !tools.contains(id) {
+                tools.push(id.clone());
+            }
+        }
+        for id in skills_allow.iter().chain(skills_deny).chain(&skills_pin) {
+            if !skills.iter().any(|(slug, _, _)| slug == id) {
+                skills.push((
+                    id.clone(),
+                    id.clone(),
+                    "Not currently available in this workspace".to_owned(),
+                ));
+            }
+        }
+        let mut editor = Self::new(tools, skills);
         editor.editing_agent_id = Some(agent_id.clone());
         editor.name.insert_text(name);
         editor.slug.insert_text(&agent_id);
         editor.instructions.insert_text(instructions);
         editor.slug_manual = true;
+        for choice in &mut editor.tools {
+            choice.selected = access_selected(&choice.id, tools_allow, tools_deny);
+        }
+        for choice in &mut editor.skills {
+            choice.selected = access_selected(&choice.id, skills_allow, skills_deny);
+        }
+        editor.skill_pins = skills_pin;
         editor
     }
 
@@ -848,6 +883,11 @@ impl AgentEditor {
             self.field.next()
         };
     }
+}
+
+fn access_selected(id: &str, allow: &[String], deny: &[String]) -> bool {
+    !deny.iter().any(|value| value == id)
+        && (allow.is_empty() || allow.iter().any(|value| value == id))
 }
 
 fn agent_slug(value: &str) -> String {

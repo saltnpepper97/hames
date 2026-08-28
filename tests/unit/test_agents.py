@@ -7,6 +7,8 @@ import pytest
 
 from hames.agent import (
     AgentRegistry,
+    AgentSkills,
+    AgentTools,
     apply_agent_skill_policy,
     load_agent,
     permitted_tools,
@@ -106,6 +108,27 @@ def test_default_agent_can_be_customized_but_keeps_stable_identity(
     assert updated.path.stat().st_mode & 0o777 == 0o600
     with pytest.raises(ValueError, match="default"):
         registry.retire("default")
+
+
+def test_agent_update_changes_access_without_losing_other_metadata(
+    hames_paths: HamesPaths,
+) -> None:
+    hames_paths.ensure_foundation()
+    registry = AgentRegistry(hames_paths.agents)
+    original = registry.load("default")
+
+    updated = registry.update(
+        "default",
+        tools=AgentTools(deny=["shell"]),
+        skills=AgentSkills(deny=["deployment"], pin=["testing"]),
+    )
+
+    assert updated.metadata.id == "default"
+    assert updated.metadata.name == original.metadata.name
+    assert updated.instructions == original.instructions
+    assert updated.metadata.tools.deny == ["shell"]
+    assert updated.metadata.skills.deny == ["deployment"]
+    assert updated.metadata.skills.pin == ["testing"]
 
 
 def test_agent_update_rejects_identity_change_without_touching_capsule(

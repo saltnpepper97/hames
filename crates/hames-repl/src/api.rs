@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 30;
+pub const PROTOCOL_VERSION: u32 = 31;
 pub const HEAL_SCARS_PROMPT: &str = "Heal behavioral scars now.";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -832,6 +832,14 @@ struct CreateAgent<'a> {
     source: Option<&'a str>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct AgentAccessUpdate {
+    pub allow: Vec<String>,
+    pub deny: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pin: Vec<String>,
+}
+
 #[derive(Serialize)]
 struct UpdateAgent<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -840,6 +848,10 @@ struct UpdateAgent<'a> {
     instructions: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     source: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<&'a AgentAccessUpdate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    skills: Option<&'a AgentAccessUpdate>,
 }
 
 #[derive(Serialize)]
@@ -1088,6 +1100,8 @@ impl GatewayClient {
         name: Option<&str>,
         instructions: Option<&str>,
         source: Option<&str>,
+        tools: Option<&AgentAccessUpdate>,
+        skills: Option<&AgentAccessUpdate>,
     ) -> Result<AgentDetail> {
         decode(
             self.http
@@ -1097,6 +1111,8 @@ impl GatewayClient {
                     name,
                     instructions,
                     source,
+                    tools,
+                    skills,
                 })
                 .send()
                 .await?,

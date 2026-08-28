@@ -913,7 +913,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 30
+            assert health_body["protocol_version"] == 31
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -2610,6 +2610,12 @@ async def test_gateway_customizes_default_agent_without_making_it_deletable(
                 json={
                     "name": "Navigator",
                     "instructions": "# Role\nGuide the work carefully.",
+                    "tools": {"allow": [], "deny": ["shell"]},
+                    "skills": {
+                        "allow": [],
+                        "deny": ["deployment"],
+                        "pin": ["testing"],
+                    },
                 },
             )
             listed = await client.get("/v1/agents", headers=headers)
@@ -2619,6 +2625,9 @@ async def test_gateway_customizes_default_agent_without_making_it_deletable(
         assert updated.json()["id"] == "default"
         assert updated.json()["name"] == "Navigator"
         assert updated.json()["instructions"] == "# Role\nGuide the work carefully."
+        assert updated.json()["tools_deny"] == ["shell"]
+        assert updated.json()["skills_deny"] == ["deployment"]
+        assert updated.json()["skills_pin"] == ["testing"]
         assert "name: Navigator" in updated.json()["source"]
         assert listed.json()[0]["name"] == "Navigator"
         assert protected.status_code == 409

@@ -22,7 +22,9 @@ from hames import PROTOCOL_VERSION, __version__
 from hames.agent import (
     AgentCapsule,
     AgentRegistry,
+    AgentSkills,
     AgentSummary,
+    AgentTools,
     apply_agent_skill_policy,
     load_agent,
     skill_permitted,
@@ -265,13 +267,18 @@ class AgentUpdateRequest(ApiModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
     instructions: str | None = Field(default=None, min_length=1, max_length=65_536)
     source: str | None = Field(default=None, min_length=1, max_length=65_536)
+    tools: AgentTools | None = None
+    skills: AgentSkills | None = None
 
     @model_validator(mode="after")
     def has_one_update_form(self) -> AgentUpdateRequest:
-        if self.source is not None and (self.name is not None or self.instructions is not None):
-            raise ValueError("source cannot be combined with name or instructions")
-        if self.source is None and self.name is None and self.instructions is None:
-            raise ValueError("agent update requires name, instructions, or source")
+        structured = any(
+            value is not None for value in (self.name, self.instructions, self.tools, self.skills)
+        )
+        if self.source is not None and structured:
+            raise ValueError("source cannot be combined with structured agent updates")
+        if self.source is None and not structured:
+            raise ValueError("agent update requires source or a structured field")
         return self
 
 
@@ -850,6 +857,8 @@ def create_app(state: GatewayState) -> FastAPI:
                 agent_id,
                 name=request.name,
                 instructions=request.instructions,
+                tools=request.tools,
+                skills=request.skills,
                 source=request.source,
             )
             return _agent_detail(capsule)

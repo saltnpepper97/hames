@@ -285,18 +285,20 @@ class AgentRegistry:
         *,
         name: str | None = None,
         instructions: str | None = None,
+        tools: AgentTools | None = None,
+        skills: AgentSkills | None = None,
         source: str | None = None,
     ) -> AgentCapsule:
         """Atomically update a capsule without changing its stable identity."""
 
         current = self.load(agent_id)
         if source is not None:
-            if name is not None or instructions is not None:
-                raise ValueError("source cannot be combined with name or instructions")
+            if any(value is not None for value in (name, instructions, tools, skills)):
+                raise ValueError("source cannot be combined with structured agent updates")
             raw = source
         else:
-            if name is None and instructions is None:
-                raise ValueError("agent update requires name, instructions, or source")
+            if all(value is None for value in (name, instructions, tools, skills)):
+                raise ValueError("agent update requires source or a structured field")
             metadata_raw, current_instructions = _split_agent_markdown(
                 current.path.read_text(encoding="utf-8"), origin=str(current.path)
             )
@@ -305,6 +307,10 @@ class AgentRegistry:
                 if not stripped_name:
                     raise ValueError("agent name cannot be empty")
                 metadata_raw["name"] = stripped_name
+            if tools is not None:
+                metadata_raw["tools"] = tools.model_dump(mode="json")
+            if skills is not None:
+                metadata_raw["skills"] = skills.model_dump(mode="json")
             body = current_instructions if instructions is None else instructions.strip()
             raw = f"---\n{yaml.safe_dump(metadata_raw, sort_keys=False)}---\n{body}\n"
 

@@ -600,7 +600,7 @@ async fn run_agent_command(action: AgentAction) -> Result<()> {
                     )
                 })?;
             let agent = client
-                .update_agent(&id, name.as_deref(), None, source.as_deref())
+                .update_agent(&id, name.as_deref(), None, source.as_deref(), None, None)
                 .await?;
             if json {
                 print_json(&agent)

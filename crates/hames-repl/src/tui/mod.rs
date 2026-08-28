@@ -37,8 +37,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::api::{
-    GatewayClient, HEAL_SCARS_PROMPT, LiveEnvelope, PROTOCOL_VERSION, PasteSpan, ProviderModel,
-    ScarUpdate, Session, SseDecoder, event_reconnect_delay,
+    AgentAccessUpdate, GatewayClient, HEAL_SCARS_PROMPT, LiveEnvelope, PROTOCOL_VERSION, PasteSpan,
+    ProviderModel, ScarUpdate, Session, SseDecoder, event_reconnect_delay,
 };
 use crate::local::{LocalPaths, write_private_export};
 use crate::repl::ensure_gateway;
@@ -533,6 +533,8 @@ enum Effect {
         agent_id: String,
         name: String,
         instructions: String,
+        tools: AgentAccessUpdate,
+        skills: AgentAccessUpdate,
     },
     DeleteAgent(String),
 }
@@ -1193,10 +1195,12 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             {
                 if let Some(agent_id) = &editor.editing_agent_id {
                     return match agent_customization(editor) {
-                        Ok((name, instructions)) => Some(Effect::UpdateAgent {
+                        Ok((name, instructions, tools, skills)) => Some(Effect::UpdateAgent {
                             agent_id: agent_id.clone(),
                             name,
                             instructions,
+                            tools,
+                            skills,
                         }),
                         Err(message) => {
                             app.notice = Some(message);
@@ -1215,8 +1219,7 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             if editor.page == AgentEditorPage::Access {
                 match key.code {
                     KeyCode::Left | KeyCode::Right
-                        if !editor.is_editing()
-                            && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
                     {
                         editor.page = AgentEditorPage::Identity;
                         None
@@ -1245,8 +1248,7 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
                 match key.code {
                     KeyCode::Left | KeyCode::Right
-                        if !editor.is_editing()
-                            && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
                     {
                         editor.page = AgentEditorPage::Access;
                         editor.access_selected = 0;
@@ -2172,11 +2174,25 @@ async fn apply_effect(
         }
         Effect::EditAgent(agent_id) => {
             app.notice = Some("Loading agent capsule…".to_owned());
-            let agent = client.agent(&agent_id).await?;
+            let (agent, tools, skills) = tokio::try_join!(
+                client.agent(&agent_id),
+                client.tools(),
+                client.available_skills(&app.session.id)
+            )?;
             app.modal = Some(Modal::AgentEdit(AgentEditor::edit(
                 agent.agent.id,
                 &agent.agent.name,
                 &agent.instructions,
+                tools,
+                skills
+                    .into_iter()
+                    .map(|skill| (skill.slug, skill.name, skill.description))
+                    .collect(),
+                &agent.tools_allow,
+                &agent.tools_deny,
+                &agent.skills_allow,
+                &agent.skills_deny,
+                agent.skills_pin,
             )));
             app.notice = None;
         }
@@ -2198,10 +2214,19 @@ async fn apply_effect(
             agent_id,
             name,
             instructions,
+            tools,
+            skills,
         } => {
             app.notice = Some("Saving agent capsule…".to_owned());
             let updated = client
-                .update_agent(&agent_id, Some(&name), Some(&instructions), None)
+                .update_agent(
+                    &agent_id,
+                    Some(&name),
+                    Some(&instructions),
+                    None,
+                    Some(&tools),
+                    Some(&skills),
+                )
                 .await?;
             app.modal = None;
             refresh_agents_sheet(client, app).await?;
@@ -3240,42 +3265,14 @@ fn agent_source(editor: &AgentEditor) -> std::result::Result<String, String> {
         );
     }
 
-    let mut tool_allow = editor
-        .tools
-        .iter()
-        .filter(|choice| choice.selected)
-        .map(|choice| choice.id.clone())
-        .collect::<Vec<_>>();
-    let tool_deny = editor
-        .tools
-        .iter()
-        .filter(|choice| !choice.selected)
-        .map(|choice| choice.id.clone())
-        .collect::<Vec<_>>();
-    if tool_deny.is_empty() {
-        tool_allow.clear();
-    }
-    let mut skill_allow = editor
-        .skills
-        .iter()
-        .filter(|choice| choice.selected)
-        .map(|choice| choice.id.clone())
-        .collect::<Vec<_>>();
-    let skill_deny = editor
-        .skills
-        .iter()
-        .filter(|choice| !choice.selected)
-        .map(|choice| choice.id.clone())
-        .collect::<Vec<_>>();
-    if skill_deny.is_empty() {
-        skill_allow.clear();
-    }
+    let tools = agent_access_update(&editor.tools, &[]);
+    let skills = agent_access_update(&editor.skills, &editor.skill_pins);
     let metadata = serde_json::json!({
         "id": slug,
         "name": name,
         "authority": "standard",
-        "tools": {"allow": tool_allow, "deny": tool_deny},
-        "skills": {"allow": skill_allow, "deny": skill_deny},
+        "tools": tools,
+        "skills": skills,
     });
     let frontmatter = serde_json::to_string_pretty(&metadata)
         .map_err(|error| format!("Could not format AGENT.md: {error}"))?;
@@ -3285,7 +3282,9 @@ fn agent_source(editor: &AgentEditor) -> std::result::Result<String, String> {
     ))
 }
 
-fn agent_customization(editor: &AgentEditor) -> std::result::Result<(String, String), String> {
+fn agent_customization(
+    editor: &AgentEditor,
+) -> std::result::Result<(String, String, AgentAccessUpdate, AgentAccessUpdate), String> {
     let name = editor.name.text().trim().to_owned();
     if name.is_empty() || name.chars().count() > 80 {
         return Err("Agent name must be between 1 and 80 characters".to_owned());
@@ -3294,7 +3293,38 @@ fn agent_customization(editor: &AgentEditor) -> std::result::Result<(String, Str
     if instructions.is_empty() {
         return Err("AGENT.md instructions cannot be empty".to_owned());
     }
-    Ok((name, instructions))
+    Ok((
+        name,
+        instructions,
+        agent_access_update(&editor.tools, &[]),
+        agent_access_update(&editor.skills, &editor.skill_pins),
+    ))
+}
+
+fn agent_access_update(choices: &[app::AgentChoice], pinned: &[String]) -> AgentAccessUpdate {
+    let mut allow = choices
+        .iter()
+        .filter(|choice| choice.selected)
+        .map(|choice| choice.id.clone())
+        .collect::<Vec<_>>();
+    let deny = choices
+        .iter()
+        .filter(|choice| !choice.selected)
+        .map(|choice| choice.id.clone())
+        .collect::<Vec<_>>();
+    if deny.is_empty() {
+        allow.clear();
+    }
+    let pin = pinned
+        .iter()
+        .filter(|id| {
+            choices
+                .iter()
+                .any(|choice| choice.id == **id && choice.selected)
+        })
+        .cloned()
+        .collect();
+    AgentAccessUpdate { allow, deny, pin }
 }
 
 fn compact_home(value: &str) -> String {
@@ -4095,11 +4125,22 @@ mod tests {
     }
 
     #[test]
-    fn existing_agent_editor_keeps_id_fixed_and_saves_name_and_instructions() {
+    fn existing_agent_editor_keeps_id_fixed_and_updates_capabilities() {
         let editor = AgentEditor::edit(
             "default".to_owned(),
             "Navigator",
             "# Role\nGuide carefully.",
+            vec!["read_file".to_owned(), "write_file".to_owned()],
+            vec![(
+                "testing".to_owned(),
+                "Testing".to_owned(),
+                "Run tests".to_owned(),
+            )],
+            &[],
+            &["write_file".to_owned()],
+            &[],
+            &["testing".to_owned()],
+            Vec::new(),
         );
         let mut app = App::new(session(), Vec::new(), true);
         app.modal = Some(Modal::AgentEdit(editor));
@@ -4111,15 +4152,33 @@ mod tests {
                 if editor.page == crate::tui::app::AgentEditorPage::Identity
                     && editor.slug.text() == "default"
         ));
+        assert!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL)
+            )
+            .is_none()
+        );
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)).is_none());
+        assert!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)
+            )
+            .is_none()
+        );
         assert!(matches!(
             handle_key(
                 &mut app,
                 KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)
             ),
-            Some(Effect::UpdateAgent { agent_id, name, instructions })
+            Some(Effect::UpdateAgent { agent_id, name, instructions, tools, skills })
                 if agent_id == "default"
                     && name == "Navigator"
                     && instructions == "# Role\nGuide carefully."
+                    && tools.allow.is_empty()
+                    && tools.deny.is_empty()
+                    && skills.deny == ["testing"]
         ));
     }
 
