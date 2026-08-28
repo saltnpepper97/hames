@@ -1,4 +1,4 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -54,6 +54,7 @@ const TRANSCRIPT_GUTTER: &str = "  ";
 const ASSISTANT_BODY_INDENT: &str = "  ";
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
+    app.collapse_stale_patch_work(Instant::now());
     app.hits.clear();
     if app.modal.is_none() {
         app.modal_viewport = TranscriptViewport::default();
@@ -215,8 +216,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
 
 fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let workspace = compact_home(&app.workspace_name);
+    let agent_name = app.agent_name.replace(['\n', '\r', '\t'], " ");
     let mut left_spans = vec![
-        Span::styled(" ◈ Hames", Style::default().fg(MINT).bold()),
+        Span::styled(format!(" ◈ {agent_name}"), Style::default().fg(MINT).bold()),
         Span::styled(format!(" · {workspace}"), Style::default().fg(MUTED)),
     ];
     if let Some(reference) = &app.git_ref {
@@ -238,7 +240,8 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .borders(Borders::BOTTOM)
         .border_style(Style::default().fg(Color::Rgb(54, 63, 78)));
     let desired_left = u16::try_from(
-        11 + workspace.chars().count()
+        6 + UnicodeWidthStr::width(agent_name.as_str())
+            + UnicodeWidthStr::width(workspace.as_str())
             + app
                 .git_ref
                 .as_ref()
@@ -605,11 +608,11 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     sheen: live.then_some((0, 10)),
                 });
                 if !*collapsed && !content.is_empty() {
-                    push_wrapped(
+                    let content = content.trim_start_matches(['\r', '\n']);
+                    push_markdown(
                         &mut lines,
                         content,
                         width,
-                        "  ",
                         Style::default().fg(Color::Rgb(174, 180, 192)),
                     );
                 }
@@ -773,14 +776,16 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     "Working"
                 };
                 let count = visible_rows.len();
-                let disclosure = if count > 1 {
+                let patch_work = visible_rows.iter().all(|row| is_diff_write_tool(&row.name));
+                let collapsible = count > 1 || patch_work;
+                let disclosure = if collapsible {
                     format!("  {}", if *collapsed { "▸" } else { "▾" })
                 } else {
                     String::new()
                 };
                 let heading = if visible_rows.iter().all(|row| is_task_tool(&row.name)) {
                     "Tasks"
-                } else if visible_rows.iter().all(|row| is_diff_write_tool(&row.name)) {
+                } else if patch_work {
                     "Work"
                 } else if visible_rows.iter().all(|row| is_run_tool(&row.name)) {
                     "Run"
@@ -799,10 +804,10 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                             Style::default().fg(MUTED),
                         ),
                     ]),
-                    thought: (count > 1).then_some(TranscriptDisclosure::Activity(index)),
+                    thought: collapsible.then_some(TranscriptDisclosure::Activity(index)),
                     sheen: None,
                 });
-                let first_visible_row = if *collapsed && count > 1 {
+                let first_visible_row = if *collapsed && count > 1 && !patch_work {
                     visible_rows.len().saturating_sub(1)
                 } else {
                     0
@@ -1223,7 +1228,7 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             Style::default()
         };
         let row_color = if deleting {
-            CORAL
+            CORAL_LIGHT
         } else if selected {
             sheet_text_color(app.theme)
         } else if completed_task || current_task {
@@ -1246,7 +1251,10 @@ fn render_sheet(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             let prompt = " Press Ctrl+D again to delete this entry";
             let used = 3 + UnicodeWidthStr::width(prompt);
             spans.extend([
-                Span::styled(prompt, Style::default().fg(CORAL).bold().patch(row_style)),
+                Span::styled(
+                    prompt,
+                    Style::default().fg(CORAL_LIGHT).bold().patch(row_style),
+                ),
                 Span::styled(
                     " ".repeat(usize::from(area.width).saturating_sub(used)),
                     row_style,
@@ -1413,7 +1421,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         _ => "Auto",
     };
     let reasoning = if app.session.reasoning_effort.is_empty() {
-        "default"
+        "not set"
     } else {
         &app.session.reasoning_effort
     };
@@ -2739,7 +2747,9 @@ fn memory_browser_body(browser: &MemoryBrowser) -> Vec<Line<'static>> {
             Span::styled(
                 label,
                 Style::default()
-                    .fg(if pending_delete || selected {
+                    .fg(if pending_delete {
+                        CORAL_LIGHT
+                    } else if selected {
                         INPUT
                     } else {
                         MUTED
@@ -2877,7 +2887,9 @@ fn scar_browser_body(browser: &ScarBrowser) -> Vec<Line<'static>> {
             Span::styled(
                 label,
                 Style::default()
-                    .fg(if pending_delete || selected {
+                    .fg(if pending_delete {
+                        CORAL_LIGHT
+                    } else if selected {
                         INPUT
                     } else {
                         MUTED
@@ -3101,10 +3113,16 @@ fn agent_identity_body(editor: &AgentEditor) -> Vec<Line<'static>> {
         lines.push(Line::from(""));
     }
     lines.push(Line::from(vec![
-        Span::styled("↑↓", Style::default().fg(INPUT).bold()),
+        Span::styled("Tab", Style::default().fg(INPUT).bold()),
         Span::styled(" field · ", Style::default().fg(MUTED)),
+        Span::styled("Arrows/PgUp/PgDn", Style::default().fg(INPUT).bold()),
+        Span::styled(" edit · ", Style::default().fg(MUTED)),
         Span::styled(
-            if editor.is_editing() { "" } else { "←→" },
+            if editor.is_editing() {
+                ""
+            } else {
+                "Ctrl+←→"
+            },
             Style::default().fg(INPUT).bold(),
         ),
         Span::styled(
@@ -3305,7 +3323,7 @@ fn agent_access_body(editor: &AgentEditor) -> Vec<Line<'static>> {
     lines.push(Line::from(vec![
         Span::styled("↑↓", Style::default().fg(INPUT).bold()),
         Span::styled(" navigate · ", Style::default().fg(MUTED)),
-        Span::styled("←→", Style::default().fg(INPUT).bold()),
+        Span::styled("Ctrl+←→", Style::default().fg(INPUT).bold()),
         Span::styled(" page · ", Style::default().fg(MUTED)),
         Span::styled("Space", Style::default().fg(INPUT).bold()),
         Span::styled(" toggle · ", Style::default().fg(MUTED)),
@@ -4181,8 +4199,8 @@ fn terminal_color(color: Color) -> Color {
         CORAL_LIGHT => Color::LightRed,
         GOLD => Color::Yellow,
         GOLD_LIGHT => Color::LightYellow,
-        MUTED => Color::DarkGray,
-        MUTED_LIGHT | INPUT_LIGHT | RULE_LIGHT => Color::Gray,
+        MUTED | RULE | RULE_LIGHT => Color::DarkGray,
+        MUTED_LIGHT | INPUT_LIGHT => Color::Gray,
         INPUT => Color::Gray,
         PANEL => Color::Black,
         PANEL_BRIGHT => Color::DarkGray,
@@ -4406,7 +4424,7 @@ fn context_gauge(used: u64, window: u64, cells: usize) -> Line<'static> {
         Span::raw("  "),
         Span::styled("█".repeat(filled), Style::default().fg(fill_color)),
         Span::styled(
-            "░".repeat(cells.saturating_sub(filled)),
+            "█".repeat(cells.saturating_sub(filled)),
             Style::default().fg(RULE_LIGHT),
         ),
     ])
@@ -4430,7 +4448,7 @@ fn rate_limit_line(label: &str, window: &serde_json::Value, cells: usize) -> Lin
         Span::styled(format!("  {label:<9}"), Style::default().fg(MUTED)),
         Span::styled("█".repeat(filled), Style::default().fg(INPUT_LIGHT)),
         Span::styled(
-            "░".repeat(cells.saturating_sub(filled)),
+            "█".repeat(cells.saturating_sub(filled)),
             Style::default().fg(RULE_LIGHT),
         ),
         Span::styled(
@@ -4605,19 +4623,19 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
-    use ratatui::style::Color;
+    use ratatui::style::{Color, Modifier};
     use serde_json::json;
     use unicode_width::UnicodeWidthStr;
 
     use super::{
-        ADDITION_BG, CORAL, CYAN, DELETE_BG, GOLD, INPUT, INPUT_LIGHT, MINT, MINT_LIGHT, MUTED,
-        PANEL_BRIGHT, REMOVAL_BG, SKY, TASK_CURRENT_BG, TASK_DONE_BG, agent_access_body,
-        agent_identity_body, approval_detail_lines, compact_diff_lines, compact_home,
-        composer_caret_color, context_footer, context_percent, draw, format_elapsed,
-        format_token_count, goal_elapsed, help_body, line_text, memory_browser_body, mode_color,
-        mode_outline, scar_browser_body, scar_editor_body, scrollbar_position, sheet_text_color,
-        single_line_editor, split_width, thought_label, transcript_lines, traveling_sheen,
-        usage_body,
+        ADDITION_BG, CORAL, CORAL_LIGHT, CYAN, DELETE_BG, GOLD, INPUT, INPUT_LIGHT, MINT,
+        MINT_LIGHT, MUTED, PANEL_BRIGHT, REMOVAL_BG, RULE, RULE_LIGHT, SKY, TASK_CURRENT_BG,
+        TASK_DONE_BG, agent_access_body, agent_identity_body, approval_detail_lines,
+        compact_diff_lines, compact_home, composer_caret_color, context_footer, context_gauge,
+        context_percent, draw, format_elapsed, format_token_count, goal_elapsed, help_body,
+        line_text, memory_browser_body, mode_color, mode_outline, scar_browser_body,
+        scar_editor_body, scrollbar_position, sheet_text_color, single_line_editor, split_width,
+        terminal_color, thought_label, transcript_lines, traveling_sheen, usage_body,
     };
 
     use crate::api::{
@@ -4762,7 +4780,7 @@ mod tests {
         app.active_run = Some("run-thinking".to_owned());
         app.transcript.push(TranscriptItem::Thought {
             run_id: "run-thinking".to_owned(),
-            content: "partial private reasoning".to_owned(),
+            content: "\n\n**Inspecting fullscreen toggle behavior**\n\n**Planning fix**".to_owned(),
             duration_seconds: 0.0,
             interrupted: false,
             live: true,
@@ -4775,16 +4793,39 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(collapsed.contains("Thinking  ▸"));
-        assert!(!collapsed.contains("partial private reasoning"));
+        assert!(!collapsed.contains("Inspecting fullscreen toggle behavior"));
 
         app.toggle_thought(0);
-        let expanded = transcript_lines(&app, 80)
+        let expanded_lines = transcript_lines(&app, 80);
+        let expanded = expanded_lines
             .iter()
             .map(|item| line_text(&item.line))
             .collect::<Vec<_>>()
             .join("\n");
         assert!(expanded.contains("Thinking  ▾"));
-        assert!(expanded.contains("partial private reasoning"));
+        assert!(expanded.contains("Inspecting fullscreen toggle behavior"));
+        assert!(expanded.contains("Planning fix"));
+        assert!(!expanded.contains("**"));
+        let header = expanded_lines
+            .iter()
+            .position(|item| line_text(&item.line).contains("Thinking"))
+            .unwrap();
+        assert!(
+            line_text(&expanded_lines[header + 1].line)
+                .contains("Inspecting fullscreen toggle behavior")
+        );
+        assert_eq!(line_text(&expanded_lines[header + 2].line), "");
+        assert!(line_text(&expanded_lines[header + 3].line).contains("Planning fix"));
+        assert!(
+            expanded_lines
+                .iter()
+                .flat_map(|item| &item.line.spans)
+                .filter(|span| matches!(
+                    span.content.as_ref(),
+                    "Inspecting fullscreen toggle behavior" | "Planning fix"
+                ))
+                .all(|span| span.style.add_modifier.contains(Modifier::BOLD))
+        );
     }
 
     #[test]
@@ -5018,6 +5059,21 @@ mod tests {
     }
 
     #[test]
+    fn header_uses_the_selected_agent_name_instead_of_fixed_brand_text() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.agent_name = "Careful Reviewer".to_owned();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let header = (0..100)
+            .map(|x| terminal.backend().buffer().cell((x, 0)).unwrap().symbol())
+            .collect::<String>();
+        assert!(header.contains("◈ Careful Reviewer"));
+        assert!(!header.contains("◈ Hames"));
+    }
+
+    #[test]
     fn sent_paste_expands_to_full_markdown_in_the_transcript() {
         let mut app = App::new(session(), Vec::new(), true);
         let content = "before\n```rust\nfn main() {}\n```\nafter";
@@ -5169,6 +5225,7 @@ mod tests {
             .iter()
             .map(|item| line_text(&item.line))
             .collect::<Vec<_>>();
+        assert!(text.iter().any(|line| line.contains("Completed  ▾")));
         assert!(text.iter().any(|line| line.contains("── diff")));
         assert!(text.iter().any(|line| line.contains("(+1 -1)")));
         assert!(!text.iter().any(|line| line.contains("--- a/src/main.rs")));
@@ -5234,6 +5291,16 @@ mod tests {
                 .iter()
                 .any(|span| span.content.contains("src/main.rs") && span.style.fg == Some(SKY))
         );
+
+        app.toggle_activity(0);
+        let collapsed = transcript_lines(&app, 80)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>();
+        assert!(collapsed.iter().any(|line| line.contains("Completed  ▸")));
+        assert!(collapsed.iter().any(|line| line.contains("src/main.rs")));
+        assert!(!collapsed.iter().any(|line| line.contains("── diff")));
+        assert!(!collapsed.iter().any(|line| line.contains("+new")));
     }
 
     #[test]
@@ -6129,6 +6196,13 @@ mod tests {
         assert_eq!(buffer.cell((4, 24)).unwrap().symbol(), "P");
         assert_eq!(buffer.cell((10, 24)).unwrap().symbol(), "C");
         assert_eq!(buffer.cell((50, 24)).unwrap().bg, DELETE_BG);
+
+        app.theme = crate::tui::app::ThemeKind::Terminal;
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let armed = terminal.backend().buffer().cell((4, 24)).unwrap();
+        assert_eq!(armed.fg, Color::LightRed);
+        assert_eq!(armed.bg, Color::Red);
+        assert_ne!(armed.fg, armed.bg);
     }
 
     #[test]
@@ -6319,7 +6393,7 @@ mod tests {
         assert!(wide.iter().any(|line| line.contains("28.5k / 114k")));
         assert!(wide.iter().any(|line| line.contains("25%")));
         assert!(wide.iter().any(|line| line.contains('█')));
-        assert!(wide.iter().any(|line| line.contains('░')));
+        assert!(!wide.iter().any(|line| line.contains('░')));
         assert!(wide.iter().any(|line| line.contains("SESSION TOTALS")));
         assert!(
             wide.iter()
@@ -6339,6 +6413,22 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(compact.len() > wide.len());
         assert!(compact.iter().any(|line| line.contains("Model requests")));
+    }
+
+    #[test]
+    fn gauges_use_a_solid_distinct_track() {
+        let gauge = context_gauge(25, 100, 8);
+        assert_eq!(line_text(&gauge), format!("  {}", "█".repeat(8)));
+        assert_eq!(gauge.spans[1].style.fg, Some(INPUT_LIGHT));
+        assert_eq!(gauge.spans[2].style.fg, Some(RULE_LIGHT));
+    }
+
+    #[test]
+    fn terminal_theme_keeps_tracks_darker_than_thumbs_and_fills() {
+        assert_eq!(terminal_color(RULE), Color::DarkGray);
+        assert_eq!(terminal_color(RULE_LIGHT), Color::DarkGray);
+        assert_eq!(terminal_color(INPUT_LIGHT), Color::Gray);
+        assert_ne!(terminal_color(RULE), terminal_color(INPUT_LIGHT));
     }
 
     #[test]
@@ -6542,6 +6632,7 @@ mod tests {
         assert!(rendered.contains("Press Ctrl+D again to delete this memory"));
         assert!(rendered.contains("Ctrl+D confirm delete · ↑↓ cancel · Esc close"));
         assert_eq!(lines[2].spans[0].style.bg, Some(DELETE_BG));
+        assert_eq!(lines[2].spans[0].style.fg, Some(CORAL_LIGHT));
     }
 
     #[test]
@@ -6566,6 +6657,7 @@ mod tests {
         let lines = scar_browser_body(&browser);
         assert!(line_text(&lines[2]).contains("permanently delete this Scar"));
         assert_eq!(lines[2].spans[0].style.bg, Some(DELETE_BG));
+        assert_eq!(lines[2].spans[0].style.fg, Some(CORAL_LIGHT));
     }
 
     #[test]

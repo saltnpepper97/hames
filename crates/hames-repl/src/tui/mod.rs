@@ -114,7 +114,8 @@ pub async fn run() -> Result<()> {
         let tick_delay = if app.animating() {
             Duration::from_millis(80)
         } else {
-            Duration::from_secs(3600)
+            app.next_patch_collapse_delay()
+                .unwrap_or(Duration::from_secs(3600))
         };
         let mut suppress_redraw = false;
         let effect = tokio::select! {
@@ -143,11 +144,27 @@ pub async fn run() -> Result<()> {
                 {
                     match message.payload {
                         StreamPayload::Envelope(envelope) => {
+                            let changed_agent = envelope.event.as_ref().and_then(|event| {
+                                (event.event_type == "session.agent.changed")
+                                    .then(|| {
+                                        event
+                                            .payload
+                                            .get("agent_id")
+                                            .and_then(serde_json::Value::as_str)
+                                            .map(str::to_owned)
+                                    })
+                                    .flatten()
+                            });
                             if ingest_envelope(&mut app, *envelope) {
                                 let (workspace_name, git_ref) =
                                     workspace_identity(&app.session.working_directory);
                                 app.workspace_name = workspace_name;
                                 app.git_ref = git_ref;
+                            }
+                            if let Some(agent_id) = changed_agent
+                                && let Ok(agent) = client.agent(&agent_id).await
+                            {
+                                app.agent_name = agent.agent.name;
                             }
                         }
                         StreamPayload::Warning(message) => app.notice = Some(message),
@@ -1197,7 +1214,10 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             }
             if editor.page == AgentEditorPage::Access {
                 match key.code {
-                    KeyCode::Left | KeyCode::Right if !editor.is_editing() => {
+                    KeyCode::Left | KeyCode::Right
+                        if !editor.is_editing()
+                            && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
                         editor.page = AgentEditorPage::Identity;
                         None
                     }
@@ -1224,12 +1244,27 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                             .modifiers
                             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
                 match key.code {
-                    KeyCode::Left | KeyCode::Right if !editor.is_editing() => {
+                    KeyCode::Left | KeyCode::Right
+                        if !editor.is_editing()
+                            && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
                         editor.page = AgentEditorPage::Access;
                         editor.access_selected = 0;
                     }
-                    KeyCode::Up => editor.move_field(true),
-                    KeyCode::Down => editor.move_field(false),
+                    KeyCode::Left => editor.active_text_mut().move_left(),
+                    KeyCode::Right => editor.active_text_mut().move_right(),
+                    KeyCode::Up => editor.active_text_mut().move_up(),
+                    KeyCode::Down => editor.active_text_mut().move_down(),
+                    KeyCode::PageUp => {
+                        for _ in 0..8 {
+                            editor.active_text_mut().move_up();
+                        }
+                    }
+                    KeyCode::PageDown => {
+                        for _ in 0..8 {
+                            editor.active_text_mut().move_down();
+                        }
+                    }
                     KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
                         editor.move_field(true);
                     }
@@ -1241,6 +1276,12 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                     KeyCode::Enter => editor.instructions.insert_text("\n"),
                     KeyCode::Backspace => editor.active_text_mut().backspace(),
                     KeyCode::Delete => editor.active_text_mut().delete(),
+                    KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        editor.active_text_mut().move_buffer_home();
+                    }
+                    KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        editor.active_text_mut().move_buffer_end();
+                    }
                     KeyCode::Home => editor.active_text_mut().move_home(),
                     KeyCode::End => editor.active_text_mut().move_end(),
                     KeyCode::Char(value)
@@ -1938,7 +1979,7 @@ async fn apply_effect(
             app.history_index = None;
             app.history_draft = None;
             if accepted.disposition == "started" {
-                app.begin_foreground_run(accepted.run_id);
+                app.begin_submitted_turn(accepted.run_id, content, pastes);
             } else if let Some(item) = accepted.queued {
                 app.insert_queued_message(item);
             }
@@ -1958,7 +1999,7 @@ async fn apply_effect(
             app.history_index = None;
             app.history_draft = None;
             if accepted.disposition == "started" {
-                app.begin_foreground_run(accepted.run_id);
+                app.begin_submitted_turn(accepted.run_id, content, pastes);
             } else if let Some(item) = accepted.queued {
                 app.insert_queued_message(item);
             }
@@ -1996,7 +2037,7 @@ async fn apply_effect(
             app.history_index = None;
             app.history_draft = None;
             if accepted.disposition == "started" {
-                app.begin_foreground_run(accepted.run_id);
+                app.begin_submitted_turn(accepted.run_id, content, pastes);
             } else if let Some(item) = accepted.queued {
                 app.insert_queued_message(item);
             }
@@ -2034,6 +2075,9 @@ async fn apply_effect(
         Effect::Cancel => {
             if let Some(run_id) = app.active_run.clone() {
                 client.cancel(&run_id).await?;
+                if app.restore_waiting_turn(&run_id) {
+                    app.notice = Some("Interrupted message restored · edit and resend".to_owned());
+                }
             }
         }
         Effect::PauseGoal => {
@@ -2414,9 +2458,26 @@ async fn apply_menu_action(
                 app.session = client
                     .update_session(&app.session.id, &provider, &model, "off")
                     .await?;
+                app.remember_current_reasoning_effort();
                 app.context_usage = None;
                 app.sheet = None;
                 app.notice = Some(format!("Using {provider} / {model} · reasoning off"));
+                return Ok(None);
+            }
+            if let Some(reasoning) = app
+                .remembered_reasoning_effort(&provider, &model)
+                .filter(|effort| efforts.iter().any(|supported| supported == effort))
+                .map(str::to_owned)
+            {
+                app.session = client
+                    .update_session(&app.session.id, &provider, &model, &reasoning)
+                    .await?;
+                app.remember_current_reasoning_effort();
+                app.context_usage = None;
+                app.sheet = None;
+                app.notice = Some(format!(
+                    "Using {provider} / {model} · reasoning {reasoning}"
+                ));
                 return Ok(None);
             }
             app.notice = None;
@@ -2431,11 +2492,7 @@ async fn apply_menu_action(
                         action: MenuAction::SetModel {
                             provider: provider.clone(),
                             model: model.clone(),
-                            reasoning: if effort == "default" {
-                                String::new()
-                            } else {
-                                effort
-                            },
+                            reasoning: effort,
                         },
                     })
                     .collect(),
@@ -2460,6 +2517,10 @@ async fn apply_menu_action(
                 ));
                 return Ok(None);
             }
+            let current_index = efforts
+                .iter()
+                .position(|effort| effort == &app.session.reasoning_effort)
+                .unwrap_or(0);
             app.notice = None;
             app.sheet = Some(Sheet {
                 kind: SheetKind::Efforts,
@@ -2476,7 +2537,7 @@ async fn apply_menu_action(
                         action: MenuAction::SetEffort(effort),
                     })
                     .collect(),
-                selected: 0,
+                selected: current_index,
                 pending_delete: None,
             });
         }
@@ -2511,7 +2572,11 @@ async fn apply_menu_action(
                 app.notice = Some("Goal paused".to_owned());
             } else if let Some(run_id) = app.active_run.clone() {
                 client.cancel(&run_id).await?;
-                app.notice = Some("Cancelling current work…".to_owned());
+                app.notice = Some(if app.restore_waiting_turn(&run_id) {
+                    "Interrupted message restored · edit and resend".to_owned()
+                } else {
+                    "Cancelling current work…".to_owned()
+                });
             } else {
                 app.notice = Some("No active work to cancel".to_owned());
             }
@@ -2748,6 +2813,7 @@ async fn apply_menu_action(
             app.session = client
                 .update_session(&app.session.id, &provider, &model, &reasoning)
                 .await?;
+            app.remember_current_reasoning_effort();
             app.context_usage = None;
             app.notice = Some(format!("Using {provider} / {model}"));
         }
@@ -2776,15 +2842,15 @@ async fn apply_menu_action(
             });
         }
         MenuAction::SetEffort(effort) => {
-            let effort = if effort == "default" { "" } else { &effort };
             app.session = client
                 .update_session(
                     &app.session.id,
                     &app.session.provider,
                     &app.session.model,
-                    effort,
+                    &effort,
                 )
                 .await?;
+            app.remember_current_reasoning_effort();
             app.context_usage = None;
             app.notice = Some(format!(
                 "Reasoning effort · {}",
@@ -3239,7 +3305,7 @@ fn compact_home(value: &str) -> String {
 }
 
 fn effort_label(value: &str) -> &str {
-    if value.is_empty() { "default" } else { value }
+    if value.is_empty() { "not set" } else { value }
 }
 
 fn model_efforts(model: &ProviderModel) -> Vec<String> {
@@ -3250,11 +3316,9 @@ fn model_efforts(model: &ProviderModel) -> Vec<String> {
         return vec!["on".to_owned(), "off".to_owned()];
     }
     let mut efforts = model.reasoning_efforts.clone();
-    if !efforts.iter().any(|effort| effort == "default") {
-        efforts.insert(0, "default".to_owned());
-    }
+    efforts.retain(|effort| effort != "default");
     if !efforts.iter().any(|effort| effort == "off") {
-        efforts.insert(1, "off".to_owned());
+        efforts.push("off".to_owned());
     }
     efforts
 }
@@ -3973,26 +4037,54 @@ mod tests {
     }
 
     #[test]
-    fn agent_editor_uses_arrows_for_fields_and_pages_and_ctrl_enter_only_to_create() {
+    fn agent_editor_uses_tabs_for_fields_arrows_for_text_and_ctrl_arrows_for_pages() {
         let mut editor = AgentEditor::new(vec!["read_file".to_owned()], Vec::new());
         editor.name.insert_text("Reviewer");
         editor.sync_slug();
+        editor.instructions.insert_text("one\ntwo\nthree");
         let mut app = App::new(session(), Vec::new(), true);
         app.modal = Some(Modal::AgentEdit(editor));
 
-        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)).is_none());
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)).is_none());
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)).is_none());
         assert!(matches!(
             &app.modal,
             Some(Modal::AgentEdit(editor))
                 if editor.field == crate::tui::app::AgentEditField::Instructions
         ));
-        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)).is_none());
+        let cursor_before = match &app.modal {
+            Some(Modal::AgentEdit(editor)) => editor.instructions.cursor,
+            _ => unreachable!(),
+        };
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)).is_none());
+        assert!(matches!(
+            &app.modal,
+            Some(Modal::AgentEdit(editor)) if editor.instructions.cursor < cursor_before
+        ));
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)).is_none());
+        assert!(matches!(
+            &app.modal,
+            Some(Modal::AgentEdit(editor)) if editor.instructions.cursor < cursor_before - 1
+        ));
+        assert!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL)
+            )
+            .is_none()
+        );
         assert!(matches!(
             &app.modal,
             Some(Modal::AgentEdit(editor))
                 if editor.page == crate::tui::app::AgentEditorPage::Access
         ));
-        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)).is_none());
+        assert!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL)
+            )
+            .is_none()
+        );
         assert!(matches!(
             handle_key(
                 &mut app,
@@ -4385,7 +4477,13 @@ mod tests {
             reasoning_efforts: vec!["low".to_owned(), "medium".to_owned()],
             ..gemma
         };
-        assert_eq!(model_efforts(&qwen), ["default", "off", "low", "medium"]);
+        assert_eq!(model_efforts(&qwen), ["low", "medium", "off"]);
+
+        let legacy_default = ProviderModel {
+            reasoning_efforts: vec!["default".to_owned(), "high".to_owned()],
+            ..qwen
+        };
+        assert_eq!(model_efforts(&legacy_default), ["high", "off"]);
     }
 
     fn session() -> Session {

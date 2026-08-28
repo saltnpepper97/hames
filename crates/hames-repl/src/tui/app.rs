@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -293,6 +293,7 @@ pub enum ActivityPhase {
 }
 
 const MAX_ACTIVITY_ROWS_PER_GROUP: usize = 20;
+const PATCH_AUTO_COLLAPSE_AFTER: Duration = Duration::from_secs(120);
 
 impl ActivityPhase {
     pub fn terminal(self) -> bool {
@@ -1201,6 +1202,13 @@ pub struct PendingSubmission {
     paste_spans: Vec<PasteSpan>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WaitingTurnDraft {
+    run_id: String,
+    content: String,
+    paste_spans: Vec<PasteSpan>,
+}
+
 impl HitRegion {
     pub fn contains(&self, x: u16, y: u16) -> bool {
         x >= self.x
@@ -1232,6 +1240,7 @@ pub struct App {
     pub trusted: bool,
     pub connection_state: ConnectionState,
     pub pending_submission: Option<PendingSubmission>,
+    waiting_turn_draft: Option<WaitingTurnDraft>,
     pub modal: Option<Modal>,
     pub question: Option<QuestionTray>,
     pub sheet: Option<Sheet>,
@@ -1253,6 +1262,8 @@ pub struct App {
     pub last_sequence: u64,
     pub seen_events: HashSet<String>,
     pub context_usage: Option<ContextUsageProjection>,
+    model_reasoning_efforts: HashMap<(String, String), String>,
+    patch_completed_at: HashMap<(String, u64), Instant>,
     pub hits: Vec<HitRegion>,
     pub should_quit: bool,
     pub focused_thought: Option<usize>,
@@ -1266,6 +1277,8 @@ pub struct App {
 impl App {
     pub fn new(session: Session, events: Vec<Event>, trusted: bool) -> Self {
         let session_id = session.id.clone();
+        let initial_model = (session.provider.clone(), session.model.clone());
+        let initial_effort = session.reasoning_effort.clone();
         let workspace_name = session.working_directory.clone();
         let agent_name = if session.agent_id == "default" {
             "Hames".to_owned()
@@ -1316,6 +1329,7 @@ impl App {
             trusted,
             connection_state: ConnectionState::Connected,
             pending_submission: None,
+            waiting_turn_draft: None,
             modal: None,
             question: None,
             sheet: None,
@@ -1337,6 +1351,8 @@ impl App {
             last_sequence: 0,
             seen_events: HashSet::new(),
             context_usage: None,
+            model_reasoning_efforts: HashMap::from([(initial_model, initial_effort)]),
+            patch_completed_at: HashMap::new(),
             hits: Vec::new(),
             should_quit: false,
             focused_thought: None,
@@ -1349,6 +1365,7 @@ impl App {
         for event in events {
             app.ingest_durable(event, false);
         }
+        app.collapse_replayed_patch_work();
         app
     }
 
@@ -1365,6 +1382,63 @@ impl App {
                 TranscriptItem::Compaction { live, .. } => *live,
                 _ => false,
             })
+    }
+
+    pub fn next_patch_collapse_delay(&self) -> Option<Duration> {
+        let now = Instant::now();
+        self.transcript
+            .iter()
+            .filter_map(|item| {
+                let TranscriptItem::Activity {
+                    run_id,
+                    rows,
+                    collapsed: false,
+                } = item
+                else {
+                    return None;
+                };
+                patch_completion_time(&self.patch_completed_at, run_id, rows).map(|completed_at| {
+                    PATCH_AUTO_COLLAPSE_AFTER.saturating_sub(now.duration_since(completed_at))
+                })
+            })
+            .min()
+    }
+
+    pub fn collapse_stale_patch_work(&mut self, now: Instant) {
+        let mut expired = Vec::new();
+        for item in &mut self.transcript {
+            let TranscriptItem::Activity {
+                run_id,
+                rows,
+                collapsed,
+            } = item
+            else {
+                continue;
+            };
+            let Some(completed_at) = patch_completion_time(&self.patch_completed_at, run_id, rows)
+            else {
+                continue;
+            };
+            if now.duration_since(completed_at) >= PATCH_AUTO_COLLAPSE_AFTER {
+                *collapsed = true;
+                expired.extend(rows.iter().map(|row| (run_id.clone(), row.index)));
+            }
+        }
+        for key in expired {
+            self.patch_completed_at.remove(&key);
+        }
+    }
+
+    fn collapse_replayed_patch_work(&mut self) {
+        for item in &mut self.transcript {
+            if let TranscriptItem::Activity {
+                rows, collapsed, ..
+            } = item
+                && is_completed_patch_work(rows)
+            {
+                *collapsed = true;
+            }
+        }
     }
 
     pub fn set_queue(&mut self, state: QueueState) {
@@ -1498,6 +1572,68 @@ impl App {
         self.active_run = Some(run_id.clone());
         self.run_started_at = Some(Instant::now());
         self.scroll = 0;
+    }
+
+    pub fn begin_submitted_turn(
+        &mut self,
+        run_id: Option<String>,
+        content: String,
+        paste_spans: Vec<PasteSpan>,
+    ) {
+        let Some(run_id) = run_id else {
+            return;
+        };
+        self.begin_foreground_run(Some(run_id.clone()));
+        self.waiting_turn_draft = Some(WaitingTurnDraft {
+            run_id,
+            content,
+            paste_spans,
+        });
+    }
+
+    pub fn restore_waiting_turn(&mut self, run_id: &str) -> bool {
+        self.cancel_waiting_turn(run_id, true)
+    }
+
+    fn cancel_waiting_turn(&mut self, run_id: &str, restore: bool) -> bool {
+        let Some(draft) = self
+            .waiting_turn_draft
+            .take()
+            .filter(|draft| draft.run_id == run_id)
+        else {
+            return false;
+        };
+        if let Some(index) = self.transcript.iter().rposition(
+            |item| matches!(item, TranscriptItem::User { content } if content == &draft.content),
+        ) {
+            self.remove_transcript_item(index);
+        }
+        if let Some(index) = self
+            .message_history
+            .iter()
+            .rposition(|content| content == &draft.content)
+        {
+            self.message_history.remove(index);
+        }
+        if restore && self.composer.is_empty() {
+            self.composer
+                .load_message(&draft.content, &draft.paste_spans);
+            self.history_index = None;
+            self.history_draft = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn mark_turn_responding(&mut self, run_id: &str) {
+        if self
+            .waiting_turn_draft
+            .as_ref()
+            .is_some_and(|draft| draft.run_id == run_id)
+        {
+            self.waiting_turn_draft = None;
+        }
     }
 
     pub fn plan_ready(&self) -> bool {
@@ -2030,6 +2166,9 @@ impl App {
                     .get("text")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
+                if !text.is_empty() {
+                    self.mark_turn_responding(run_id);
+                }
                 let index = self.ensure_thought(run_id, true);
                 if let TranscriptItem::Thought { content, .. } = &mut self.transcript[index] {
                     content.push_str(text);
@@ -2044,6 +2183,7 @@ impl App {
                 if text.is_empty() {
                     return;
                 }
+                self.mark_turn_responding(run_id);
                 let index = self.ensure_assistant(run_id, true);
                 if let TranscriptItem::Assistant { content, .. } = &mut self.transcript[index] {
                     content.push_str(text);
@@ -2063,6 +2203,7 @@ impl App {
                 if name.is_empty() && arguments.is_empty() {
                     return;
                 }
+                self.mark_turn_responding(run_id);
                 let index = payload.get("index").and_then(Value::as_u64).unwrap_or(0);
                 let row = self.ensure_activity_row(run_id, index, None, name);
                 merge_tool_name(&mut row.name, name);
@@ -2096,6 +2237,7 @@ impl App {
                 self.session.provider = string(&event.payload, "provider");
                 self.session.model = string(&event.payload, "model");
                 self.session.reasoning_effort = string(&event.payload, "reasoning_effort");
+                self.remember_current_reasoning_effort();
                 self.session.context_window_tokens =
                     u64_value(&event.payload, "context_window_tokens");
                 self.session.context_window_source =
@@ -2451,6 +2593,19 @@ impl App {
                 }
                 self.collapse_completed_thoughts();
                 let user_content = string(&event.payload, "content");
+                if !run_id.is_empty() {
+                    let paste_spans = event
+                        .payload
+                        .get("paste_spans")
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok())
+                        .unwrap_or_default();
+                    self.waiting_turn_draft = Some(WaitingTurnDraft {
+                        run_id: run_id.clone(),
+                        content: user_content.clone(),
+                        paste_spans,
+                    });
+                }
                 self.message_history.push(user_content.clone());
                 self.transcript.push(TranscriptItem::User {
                     content: user_content,
@@ -2615,6 +2770,9 @@ impl App {
                 }
             }
             "assistant.reasoning" => {
+                if !string(&event.payload, "content").is_empty() {
+                    self.mark_turn_responding(&run_id);
+                }
                 let index = self.ensure_thought(&run_id, false);
                 let segment = string(&event.payload, "content");
                 if let TranscriptItem::Thought {
@@ -2637,6 +2795,9 @@ impl App {
                 }
             }
             "assistant.message" => {
+                if !string(&event.payload, "content").is_empty() {
+                    self.mark_turn_responding(&run_id);
+                }
                 self.finish_live_thought(&run_id);
                 let message = string(&event.payload, "content");
                 if !message.is_empty() {
@@ -2655,6 +2816,7 @@ impl App {
                 }
             }
             "model.tool_call" => {
+                self.mark_turn_responding(&run_id);
                 self.finish_live_thought(&run_id);
                 self.finish_live_assistant(&run_id);
                 let index = event
@@ -2687,7 +2849,7 @@ impl App {
             "tool.requested" | "policy.requested" | "policy.decided" | "approval.requested"
             | "approval.resolved" | "tool.started" | "tool.completed" | "tool.failed"
             | "tool.rejected" => {
-                self.update_activity(&run_id, &event.event_type, &event.payload);
+                self.update_activity(&run_id, &event.event_type, &event.payload, live);
                 if event.event_type == "approval.requested" {
                     self.modal = Some(Modal::Approval(approval_from(&event.payload)));
                     self.sheet = None;
@@ -2771,7 +2933,7 @@ impl App {
                     },
                     error: !recoverable,
                 });
-                if live && !recoverable {
+                if live && !recoverable && event.event_type != "run.failed" {
                     self.modal = Some(Modal::Error(
                         self.transcript
                             .last()
@@ -2783,6 +2945,7 @@ impl App {
                     ));
                 }
                 if event.event_type == "run.failed" {
+                    self.mark_turn_responding(&run_id);
                     if self
                         .question
                         .as_ref()
@@ -2796,6 +2959,12 @@ impl App {
             }
             "run.completed" | "run.cancelled" => {
                 let cancelled = event.event_type == "run.cancelled";
+                let restored = if cancelled {
+                    self.cancel_waiting_turn(&run_id, live)
+                } else {
+                    self.mark_turn_responding(&run_id);
+                    false
+                };
                 if self
                     .question
                     .as_ref()
@@ -2818,6 +2987,10 @@ impl App {
                 }
                 self.finish_run(&run_id, cancelled);
                 if cancelled {
+                    if restored {
+                        self.notice =
+                            Some("Interrupted message restored · edit and resend".to_owned());
+                    }
                     self.transcript.push(TranscriptItem::Status {
                         text: "Turn interrupted".to_owned(),
                         error: false,
@@ -2932,6 +3105,22 @@ impl App {
         }
     }
 
+    pub fn remembered_reasoning_effort(&self, provider: &str, model: &str) -> Option<&str> {
+        self.model_reasoning_efforts
+            .get(&(provider.to_owned(), model.to_owned()))
+            .map(String::as_str)
+            .filter(|effort| !effort.is_empty())
+    }
+
+    pub fn remember_current_reasoning_effort(&mut self) {
+        if !self.session.reasoning_effort.is_empty() {
+            self.model_reasoning_efforts.insert(
+                (self.session.provider.clone(), self.session.model.clone()),
+                self.session.reasoning_effort.clone(),
+            );
+        }
+    }
+
     fn update_dream(
         &mut self,
         job_id: String,
@@ -3017,11 +3206,24 @@ impl App {
     }
 
     pub fn toggle_activity(&mut self, index: usize) {
+        let mut manually_collapsed = Vec::new();
         match self.transcript.get_mut(index) {
-            Some(TranscriptItem::Activity { collapsed, .. })
-            | Some(TranscriptItem::Compaction { collapsed, .. })
+            Some(TranscriptItem::Activity {
+                run_id,
+                rows,
+                collapsed,
+            }) => {
+                *collapsed = !*collapsed;
+                if *collapsed {
+                    manually_collapsed.extend(rows.iter().map(|row| (run_id.clone(), row.index)));
+                }
+            }
+            Some(TranscriptItem::Compaction { collapsed, .. })
             | Some(TranscriptItem::Plan { collapsed, .. }) => *collapsed = !*collapsed,
             _ => {}
+        }
+        for key in manually_collapsed {
+            self.patch_completed_at.remove(&key);
         }
     }
 
@@ -3039,6 +3241,10 @@ impl App {
         }) else {
             return;
         };
+        self.remove_transcript_item(index);
+    }
+
+    fn remove_transcript_item(&mut self, index: usize) {
         self.transcript.remove(index);
         if self.focused_thought == Some(index) {
             self.focused_thought = None;
@@ -3053,6 +3259,13 @@ impl App {
             && pending > index
         {
             self.pending_thought_toggle = Some(pending - 1);
+        }
+        if self.pending_activity_toggle == Some(index) {
+            self.pending_activity_toggle = None;
+        } else if let Some(pending) = self.pending_activity_toggle
+            && pending > index
+        {
+            self.pending_activity_toggle = Some(pending - 1);
         }
     }
 
@@ -3109,6 +3322,26 @@ impl App {
     fn activity_group(&self, run_id: &str, name: &str) -> Option<usize> {
         if name.is_empty() {
             return None;
+        }
+        if is_task_tool(name) {
+            let (index, item) = self
+                .transcript
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, item)| !matches!(item, TranscriptItem::TaskList { .. }))?;
+            let TranscriptItem::Activity {
+                run_id: id, rows, ..
+            } = item
+            else {
+                return None;
+            };
+            return (id == run_id
+                && rows.len() < MAX_ACTIVITY_ROWS_PER_GROUP
+                && rows
+                    .iter()
+                    .all(|row| row.name.is_empty() || is_task_tool(&row.name)))
+            .then_some(index);
         }
         let index = self.transcript.len().checked_sub(1)?;
         let TranscriptItem::Activity {
@@ -3174,8 +3407,8 @@ impl App {
             }
             return &mut rows[row_index];
         }
-        // Only adjacent tools of the same kind share an umbrella. This preserves
-        // the visible timeline when reasoning, prose, or another tool kind intervenes.
+        // Task-state projections do not split adjacent task calls. Reasoning, prose,
+        // and every real tool boundary still preserve transcript chronology.
         let activity_index = if let Some(index) = self.activity_group(run_id, name) {
             if let TranscriptItem::Activity { collapsed, .. } = &mut self.transcript[index] {
                 *collapsed = false;
@@ -3211,7 +3444,7 @@ impl App {
         &mut rows[row_index]
     }
 
-    fn update_activity(&mut self, run_id: &str, event_type: &str, payload: &Value) {
+    fn update_activity(&mut self, run_id: &str, event_type: &str, payload: &Value, live: bool) {
         let call_id = payload
             .get("tool_call_id")
             .and_then(Value::as_str)
@@ -3220,6 +3453,7 @@ impl App {
             .get("index")
             .and_then(Value::as_u64)
             .unwrap_or(u64::MAX);
+        let mut completed_patch = None;
         {
             let row = self.ensure_activity_row(
                 run_id,
@@ -3266,6 +3500,13 @@ impl App {
                 .get("duration_seconds")
                 .and_then(Value::as_f64)
                 .unwrap_or(row.duration_seconds);
+            if live && event_type == "tool.completed" && is_diff_write_tool(&row.name) {
+                completed_patch = Some(row.index);
+            }
+        }
+        if let Some(index) = completed_patch {
+            self.patch_completed_at
+                .insert((run_id.to_owned(), index), Instant::now());
         }
         if matches!(
             event_type,
@@ -3505,7 +3746,31 @@ pub(crate) fn task_checkbox(task: &SessionTask) -> &'static str {
 }
 
 fn should_collapse_activity(rows: &[ActivityRow]) -> bool {
-    rows.iter().all(|row| row.phase.terminal())
+    rows.iter().all(|row| row.phase.terminal()) && !is_completed_patch_work(rows)
+}
+
+fn is_completed_patch_work(rows: &[ActivityRow]) -> bool {
+    !rows.is_empty()
+        && rows.iter().all(|row| {
+            row.phase.terminal() && matches!(row.name.as_str(), "edit_file" | "write_file")
+        })
+        && rows
+            .iter()
+            .any(|row| row.phase == ActivityPhase::Completed && !row.content.is_empty())
+}
+
+fn patch_completion_time(
+    completed_at: &HashMap<(String, u64), Instant>,
+    run_id: &str,
+    rows: &[ActivityRow],
+) -> Option<Instant> {
+    is_completed_patch_work(rows)
+        .then(|| {
+            rows.iter()
+                .filter_map(|row| completed_at.get(&(run_id.to_owned(), row.index)).copied())
+                .max()
+        })
+        .flatten()
 }
 
 fn normalize_task_positions(items: &mut [SessionTask]) {
@@ -3721,12 +3986,14 @@ fn display_path(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use serde_json::json;
 
     use super::{
-        ActivityPhase, App, Composer, ComposerUnit, DreamPhase, TranscriptItem, TranscriptPoint,
-        TranscriptViewport, task_checkbox,
+        ActivityPhase, App, Composer, ComposerUnit, DreamPhase, PATCH_AUTO_COLLAPSE_AFTER,
+        TranscriptItem, TranscriptPoint, TranscriptViewport, is_task_tool, task_checkbox,
     };
     use crate::api::{Event, PasteSpan, Session, SessionTask};
 
@@ -3741,6 +4008,101 @@ mod tests {
         assert_ne!(changed, first);
         app.confirm_submission(&changed);
         assert!(app.pending_submission.is_none());
+    }
+
+    #[test]
+    fn cancelling_a_waiting_turn_restores_its_exact_message() {
+        let run_id = "run-waiting";
+        let content = "before one\ntwo\nthree\nfour after";
+        let pastes = vec![PasteSpan {
+            start_byte: 7,
+            end_byte: 25,
+            line_count: 4,
+            byte_count: 18,
+        }];
+        let mut app = App::new(session(), Vec::new(), true);
+        app.begin_submitted_turn(Some(run_id.to_owned()), content.to_owned(), pastes.clone());
+        app.ingest_durable(
+            event(
+                1,
+                "user.message",
+                run_id,
+                json!({"content": content, "purpose": "turn", "paste_spans": pastes}),
+            ),
+            true,
+        );
+
+        app.ingest_durable(event(2, "run.cancelled", run_id, json!({})), true);
+
+        assert_eq!(app.composer.message(), (content.to_owned(), pastes));
+        assert!(
+            !app.transcript
+                .iter()
+                .any(|item| matches!(item, TranscriptItem::User { .. }))
+        );
+        assert!(app.message_history.is_empty());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Interrupted message restored · edit and resend")
+        );
+    }
+
+    #[test]
+    fn cancelled_waiting_turn_stays_out_of_replayed_transcript() {
+        let run_id = "run-replayed-cancel";
+        let events = vec![
+            event(
+                1,
+                "user.message",
+                run_id,
+                json!({"content": "mistyped request", "purpose": "turn"}),
+            ),
+            event(2, "run.started", run_id, json!({})),
+            event(3, "run.cancelled", run_id, json!({})),
+        ];
+
+        let app = App::new(session(), events, true);
+
+        assert!(!app.transcript.iter().any(
+            |item| matches!(item, TranscriptItem::User { content } if content == "mistyped request")
+        ));
+        assert!(app.composer.is_empty());
+        assert!(app.message_history.is_empty());
+    }
+
+    #[test]
+    fn cancellation_does_not_restore_after_the_turn_starts_responding() {
+        let run_id = "run-responding";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.begin_submitted_turn(Some(run_id.to_owned()), "fix this".to_owned(), Vec::new());
+        app.ingest_transient(
+            run_id,
+            "response.reasoning_delta",
+            &json!({"text": "I will inspect it"}),
+        );
+
+        app.ingest_durable(event(1, "run.cancelled", run_id, json!({})), true);
+
+        assert!(app.composer.is_empty());
+        assert_ne!(
+            app.notice.as_deref(),
+            Some("Interrupted message restored · edit and resend")
+        );
+    }
+
+    #[test]
+    fn restoring_a_waiting_turn_never_overwrites_a_new_draft() {
+        let run_id = "run-new-draft";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.begin_submitted_turn(
+            Some(run_id.to_owned()),
+            "first draft".to_owned(),
+            Vec::new(),
+        );
+        app.composer.insert_text("new draft");
+
+        assert!(!app.restore_waiting_turn(run_id));
+        assert_eq!(app.composer.text(), "new draft");
     }
 
     #[test]
@@ -3918,7 +4280,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_writes_collapse_with_the_finished_work_group() {
+    fn completed_patch_work_stays_open_until_explicitly_collapsed() {
         let run_id = "run-write";
         let mut app = App::new(session(), Vec::new(), true);
         app.begin_foreground_run(Some(run_id.to_owned()));
@@ -3951,8 +4313,74 @@ mod tests {
         else {
             panic!("write should remain visible as work");
         };
-        assert!(*collapsed);
+        assert!(!*collapsed);
         assert!(rows.iter().any(|row| row.content.contains("+print(1)")));
+
+        let activity_index = app
+            .transcript
+            .iter()
+            .position(|item| matches!(item, TranscriptItem::Activity { .. }))
+            .unwrap();
+        let completed_at = *app.patch_completed_at.values().next().unwrap();
+        app.collapse_stale_patch_work(
+            completed_at + PATCH_AUTO_COLLAPSE_AFTER - Duration::from_millis(1),
+        );
+        assert!(matches!(
+            &app.transcript[activity_index],
+            TranscriptItem::Activity {
+                collapsed: false,
+                ..
+            }
+        ));
+
+        app.collapse_stale_patch_work(completed_at + PATCH_AUTO_COLLAPSE_AFTER);
+        assert!(matches!(
+            &app.transcript[activity_index],
+            TranscriptItem::Activity {
+                collapsed: true,
+                ..
+            }
+        ));
+
+        app.toggle_activity(activity_index);
+        app.collapse_stale_patch_work(completed_at + PATCH_AUTO_COLLAPSE_AFTER * 2);
+        assert!(matches!(
+            &app.transcript[activity_index],
+            TranscriptItem::Activity {
+                collapsed: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn replayed_patch_work_starts_collapsed() {
+        let run_id = "run-replayed-write";
+        let app = App::new(
+            session(),
+            vec![event(
+                1,
+                "tool.completed",
+                run_id,
+                json!({
+                    "index": 0,
+                    "tool_call_id": "write-replayed",
+                    "name": "write_file",
+                    "status": "completed",
+                    "summary": "wrote src/game.py",
+                    "content": "--- /dev/null\n+++ b/src/game.py\n+print(1)\n"
+                }),
+            )],
+            true,
+        );
+
+        assert!(app.transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Activity {
+                collapsed: true,
+                ..
+            }
+        )));
     }
 
     #[test]
@@ -4008,6 +4436,7 @@ mod tests {
             event(5, "run.completed", run_id, json!({"active_seconds": 251.0})),
             true,
         );
+        assert!(app.modal.is_none());
         assert!(app.active_run.is_none());
         assert!(app.transcript.iter().any(|item| matches!(
             item,
@@ -4240,6 +4669,187 @@ mod tests {
             })
             .collect();
         assert_eq!(cards, vec![("write_file", 1), ("task_update", 1)]);
+    }
+
+    #[test]
+    fn consecutive_task_updates_ignore_their_own_task_list_projection() {
+        let run_id = "run-adjacent-tasks";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.tasks.items = vec![
+            SessionTask {
+                id: "task-1".to_owned(),
+                text: "Trace state transitions".to_owned(),
+                status: "in_progress".to_owned(),
+                position: 0,
+                created_by: "agent".to_owned(),
+            },
+            SessionTask {
+                id: "task-2".to_owned(),
+                text: "Run regression coverage".to_owned(),
+                status: "pending".to_owned(),
+                position: 1,
+                created_by: "agent".to_owned(),
+            },
+        ];
+        app.ingest_durable(
+            event(
+                1,
+                "model.tool_call",
+                run_id,
+                json!({
+                    "index": 0,
+                    "tool_call_id": "call-1",
+                    "name": "task_update",
+                    "arguments": {"action": "update", "task_id": "task-1"}
+                }),
+            ),
+            true,
+        );
+        app.ingest_durable(
+            event(
+                2,
+                "task.updated",
+                run_id,
+                json!({"task_id": "task-1", "status": "completed"}),
+            ),
+            true,
+        );
+        app.ingest_durable(
+            event(
+                3,
+                "model.tool_call",
+                run_id,
+                json!({
+                    "index": 1,
+                    "tool_call_id": "call-2",
+                    "name": "task_update",
+                    "arguments": {"action": "update", "task_id": "task-2"}
+                }),
+            ),
+            true,
+        );
+
+        let task_cards = app
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Activity { rows, .. }
+                    if rows.iter().all(|row| is_task_tool(&row.name)) =>
+                {
+                    Some(rows.len())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(task_cards, vec![2]);
+    }
+
+    #[test]
+    fn task_updates_stop_grouping_at_other_tool_work() {
+        let run_id = "run-task-summary";
+        let mut app = App::new(session(), Vec::new(), true);
+        for (sequence, index, call_id, name, arguments) in [
+            (
+                1,
+                0,
+                "task-1",
+                "task_update",
+                json!({"action": "update", "text": "Trace state transitions"}),
+            ),
+            (2, 1, "shell-1", "shell", json!({"command": "cargo test"})),
+            (
+                3,
+                2,
+                "task-2",
+                "task_update",
+                json!({"action": "update", "text": "Run regression coverage"}),
+            ),
+        ] {
+            app.ingest_durable(
+                event(
+                    sequence,
+                    "model.tool_call",
+                    run_id,
+                    json!({
+                        "index": index,
+                        "tool_call_id": call_id,
+                        "name": name,
+                        "arguments": arguments
+                    }),
+                ),
+                true,
+            );
+        }
+
+        let cards = app
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Activity { rows, .. } => Some((
+                    rows.first()
+                        .map(|row| row.name.as_str())
+                        .unwrap_or_default(),
+                    rows.len(),
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            cards,
+            vec![("task_update", 1), ("shell", 1), ("task_update", 1)]
+        );
+    }
+
+    #[test]
+    fn task_updates_stop_grouping_at_assistant_output() {
+        let run_id = "run-task-talk-task";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_durable(
+            event(
+                1,
+                "model.tool_call",
+                run_id,
+                json!({
+                    "index": 0,
+                    "tool_call_id": "task-1",
+                    "name": "task_update",
+                    "arguments": {"action": "update", "text": "Trace state transitions"}
+                }),
+            ),
+            true,
+        );
+        app.ingest_durable(
+            event(
+                2,
+                "assistant.message",
+                run_id,
+                json!({"content": "The state transition is understood."}),
+            ),
+            true,
+        );
+        app.ingest_durable(
+            event(
+                3,
+                "model.tool_call",
+                run_id,
+                json!({
+                    "index": 1,
+                    "tool_call_id": "task-2",
+                    "name": "task_update",
+                    "arguments": {"action": "update", "text": "Run regression coverage"}
+                }),
+            ),
+            true,
+        );
+
+        let task_cards = app
+            .transcript
+            .iter()
+            .filter(|item| {
+                matches!(item, TranscriptItem::Activity { rows, .. } if rows.iter().all(|row| is_task_tool(&row.name)))
+            })
+            .count();
+        assert_eq!(task_cards, 2);
     }
 
     #[test]
@@ -5722,7 +6332,56 @@ mod tests {
                 .count(),
             1
         );
+        assert!(app.modal.is_none());
         assert!(app.active_run.is_none());
+    }
+
+    #[test]
+    fn session_history_remembers_the_last_effort_for_each_model() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_durable(
+            event(
+                1,
+                "session.settings.changed",
+                "",
+                json!({
+                    "provider": "codex",
+                    "model": "gpt-5.6-sol",
+                    "reasoning_effort": "high",
+                    "context_window_tokens": 272000,
+                    "context_window_source": "provider"
+                }),
+            ),
+            false,
+        );
+        app.ingest_durable(
+            event(
+                2,
+                "session.settings.changed",
+                "",
+                json!({
+                    "provider": "fake",
+                    "model": "fixture",
+                    "reasoning_effort": "low",
+                    "context_window_tokens": 32768,
+                    "context_window_source": "provider"
+                }),
+            ),
+            false,
+        );
+
+        assert_eq!(
+            app.remembered_reasoning_effort("codex", "gpt-5.6-sol"),
+            Some("high")
+        );
+        assert_eq!(
+            app.remembered_reasoning_effort("fake", "fixture"),
+            Some("low")
+        );
+        assert_eq!(
+            app.remembered_reasoning_effort("codex", "gpt-5.6-luna"),
+            None
+        );
     }
 
     #[test]

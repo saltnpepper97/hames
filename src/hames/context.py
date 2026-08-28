@@ -38,7 +38,10 @@ memory, Skills, or capabilities that the supplied context does not define.
 Set a concise session title with session_title_set once the conversation's
 purpose is clear, and update it when that purpose changes. If you start a
 background terminal, call terminal_stop when that work is finished; leave it
-running only if the user still needs it.
+running only if the user still needs it. The session checklist represents the
+current piece of work. Keep completed tasks while finishing or following up on
+that work, but when the user starts materially unrelated work and no old task is
+unfinished, remove the old completed tasks before adding the new checklist.
 """
 
 COMPILER_VERSION = 4
@@ -258,7 +261,9 @@ def compile_context(
         task_part = (
             f"tasks.{session.id}.{task_list.revision}",
             "Current session checklist. Use task_update as work starts, completes, becomes "
-            f"blocked, or new work is discovered:\n{rows}",
+            "blocked, or new work is discovered. If the user has started materially unrelated "
+            "work and every old task is completed, remove those old tasks before adding the new "
+            f"checklist; keep them for follow-up on the same work:\n{rows}",
         )
     goals = project_goals(events)
     active_goal = next((goal for goal in reversed(goals) if goal.status == "running"), None)

@@ -3011,7 +3011,7 @@ async def test_manual_compaction_uses_active_provider_and_records_a_durable_cuto
 
 
 @pytest.mark.asyncio
-async def test_automatic_compaction_runs_before_an_over_budget_agent_request(
+async def test_automatic_codex_compaction_preserves_only_the_latest_turn(
     tmp_path: Path,
 ) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
@@ -3025,8 +3025,12 @@ async def test_automatic_compaction_runs_before_an_over_budget_agent_request(
 
     fake = FakeProvider(
         [],
-        turns=[response("rolling summary one"), response("rolling summary two"), response("done")],
+        turns=[
+            response("rolling summary one"),
+            response("done"),
+        ],
     )
+    fake.adapter = "codex"
     state = GatewayState.create(paths, providers={"fake": fake})
     headers = {"Authorization": f"Bearer {state.token}"}
     transport = httpx.ASGITransport(app=create_app(state))
@@ -3047,7 +3051,7 @@ async def test_automatic_compaction_runs_before_an_over_budget_agent_request(
                 state.ledger.append(
                     session_id=session_id,
                     event_type="user.message",
-                    payload={"content": f"old-{index}-" + ("x" * 40_000)},
+                    payload={"content": f"old-{index}-" + ("x" * 170_000)},
                 )
 
             sent = await client.post(
@@ -3057,16 +3061,24 @@ async def test_automatic_compaction_runs_before_an_over_budget_agent_request(
             )
             assert sent.status_code == 202
             events = await _wait_for_event(client, headers, session_id, "run.completed")
-            compacted = next(
+            compacted_events = [
                 event for event in events if event["type"] == "context.compaction.completed"
-            )
+            ]
+            assert compacted_events, [
+                (event["type"], event.get("payload"))
+                for event in events
+                if isinstance(event["type"], str)
+                and ("compaction" in event["type"] or event["type"].startswith("run."))
+            ]
+            compacted = compacted_events[0]
             payload = JSON_OBJECT.validate_python(compacted["payload"])
             assert payload["trigger"] == "automatic"
-            assert payload["passes"] == 2
-            assert len(fake.requests) == 3
+            assert payload["preserve_recent_turns"] == 1
+            assert payload["turns_compacted"] == 6
+            assert payload["passes"] == 1
+            assert len(fake.requests) == 2
             assert fake.requests[0].metadata == {"purpose": "context_compaction"}
-            assert fake.requests[1].metadata == {"purpose": "context_compaction"}
-            assert fake.requests[2].metadata == {
+            assert fake.requests[1].metadata == {
                 "purpose": "agent",
                 "workspace_path": str(tmp_path),
                 "interaction_mode": "auto",

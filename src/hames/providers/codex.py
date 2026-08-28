@@ -328,6 +328,10 @@ class CodexProvider:
                     "input": [{"type": "text", "text": _codex_input(request.messages)}],
                     "model": request.model,
                     "effort": _codex_wire_effort(request.reasoning_effort),
+                    # App-server does not reliably enable reasoning summaries when this is
+                    # omitted. Request them explicitly so Hames can stream useful progress
+                    # while a reasoning model is working.
+                    "summary": "auto",
                     "approvalPolicy": "never",
                     # Hames is the external sandbox. Codex native tools are disabled below;
                     # every model-visible side effect must arrive as an item/tool/call request.
@@ -345,6 +349,9 @@ class CodexProvider:
             )
 
             tool_index = 0
+            summary_has_text = False
+            summary_boundary_pending = False
+            last_summary_index: object = None
             while True:
                 message = await connection.next_message()
                 method = str(message.get("method", ""))
@@ -393,10 +400,28 @@ class CodexProvider:
                     success = getattr(result, "status", "completed") == "completed"
                     await connection.respond_tool_result(message.get("id"), text, success=success)
                     continue
-                if method in {
-                    "item/reasoning/summaryTextDelta",
-                    "item/reasoning/textDelta",
-                }:
+                if method == "item/reasoning/summaryPartAdded":
+                    summary_boundary_pending = summary_has_text
+                elif method == "item/reasoning/summaryTextDelta":
+                    text = str(params.get("delta", ""))
+                    summary_index = params.get("summaryIndex")
+                    changed_part = (
+                        summary_has_text
+                        and summary_index is not None
+                        and last_summary_index is not None
+                        and summary_index != last_summary_index
+                    )
+                    if text:
+                        if summary_boundary_pending or changed_part:
+                            text = "\n\n" + text
+                        summary_has_text = True
+                        summary_boundary_pending = False
+                        last_summary_index = summary_index
+                    yield StreamEvent(
+                        kind=StreamEventKind.REASONING_DELTA,
+                        text=text,
+                    )
+                elif method == "item/reasoning/textDelta":
                     yield StreamEvent(
                         kind=StreamEventKind.REASONING_DELTA,
                         text=str(params.get("delta", "")),

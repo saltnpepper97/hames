@@ -227,12 +227,13 @@ class ContextCompiledPayload(EventPayload):
 class ContextCompactionStartedPayload(EventPayload):
     compaction_id: str
     trigger: Literal["automatic", "manual", "plan"]
-    preserve_recent_turns: int
+    preserve_recent_turns: int = 4
 
 
 class ContextCompactionCompletedPayload(EventPayload):
     compaction_id: str
     trigger: Literal["automatic", "manual", "plan"]
+    preserve_recent_turns: int = 4
     summary: str
     cutoff_event_id: str
     cutoff_sequence: int

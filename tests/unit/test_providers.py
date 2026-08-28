@@ -4,6 +4,7 @@ import json
 import sys
 import textwrap
 from pathlib import Path
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -639,10 +640,11 @@ async def test_llama_cpp_caps_nested_string_max_length_for_grammar() -> None:
             )
         )
     ]
-    tools = seen_request["tools"]
-    assert isinstance(tools, list)
-    parameters = tools[0]["parameters"]
-    description = parameters["$defs"]["AskUserOption"]["properties"]["description"]
+    tools = cast(list[dict[str, Any]], seen_request["tools"])
+    parameters = cast(dict[str, Any], tools[0]["parameters"])
+    description = cast(
+        dict[str, Any], parameters["$defs"]["AskUserOption"]["properties"]["description"]
+    )
     assert description["maxLength"] == 1023
     assert parameters["properties"]["question"]["maxLength"] == 1000
     await client.aclose()
@@ -874,6 +876,11 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
                             "code": -4, "message": "[ReasoningEffortParam] Invalid value: 'off'"
                         }}), flush=True)
                         continue
+                    if params.get("summary") != "auto":
+                        print(json.dumps({"id": request_id, "error": {
+                            "code": -5, "message": "reasoning summary missing"
+                        }}), flush=True)
+                        continue
                     if params.get("sandboxPolicy", {}).get("type") != "externalSandbox":
                         print(json.dumps({"id": request_id, "error": {
                             "code": -3, "message": "external sandbox missing"}}), flush=True)
@@ -890,10 +897,22 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
                     elif "USE TOOL" in prompt:
                         emit_tool(900, "call-1", "read_file", {"path": "README.md"})
                     else:
+                        print(json.dumps({"method": "item/reasoning/summaryPartAdded",
+                                          "params": {"itemId": "r1", "threadId": "thread-1",
+                                                     "turnId": "turn-1", "summaryIndex": 0}}),
+                              flush=True)
                         print(json.dumps({"method": "item/reasoning/summaryTextDelta",
                                           "params": {"delta": "consider ", "itemId": "r1",
                                                      "threadId": "thread-1", "turnId": "turn-1",
                                                      "summaryIndex": 0}}), flush=True)
+                        print(json.dumps({"method": "item/reasoning/summaryPartAdded",
+                                          "params": {"itemId": "r1", "threadId": "thread-1",
+                                                     "turnId": "turn-1", "summaryIndex": 1}}),
+                              flush=True)
+                        print(json.dumps({"method": "item/reasoning/summaryTextDelta",
+                                          "params": {"delta": "decide", "itemId": "r1",
+                                                     "threadId": "thread-1", "turnId": "turn-1",
+                                                     "summaryIndex": 1}}), flush=True)
                         print(json.dumps({"method": "item/agentMessage/delta",
                                           "params": {"delta": "answer", "itemId": "a1",
                                                      "threadId": "thread-1", "turnId": "turn-1"}}),
@@ -954,10 +973,15 @@ async def test_codex_subscription_discovers_models_and_normalizes_app_server_str
     assert [event.kind for event in events] == [
         StreamEventKind.STARTED,
         StreamEventKind.REASONING_DELTA,
+        StreamEventKind.REASONING_DELTA,
         StreamEventKind.TEXT_DELTA,
         StreamEventKind.USAGE,
         StreamEventKind.COMPLETED,
     ]
+    assert (
+        "".join(event.text for event in events if event.kind is StreamEventKind.REASONING_DELTA)
+        == "consider \n\ndecide"
+    )
     assert events[-2].usage is not None
     assert events[-2].usage.cached_input_tokens == 2
 

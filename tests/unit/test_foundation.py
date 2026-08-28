@@ -31,6 +31,8 @@ def test_core_contract_keeps_model_and_harness_authority_separate() -> None:
     assert "Do not claim hidden\nmemory, Skills" in CORE_CONTRACT
     assert "session_title_set" in CORE_CONTRACT
     assert "terminal_stop" in CORE_CONTRACT
+    assert "materially unrelated work" in CORE_CONTRACT
+    assert "remove the old completed tasks before adding the new checklist" in CORE_CONTRACT
 
 
 def test_foundation_is_private_and_does_not_overwrite(hames_paths: HamesPaths) -> None:

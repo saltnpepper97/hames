@@ -2136,6 +2136,7 @@ class RunManager:
                 "provider": session.provider,
                 "model": session.model,
                 "reasoning_effort": session.reasoning_effort,
+                "preserve_recent_turns": preserved,
                 "turns_compacted": len(processed),
                 "before_tokens": before_tokens,
                 "after_tokens": max(1, len(rolling_summary.encode()) // 4),
@@ -2673,9 +2674,15 @@ class RunManager:
         )
         if should_compact and run_id not in self._auto_compacted_runs:
             self._auto_compacted_runs.add(run_id)
+            provider = self.providers[session.provider]
+            preserved_turns = (
+                1
+                if getattr(provider, "adapter", "") == "codex"
+                else self.config.context.compaction_preserve_recent_turns
+            )
             _, candidates = conversation_compaction_candidates(
                 history,
-                preserve_recent_turns=self.config.context.compaction_preserve_recent_turns,
+                preserve_recent_turns=preserved_turns,
             )
             if candidates:
                 try:
@@ -2684,6 +2691,7 @@ class RunManager:
                         run_id,
                         trigger="automatic",
                         causation_id=initial_causation_id,
+                        preserve_recent_turns=preserved_turns,
                     )
                 except asyncio.CancelledError:
                     await self._append(
@@ -3761,8 +3769,8 @@ class RunManager:
                 elif arguments.action == "remove":
                     summary = f"removed {label}" if label else "removed a task"
                 elif arguments.status:
-                    status = arguments.status.replace("_", " ")
-                    summary = f"marked {label} {status}" if label else f"marked {status}"
+                    task_status = arguments.status.replace("_", " ")
+                    summary = f"marked {label} {task_status}" if label else f"marked {task_status}"
                 else:
                     summary = f"updated {label}" if label else "updated a task"
                 return ToolResult(
@@ -3829,11 +3837,13 @@ class RunManager:
                 return ToolResult(
                     status="completed",
                     summary=summary,
-                    structured_data={
-                        "closed": closed,
-                        "terminal_ids": wanted,
-                        "remaining": remaining,
-                    },
+                    structured_data=JSON_OBJECT.validate_python(
+                        {
+                            "closed": closed,
+                            "terminal_ids": wanted,
+                            "remaining": remaining,
+                        }
+                    ),
                 )
             if isinstance(arguments, MemoryAddArguments):
                 candidate = MemoryCandidate(
