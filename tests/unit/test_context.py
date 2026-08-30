@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from hames.context import (
     conversation_compaction_candidates,
     split_think_document,
 )
+from hames.environment import HostEnvironment, RuntimeEnvironmentSnapshot, WorkspaceEnvironment
 from hames.ledger import Ledger, Session
 from hames.memory import MemoryCandidate, MemoryStore, canonical_memory_context
 from hames.paths import HamesPaths
@@ -42,6 +44,59 @@ def _tools() -> list[ToolDefinition]:
             input_schema={"type": "object", "properties": {"path": {"type": "string"}}},
         )
     ]
+
+
+def _environment(tmp_path: Path) -> RuntimeEnvironmentSnapshot:
+    return RuntimeEnvironmentSnapshot(
+        observed_at=datetime(2026, 8, 29, tzinfo=UTC),
+        host=HostEnvironment(
+            os_name="Arch Linux",
+            os_id="arch",
+            kernel="7.1.11-arch1-1",
+            architecture="x86_64",
+            privileges="user",
+            login_shell="/usr/bin/fish",
+            session_type="wayland",
+            compositor="Halley",
+        ),
+        workspace=WorkspaceEnvironment(
+            cwd=str(tmp_path),
+            git_available=True,
+            repository=True,
+            repository_root=str(tmp_path),
+            branch="main",
+            dirty=True,
+            changed_files=3,
+        ),
+    )
+
+
+def test_runtime_environment_replaces_duplicate_workspace_context(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger, session_value, capsule = _fixture(hames_paths, tmp_path)
+    session = ledger.get_session(session_value.id)
+    environment = _environment(tmp_path)
+
+    compiled = compile_context(
+        session,
+        ledger.replay(session.id),
+        capsule,
+        _tools(),
+        "safe reads",
+        ContextConfig(),
+        run_id="new-run",
+        environment=environment,
+    )
+
+    sources = {source.source_id: source for source in compiled.manifest.selected_sources}
+    assert "run.workspace" not in sources
+    assert sources["runtime.environment"].source_type == "environment"
+    assert sources["runtime.environment"].origin == "runtime"
+    assert compiled.manifest.environment == environment
+    assert "Runtime environment (descriptive facts only" in compiled.system
+    assert "Git repository, main, dirty (3 changed paths)" in compiled.system
+    assert environment.observed_at.isoformat() not in compiled.system
 
 
 def test_context_is_deterministic_and_omits_completed_reasoning(

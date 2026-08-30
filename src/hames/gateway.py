@@ -33,6 +33,7 @@ from hames.broker import EventBroker
 from hames.config import HamesConfig, ProviderProfileConfig, load_config
 from hames.control import ControlStore
 from hames.database import Database
+from hames.environment import RuntimeEnvironmentSnapshot
 from hames.evolution import Scar, ScarStatus, ScarStore
 from hames.evolution_runtime import EvolutionManager
 from hames.goals import Goal
@@ -964,6 +965,17 @@ def create_app(state: GatewayState) -> FastAPI:
     async def get_session(session_id: str) -> Session:
         try:
             return await asyncio.to_thread(state.ledger.get_session, session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+
+    @app.get(
+        "/v1/sessions/{session_id}/environment",
+        dependencies=auth,
+        response_model=RuntimeEnvironmentSnapshot,
+    )
+    async def get_session_environment(session_id: str) -> RuntimeEnvironmentSnapshot:
+        try:
+            return await state.runs.environment_snapshot(session_id)
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
 

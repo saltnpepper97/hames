@@ -6,6 +6,7 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from hames.environment import RuntimeEnvironmentSnapshot
 from hames.providers.base import JSON_OBJECT, JsonValue
 
 
@@ -222,6 +223,7 @@ class ContextCompiledPayload(EventPayload):
     agent_capsule_hash: str
     agent_capsule_path: str
     agent_origin: str = "global"
+    environment: RuntimeEnvironmentSnapshot | None = None
 
 
 class ContextCompactionStartedPayload(EventPayload):

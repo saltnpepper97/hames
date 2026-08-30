@@ -85,6 +85,38 @@ class ForegroundOverlapProvider:
 
 
 @pytest.mark.asyncio
+async def test_session_environment_endpoint_exposes_current_workspace(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+
+            response = await client.get(f"/v1/sessions/{session_id}/environment", headers=headers)
+
+            assert response.status_code == 200
+            environment = response_object(response)
+            workspace = JSON_OBJECT.validate_python(environment["workspace"])
+            assert workspace["cwd"] == str(tmp_path)
+            assert workspace["repository"] is False
+            assert environment["tool_shell"] == "/bin/bash"
+            assert environment["tool_terminal"] == "noninteractive"
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
 async def test_message_submission_ids_replay_without_duplicate_runs_or_queue_entries(
     tmp_path: Path,
 ) -> None:

@@ -36,6 +36,7 @@ from hames.context import (
     split_think_document,
 )
 from hames.control import Approval, ControlStore
+from hames.environment import EnvironmentSnapshotter, RuntimeEnvironmentSnapshot
 from hames.evolution import ScarStore
 from hames.evolution_runtime import MODEL_BEHAVIOR_REPAIR_LAYERS
 from hames.goals import Goal, GoalStore
@@ -394,6 +395,7 @@ class RunManager:
         self.broker = broker
         self.search = search
         self.tools = ToolRegistry(search=search)
+        self.environment = EnvironmentSnapshotter()
         self.skills = SkillRegistry(
             paths.skills,
             ledger,
@@ -1520,6 +1522,10 @@ class RunManager:
             if terminal.session_id == session_id and terminal.process.returncode is None
         ]
 
+    async def environment_snapshot(self, session_id: str) -> RuntimeEnvironmentSnapshot:
+        session = await asyncio.to_thread(self.ledger.get_session, session_id)
+        return await asyncio.to_thread(self.environment.capture, Path(session.working_directory))
+
     @property
     def active_background_terminal_count(self) -> int:
         return sum(
@@ -2645,6 +2651,9 @@ class RunManager:
         policy_summary = f"{POLICY_SUMMARY} {MODE_POLICY_SUMMARIES[interaction_mode]}"
         if healing_run:
             policy_summary = f"{policy_summary} {HEALING_POLICY_SUMMARY}"
+        environment = await asyncio.to_thread(
+            self.environment.capture, Path(session.working_directory)
+        )
         context = compile_context(
             session,
             history,
@@ -2663,6 +2672,7 @@ class RunManager:
             scar_budget_tokens=self.config.evolution.scar_context_budget_tokens,
             plugin_sources=plugin_sources,
             plugin_budget_tokens=self.config.plugins.context_budget_tokens,
+            environment=environment,
         )
         should_compact = context.manifest.estimated_input_tokens >= (
             self.config.context.auto_compaction_threshold_tokens(
@@ -2742,6 +2752,7 @@ class RunManager:
                         scar_budget_tokens=self.config.evolution.scar_context_budget_tokens,
                         plugin_sources=plugin_sources,
                         plugin_budget_tokens=self.config.plugins.context_budget_tokens,
+                        environment=environment,
                     )
         reasoning_budget_tokens = (
             512
