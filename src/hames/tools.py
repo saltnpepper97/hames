@@ -832,8 +832,9 @@ class TerminalStopTool(ToolBase):
 class GoalReportTool(ToolBase):
     name = "goal_report"
     description = (
-        "Report evidence-backed progress or explicitly finish the current autonomous goal as "
-        "achieved or blocked. Ordinary final text does not finish a goal."
+        "During the active step of an autonomous goal, report evidence-backed progress or "
+        "explicitly finish that goal as achieved or blocked. This tool is unavailable to "
+        "ordinary and foreground runs; ordinary final text does not finish a goal."
     )
     side_effect_class = "goal_management"
     arguments_type: ClassVar[type[ToolArguments]] = GoalReportArguments

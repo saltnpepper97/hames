@@ -110,6 +110,7 @@ pub async fn run() -> Result<()> {
                     Some(Ok(event)) => {
                         let pointer_moved = matches!(&event, Event::Mouse(MouseEvent { kind: MouseEventKind::Moved, .. }));
                         app.error_notice = None;
+                        app.dismiss_notice();
                         let effect = handle_terminal_event(&mut app, event);
                         if pointer_moved {
                             suppress_redraw = true;
@@ -612,6 +613,7 @@ fn repeat_safe_key(app: &App, key: KeyEvent) -> bool {
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+    app.clear_composer_selection();
     if key.code != KeyCode::Esc {
         app.clear_escape_confirmation();
     }
@@ -792,8 +794,8 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             }
             action.map(Effect::Menu)
         }
-        KeyCode::Up if app.composer.is_empty() => {
-            if !app.queued_messages.is_empty() {
+        KeyCode::Up if app.composer.is_empty() || app.history_index.is_some() => {
+            if app.history_index.is_none() && !app.queued_messages.is_empty() {
                 Some(Effect::TakeLatestQueued)
             } else {
                 app.history_previous();
@@ -1477,6 +1479,12 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                 .rev()
                 .find(|region| region.contains(mouse.column, mouse.row))
                 .cloned();
+            if !matches!(
+                region.as_ref().map(|item| &item.action),
+                Some(HitAction::FocusComposer)
+            ) {
+                app.clear_composer_selection();
+            }
             match region.as_ref().map(|item| item.action.clone()) {
                 Some(HitAction::Scrollbar {
                     target,
@@ -1600,6 +1608,15 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                 }
                 Some(HitAction::FocusComposer) => {
                     app.clear_transcript_selection();
+                    app.clear_modal_selection();
+                    if let Some(cursor) =
+                        app.composer_viewport
+                            .cursor_at(mouse.column, mouse.row, false)
+                    {
+                        app.begin_composer_selection(cursor);
+                    } else {
+                        app.clear_composer_selection();
+                    }
                     None
                 }
                 None => {
@@ -1625,6 +1642,13 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
         MouseEventKind::Drag(MouseButton::Left) => {
             if let Some(drag) = app.scroll_drag.clone() {
                 scroll_to_pointer(app, &drag, mouse.row);
+            } else if app.selecting_composer {
+                if let Some(cursor) = app
+                    .composer_viewport
+                    .cursor_at(mouse.column, mouse.row, true)
+                {
+                    app.update_composer_selection(cursor);
+                }
             } else if app.selecting_modal {
                 if let Some(point) = app.modal_viewport.point(mouse.column, mouse.row) {
                     app.update_modal_selection(point);
@@ -1636,6 +1660,27 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
         }
         MouseEventKind::Up(MouseButton::Left) => {
             app.scroll_drag = None;
+            if app.selecting_composer {
+                let anchor = app.composer_selection.map(|selection| selection.anchor);
+                let leading = app
+                    .composer_viewport
+                    .cursor_at(mouse.column, mouse.row, false);
+                let had_range = app
+                    .composer_selection
+                    .is_some_and(|selection| selection.anchor != selection.head);
+                let cursor = if had_range || leading.is_some_and(|cursor| Some(cursor) != anchor) {
+                    app.composer_viewport
+                        .cursor_at(mouse.column, mouse.row, true)
+                } else {
+                    leading
+                };
+                if let Some(cursor) = cursor {
+                    app.update_composer_selection(cursor);
+                }
+                if let Some(text) = app.finish_composer_selection() {
+                    return Some(Effect::Copy(text));
+                }
+            }
             if app.selecting_modal {
                 if let Some(point) = app.modal_viewport.point(mouse.column, mouse.row) {
                     app.update_modal_selection(point);
@@ -2524,22 +2569,10 @@ async fn apply_menu_action(
                 app.notice = Some(format!("Using {provider} / {model} · reasoning off"));
                 return Ok(None);
             }
-            if let Some(reasoning) = app
-                .remembered_reasoning_effort(&provider, &model)
-                .filter(|effort| efforts.iter().any(|supported| supported == effort))
-                .map(str::to_owned)
-            {
-                app.session = client
-                    .update_session(&app.session.id, &provider, &model, &reasoning)
-                    .await?;
-                app.remember_current_reasoning_effort();
-                app.context_usage = None;
-                app.sheet = None;
-                app.notice = Some(format!(
-                    "Using {provider} / {model} · reasoning {reasoning}"
-                ));
-                return Ok(None);
-            }
+            let selected_effort = model_effort_selection(
+                &efforts,
+                app.remembered_reasoning_effort(&provider, &model),
+            );
             app.notice = None;
             app.sheet = Some(Sheet {
                 kind: SheetKind::Efforts,
@@ -2556,7 +2589,7 @@ async fn apply_menu_action(
                         },
                     })
                     .collect(),
-                selected: 0,
+                selected: selected_effort,
                 pending_delete: None,
             });
         }
@@ -3421,6 +3454,12 @@ fn model_efforts(model: &ProviderModel) -> Vec<String> {
     efforts
 }
 
+fn model_effort_selection(efforts: &[String], remembered: Option<&str>) -> usize {
+    remembered
+        .and_then(|remembered| efforts.iter().position(|effort| effort == remembered))
+        .unwrap_or(0)
+}
+
 fn provider_menu_label(profile: &crate::api::ProviderProfile) -> String {
     match profile.adapter.as_str() {
         "llama_cpp" => "llama.cpp".to_owned(),
@@ -3455,18 +3494,18 @@ mod tests {
 
     use super::{
         Effect, action_error_message, agent_source, handle_key, handle_mouse,
-        handle_terminal_event, model_efforts, next_mode, parse_command, pointer_top,
-        repeat_safe_key, session_exit_notice, terminal_tab_title, workspace_identity,
+        handle_terminal_event, model_effort_selection, model_efforts, next_mode, parse_command,
+        pointer_top, repeat_safe_key, session_exit_notice, terminal_tab_title, workspace_identity,
     };
     use crate::api::{
         Goal, MemoryRecord, PlanRevision, PlanState, ProviderModel, QueuedMessage, Scar, Session,
         SessionTask, SessionTaskList, SkillSummary, SseDecoder,
     };
     use crate::tui::app::{
-        AgentEditor, App, HitAction, HitRegion, InlineEditor, InlineEditorKind, MemoryBrowser,
-        MenuAction, MenuOption, Modal, QuestionInputKind, QuestionOption, QuestionTray,
-        ScarBrowser, ScarEditField, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind,
-        TranscriptItem, TranscriptViewport,
+        AgentEditor, App, ComposerCell, ComposerRowMap, ComposerViewport, HitAction, HitRegion,
+        InlineEditor, InlineEditorKind, MemoryBrowser, MenuAction, MenuOption, Modal,
+        QuestionInputKind, QuestionOption, QuestionTray, ScarBrowser, ScarEditField, ScrollDrag,
+        ScrollTarget, Sheet, SheetKind, ThemeKind, TranscriptItem, TranscriptViewport,
     };
 
     #[test]
@@ -3916,6 +3955,17 @@ mod tests {
         app.composer.clear();
         handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(app.composer.text(), "older");
+    }
+
+    #[test]
+    fn repeated_up_walks_deep_input_history() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.message_history = (0..50).map(|index| format!("message {index}")).collect();
+
+        for expected in (25..50).rev() {
+            assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)).is_none());
+            assert_eq!(app.composer.text(), format!("message {expected}"));
+        }
     }
 
     #[test]
@@ -4500,6 +4550,26 @@ mod tests {
     }
 
     #[test]
+    fn escape_confirmation_and_notice_expire_together() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-1".to_owned());
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).is_none());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Press Esc again to interrupt current work")
+        );
+
+        app.expire_escape_confirmation_for_test();
+        assert!(app.transient_notice().is_none());
+        assert!(app.notice.is_none());
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).is_none());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Press Esc again to interrupt current work")
+        );
+    }
+
+    #[test]
     fn two_escapes_pause_an_active_goal_step() {
         let mut app = App::new(session(), Vec::new(), true);
         app.active_run = Some("run-goal".to_owned());
@@ -4572,6 +4642,95 @@ mod tests {
             ),
             Some(Effect::Copy(text)) if text == "Hames"
         ));
+    }
+
+    #[test]
+    fn mouse_drag_selects_and_copies_composer_text() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.composer.insert_text("Hames input");
+        app.composer_viewport = ComposerViewport {
+            x: 2,
+            y: 3,
+            width: 30,
+            height: 1,
+            line_offset: 0,
+            rows: vec![ComposerRowMap {
+                start_cursor: 0,
+                end_cursor: 11,
+                cells: (0..11)
+                    .map(|index| ComposerCell {
+                        start_column: index + 2,
+                        end_column: index + 3,
+                        unit_index: index,
+                    })
+                    .collect(),
+            }],
+            cursor_row: 0,
+            cursor_column: 13,
+        };
+        app.hits.push(HitRegion {
+            x: 1,
+            y: 2,
+            width: 32,
+            height: 3,
+            action: HitAction::FocusComposer,
+        });
+
+        for (kind, column) in [
+            (MouseEventKind::Down(MouseButton::Left), 6),
+            (MouseEventKind::Drag(MouseButton::Left), 10),
+        ] {
+            assert!(
+                handle_mouse(
+                    &mut app,
+                    MouseEvent {
+                        kind,
+                        column,
+                        row: 3,
+                        modifiers: KeyModifiers::NONE,
+                    },
+                )
+                .is_none()
+            );
+        }
+        assert!(matches!(
+            handle_mouse(
+                &mut app,
+                MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    column: 10,
+                    row: 3,
+                    modifiers: KeyModifiers::NONE,
+                },
+            ),
+            Some(Effect::Copy(text)) if text == "mes i"
+        ));
+
+        assert!(
+            handle_mouse(
+                &mut app,
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: 7,
+                    row: 3,
+                    modifiers: KeyModifiers::NONE,
+                },
+            )
+            .is_none()
+        );
+        assert!(
+            handle_mouse(
+                &mut app,
+                MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    column: 7,
+                    row: 3,
+                    modifiers: KeyModifiers::NONE,
+                },
+            )
+            .is_none()
+        );
+        assert_eq!(app.composer.cursor, 3);
     }
 
     #[test]
@@ -4709,6 +4868,20 @@ mod tests {
             ..qwen
         };
         assert_eq!(model_efforts(&legacy_default), ["high", "off"]);
+    }
+
+    #[test]
+    fn remembered_model_effort_is_highlighted_for_confirmation() {
+        let efforts = vec![
+            "low".to_owned(),
+            "medium".to_owned(),
+            "xhigh".to_owned(),
+            "off".to_owned(),
+        ];
+
+        assert_eq!(model_effort_selection(&efforts, Some("medium")), 1);
+        assert_eq!(model_effort_selection(&efforts, Some("unsupported")), 0);
+        assert_eq!(model_effort_selection(&efforts, None), 0);
     }
 
     fn session() -> Session {

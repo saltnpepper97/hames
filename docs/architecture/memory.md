@@ -79,7 +79,9 @@ Extraction jobs are durable and bounded. A gateway restart moves interrupted
 is available through `/memory status` and `/memory retry`. Chat completion does not
 wait for extraction.
 
-The active provider is wrapped by one async serialization lock. Foreground agent
-turns and maintenance extraction therefore cannot interleave streams against a
-local llama.cpp or Ollama server. A memory-specific provider, model, and reasoning
-effort can be configured; blank values inherit the session selection.
+Each provider profile permits concurrent foreground agent streams. Maintenance
+work remains exclusive and yields to waiting foreground work, so extraction and
+skill jobs cannot consume an interactive provider slot indefinitely. A backend
+with its own concurrency limit may still queue or reject excess requests. A
+memory-specific provider, model, and reasoning effort can be configured; blank
+values inherit the session selection.

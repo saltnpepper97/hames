@@ -17,10 +17,10 @@ use unicode_width::UnicodeWidthStr;
 
 use super::app::{
     ActivityCategory, ActivityPhase, AgentChoice, AgentEditField, AgentEditor, AgentEditorPage,
-    App, ApprovalModal, Composer, ComposerUnit, ConnectionState, DreamPhase, HitAction, HitRegion,
-    MemoryBrowser, MenuAction, Modal, QuestionInputKind, ScarBrowser, ScarEditField, ScarEditor,
-    ScrollTarget, Sheet, SheetKind, ThemeKind, TranscriptItem, TranscriptViewport, UsageModal,
-    task_checkbox,
+    App, ApprovalModal, Composer, ComposerCell, ComposerRowMap, ComposerUnit, ComposerViewport,
+    ConnectionState, DreamPhase, HitAction, HitRegion, MemoryBrowser, MenuAction, Modal,
+    QuestionInputKind, ScarBrowser, ScarEditField, ScarEditor, ScrollTarget, Sheet, SheetKind,
+    ThemeKind, TranscriptItem, TranscriptViewport, UsageModal, task_checkbox,
 };
 
 const MINT: Color = Color::Rgb(116, 226, 192);
@@ -99,7 +99,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .copy_notice()
         .map(|message| (message.to_owned(), false))
         .or_else(|| app.error_notice.clone().map(|message| (message, true)))
-        .or_else(|| app.notice.clone().map(|message| (message, false)));
+        .or_else(|| app.transient_notice().map(|message| (message, false)));
     let has_terminals = !app.background_terminals.is_empty();
     let notice_replaces_terminals = notice.is_some() && has_terminals;
     let notice_height = u16::from(notice.is_some() && !has_terminals);
@@ -1546,7 +1546,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     });
     let content_width = inner.width.saturating_sub(1).max(1);
     let content_area = Rect::new(inner.x, inner.y, content_width, inner.height);
-    let (lines, cursor_x, cursor_y) = composer_lines(app, usize::from(content_width));
+    let (lines, cursor_x, cursor_y, row_maps) = composer_lines(app, usize::from(content_width));
     let available = usize::from(inner.height);
     let automatic_start = cursor_y
         .saturating_add(1)
@@ -1557,6 +1557,16 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .unwrap_or(automatic_start)
         .min(lines.len().saturating_sub(available));
     let end = (start + available).min(lines.len());
+    app.composer_viewport = ComposerViewport {
+        x: content_area.x,
+        y: content_area.y,
+        width: content_area.width,
+        height: content_area.height,
+        line_offset: start,
+        rows: row_maps,
+        cursor_row: cursor_y,
+        cursor_column: cursor_x,
+    };
     frame.render_widget(Paragraph::new(lines[start..end].to_vec()), content_area);
     if lines.len() > available {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -1596,7 +1606,10 @@ fn render_composer(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     }
 }
 
-fn composer_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize) {
+fn composer_lines(
+    app: &App,
+    width: usize,
+) -> (Vec<Line<'static>>, usize, usize, Vec<ComposerRowMap>) {
     if app.composer.units.is_empty() {
         return (
             vec![Line::from(vec![
@@ -1610,6 +1623,7 @@ fn composer_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize)
             ])],
             2,
             0,
+            vec![ComposerRowMap::default()],
         );
     }
     let mut rows: Vec<Vec<Span<'static>>> = vec![vec![Span::styled(
@@ -1618,6 +1632,7 @@ fn composer_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize)
             .fg(composer_caret_color(&app.session.interaction_mode))
             .bold(),
     )]];
+    let mut row_maps = vec![ComposerRowMap::default()];
     let mut x = 2;
     let mut cursor = (2, 0);
     for (index, unit) in app.composer.units.iter().enumerate() {
@@ -1626,7 +1641,13 @@ fn composer_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize)
         }
         let (display, style) = match unit {
             ComposerUnit::Text(value) if value == "\n" => {
+                row_maps.last_mut().expect("composer row map").end_cursor = index;
                 rows.push(vec![Span::raw("  ")]);
+                row_maps.push(ComposerRowMap {
+                    start_cursor: index + 1,
+                    end_cursor: index + 1,
+                    cells: Vec::new(),
+                });
                 x = 2;
                 continue;
             }
@@ -1638,12 +1659,34 @@ fn composer_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize)
         };
         let token_width = UnicodeWidthStr::width(display.as_str());
         if x > 0 && x + token_width > width {
+            row_maps.last_mut().expect("composer row map").end_cursor = index;
             rows.push(vec![Span::raw("  ")]);
+            row_maps.push(ComposerRowMap {
+                start_cursor: index,
+                end_cursor: index,
+                cells: Vec::new(),
+            });
             x = 2;
             if index == app.composer.cursor {
                 cursor = (2, rows.len() - 1);
             }
         }
+        let end_column = x + token_width;
+        row_maps
+            .last_mut()
+            .expect("composer row map")
+            .cells
+            .push(ComposerCell {
+                start_column: x,
+                end_column,
+                unit_index: index,
+            });
+        row_maps.last_mut().expect("composer row map").end_cursor = index + 1;
+        let style = if app.composer_unit_selected(index) {
+            style.fg(Color::Black).bg(Color::White)
+        } else {
+            style
+        };
         rows.last_mut()
             .expect("composer row")
             .push(Span::styled(display, style));
@@ -1656,6 +1699,7 @@ fn composer_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize)
         rows.into_iter().map(Line::from).collect(),
         cursor.0,
         cursor.1,
+        row_maps,
     )
 }
 
@@ -1699,7 +1743,7 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
             ]
         } else {
             [
-                Span::styled("Esc×2", Style::default().fg(INPUT).bold()),
+                Span::styled("Esc", Style::default().fg(INPUT).bold()),
                 Span::styled(" interrupt", Style::default().fg(MUTED)),
             ]
         });
@@ -1966,7 +2010,7 @@ fn activity_bar(app: &App) -> Line<'static> {
         spans.push(Span::styled(" edit", Style::default().fg(MUTED)));
     }
     spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
-    spans.push(Span::styled("Esc×2", Style::default().fg(INPUT).bold()));
+    spans.push(Span::styled("Esc", Style::default().fg(INPUT).bold()));
     spans.push(Span::styled(
         if app.active_run_is_goal_step() {
             " pause"
@@ -2071,7 +2115,7 @@ fn compact_decimal(value: f64, suffix: &str) -> String {
 }
 
 fn composer_rows(app: &App, width: u16) -> u16 {
-    let (lines, _, _) = composer_lines(app, usize::from(width.max(1)));
+    let (lines, _, _, _) = composer_lines(app, usize::from(width.max(1)));
     u16::try_from(lines.len()).unwrap_or(u16::MAX)
 }
 
@@ -4672,7 +4716,7 @@ fn help_body(wide: bool) -> Vec<Line<'static>> {
             help_pair_line("Ctrl+P", "Preview paste", "Ctrl+Q", "Quit Hames"),
             Line::from(""),
             help_section("While working"),
-            help_pair_line("Esc×2", "Interrupt turn", "Enter", "Queue message"),
+            help_pair_line("Esc", "Interrupt turn", "Enter", "Queue message"),
             help_pair_line("Ctrl+Enter", "Send now", "Ctrl+C", "Cancel or pause"),
             help_pair_line("Alt+↑/↓", "Select queued", "Ctrl+U", "Clear logical line"),
             Line::from(""),
@@ -4706,7 +4750,7 @@ fn help_body(wide: bool) -> Vec<Line<'static>> {
         help_line("Shift+Tab", "Change mode"),
         Line::from(""),
         help_section("While working"),
-        help_line("Esc×2", "Interrupt turn"),
+        help_line("Esc", "Interrupt turn"),
         help_line("Enter", "Queue message"),
         help_line("Ctrl+Enter", "Send now"),
         help_line("Alt+↑/↓", "Select queued"),
@@ -6494,6 +6538,74 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_notice_expires_above_the_composer() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.notice = Some("Current work interrupted · priority turn queued".to_owned());
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Current work interrupted"));
+
+        app.expire_transient_notice();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(!rendered.contains("Current work interrupted"));
+    }
+
+    #[test]
+    fn composer_selection_is_visibly_highlighted() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.composer.insert_text("select me");
+        app.begin_composer_selection(0);
+        app.update_composer_selection(6);
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let x = app.composer_viewport.x + 2;
+        let y = app.composer_viewport.y;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((x, y)).unwrap().bg, Color::White);
+        assert_ne!(buffer.cell((x + 7, y)).unwrap().bg, Color::White);
+    }
+
+    #[test]
+    fn composer_vertical_navigation_preserves_visual_wrapped_column() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.composer.insert_text(&"abcdefghij".repeat(20));
+        app.composer.cursor = 140;
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let original_row = app.composer_viewport.cursor_row;
+        let original_column = app.composer_viewport.cursor_column;
+        assert!(original_row > 0);
+
+        assert!(app.handle_composer_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Up,
+            crossterm::event::KeyModifiers::NONE,
+        )));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.composer_viewport.cursor_row, original_row - 1);
+        assert_eq!(app.composer_viewport.cursor_column, original_column);
+    }
+
+    #[test]
     fn completed_compaction_is_a_collapsed_expandable_transcript_disclosure() {
         let mut app = App::new(session(), Vec::new(), true);
         app.transcript.push(TranscriptItem::Compaction {
@@ -6571,7 +6683,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("──────"));
-        assert!(rendered.contains("Waiting · 12s · Esc×2 interrupt"));
+        assert!(rendered.contains("Waiting · 12s · Esc interrupt"));
         assert!(!rendered.contains("Enter queue"));
         assert!(!rendered.contains("Ctrl+Enter send now"));
         assert!(!rendered.contains("[connected]"));
@@ -6604,7 +6716,7 @@ mod tests {
         let footer = (0..terminal.size().unwrap().width)
             .map(|x| buffer.cell((x, footer_y)).unwrap().symbol())
             .collect::<String>();
-        assert!(footer.contains("Enter queue · Ctrl+Enter send now · Esc×2 interrupt"));
+        assert!(footer.contains("Enter queue · Ctrl+Enter send now · Esc interrupt"));
 
         let enter_x = UnicodeWidthStr::width(&footer[..footer.find("Enter").unwrap()]) as u16;
         let control_x =
@@ -6635,7 +6747,7 @@ mod tests {
                     .symbol()
             })
             .collect::<String>();
-        assert!(footer.contains("Ctrl+Enter send now · Alt+↑/↓ select · ↑ edit · Esc×2 interrupt"));
+        assert!(footer.contains("Ctrl+Enter send now · Alt+↑/↓ select · ↑ edit · Esc interrupt"));
     }
 
     #[test]
@@ -6667,7 +6779,7 @@ mod tests {
             })
             .collect::<String>();
         assert!(footer.contains("Thinking"));
-        assert!(footer.contains("4s · Esc×2 interrupt"));
+        assert!(footer.contains("4s · Esc interrupt"));
     }
 
     #[test]

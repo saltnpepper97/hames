@@ -362,6 +362,27 @@ class Ledger:
             rows = connection.execute("SELECT * FROM sessions ORDER BY created_at DESC").fetchall()
         return [Session.model_validate(dict(row)) for row in rows]
 
+    def latest_root_session(self, working_directory: Path) -> Session | None:
+        """Return the most recently active foreground session for a workspace."""
+
+        canonical = working_directory.expanduser().resolve(strict=True)
+        if not canonical.is_dir():
+            raise ValueError("working_directory must be a directory")
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT s.*
+                FROM sessions s
+                JOIN events e ON e.session_id = s.id
+                WHERE s.working_directory = ? AND s.lineage_kind = 'root'
+                GROUP BY s.id
+                ORDER BY MAX(e.sequence) DESC
+                LIMIT 1
+                """,
+                (str(canonical),),
+            ).fetchone()
+        return Session.model_validate(dict(row)) if row is not None else None
+
     def recent_open_session(
         self, working_directory: Path, *, active_within_seconds: int
     ) -> Session | None:

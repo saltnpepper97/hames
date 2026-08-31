@@ -788,6 +788,7 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
             """
             import json
             import sys
+            import time
 
             pending = []
 
@@ -891,6 +892,9 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
                     if "USE TWO TOOLS" in prompt:
                         emit_tool(900, "call-1", "read_file", {"path": "a.py"})
                         pending.extend(["tool2", "complete"])
+                    elif "QUIET TURN" in prompt:
+                        time.sleep(0.2)
+                        emit_completed()
                     elif "LARGE WRITE" in prompt:
                         emit_tool(900, "call-1", "write_file",
                                   {"path": "game.py", "content": "x" * 70000})
@@ -1038,6 +1042,38 @@ async def test_codex_maps_disabled_reasoning_to_none(tmp_path: Path) -> None:
         )
     ]
     assert events[-1].kind is StreamEventKind.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_codex_quiet_turn_uses_runtime_deadline_instead_of_request_timeout(
+    tmp_path: Path,
+) -> None:
+    provider = CodexProvider(
+        command=(sys.executable, str(_fake_codex_app_server(tmp_path))),
+        timeout_seconds=0.1,
+    )
+    events = [
+        event
+        async for event in provider.stream(
+            ModelRequest(
+                model="gpt-5.4-codex",
+                messages=[ProviderMessage(role="user", content="QUIET TURN")],
+                system="contract",
+                metadata={"workspace_path": str(tmp_path)},
+                tools=[
+                    ToolDefinition(
+                        name="read_file",
+                        description="Read one file",
+                        input_schema={"type": "object"},
+                    )
+                ],
+            )
+        )
+    ]
+    assert [event.kind for event in events] == [
+        StreamEventKind.STARTED,
+        StreamEventKind.COMPLETED,
+    ]
 
 
 @pytest.mark.asyncio

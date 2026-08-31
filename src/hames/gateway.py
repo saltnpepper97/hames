@@ -81,7 +81,7 @@ from hames.plugin_runtime import (
 from hames.plugin_sandbox import PluginSandboxError
 from hames.providers import Provider, ProviderError, ProviderModel
 from hames.providers.registry import configured_providers
-from hames.providers.scheduled import SerializedProvider
+from hames.providers.scheduled import ScheduledProvider
 from hames.rules import (
     ContextRule,
     ContextRuleCondition,
@@ -531,7 +531,7 @@ class GatewayState:
         broker = EventBroker()
         raw_providers = providers or configured_providers(config)
         selected_providers: dict[str, Provider] = {
-            profile_id: SerializedProvider(provider)
+            profile_id: ScheduledProvider(provider)
             for profile_id, provider in raw_providers.items()
         }
         search = SearchMcpManager(paths, config)
@@ -799,15 +799,32 @@ def create_app(state: GatewayState) -> FastAPI:
                     "session_not_found",
                     f"unknown session: {request.inherit_session_id}",
                 ) from exc
+        contextual: Session | None = None
+        if inherited is None and not request.agent_id:
+            try:
+                contextual = await asyncio.to_thread(
+                    state.ledger.latest_root_session, Path(request.working_directory)
+                )
+            except (FileNotFoundError, ValueError) as exc:
+                raise ApiError(400, "invalid_working_directory", str(exc)) from exc
         agent_id = (
             inherited.agent_id
             if inherited is not None
-            else request.agent_id or state.config.runtime.default_agent
+            else request.agent_id
+            or (contextual.agent_id if contextual is not None else "")
+            or state.config.runtime.default_agent
         )
         try:
             await asyncio.to_thread(state.agents.load, agent_id)
         except (FileNotFoundError, ValueError) as exc:
-            raise ApiError(400, "unknown_agent", str(exc)) from exc
+            if contextual is not None and not request.agent_id:
+                agent_id = state.config.runtime.default_agent
+                try:
+                    await asyncio.to_thread(state.agents.load, agent_id)
+                except (FileNotFoundError, ValueError) as fallback_exc:
+                    raise ApiError(400, "unknown_agent", str(fallback_exc)) from fallback_exc
+            else:
+                raise ApiError(400, "unknown_agent", str(exc)) from exc
         if inherited is None:
             provider_name = request.provider or state.config.runtime.default_provider
             selection = await resolve_selection(

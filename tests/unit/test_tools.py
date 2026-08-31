@@ -272,6 +272,57 @@ def test_policy_classifies_safe_dangerous_and_protected_actions(tmp_path: Path) 
         gate.decide("shell", ShellArguments(command="cat ~/.zshrc"), context).decision
         is PolicyDecisionKind.ALLOW
     )
+    quoted_search = (
+        "cd ~/downloads/niri && "
+        "rg -n -i 'persist|quit|exit|shutdown|rm -rf|sudo|mkfs.ext4' README.md src"
+    )
+    assert (
+        gate.decide(
+            "shell",
+            ShellArguments(command=quoted_search, workspace="home"),
+            context,
+            interaction_mode="auto",
+        ).decision
+        is PolicyDecisionKind.ALLOW
+    )
+    for dangerous_command in (
+        "printf done; shutdown now",
+        "printf done | sudo tee /etc/example",
+        "sh -c 'rm -rf target'",
+    ):
+        assert (
+            gate.decide(
+                "shell",
+                ShellArguments(command=dangerous_command),
+                context,
+                interaction_mode="auto",
+            ).decision
+            is PolicyDecisionKind.REQUIRE_CONFIRMATION
+        )
+    for compositor_command in (
+        "systemctl --user restart halley.service",
+        "systemctl stop niri",
+        "gnome-shell --replace",
+        "swaymsg exit",
+        "niri msg action quit --skip-confirmation",
+    ):
+        decision = gate.decide(
+            "shell",
+            ShellArguments(command=compositor_command),
+            context,
+            interaction_mode="auto",
+        )
+        assert decision.decision is PolicyDecisionKind.REQUIRE_CONFIRMATION
+        assert decision.risk == "graphical_session"
+    assert (
+        gate.decide(
+            "shell",
+            ShellArguments(command="systemctl --user restart hames.service"),
+            context,
+            interaction_mode="auto",
+        ).decision
+        is PolicyDecisionKind.ALLOW
+    )
     assert (
         gate.decide(
             "shell",

@@ -13,7 +13,7 @@ from hames.providers import (
     StreamEvent,
     StreamEventKind,
 )
-from hames.providers.scheduled import SerializedProvider
+from hames.providers.scheduled import ScheduledProvider
 
 
 class BlockingProvider:
@@ -53,15 +53,31 @@ def _request(purpose: str) -> ModelRequest:
     )
 
 
-async def _consume(provider: SerializedProvider, purpose: str) -> None:
+async def _consume(provider: ScheduledProvider, purpose: str) -> None:
     async for _ in provider.stream(_request(purpose)):
         pass
 
 
 @pytest.mark.asyncio
+async def test_foreground_requests_run_concurrently() -> None:
+    inner = BlockingProvider()
+    provider = ScheduledProvider(inner)
+    first = asyncio.create_task(_consume(provider, "agent"))
+    first_release = await inner.releases.get()
+    second = asyncio.create_task(_consume(provider, "agent"))
+
+    second_release = await asyncio.wait_for(inner.releases.get(), timeout=1)
+    assert inner.started == ["agent", "agent"]
+
+    first_release.set()
+    second_release.set()
+    await asyncio.gather(first, second)
+
+
+@pytest.mark.asyncio
 async def test_foreground_request_runs_before_waiting_maintenance() -> None:
     inner = BlockingProvider()
-    provider = SerializedProvider(inner)
+    provider = ScheduledProvider(inner)
     first = asyncio.create_task(_consume(provider, "memory_extraction"))
     first_release = await inner.releases.get()
     second = asyncio.create_task(_consume(provider, "skill_authoring"))
@@ -80,7 +96,7 @@ async def test_foreground_request_runs_before_waiting_maintenance() -> None:
 @pytest.mark.asyncio
 async def test_foreground_preempts_long_running_maintenance_after_a_short_grace() -> None:
     inner = BlockingProvider()
-    provider = SerializedProvider(inner, foreground_grace_seconds=0.01)
+    provider = ScheduledProvider(inner, foreground_grace_seconds=0.01)
     maintenance = asyncio.create_task(_consume(provider, "memory_extraction"))
     await inner.releases.get()
 
@@ -100,12 +116,26 @@ async def test_foreground_preempts_long_running_maintenance_after_a_short_grace(
 @pytest.mark.asyncio
 async def test_account_limits_do_not_wait_for_an_active_model_stream() -> None:
     inner = BlockingProvider()
-    provider = SerializedProvider(inner)
+    provider = ScheduledProvider(inner)
     model = asyncio.create_task(_consume(provider, "agent"))
     release = await inner.releases.get()
 
     limits = await asyncio.wait_for(provider.account_rate_limits(), timeout=0.1)
     assert limits == {"weekly_window": {"used": 12, "remaining": 88}}
+
+    release.set()
+    await model
+
+
+@pytest.mark.asyncio
+async def test_model_list_does_not_wait_for_an_active_model_stream() -> None:
+    inner = BlockingProvider()
+    provider = ScheduledProvider(inner)
+    model = asyncio.create_task(_consume(provider, "agent"))
+    release = await inner.releases.get()
+
+    models = await asyncio.wait_for(provider.list_models(), timeout=0.1)
+    assert models == []
 
     release.set()
     await model

@@ -39,11 +39,6 @@ class PolicyDecision:
 
 
 _DENIED_SHELL = (
-    (
-        re.compile(r"(^|[;&|]\s*)\s*(mkfs(?:\.[a-z0-9]+)?|fdisk|parted)\b", re.I),
-        "raw filesystem mutation",
-    ),
-    (re.compile(r"\bdd\b[^\n]*(?:of=)?/dev/(?:sd|nvme|vd|hd)", re.I), "raw disk write"),
     (re.compile(r"(?:^|[\s'\"])(?:~?/)?\.hames(?:[/\s'\"]|$)"), "Hames state access"),
     (
         re.compile(r"(?:^|[\s'\"])(?:~?/)?\.codex(?:[/\s'\"]|$)"),
@@ -57,24 +52,6 @@ _DENIED_SHELL = (
         re.compile(r"(?:^|[\s'\"])(?:~?/)?\.(?:kube|env)(?:[/\s'\"]|$)"),
         "secret configuration access",
     ),
-)
-
-_CONFIRM_SHELL = (
-    (
-        re.compile(r"\brm\b[^\n;&|]*\s(?:-[A-Za-z]*r[A-Za-z]*|--recursive)(?:\s|$)", re.I),
-        "recursive deletion",
-    ),
-    (
-        re.compile(r"\bgit\s+(?:reset\s+--hard|clean\s+-[^\s]*f|push\b[^\n]*--force)", re.I),
-        "destructive Git operation",
-    ),
-    (re.compile(r"(^|[;&|]\s*)\s*(?:sudo|su)\b", re.I), "privilege escalation"),
-    (
-        re.compile(r"(^|[;&|]\s*)\s*(?:shutdown|reboot|poweroff|halt)\b", re.I),
-        "host power operation",
-    ),
-    (re.compile(r"\b(?:killall|pkill)\b", re.I), "broad process termination"),
-    (re.compile(r"\bchmod\s+(?:-[^\s]+\s+)*777\b", re.I), "broad permission change"),
 )
 
 _SECRET_NAMES = {
@@ -115,6 +92,31 @@ _MANUAL_CONFIRM_TOOLS = {
     "scar_record",
     "scar_control",
     "task_update",
+}
+
+_COMPOSITOR_NAMES = {
+    "cage",
+    "cosmic-comp",
+    "gnome-shell",
+    "halley",
+    "hyprland",
+    "kwin_wayland",
+    "labwc",
+    "mutter",
+    "niri",
+    "river",
+    "sway",
+    "wayfire",
+    "weston",
+}
+
+_SYSTEMCTL_LIFECYCLE_ACTIONS = {
+    "start",
+    "stop",
+    "restart",
+    "try-restart",
+    "reload-or-restart",
+    "reload-or-try-restart",
 }
 
 
@@ -274,9 +276,9 @@ class PolicyGate:
             for pattern, reason in _DENIED_SHELL:
                 if pattern.search(arguments.command):
                     return PolicyDecision(PolicyDecisionKind.DENY, reason, "prohibited")
-            for pattern, reason in _CONFIRM_SHELL:
-                if pattern.search(arguments.command):
-                    return PolicyDecision(PolicyDecisionKind.REQUIRE_CONFIRMATION, reason, "high")
+            shell_risk = _shell_command_risk(arguments.command)
+            if shell_risk is not None:
+                return shell_risk
             if interaction_mode == "manual":
                 workspace_root = context.root_for(arguments.workspace).resolve(strict=True)
                 for raw_path in _OUTSIDE_PATH.findall(arguments.command):
@@ -316,6 +318,132 @@ class PolicyGate:
                 "manual_mode",
             )
         return PolicyDecision(PolicyDecisionKind.ALLOW, "allowed by trusted-root policy")
+
+
+def _shell_command_risk(command: str) -> PolicyDecision | None:
+    for words in _shell_command_words(command):
+        executable = Path(words[0]).name.lower()
+        arguments = words[1:]
+        if _controls_live_compositor(executable, arguments):
+            return PolicyDecision(
+                PolicyDecisionKind.REQUIRE_CONFIRMATION,
+                "live compositor lifecycle control requires explicit human approval",
+                "graphical_session",
+            )
+        if executable.startswith("mkfs.") or executable in {"mkfs", "fdisk", "parted"}:
+            return PolicyDecision(PolicyDecisionKind.DENY, "raw filesystem mutation", "prohibited")
+        if executable == "dd" and any(argument.startswith("of=/dev/") for argument in arguments):
+            return PolicyDecision(PolicyDecisionKind.DENY, "raw disk write", "prohibited")
+        if executable in {"sudo", "su"}:
+            return PolicyDecision(
+                PolicyDecisionKind.REQUIRE_CONFIRMATION, "privilege escalation", "high"
+            )
+        if executable in {"shutdown", "reboot", "poweroff", "halt"}:
+            return PolicyDecision(
+                PolicyDecisionKind.REQUIRE_CONFIRMATION, "host power operation", "high"
+            )
+        if executable == "rm" and any(
+            argument == "--recursive"
+            or re.fullmatch(r"-[A-Za-z]*r[A-Za-z]*", argument, re.I) is not None
+            for argument in arguments
+        ):
+            return PolicyDecision(
+                PolicyDecisionKind.REQUIRE_CONFIRMATION, "recursive deletion", "high"
+            )
+        if executable == "git" and _destructive_git_arguments(arguments):
+            return PolicyDecision(
+                PolicyDecisionKind.REQUIRE_CONFIRMATION, "destructive Git operation", "high"
+            )
+        if executable in {"killall", "pkill"}:
+            return PolicyDecision(
+                PolicyDecisionKind.REQUIRE_CONFIRMATION, "broad process termination", "high"
+            )
+        if executable == "chmod" and "777" in arguments:
+            return PolicyDecision(
+                PolicyDecisionKind.REQUIRE_CONFIRMATION, "broad permission change", "high"
+            )
+    return None
+
+
+def _controls_live_compositor(executable: str, arguments: list[str]) -> bool:
+    if executable == "systemctl":
+        positional = [argument.lower() for argument in arguments if not argument.startswith("-")]
+        action_index = next(
+            (
+                index
+                for index, argument in enumerate(positional)
+                if argument in _SYSTEMCTL_LIFECYCLE_ACTIONS
+            ),
+            None,
+        )
+        if action_index is None:
+            return False
+        units = positional[action_index + 1 :]
+        return any(_is_compositor_name(unit) for unit in units)
+    if executable in {"halleyctl", "hyprctl", "niri", "swaymsg"}:
+        disruptive = {"exit", "quit", "restart", "stop"}
+        if any(argument.lower() in disruptive for argument in arguments):
+            return True
+    if executable in _COMPOSITOR_NAMES:
+        return any(argument.lower() == "--replace" for argument in arguments)
+    return False
+
+
+def _is_compositor_name(value: str) -> bool:
+    normalized = Path(value).name.lower()
+    for suffix in (".service", ".target", ".scope"):
+        normalized = normalized.removesuffix(suffix)
+    return normalized in _COMPOSITOR_NAMES or normalized == "display-manager"
+
+
+def _shell_command_words(command: str) -> list[list[str]]:
+    commands: list[list[str]] = []
+    for clause in _plan_shell_clauses(command):
+        try:
+            words = shlex.split(clause)
+        except ValueError:
+            continue
+        while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):
+            words.pop(0)
+        if not words:
+            continue
+        executable = Path(words[0]).name.lower()
+        if executable == "env":
+            words.pop(0)
+            while words and (words[0].startswith("-") or "=" in words[0]):
+                words.pop(0)
+        elif executable == "command":
+            words.pop(0)
+            while words and words[0].startswith("-"):
+                words.pop(0)
+        elif executable == "nohup":
+            words.pop(0)
+        if not words:
+            continue
+        executable = Path(words[0]).name.lower()
+        if executable in {"bash", "sh", "zsh"} and len(words) >= 3 and words[1] == "-c":
+            commands.extend(_shell_command_words(words[2]))
+        else:
+            commands.append(words)
+    return commands
+
+
+def _destructive_git_arguments(arguments: list[str]) -> bool:
+    if not arguments:
+        return False
+    operation = arguments[0]
+    if operation == "reset":
+        return "--hard" in arguments[1:]
+    if operation == "clean":
+        return any(
+            argument == "--force"
+            or re.fullmatch(r"-[A-Za-z]*f[A-Za-z]*", argument, re.I) is not None
+            for argument in arguments[1:]
+        )
+    return operation == "push" and any(
+        argument == "--force" or argument.startswith("--force-with-lease")
+        for argument in arguments[1:]
+    )
 
 
 def _plan_shell_allowed(command: str) -> bool:

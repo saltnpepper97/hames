@@ -1,4 +1,4 @@
-"""Serialize access to a provider shared by interactive and maintenance calls."""
+"""Schedule interactive and maintenance calls sharing one provider profile."""
 
 from __future__ import annotations
 
@@ -23,26 +23,24 @@ MAINTENANCE_PURPOSES = {
 }
 
 
-class SerializedProvider:
+class ScheduledProvider:
     def __init__(self, inner: Provider, *, foreground_grace_seconds: float = 0.4) -> None:
         self.inner = inner
         self.profile_id = inner.profile_id
         self.adapter = inner.adapter
         self.base_url = inner.base_url
         self._condition = asyncio.Condition()
-        self._active = False
-        self._active_maintenance = False
-        self._active_task: asyncio.Task[object] | None = None
+        self._active_foreground_tasks: set[asyncio.Task[object]] = set()
+        self._active_maintenance_task: asyncio.Task[object] | None = None
         self._preempted_tasks: set[asyncio.Task[object]] = set()
         self._foreground_waiters = 0
         self._foreground_grace_seconds = foreground_grace_seconds
 
     async def list_models(self) -> list[ProviderModel]:
-        await self._acquire(maintenance=False)
-        try:
-            return await self.inner.list_models()
-        finally:
-            await self._release()
+        # Model discovery uses a separate control request/connection for every
+        # supported provider. Do not queue /model behind a potentially long
+        # generation stream.
+        return await self.inner.list_models()
 
     def cached_account_rate_limits(self) -> dict[str, JsonValue] | None:
         reader = getattr(self.inner, "cached_account_rate_limits", None)
@@ -61,8 +59,8 @@ class SerializedProvider:
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
         maintenance = str(request.metadata.get("purpose", "agent")) in MAINTENANCE_PURPOSES
-        await self._acquire(maintenance=maintenance)
         task = asyncio.current_task()
+        await self._acquire(task, maintenance=maintenance)
         try:
             async for event in self.inner.stream(request):
                 yield event
@@ -77,53 +75,51 @@ class SerializedProvider:
                 ) from None
             raise
         finally:
-            await self._release(task)
+            await self._release(task, maintenance=maintenance)
 
-    async def _acquire(self, *, maintenance: bool) -> None:
+    async def _acquire(self, task: asyncio.Task[object] | None, *, maintenance: bool) -> None:
         async with self._condition:
             if maintenance:
-                while self._active or self._foreground_waiters:
+                while (
+                    self._active_foreground_tasks
+                    or self._active_maintenance_task is not None
+                    or self._foreground_waiters
+                ):
                     await self._condition.wait()
-                self._activate(maintenance=True)
+                self._active_maintenance_task = task
                 return
             self._foreground_waiters += 1
             try:
                 deadline: float | None = None
-                while self._active:
-                    if self._active_maintenance and self._active_task is not None:
-                        deadline = deadline or (
-                            asyncio.get_running_loop().time() + self._foreground_grace_seconds
-                        )
-                        remaining = deadline - asyncio.get_running_loop().time()
-                        if remaining <= 0:
-                            if self._active_task not in self._preempted_tasks:
-                                self._preempted_tasks.add(self._active_task)
-                                self._active_task.cancel()
-                            await self._condition.wait()
-                            continue
-                        try:
-                            await asyncio.wait_for(self._condition.wait(), timeout=remaining)
-                        except TimeoutError:
-                            continue
-                    else:
+                while self._active_maintenance_task is not None:
+                    deadline = deadline or (
+                        asyncio.get_running_loop().time() + self._foreground_grace_seconds
+                    )
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        maintenance_task = self._active_maintenance_task
+                        if maintenance_task not in self._preempted_tasks:
+                            self._preempted_tasks.add(maintenance_task)
+                            maintenance_task.cancel()
                         await self._condition.wait()
-                self._activate(maintenance=False)
+                        continue
+                    try:
+                        await asyncio.wait_for(self._condition.wait(), timeout=remaining)
+                    except TimeoutError:
+                        continue
+                if task is not None:
+                    self._active_foreground_tasks.add(task)
             finally:
                 self._foreground_waiters -= 1
                 self._condition.notify_all()
 
-    def _activate(self, *, maintenance: bool) -> None:
-        self._active = True
-        self._active_maintenance = maintenance
-        self._active_task = asyncio.current_task()
-
-    async def _release(self, task: asyncio.Task[object] | None = None) -> None:
+    async def _release(self, task: asyncio.Task[object] | None, *, maintenance: bool) -> None:
         async with self._condition:
-            if task is not None and self._active_task is not task:
-                return
-            self._active = False
-            self._active_maintenance = False
-            self._active_task = None
+            if maintenance:
+                if self._active_maintenance_task is task:
+                    self._active_maintenance_task = None
+            elif task is not None:
+                self._active_foreground_tasks.discard(task)
             self._condition.notify_all()
 
     async def aclose(self) -> None:

@@ -105,14 +105,23 @@ class _CodexConnection:
     async def next_message(self) -> dict[str, JsonValue]:
         if self.pending_messages:
             return self.pending_messages.pop(0)
-        return await self.read()
+        # A running Codex turn can legitimately stay silent for longer than the
+        # control-request timeout while the model reasons. The runtime's active
+        # clock owns the overall turn deadline, so do not turn a quiet model
+        # into a provider failure here.
+        return await self.read(enforce_timeout=False)
 
-    async def read(self) -> dict[str, JsonValue]:
+    async def read(self, *, enforce_timeout: bool = True) -> dict[str, JsonValue]:
         process = self.process
         if process is None or process.stdout is None:
             raise ProviderError("provider_protocol_error", "Codex app-server is not running")
         try:
-            line = await asyncio.wait_for(process.stdout.readline(), timeout=self.timeout_seconds)
+            if enforce_timeout:
+                line = await asyncio.wait_for(
+                    process.stdout.readline(), timeout=self.timeout_seconds
+                )
+            else:
+                line = await process.stdout.readline()
         except TimeoutError as exc:
             raise ProviderError(
                 "provider_timeout", "Codex app-server timed out", retryable=True

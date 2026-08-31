@@ -39,7 +39,7 @@ from hames.control import Approval, ControlStore
 from hames.environment import EnvironmentSnapshotter, RuntimeEnvironmentSnapshot
 from hames.evolution import ScarStore
 from hames.evolution_runtime import MODEL_BEHAVIOR_REPAIR_LAYERS
-from hames.goals import Goal, GoalStore
+from hames.goals import Goal, GoalStore, project_goals
 from hames.ledger import Event, Ledger, Session, new_id
 from hames.memory import (
     MemoryCandidate,
@@ -2625,6 +2625,14 @@ class RunManager:
             # Planning produces a reviewable plan, not the execution checklist. After approval,
             # task_update is restored so the agent can create and maintain that checklist.
             allowed_tools = frozenset(allowed_tools - {"task_update"})
+        active_goal = next(
+            (goal for goal in reversed(project_goals(history)) if goal.status == "running"),
+            None,
+        )
+        if active_goal is None or active_goal.current_run_id != run_id:
+            # The runtime rejects goal reports outside the current autonomous step. Do not
+            # advertise an unusable tool to ordinary or foreground model turns.
+            allowed_tools = frozenset(allowed_tools - {"goal_report"})
         definitions = self.tools.definitions(allowed_tools)
         if self.plugin_manager is not None:
             definitions = [*definitions, *self.plugin_manager.definitions(allowed_tools)]

@@ -16,6 +16,7 @@ use crate::api::{
 
 pub const LARGE_PASTE_LINES: usize = 4;
 pub const LARGE_PASTE_BYTES: usize = 400;
+const ESCAPE_CONFIRMATION_DURATION: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ComposerUnit {
@@ -1241,11 +1242,93 @@ impl TranscriptSelection {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ComposerCell {
+    pub start_column: usize,
+    pub end_column: usize,
+    pub unit_index: usize,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ComposerRowMap {
+    pub start_cursor: usize,
+    pub end_cursor: usize,
+    pub cells: Vec<ComposerCell>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ComposerViewport {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+    pub line_offset: usize,
+    pub rows: Vec<ComposerRowMap>,
+    pub cursor_row: usize,
+    pub cursor_column: usize,
+}
+
+impl ComposerViewport {
+    pub fn cursor_at(&self, x: u16, y: u16, trailing: bool) -> Option<usize> {
+        if x < self.x
+            || x >= self.x.saturating_add(self.width)
+            || y < self.y
+            || y >= self.y.saturating_add(self.height)
+        {
+            return None;
+        }
+        let row = self.line_offset.saturating_add(usize::from(y - self.y));
+        let map = self.rows.get(row)?;
+        let column = usize::from(x - self.x);
+        for cell in &map.cells {
+            if column < cell.start_column {
+                return Some(map.start_cursor);
+            }
+            if column < cell.end_column {
+                return Some(cell.unit_index + usize::from(trailing));
+            }
+        }
+        Some(map.end_cursor)
+    }
+
+    pub fn closest_cursor(&self, row: usize, column: usize) -> Option<usize> {
+        let map = self.rows.get(row)?;
+        let end_column = map.cells.last().map_or(2, |cell| cell.end_column);
+        let mut candidates = vec![(2usize, map.start_cursor), (end_column, map.end_cursor)];
+        for cell in &map.cells {
+            candidates.push((cell.start_column, cell.unit_index));
+            candidates.push((cell.end_column, cell.unit_index + 1));
+        }
+        candidates
+            .into_iter()
+            .min_by_key(|(candidate, _)| candidate.abs_diff(column))
+            .map(|(_, cursor)| cursor)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ComposerSelection {
+    pub anchor: usize,
+    pub head: usize,
+}
+
+impl ComposerSelection {
+    pub fn bounds(self) -> (usize, usize) {
+        if self.anchor <= self.head {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CopyNotice {
     pub text: String,
     pub expires_at: Instant,
 }
+
+const NOTICE_DURATION: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConnectionState {
@@ -1295,7 +1378,7 @@ pub struct App {
     pub history_draft: Option<String>,
     pub active_run: Option<String>,
     pub run_started_at: Option<Instant>,
-    escape_armed_run: Option<String>,
+    escape_armed_run: Option<(String, Instant)>,
     pub goal: Option<Goal>,
     pub plan: PlanState,
     pub tasks: SessionTaskList,
@@ -1309,9 +1392,14 @@ pub struct App {
     pub sheet: Option<Sheet>,
     pub inline_editor: Option<InlineEditor>,
     pub notice: Option<String>,
+    notice_lifecycle: Option<(String, Instant)>,
     pub error_notice: Option<String>,
     pub scroll: usize,
     pub composer_scroll: Option<usize>,
+    pub composer_viewport: ComposerViewport,
+    pub composer_selection: Option<ComposerSelection>,
+    pub selecting_composer: bool,
+    composer_preferred_column: Option<usize>,
     pub scroll_drag: Option<ScrollDrag>,
     pub transcript_viewport: TranscriptViewport,
     pub transcript_selection: Option<TranscriptSelection>,
@@ -1400,9 +1488,14 @@ impl App {
             sheet: None,
             inline_editor: None,
             notice: None,
+            notice_lifecycle: None,
             error_notice: None,
             scroll: 0,
             composer_scroll: None,
+            composer_viewport: ComposerViewport::default(),
+            composer_selection: None,
+            selecting_composer: false,
+            composer_preferred_column: None,
             scroll_drag: None,
             transcript_viewport: TranscriptViewport::default(),
             transcript_selection: None,
@@ -1441,26 +1534,46 @@ impl App {
                 .is_some_and(|notice| notice.starts_with("Press Esc again to "))
         {
             self.notice = None;
+            self.notice_lifecycle = None;
         }
     }
 
     pub fn confirm_escape_for_active_run(&mut self, action: &str) -> bool {
-        let Some(run_id) = self.active_run.as_ref() else {
-            self.escape_armed_run = None;
+        self.expire_escape_confirmation();
+        let Some(run_id) = self.active_run.clone() else {
+            self.clear_escape_confirmation();
             return false;
         };
-        if self.escape_armed_run.as_ref() == Some(run_id) {
+        if self
+            .escape_armed_run
+            .as_ref()
+            .is_some_and(|(armed_run, _)| armed_run == &run_id)
+        {
             self.escape_armed_run = None;
             return true;
         }
-        self.escape_armed_run = Some(run_id.clone());
-        self.notice = Some(format!("Press Esc again to {action}"));
+        let expires_at = Instant::now() + ESCAPE_CONFIRMATION_DURATION;
+        let notice = format!("Press Esc again to {action}");
+        self.escape_armed_run = Some((run_id, expires_at));
+        self.notice = Some(notice.clone());
+        self.notice_lifecycle = Some((notice, expires_at));
         false
+    }
+
+    fn expire_escape_confirmation(&mut self) {
+        if self
+            .escape_armed_run
+            .as_ref()
+            .is_some_and(|(_, expires_at)| *expires_at <= Instant::now())
+        {
+            self.clear_escape_confirmation();
+        }
     }
 
     pub fn animating(&self) -> bool {
         self.active_run.is_some()
             || self.copy_notice().is_some()
+            || self.transient_notice_active()
             || self.transcript.iter().any(|item| match item {
                 TranscriptItem::Thought { live, .. } | TranscriptItem::Assistant { live, .. } => {
                     *live
@@ -1639,13 +1752,6 @@ impl App {
             |item| matches!(item, TranscriptItem::User { content, .. } if content == &draft.content),
         ) {
             self.remove_transcript_item(index);
-        }
-        if let Some(index) = self
-            .message_history
-            .iter()
-            .rposition(|content| content == &draft.content)
-        {
-            self.message_history.remove(index);
         }
         if restore && self.composer.is_empty() {
             self.composer
@@ -1885,11 +1991,134 @@ impl App {
             .map(|notice| notice.text.as_str())
     }
 
+    pub fn transient_notice(&mut self) -> Option<String> {
+        self.expire_escape_confirmation();
+        let Some(notice) = self.notice.as_ref() else {
+            self.notice_lifecycle = None;
+            return None;
+        };
+        let now = Instant::now();
+        if self
+            .notice_lifecycle
+            .as_ref()
+            .is_none_or(|(tracked, _)| tracked != notice)
+        {
+            self.notice_lifecycle = Some((notice.clone(), now + NOTICE_DURATION));
+        }
+        self.notice_lifecycle
+            .as_ref()
+            .filter(|(_, expires_at)| *expires_at > now)
+            .map(|(notice, _)| notice.clone())
+    }
+
+    pub fn transient_notice_active(&self) -> bool {
+        self.notice_lifecycle
+            .as_ref()
+            .is_some_and(|(_, expires_at)| *expires_at > Instant::now())
+    }
+
+    pub fn dismiss_notice(&mut self) {
+        self.notice = None;
+        self.notice_lifecycle = None;
+    }
+
+    #[cfg(test)]
+    pub fn expire_transient_notice(&mut self) {
+        if let Some((_, expires_at)) = &mut self.notice_lifecycle {
+            *expires_at = Instant::now() - Duration::from_millis(1);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn expire_escape_confirmation_for_test(&mut self) {
+        if let Some((_, expires_at)) = &mut self.escape_armed_run {
+            *expires_at = Instant::now() - Duration::from_millis(1);
+        }
+    }
+
     pub fn show_copy_notice(&mut self, character_count: usize) {
         self.copy_notice = Some(CopyNotice {
             text: format!("Copied to clipboard · {character_count} characters"),
             expires_at: Instant::now() + Duration::from_secs(2),
         });
+    }
+
+    pub fn begin_composer_selection(&mut self, cursor: usize) {
+        let cursor = cursor.min(self.composer.units.len());
+        self.composer.cursor = cursor;
+        self.composer_selection = Some(ComposerSelection {
+            anchor: cursor,
+            head: cursor,
+        });
+        self.selecting_composer = true;
+        self.composer_preferred_column = None;
+    }
+
+    pub fn update_composer_selection(&mut self, cursor: usize) {
+        let cursor = cursor.min(self.composer.units.len());
+        if let Some(selection) = &mut self.composer_selection
+            && self.selecting_composer
+        {
+            selection.head = cursor;
+            self.composer.cursor = cursor;
+        }
+    }
+
+    pub fn finish_composer_selection(&mut self) -> Option<String> {
+        self.selecting_composer = false;
+        let selection = self.composer_selection?;
+        let (start, end) = selection.bounds();
+        if start == end {
+            self.composer_selection = None;
+            return None;
+        }
+        let mut selected = String::new();
+        for unit in &self.composer.units[start..end] {
+            match unit {
+                ComposerUnit::Text(value) | ComposerUnit::Paste(value) => {
+                    selected.push_str(value);
+                }
+            }
+        }
+        (!selected.is_empty()).then_some(selected)
+    }
+
+    pub fn clear_composer_selection(&mut self) {
+        self.composer_selection = None;
+        self.selecting_composer = false;
+    }
+
+    pub fn composer_unit_selected(&self, index: usize) -> bool {
+        self.composer_selection
+            .map(ComposerSelection::bounds)
+            .is_some_and(|(start, end)| index >= start && index < end)
+    }
+
+    fn move_composer_vertically(&mut self, direction: isize) {
+        if self.composer_viewport.rows.is_empty() {
+            if direction < 0 {
+                self.composer.move_up();
+            } else {
+                self.composer.move_down();
+            }
+            return;
+        }
+        let current_row = self
+            .composer_viewport
+            .cursor_row
+            .min(self.composer_viewport.rows.len().saturating_sub(1));
+        let target_row = current_row
+            .saturating_add_signed(direction)
+            .min(self.composer_viewport.rows.len().saturating_sub(1));
+        if target_row == current_row {
+            return;
+        }
+        let preferred = *self
+            .composer_preferred_column
+            .get_or_insert(self.composer_viewport.cursor_column);
+        if let Some(cursor) = self.composer_viewport.closest_cursor(target_row, preferred) {
+            self.composer.cursor = cursor.min(self.composer.units.len());
+        }
     }
 
     pub fn begin_transcript_selection(&mut self, point: TranscriptPoint) {
@@ -2159,6 +2388,10 @@ impl App {
 
     pub fn handle_composer_key(&mut self, key: KeyEvent) -> bool {
         self.composer_scroll = None;
+        self.clear_composer_selection();
+        if !matches!(key.code, KeyCode::Up | KeyCode::Down) {
+            self.composer_preferred_column = None;
+        }
         match key.code {
             KeyCode::Backspace => {
                 self.composer.backspace();
@@ -2174,8 +2407,8 @@ impl App {
             }
             KeyCode::Left => self.composer.move_left(),
             KeyCode::Right => self.composer.move_right(),
-            KeyCode::Up => self.composer.move_up(),
-            KeyCode::Down => self.composer.move_down(),
+            KeyCode::Up => self.move_composer_vertically(-1),
+            KeyCode::Down => self.move_composer_vertically(1),
             KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.composer.move_buffer_home();
             }
@@ -4148,7 +4381,7 @@ mod tests {
                 .iter()
                 .any(|item| matches!(item, TranscriptItem::User { .. }))
         );
-        assert!(app.message_history.is_empty());
+        assert_eq!(app.message_history, [content]);
         assert_eq!(
             app.notice.as_deref(),
             Some("Interrupted message restored · edit and resend")
@@ -4175,7 +4408,7 @@ mod tests {
             |item| matches!(item, TranscriptItem::User { content, .. } if content == "mistyped request")
         ));
         assert!(app.composer.is_empty());
-        assert!(app.message_history.is_empty());
+        assert_eq!(app.message_history, ["mistyped request"]);
     }
 
     #[test]

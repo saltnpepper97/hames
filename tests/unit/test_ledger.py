@@ -178,6 +178,38 @@ def test_recent_open_session_uses_canonical_cwd_and_latest_activity(
         ledger.recent_open_session(tmp_path, active_within_seconds=0)
 
 
+def test_latest_root_session_uses_workspace_activity_and_includes_closed(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    first = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="reviewer",
+        provider="fake",
+        model="fixture",
+    )
+    latest = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    ledger.close_session(latest.id)
+    ledger.append(
+        session_id=first.id,
+        event_type="user.message",
+        agent_id=first.agent_id,
+        payload={"content": "most recently active"},
+    )
+    ledger.close_session(first.id)
+
+    selected = ledger.latest_root_session(tmp_path / ".")
+
+    assert selected is not None
+    assert selected.id == first.id
+    assert selected.agent_id == "reviewer"
+
+
 def test_m00_migration_preserves_events(hames_paths: HamesPaths, tmp_path: Path) -> None:
     old_database = Database(hames_paths.database, migrations=MIGRATIONS[:2])
     old_database.migrate()

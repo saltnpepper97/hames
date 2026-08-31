@@ -2502,6 +2502,19 @@ base_url = "http://127.0.0.1:8080"
             )
             assert changed_mode.status_code == 200
 
+            contextual = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path)},
+            )
+            assert contextual.status_code == 201, contextual.text
+            contextual_body = response_object(contextual)
+            assert contextual_body["agent_id"] == "default"
+            assert contextual_body["provider"] == "fake"
+            assert contextual_body["model"] == "fixture"
+            assert contextual_body["reasoning_effort"] == "medium"
+            assert contextual_body["interaction_mode"] == "auto"
+
             inherited = await client.post(
                 "/v1/sessions",
                 headers=headers,
@@ -3209,6 +3222,8 @@ async def test_foreground_request_yields_goal_then_goal_resumes_after_queue_sett
             assert len(provider.requests) >= 4
             assert provider.requests[1].messages[-1].content == "Answer this first"
             assert "Active autonomous goal" in provider.requests[2].system
+            assert "goal_report" not in {tool.name for tool in provider.requests[1].tools}
+            assert "goal_report" in {tool.name for tool in provider.requests[2].tools}
     finally:
         await state.runs.close()
 
