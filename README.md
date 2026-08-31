@@ -152,9 +152,9 @@ Shift+Tab cycles
 Manual, Auto, and Plan modes, with a distinct composer border for each. Ctrl+K
 opens the command palette, Page Up/Page Down and the mouse wheel scroll the
 transcript, and Enter or Space expands a selected Thought. Large pastes become
-compact capsules without losing their exact durable content. Recent sessions for
-the current directory are offered when the TUI opens. Scrollbar tracks and solid
-thumbs support anchored dragging, so grabbing a thumb never teleports the view.
+compact capsules without losing their exact durable content. The TUI always opens
+to a new session; `/sessions` offers prior open work explicitly. Scrollbar tracks
+and solid thumbs support anchored dragging, so grabbing a thumb never teleports the view.
 `/themes` switches between the default
 custom Hames palette and terminal-native colors. The choice is a global client
 preference in `~/.hames/ui.toml`, loaded before the first frame and shared by all
@@ -163,14 +163,14 @@ sessions.
 The bottom row keeps a right-aligned live stream badge: `[connecting]`,
 `[connected]`, `[reconnecting N]`, or `[offline]`. While idle it shows the shortcut
 hints on the left; during work those hints become a compact animated gray rule
-with a restrained white sheen, elapsed time, and `Esc interrupt`.
+with a restrained white sheen, elapsed time, and `Esc×2 interrupt`.
 Interrupted reasoning settles as a completed `Thought`, followed by a separate
 `Turn interrupted` transcript status.
 
 `/goal <objective>` starts durable autonomous work. Bare `/goal` opens its
 supervisor view; `/goal pause`, `/goal resume`, and `/goal cancel` provide direct
-controls. `Esc` pauses an active goal step, while ordinary runs retain
-`Esc interrupt`. Closing the TUI leaves a running goal with the gateway and prints
+controls. Pressing `Esc` twice pauses an active goal step, while ordinary runs use
+`Esc×2 interrupt`. Closing the TUI leaves a running goal with the gateway and prints
 the session resume handoff.
 
 Transcript and modal text support native mouse-drag selection inside the TUI.

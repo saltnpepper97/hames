@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+use chrono::Utc;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
 use tachyonfx::Effect;
@@ -10,7 +11,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::api::{
     BackgroundTerminal, ContextUsageProjection, Event, Goal, MemoryRecord, PasteSpan, PlanRevision,
     PlanState, QueueState, QueuedMessage, Scar, Session, SessionTask, SessionTaskList,
-    SkillSummary, UsageProjection, new_submission_id,
+    SkillSummary, ToolResultDetails, UsageProjection, new_submission_id,
 };
 
 pub const LARGE_PASTE_LINES: usize = 4;
@@ -168,8 +169,13 @@ impl Composer {
 
     pub fn delete_to_line_start(&mut self) {
         let start = self.line_start(self.cursor);
-        self.units.drain(start..self.cursor);
-        self.cursor = start;
+        if start < self.cursor {
+            self.units.drain(start..self.cursor);
+            self.cursor = start;
+        } else if start > 0 && self.line_end(self.cursor) == self.cursor {
+            self.units.remove(start - 1);
+            self.cursor = start - 1;
+        }
     }
 
     pub fn delete_to_line_end(&mut self) {
@@ -293,7 +299,6 @@ pub enum ActivityPhase {
 }
 
 const MAX_ACTIVITY_ROWS_PER_GROUP: usize = 20;
-const PATCH_AUTO_COLLAPSE_AFTER: Duration = Duration::from_secs(120);
 
 impl ActivityPhase {
     pub fn terminal(self) -> bool {
@@ -316,6 +321,12 @@ pub struct ActivityRow {
     pub content: String,
     pub structured_data: Value,
     pub truncated: bool,
+    pub result_event_id: Option<String>,
+    pub blob_references: Vec<String>,
+    pub detailed_content: Option<String>,
+    pub detailed_total_lines: Option<usize>,
+    pub detailed_complete: bool,
+    pub details_error: Option<String>,
     pub duration_seconds: f64,
 }
 
@@ -332,6 +343,12 @@ impl ActivityRow {
             content: String::new(),
             structured_data: Value::Null,
             truncated: false,
+            result_event_id: None,
+            blob_references: Vec::new(),
+            detailed_content: None,
+            detailed_total_lines: None,
+            detailed_complete: false,
+            details_error: None,
             duration_seconds: 0.0,
         }
     }
@@ -500,6 +517,7 @@ impl ActivityRow {
 pub enum TranscriptItem {
     User {
         content: String,
+        created_at: Option<String>,
     },
     Thought {
         run_id: String,
@@ -514,6 +532,7 @@ pub enum TranscriptItem {
         content: String,
         live: bool,
         durable: bool,
+        created_at: Option<String>,
     },
     Question {
         question: String,
@@ -535,6 +554,7 @@ pub enum TranscriptItem {
         run_id: String,
         rows: Vec<ActivityRow>,
         collapsed: bool,
+        created_at: Option<String>,
     },
     Dream {
         job_id: String,
@@ -1019,6 +1039,7 @@ pub enum MenuAction {
     Events,
     Inspect,
     Context,
+    Details,
     Memory,
     Skills,
     Scars,
@@ -1266,6 +1287,7 @@ pub struct App {
     pub transcript: Vec<TranscriptItem>,
     pub composer: Composer,
     pub queued_messages: Vec<QueuedMessage>,
+    pub selected_queue_id: Option<String>,
     pub background_terminals: Vec<BackgroundTerminal>,
     pub queue_paused: bool,
     pub message_history: Vec<String>,
@@ -1273,6 +1295,7 @@ pub struct App {
     pub history_draft: Option<String>,
     pub active_run: Option<String>,
     pub run_started_at: Option<Instant>,
+    escape_armed_run: Option<String>,
     pub goal: Option<Goal>,
     pub plan: PlanState,
     pub tasks: SessionTaskList,
@@ -1302,8 +1325,8 @@ pub struct App {
     pub last_sequence: u64,
     pub seen_events: HashSet<String>,
     pub context_usage: Option<ContextUsageProjection>,
+    pub diff_details: bool,
     model_reasoning_efforts: HashMap<(String, String), String>,
-    patch_completed_at: HashMap<(String, u64), Instant>,
     pub hits: Vec<HitRegion>,
     pub should_quit: bool,
     pub focused_thought: Option<usize>,
@@ -1345,6 +1368,7 @@ impl App {
             transcript: Vec::new(),
             composer: Composer::default(),
             queued_messages: Vec::new(),
+            selected_queue_id: None,
             background_terminals: Vec::new(),
             queue_paused: false,
             message_history: Vec::new(),
@@ -1352,6 +1376,7 @@ impl App {
             history_draft: None,
             active_run: None,
             run_started_at: None,
+            escape_armed_run: None,
             goal: None,
             plan: PlanState {
                 session_id: session_id.clone(),
@@ -1391,8 +1416,8 @@ impl App {
             last_sequence: 0,
             seen_events: HashSet::new(),
             context_usage: None,
+            diff_details: false,
             model_reasoning_efforts: HashMap::from([(initial_model, initial_effort)]),
-            patch_completed_at: HashMap::new(),
             hits: Vec::new(),
             should_quit: false,
             focused_thought: None,
@@ -1405,8 +1430,32 @@ impl App {
         for event in events {
             app.ingest_durable(event, false);
         }
-        app.collapse_replayed_patch_work();
         app
+    }
+
+    pub fn clear_escape_confirmation(&mut self) {
+        if self.escape_armed_run.take().is_some()
+            && self
+                .notice
+                .as_deref()
+                .is_some_and(|notice| notice.starts_with("Press Esc again to "))
+        {
+            self.notice = None;
+        }
+    }
+
+    pub fn confirm_escape_for_active_run(&mut self, action: &str) -> bool {
+        let Some(run_id) = self.active_run.as_ref() else {
+            self.escape_armed_run = None;
+            return false;
+        };
+        if self.escape_armed_run.as_ref() == Some(run_id) {
+            self.escape_armed_run = None;
+            return true;
+        }
+        self.escape_armed_run = Some(run_id.clone());
+        self.notice = Some(format!("Press Esc again to {action}"));
+        false
     }
 
     pub fn animating(&self) -> bool {
@@ -1424,66 +1473,10 @@ impl App {
             })
     }
 
-    pub fn next_patch_collapse_delay(&self) -> Option<Duration> {
-        let now = Instant::now();
-        self.transcript
-            .iter()
-            .filter_map(|item| {
-                let TranscriptItem::Activity {
-                    run_id,
-                    rows,
-                    collapsed: false,
-                } = item
-                else {
-                    return None;
-                };
-                patch_completion_time(&self.patch_completed_at, run_id, rows).map(|completed_at| {
-                    PATCH_AUTO_COLLAPSE_AFTER.saturating_sub(now.duration_since(completed_at))
-                })
-            })
-            .min()
-    }
-
-    pub fn collapse_stale_patch_work(&mut self, now: Instant) {
-        let mut expired = Vec::new();
-        for item in &mut self.transcript {
-            let TranscriptItem::Activity {
-                run_id,
-                rows,
-                collapsed,
-            } = item
-            else {
-                continue;
-            };
-            let Some(completed_at) = patch_completion_time(&self.patch_completed_at, run_id, rows)
-            else {
-                continue;
-            };
-            if now.duration_since(completed_at) >= PATCH_AUTO_COLLAPSE_AFTER {
-                *collapsed = true;
-                expired.extend(rows.iter().map(|row| (run_id.clone(), row.index)));
-            }
-        }
-        for key in expired {
-            self.patch_completed_at.remove(&key);
-        }
-    }
-
-    fn collapse_replayed_patch_work(&mut self) {
-        for item in &mut self.transcript {
-            if let TranscriptItem::Activity {
-                rows, collapsed, ..
-            } = item
-                && is_completed_patch_work(rows)
-            {
-                *collapsed = true;
-            }
-        }
-    }
-
     pub fn set_queue(&mut self, state: QueueState) {
         self.queue_paused = state.paused;
         self.queued_messages = state.items;
+        self.reconcile_queue_selection();
     }
 
     pub fn set_background_terminals(&mut self, terminals: Vec<BackgroundTerminal>) {
@@ -1560,7 +1553,6 @@ impl App {
     }
 
     fn upsert_task_list(&mut self) {
-        self.collapse_trailing_activity();
         let item = TranscriptItem::TaskList {
             title: self.tasks.title.clone(),
             items: self.tasks.items.clone(),
@@ -1644,7 +1636,7 @@ impl App {
             return false;
         };
         if let Some(index) = self.transcript.iter().rposition(
-            |item| matches!(item, TranscriptItem::User { content } if content == &draft.content),
+            |item| matches!(item, TranscriptItem::User { content, .. } if content == &draft.content),
         ) {
             self.remove_transcript_item(index);
         }
@@ -1774,6 +1766,45 @@ impl App {
         self.queued_messages.insert(index, item);
         for (position, queued) in self.queued_messages.iter_mut().enumerate() {
             queued.position = position + 1;
+        }
+        self.reconcile_queue_selection();
+    }
+
+    pub fn selected_queued_message(&self) -> Option<&QueuedMessage> {
+        if self.queued_messages.len() == 1 {
+            return self.queued_messages.first();
+        }
+        let selected = self.selected_queue_id.as_deref()?;
+        self.queued_messages.iter().find(|item| item.id == selected)
+    }
+
+    pub fn move_queue_selection(&mut self, direction: isize) {
+        if self.queued_messages.is_empty() {
+            self.selected_queue_id = None;
+            return;
+        }
+        let len = self.queued_messages.len();
+        let current = self.selected_queue_id.as_deref().and_then(|selected| {
+            self.queued_messages
+                .iter()
+                .position(|item| item.id == selected)
+        });
+        let next = match (current, direction.is_negative()) {
+            (Some(index), true) => index.checked_sub(1).unwrap_or(len - 1),
+            (Some(index), false) => (index + 1) % len,
+            (None, true) => len - 1,
+            (None, false) => 0,
+        };
+        self.selected_queue_id = Some(self.queued_messages[next].id.clone());
+    }
+
+    pub fn reconcile_queue_selection(&mut self) {
+        if self
+            .selected_queue_id
+            .as_ref()
+            .is_some_and(|selected| !self.queued_messages.iter().any(|item| &item.id == selected))
+        {
+            self.selected_queue_id = None;
         }
     }
 
@@ -1999,6 +2030,11 @@ impl App {
             option("/events", "recent durable history", MenuAction::Events),
             option("/inspect", "latest run timeline", MenuAction::Inspect),
             option("/context", "latest compiled context", MenuAction::Context),
+            option(
+                "/details",
+                "expand all edit diffs inline",
+                MenuAction::Details,
+            ),
             option("/memory", "active durable memories", MenuAction::Memory),
             option("/skills", "active procedural catalog", MenuAction::Skills),
             option("/scars", "corrections and repair state", MenuAction::Scars),
@@ -2245,7 +2281,7 @@ impl App {
                 }
                 self.mark_turn_responding(run_id);
                 let index = payload.get("index").and_then(Value::as_u64).unwrap_or(0);
-                let row = self.ensure_activity_row(run_id, index, None, name);
+                let row = self.ensure_activity_row(run_id, index, None, name, None);
                 merge_tool_name(&mut row.name, name);
                 if !arguments.is_empty() {
                     row.argument_parts.push_str(arguments);
@@ -2631,7 +2667,6 @@ impl App {
                 if event.payload.get("purpose").and_then(Value::as_str) == Some("plan_execution") {
                     return;
                 }
-                self.collapse_completed_thoughts();
                 let user_content = string(&event.payload, "content");
                 if !run_id.is_empty() {
                     let paste_spans = event
@@ -2649,6 +2684,7 @@ impl App {
                 self.message_history.push(user_content.clone());
                 self.transcript.push(TranscriptItem::User {
                     content: user_content,
+                    created_at: Some(event.created_at.clone()),
                 });
                 if live {
                     self.scroll = 0;
@@ -2703,6 +2739,7 @@ impl App {
                 for (index, item) in self.queued_messages.iter_mut().enumerate() {
                     item.position = index + 1;
                 }
+                self.reconcile_queue_selection();
             }
             "queue.prioritized" => {
                 let queue_id = string(&event.payload, "queue_id");
@@ -2810,16 +2847,19 @@ impl App {
                 }
             }
             "assistant.reasoning" => {
-                if !string(&event.payload, "content").is_empty() {
+                let segment = string(&event.payload, "content");
+                if !segment.is_empty() {
                     self.mark_turn_responding(&run_id);
                 }
-                let index = self.ensure_thought(&run_id, false);
-                let segment = string(&event.payload, "content");
+                let index = self
+                    .pending_thought_for_durable_reasoning(&run_id, &segment)
+                    .unwrap_or_else(|| self.ensure_thought(&run_id, false));
                 if let TranscriptItem::Thought {
                     content,
                     duration_seconds,
                     interrupted,
                     live,
+                    collapsed,
                     ..
                 } = &mut self.transcript[index]
                 {
@@ -2832,6 +2872,7 @@ impl App {
                     *interrupted =
                         event.payload.get("status").and_then(Value::as_str) == Some("interrupted");
                     *live = false;
+                    *collapsed = !*interrupted;
                 }
             }
             "assistant.message" => {
@@ -2846,12 +2887,14 @@ impl App {
                         content,
                         live,
                         durable,
+                        created_at,
                         ..
                     } = &mut self.transcript[index]
                     {
                         *content = message;
                         *live = false;
                         *durable = true;
+                        *created_at = Some(event.created_at.clone());
                     }
                 }
             }
@@ -2878,6 +2921,7 @@ impl App {
                         .get("name")
                         .and_then(Value::as_str)
                         .unwrap_or(""),
+                    Some(&event.created_at),
                 );
                 row.name = string(&event.payload, "name");
                 row.arguments = event
@@ -2889,7 +2933,13 @@ impl App {
             "tool.requested" | "policy.requested" | "policy.decided" | "approval.requested"
             | "approval.resolved" | "tool.started" | "tool.completed" | "tool.failed"
             | "tool.rejected" => {
-                self.update_activity(&run_id, &event.event_type, &event.payload, live);
+                self.update_activity(
+                    &run_id,
+                    &event.id,
+                    &event.event_type,
+                    &event.payload,
+                    &event.created_at,
+                );
                 if event.event_type == "approval.requested" {
                     self.modal = Some(Modal::Approval(approval_from(&event.payload)));
                     self.sheet = None;
@@ -3246,24 +3296,63 @@ impl App {
     }
 
     pub fn toggle_activity(&mut self, index: usize) {
-        let mut manually_collapsed = Vec::new();
         match self.transcript.get_mut(index) {
-            Some(TranscriptItem::Activity {
-                run_id,
-                rows,
-                collapsed,
-            }) => {
-                *collapsed = !*collapsed;
-                if *collapsed {
-                    manually_collapsed.extend(rows.iter().map(|row| (run_id.clone(), row.index)));
-                }
-            }
+            Some(TranscriptItem::Activity { collapsed, .. }) => *collapsed = !*collapsed,
             Some(TranscriptItem::Compaction { collapsed, .. })
             | Some(TranscriptItem::Plan { collapsed, .. }) => *collapsed = !*collapsed,
             _ => {}
         }
-        for key in manually_collapsed {
-            self.patch_completed_at.remove(&key);
+    }
+
+    pub fn pending_diff_detail_events(&self) -> Vec<String> {
+        self.transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Activity { rows, .. } => Some(rows),
+                _ => None,
+            })
+            .flatten()
+            .filter(|row| {
+                is_diff_write_tool(&row.name)
+                    && row.truncated
+                    && !row.blob_references.is_empty()
+                    && row.detailed_content.is_none()
+                    && row.details_error.is_none()
+            })
+            .filter_map(|row| row.result_event_id.clone())
+            .collect()
+    }
+
+    pub fn apply_tool_result_details(&mut self, details: ToolResultDetails) {
+        for item in &mut self.transcript {
+            let TranscriptItem::Activity { rows, .. } = item else {
+                continue;
+            };
+            if let Some(row) = rows
+                .iter_mut()
+                .find(|row| row.result_event_id.as_deref() == Some(details.event_id.as_str()))
+            {
+                row.detailed_content = Some(details.content);
+                row.detailed_total_lines = Some(details.total_lines);
+                row.detailed_complete = details.complete;
+                row.details_error = None;
+                return;
+            }
+        }
+    }
+
+    pub fn mark_tool_result_details_failed(&mut self, event_id: &str, message: String) {
+        for item in &mut self.transcript {
+            let TranscriptItem::Activity { rows, .. } = item else {
+                continue;
+            };
+            if let Some(row) = rows
+                .iter_mut()
+                .find(|row| row.result_event_id.as_deref() == Some(event_id))
+            {
+                row.details_error = Some(message);
+                return;
+            }
         }
     }
 
@@ -3325,16 +3414,38 @@ impl App {
                 return index;
             }
         }
-        self.collapse_trailing_activity();
         self.transcript.push(TranscriptItem::Thought {
             run_id: run_id.to_owned(),
             content: String::new(),
             duration_seconds: 0.0,
             interrupted: false,
             live,
-            collapsed: true,
+            collapsed: false,
         });
         self.transcript.len() - 1
+    }
+
+    fn pending_thought_for_durable_reasoning(&self, run_id: &str, content: &str) -> Option<usize> {
+        for (index, item) in self.transcript.iter().enumerate().rev() {
+            match item {
+                // The durable reasoning event can arrive after the streamed answer. The
+                // assistant message is part of that same provider response, so it is not a
+                // boundary for reconciliation.
+                TranscriptItem::Assistant { run_id: id, .. } if id == run_id => continue,
+                TranscriptItem::Thought {
+                    run_id: id,
+                    content: existing,
+                    live: false,
+                    ..
+                } if id == run_id => return (existing == content).then_some(index),
+                // A tool starts a new model-response segment. Identical reasoning on the
+                // far side of one is a distinct thought, not a duplicate delivery.
+                TranscriptItem::Activity { run_id: id, .. } if id == run_id => return None,
+                TranscriptItem::Thought { run_id: id, .. } if id == run_id => return None,
+                _ => {}
+            }
+        }
+        None
     }
 
     fn ensure_assistant(&mut self, run_id: &str, live: bool) -> usize {
@@ -3349,12 +3460,12 @@ impl App {
         }) {
             return index;
         }
-        self.collapse_trailing_activity();
         self.transcript.push(TranscriptItem::Assistant {
             run_id: run_id.to_owned(),
             content: String::new(),
             live,
             durable: false,
+            created_at: Some(Utc::now().to_rfc3339()),
         });
         self.transcript.len() - 1
     }
@@ -3406,6 +3517,7 @@ impl App {
         index: u64,
         call_id: Option<String>,
         name: &str,
+        created_at: Option<&str>,
     ) -> &mut ActivityRow {
         let existing =
             self.transcript
@@ -3439,9 +3551,17 @@ impl App {
                         .map(|row_index| (activity_index, row_index))
                 });
         if let Some((activity_index, row_index)) = existing {
-            let TranscriptItem::Activity { rows, .. } = &mut self.transcript[activity_index] else {
+            let TranscriptItem::Activity {
+                rows,
+                created_at: activity_created_at,
+                ..
+            } = &mut self.transcript[activity_index]
+            else {
                 unreachable!();
             };
+            if activity_created_at.is_none() {
+                *activity_created_at = created_at.map(str::to_owned);
+            }
             if call_id.is_some() {
                 rows[row_index].tool_call_id = call_id;
             }
@@ -3450,16 +3570,24 @@ impl App {
         // Task-state projections do not split adjacent task calls. Reasoning, prose,
         // and every real tool boundary still preserve transcript chronology.
         let activity_index = if let Some(index) = self.activity_group(run_id, name) {
-            if let TranscriptItem::Activity { collapsed, .. } = &mut self.transcript[index] {
+            if let TranscriptItem::Activity {
+                collapsed,
+                created_at: activity_created_at,
+                ..
+            } = &mut self.transcript[index]
+            {
                 *collapsed = false;
+                if activity_created_at.is_none() {
+                    *activity_created_at = created_at.map(str::to_owned);
+                }
             }
             index
         } else {
-            self.collapse_trailing_activity();
             self.transcript.push(TranscriptItem::Activity {
                 run_id: run_id.to_owned(),
                 rows: Vec::new(),
                 collapsed: false,
+                created_at: created_at.map(str::to_owned),
             });
             self.transcript.len() - 1
         };
@@ -3484,7 +3612,14 @@ impl App {
         &mut rows[row_index]
     }
 
-    fn update_activity(&mut self, run_id: &str, event_type: &str, payload: &Value, live: bool) {
+    fn update_activity(
+        &mut self,
+        run_id: &str,
+        event_id: &str,
+        event_type: &str,
+        payload: &Value,
+        created_at: &str,
+    ) {
         let call_id = payload
             .get("tool_call_id")
             .and_then(Value::as_str)
@@ -3493,13 +3628,13 @@ impl App {
             .get("index")
             .and_then(Value::as_u64)
             .unwrap_or(u64::MAX);
-        let mut completed_patch = None;
         {
             let row = self.ensure_activity_row(
                 run_id,
                 index,
                 call_id.clone(),
                 payload.get("name").and_then(Value::as_str).unwrap_or(""),
+                Some(created_at),
             );
             let name = string(payload, "name");
             if !name.is_empty() {
@@ -3536,59 +3671,27 @@ impl App {
                 .get("truncated")
                 .and_then(Value::as_bool)
                 .unwrap_or(row.truncated);
+            if matches!(
+                event_type,
+                "tool.completed" | "tool.failed" | "tool.rejected"
+            ) {
+                row.result_event_id = Some(event_id.to_owned());
+                row.blob_references = payload
+                    .get("blob_references")
+                    .and_then(Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            }
             row.duration_seconds = payload
                 .get("duration_seconds")
                 .and_then(Value::as_f64)
                 .unwrap_or(row.duration_seconds);
-            if live && event_type == "tool.completed" && is_diff_write_tool(&row.name) {
-                completed_patch = Some(row.index);
-            }
-        }
-        if let Some(index) = completed_patch {
-            self.patch_completed_at
-                .insert((run_id.to_owned(), index), Instant::now());
-        }
-        if matches!(
-            event_type,
-            "tool.completed" | "tool.failed" | "tool.rejected"
-        ) && let Some(activity_index) = self.transcript.iter().rposition(|item| {
-            matches!(
-                item,
-                TranscriptItem::Activity { run_id: id, rows, .. }
-                    if id == run_id
-                        && call_id.as_ref().is_none_or(|call_id| rows.iter().any(|row| {
-                            row.tool_call_id.as_ref() == Some(call_id)
-                        }))
-            )
-        }) && activity_index + 1 < self.transcript.len()
-            && let TranscriptItem::Activity {
-                rows, collapsed, ..
-            } = &mut self.transcript[activity_index]
-            && rows.iter().all(|row| row.phase.terminal())
-        {
-            *collapsed = should_collapse_activity(rows);
-        }
-    }
-
-    fn collapse_trailing_activity(&mut self) {
-        if let Some(TranscriptItem::Activity {
-            rows, collapsed, ..
-        }) = self.transcript.last_mut()
-            && rows.iter().all(|row| row.phase.terminal())
-        {
-            *collapsed = should_collapse_activity(rows);
-        }
-    }
-
-    fn collapse_completed_thoughts(&mut self) {
-        for item in &mut self.transcript {
-            if let TranscriptItem::Thought {
-                live, collapsed, ..
-            } = item
-                && !*live
-            {
-                *collapsed = true;
-            }
         }
     }
 
@@ -3601,6 +3704,7 @@ impl App {
                 ..
             } = item
                 && id == run_id
+                && *live
             {
                 *live = false;
                 *collapsed = true;
@@ -3630,6 +3734,7 @@ impl App {
                     run_id: id,
                     live,
                     interrupted,
+                    collapsed,
                     ..
                 } if id == run_id => {
                     let was_live = *live;
@@ -3638,15 +3743,14 @@ impl App {
                         *interrupted = true;
                     } else if !cancelled {
                         *interrupted = false;
+                        *collapsed = true;
                     }
                 }
                 TranscriptItem::Assistant {
                     run_id: id, live, ..
                 } if id == run_id => *live = false,
                 TranscriptItem::Activity {
-                    run_id: id,
-                    rows,
-                    collapsed,
+                    run_id: id, rows, ..
                 } if id == run_id => {
                     for row in &mut *rows {
                         if !row.phase.terminal() {
@@ -3657,7 +3761,6 @@ impl App {
                             };
                         }
                     }
-                    *collapsed = should_collapse_activity(rows);
                 }
                 TranscriptItem::Compaction {
                     run_id: id,
@@ -3783,34 +3886,6 @@ pub(crate) fn task_checkbox(task: &SessionTask) -> &'static str {
         "blocked" => "[!]",
         _ => "[ ]",
     }
-}
-
-fn should_collapse_activity(rows: &[ActivityRow]) -> bool {
-    rows.iter().all(|row| row.phase.terminal()) && !is_completed_patch_work(rows)
-}
-
-fn is_completed_patch_work(rows: &[ActivityRow]) -> bool {
-    !rows.is_empty()
-        && rows.iter().all(|row| {
-            row.phase.terminal() && matches!(row.name.as_str(), "edit_file" | "write_file")
-        })
-        && rows
-            .iter()
-            .any(|row| row.phase == ActivityPhase::Completed && !row.content.is_empty())
-}
-
-fn patch_completion_time(
-    completed_at: &HashMap<(String, u64), Instant>,
-    run_id: &str,
-    rows: &[ActivityRow],
-) -> Option<Instant> {
-    is_completed_patch_work(rows)
-        .then(|| {
-            rows.iter()
-                .filter_map(|row| completed_at.get(&(run_id.to_owned(), row.index)).copied())
-                .max()
-        })
-        .flatten()
 }
 
 fn normalize_task_positions(items: &mut [SessionTask]) {
@@ -3956,14 +4031,9 @@ fn is_diff_write_tool(name: &str) -> bool {
     matches!(name, "edit_file" | "write_file")
 }
 
-fn is_run_tool(name: &str) -> bool {
-    matches!(name, "shell" | "skill_run" | "terminal_stop")
-}
-
 fn same_activity_kind(left: &str, right: &str) -> bool {
-    is_task_tool(left) == is_task_tool(right)
+    category_for_tool(left) == category_for_tool(right)
         && is_diff_write_tool(left) == is_diff_write_tool(right)
-        && is_run_tool(left) == is_run_tool(right)
 }
 
 fn tool_names_compatible(existing: &str, incoming: &str) -> bool {
@@ -4026,16 +4096,14 @@ fn display_path(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use serde_json::json;
 
     use super::{
-        ActivityPhase, App, Composer, ComposerUnit, DreamPhase, PATCH_AUTO_COLLAPSE_AFTER,
-        TranscriptItem, TranscriptPoint, TranscriptViewport, is_task_tool, task_checkbox,
+        ActivityCategory, ActivityPhase, App, Composer, ComposerUnit, DreamPhase, TranscriptItem,
+        TranscriptPoint, TranscriptViewport, is_task_tool, task_checkbox,
     };
-    use crate::api::{Event, PasteSpan, Session, SessionTask};
+    use crate::api::{Event, PasteSpan, Session, SessionTask, ToolResultDetails};
 
     #[test]
     fn failed_message_retry_reuses_its_submission_id_until_payload_changes() {
@@ -4104,7 +4172,7 @@ mod tests {
         let app = App::new(session(), events, true);
 
         assert!(!app.transcript.iter().any(
-            |item| matches!(item, TranscriptItem::User { content } if content == "mistyped request")
+            |item| matches!(item, TranscriptItem::User { content, .. } if content == "mistyped request")
         ));
         assert!(app.composer.is_empty());
         assert!(app.message_history.is_empty());
@@ -4251,6 +4319,24 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_u_clears_logical_lines_and_climbs_only_from_an_empty_line() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.composer.insert_text(&"wrapped text ".repeat(40));
+        assert!(app.handle_composer_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL,)));
+        assert!(app.composer.is_empty());
+
+        app.composer.insert_text("first\nsecond\n");
+        assert!(app.handle_composer_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL,)));
+        assert_eq!(app.composer.text(), "first\nsecond");
+        assert!(app.handle_composer_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL,)));
+        assert_eq!(app.composer.text(), "first\n");
+        assert!(app.handle_composer_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL,)));
+        assert_eq!(app.composer.text(), "first");
+        assert!(app.handle_composer_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL,)));
+        assert!(app.composer.is_empty());
+    }
+
+    #[test]
     fn task_checkboxes_use_a_literal_check_for_completion() {
         let task = |status: &str| SessionTask {
             id: status.to_owned(),
@@ -4320,7 +4406,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_patch_work_stays_open_until_explicitly_collapsed() {
+    fn completed_patch_work_stays_open_and_can_be_manually_collapsed() {
         let run_id = "run-write";
         let mut app = App::new(session(), Vec::new(), true);
         app.begin_foreground_run(Some(run_id.to_owned()));
@@ -4361,19 +4447,7 @@ mod tests {
             .iter()
             .position(|item| matches!(item, TranscriptItem::Activity { .. }))
             .unwrap();
-        let completed_at = *app.patch_completed_at.values().next().unwrap();
-        app.collapse_stale_patch_work(
-            completed_at + PATCH_AUTO_COLLAPSE_AFTER - Duration::from_millis(1),
-        );
-        assert!(matches!(
-            &app.transcript[activity_index],
-            TranscriptItem::Activity {
-                collapsed: false,
-                ..
-            }
-        ));
-
-        app.collapse_stale_patch_work(completed_at + PATCH_AUTO_COLLAPSE_AFTER);
+        app.toggle_activity(activity_index);
         assert!(matches!(
             &app.transcript[activity_index],
             TranscriptItem::Activity {
@@ -4383,7 +4457,6 @@ mod tests {
         ));
 
         app.toggle_activity(activity_index);
-        app.collapse_stale_patch_work(completed_at + PATCH_AUTO_COLLAPSE_AFTER * 2);
         assert!(matches!(
             &app.transcript[activity_index],
             TranscriptItem::Activity {
@@ -4394,7 +4467,54 @@ mod tests {
     }
 
     #[test]
-    fn replayed_patch_work_starts_collapsed() {
+    fn retained_diff_details_attach_to_the_authoritative_tool_event() {
+        let mut app = App::new(
+            session(),
+            vec![event(
+                7,
+                "tool.completed",
+                "run-details",
+                json!({
+                    "index": 0,
+                    "tool_call_id": "edit-details",
+                    "name": "edit_file",
+                    "status": "completed",
+                    "summary": "edited src/main.rs",
+                    "content": "--- a/src/main.rs\n+++ b/src/main.rs\n[output truncated]",
+                    "truncated": true,
+                    "blob_references": ["abc123"]
+                }),
+            )],
+            true,
+        );
+
+        assert_eq!(app.pending_diff_detail_events(), ["event-7"]);
+        app.apply_tool_result_details(ToolResultDetails {
+            event_id: "event-7".to_owned(),
+            tool_call_id: "edit-details".to_owned(),
+            content: "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-old\n+new\n".to_owned(),
+            total_chars: 65,
+            returned_chars: 65,
+            total_lines: 5,
+            returned_lines: 5,
+            complete: true,
+            retained: true,
+        });
+
+        assert!(app.pending_diff_detail_events().is_empty());
+        assert!(app.transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Activity { rows, .. }
+                if rows.iter().any(|row| {
+                    row.result_event_id.as_deref() == Some("event-7")
+                        && row.detailed_content.as_deref().is_some_and(|value| value.contains("+new"))
+                        && row.detailed_complete
+                })
+        )));
+    }
+
+    #[test]
+    fn replayed_patch_work_starts_expanded() {
         let run_id = "run-replayed-write";
         let app = App::new(
             session(),
@@ -4417,7 +4537,7 @@ mod tests {
         assert!(app.transcript.iter().any(|item| matches!(
             item,
             TranscriptItem::Activity {
-                collapsed: true,
+                collapsed: false,
                 ..
             }
         )));
@@ -4494,6 +4614,221 @@ mod tests {
     }
 
     #[test]
+    fn commentary_before_tool_does_not_prepend_to_the_final_answer() {
+        let run_id = "run-structured-messages";
+        let mut app = App::new(session(), Vec::new(), true);
+
+        app.ingest_transient(
+            run_id,
+            "response.text_delta",
+            &json!({"text": "I’ll inspect this first."}),
+        );
+        app.ingest_durable(
+            event(
+                1,
+                "assistant.message",
+                run_id,
+                json!({
+                    "content": "I’ll inspect this first.",
+                    "status": "completed",
+                    "phase": "commentary",
+                    "provider_item_id": "commentary-1"
+                }),
+            ),
+            true,
+        );
+        app.ingest_durable(
+            event(
+                2,
+                "model.tool_call",
+                run_id,
+                json!({
+                    "index": 0,
+                    "tool_call_id": "call-1",
+                    "name": "list_dir",
+                    "arguments": {"path": "."},
+                    "status": "requested"
+                }),
+            ),
+            true,
+        );
+        app.ingest_transient(
+            run_id,
+            "response.text_delta",
+            &json!({"text": "Final answer only."}),
+        );
+        app.ingest_durable(
+            event(
+                3,
+                "assistant.message",
+                run_id,
+                json!({
+                    "content": "Final answer only.",
+                    "status": "completed",
+                    "phase": "final_answer",
+                    "provider_item_id": "answer-1"
+                }),
+            ),
+            true,
+        );
+
+        let messages = app
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Assistant { content, .. } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            messages,
+            vec!["I’ll inspect this first.", "Final answer only."]
+        );
+        assert!(matches!(
+            &app.transcript[..],
+            [
+                TranscriptItem::Assistant { .. },
+                TranscriptItem::Activity { .. },
+                TranscriptItem::Assistant { .. }
+            ]
+        ));
+    }
+
+    #[test]
+    fn durable_reasoning_reconciles_after_streamed_answer_without_repeating_thought() {
+        let run_id = "run-late-reasoning";
+        let reasoning = "The user greeted me, so I should respond warmly.";
+        let mut app = App::new(session(), Vec::new(), true);
+
+        app.ingest_transient(
+            run_id,
+            "response.reasoning_delta",
+            &json!({"text": reasoning}),
+        );
+        app.ingest_transient(run_id, "response.text_delta", &json!({"text": "Hey!"}));
+        app.ingest_durable(
+            event(
+                1,
+                "assistant.reasoning",
+                run_id,
+                json!({
+                    "content": reasoning,
+                    "status": "completed",
+                    "duration_seconds": 13.0
+                }),
+            ),
+            true,
+        );
+        app.ingest_durable(
+            event(
+                2,
+                "assistant.message",
+                run_id,
+                json!({"content": "Hey!", "status": "completed"}),
+            ),
+            true,
+        );
+
+        assert_eq!(
+            app.transcript
+                .iter()
+                .filter(|item| matches!(item, TranscriptItem::Thought { .. }))
+                .count(),
+            1
+        );
+        assert!(matches!(
+            &app.transcript[..],
+            [
+                TranscriptItem::Thought {
+                    content,
+                    duration_seconds: 13.0,
+                    ..
+                },
+                TranscriptItem::Assistant { content: answer, .. }
+            ] if content == reasoning && answer == "Hey!"
+        ));
+    }
+
+    #[test]
+    fn duplicate_durable_reasoning_events_share_one_thought() {
+        let run_id = "run-duplicate-reasoning";
+        let reasoning = "Inspect the current transcript before replying.";
+        let mut app = App::new(session(), Vec::new(), true);
+
+        for sequence in 1..=2 {
+            app.ingest_durable(
+                event(
+                    sequence,
+                    "assistant.reasoning",
+                    run_id,
+                    json!({
+                        "content": reasoning,
+                        "status": "completed",
+                        "duration_seconds": 2.0
+                    }),
+                ),
+                true,
+            );
+        }
+
+        assert_eq!(
+            app.transcript
+                .iter()
+                .filter(|item| matches!(item, TranscriptItem::Thought { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn identical_reasoning_after_tool_work_starts_a_new_thought() {
+        let run_id = "run-repeated-reasoning-after-tool";
+        let reasoning = "Run the focused test next.";
+        let mut app = App::new(session(), Vec::new(), true);
+
+        app.ingest_durable(
+            event(
+                1,
+                "assistant.reasoning",
+                run_id,
+                json!({"content": reasoning, "status": "completed"}),
+            ),
+            true,
+        );
+        app.ingest_durable(
+            event(
+                2,
+                "model.tool_call",
+                run_id,
+                json!({
+                    "index": 0,
+                    "tool_call_id": "shell-1",
+                    "name": "shell",
+                    "arguments": {"command": "cargo test"}
+                }),
+            ),
+            true,
+        );
+        app.ingest_durable(
+            event(
+                3,
+                "assistant.reasoning",
+                run_id,
+                json!({"content": reasoning, "status": "completed"}),
+            ),
+            true,
+        );
+
+        assert_eq!(
+            app.transcript
+                .iter()
+                .filter(|item| matches!(item, TranscriptItem::Thought { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
     fn accepted_foreground_run_waits_for_user_event_before_showing_thought() {
         let run_id = "run-ordered";
         let mut app = App::new(session(), Vec::new(), true);
@@ -4513,7 +4848,7 @@ mod tests {
         app.ingest_durable(event(2, "run.started", run_id, json!({})), true);
 
         assert!(
-            matches!(app.transcript.first(), Some(TranscriptItem::User { content }) if content == "Fix the transcript order")
+            matches!(app.transcript.first(), Some(TranscriptItem::User { content, .. }) if content == "Fix the transcript order")
         );
         assert!(
             !app.transcript
@@ -4963,6 +5298,51 @@ mod tests {
     }
 
     #[test]
+    fn activity_categories_do_not_bleed_into_exploration_groups() {
+        let run_id = "run-distinct-activity-categories";
+        let mut app = App::new(session(), Vec::new(), true);
+        for (sequence, name) in [
+            (1, "read_file"),
+            (2, "memory_search"),
+            (3, "plugin.inspect"),
+            (4, "read_file"),
+        ] {
+            app.ingest_durable(
+                event(
+                    sequence,
+                    "model.tool_call",
+                    run_id,
+                    json!({
+                        "index": sequence - 1,
+                        "tool_call_id": format!("call-{sequence}"),
+                        "name": name,
+                        "arguments": {}
+                    }),
+                ),
+                true,
+            );
+        }
+
+        let categories = app
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Activity { rows, .. } => Some(rows[0].category()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            categories,
+            [
+                ActivityCategory::Explore,
+                ActivityCategory::Memory,
+                ActivityCategory::Plugin,
+                ActivityCategory::Explore,
+            ]
+        );
+    }
+
+    #[test]
     fn late_task_update_deltas_do_not_clone_into_later_work() {
         let run_id = "run-task-then-goal";
         let mut app = App::new(session(), Vec::new(), true);
@@ -5292,7 +5672,7 @@ mod tests {
         assert_eq!(activities.len(), 2);
         assert_eq!(activities[0].0.len(), 1);
         assert_eq!(activities[1].0.len(), 1);
-        assert!(activities.iter().all(|(_, collapsed)| **collapsed));
+        assert!(activities.iter().all(|(_, collapsed)| !**collapsed));
         assert_eq!(assistants, 1);
 
         let kinds = app
@@ -5309,7 +5689,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_work_group_stays_open_until_a_real_boundary() {
+    fn completed_work_group_stays_open_across_real_boundaries() {
         let run_id = "run-live-umbrella";
         let mut app = App::new(session(), Vec::new(), true);
         app.begin_foreground_run(Some(run_id.to_owned()));
@@ -5343,7 +5723,7 @@ mod tests {
             TranscriptItem::Activity { collapsed, .. } => Some(*collapsed),
             _ => None,
         });
-        assert_eq!(collapsed, Some(true));
+        assert_eq!(collapsed, Some(false));
 
         app.ingest_durable(event(2, "run.completed", run_id, json!({})), true);
     }
@@ -5380,7 +5760,7 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(groups, [(20, true), (1, false)]);
+        assert_eq!(groups, [(20, false), (1, false)]);
     }
 
     #[test]
@@ -5525,6 +5905,7 @@ mod tests {
             content: "# Build it\n\n## Tasks\n- [ ] Implement it".to_owned(),
             live: false,
             durable: true,
+            created_at: None,
         });
         app.ingest_durable(
             event(
@@ -6034,6 +6415,7 @@ mod tests {
         assert!(app.conversation_is_empty());
         app.transcript.push(TranscriptItem::User {
             content: "Hello".to_owned(),
+            created_at: None,
         });
         assert!(!app.conversation_is_empty());
     }

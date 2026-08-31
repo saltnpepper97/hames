@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 31;
+pub const PROTOCOL_VERSION: u32 = 32;
 pub const HEAL_SCARS_PROMPT: &str = "Heal behavioral scars now.";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -307,6 +307,19 @@ pub struct Event {
     pub blob_hash: Option<String>,
     pub payload_hash: String,
     pub redaction_state: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ToolResultDetails {
+    pub event_id: String,
+    pub tool_call_id: String,
+    pub content: String,
+    pub total_chars: usize,
+    pub returned_chars: usize,
+    pub total_lines: usize,
+    pub returned_lines: usize,
+    pub complete: bool,
+    pub retained: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1208,6 +1221,15 @@ impl GatewayClient {
     pub async fn events(&self, session_id: &str) -> Result<Vec<Event>> {
         decode(
             self.get(&format!("/v1/sessions/{session_id}/events"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn tool_result_details(&self, event_id: &str) -> Result<ToolResultDetails> {
+        decode(
+            self.get(&format!("/v1/events/{event_id}/tool-result-details"))
                 .send()
                 .await?,
         )

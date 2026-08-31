@@ -13,8 +13,9 @@ remains available for line-oriented and non-interactive use.
 - `hames tui` selects Ratatui explicitly.
 - `hames repl` and `hames --repl` select the classic client.
 - Non-terminal input or output falls back to the classic client.
-- Opening the TUI offers recent sessions for the same canonical working
-  directory. Exiting restores the terminal and prints an exact resume command
+- Opening the TUI creates a new session. `/sessions` offers prior open work for
+  explicit switching. Exiting restores the terminal and prints an exact resume
+  command
   only when the session contains conversation; an unused session is retired
   silently.
 - Durable replay reconstructs messages, Thoughts, grouped tool activity,
@@ -31,7 +32,7 @@ and mode-colored borders without imposing a filled background.
 The status row keeps the live gateway stream state on the right: `connecting`,
 `connected`, `reconnecting N`, or `offline`. Its left side shows shortcuts while
 idle and becomes a short, subdued neutral activity rule during a run, with the
-current activity, properly formatted elapsed time, and a truthful `Esc interrupt`
+current activity, properly formatted elapsed time, and a truthful `Esc×2 interrupt`
 control.
 
 The header identifies Hames, the full current-directory path (with the home
@@ -88,8 +89,8 @@ does not jump the transcript or composer before the pointer moves.
   bare `/goal` opens a square supervisor view with state, elapsed time, steps,
   latest progress and evidence, mode, provider, and model. Pause, resume, and
   confirmed cancellation are available from the view or slash subcommands.
-  Foreground messages yield the goal and run first; `Esc` pauses an active goal
-  step. `/new` leaves the old session's goal running, `/clear` cancels it, and a
+  Foreground messages yield the goal and run first; pressing `Esc` twice pauses
+  an active goal step. `/new` leaves the old session's goal running, `/clear` cancels it, and a
   terminal exit leaves it under gateway ownership.
 - `/model` shows reachable configured providers only. Reasoning-capable model
   choice leads to a capability-specific second sheet: `on`/`off` for boolean

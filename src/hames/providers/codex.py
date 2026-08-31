@@ -420,17 +420,53 @@ class CodexProvider:
                     yield StreamEvent(
                         kind=StreamEventKind.REASONING_DELTA,
                         text=text,
+                        provider_item_id=str(params.get("itemId", "")) or None,
                     )
                 elif method == "item/reasoning/textDelta":
                     yield StreamEvent(
                         kind=StreamEventKind.REASONING_DELTA,
                         text=str(params.get("delta", "")),
+                        provider_item_id=str(params.get("itemId", "")) or None,
                     )
                 elif method == "item/agentMessage/delta":
                     yield StreamEvent(
                         kind=StreamEventKind.TEXT_DELTA,
                         text=str(params.get("delta", "")),
+                        provider_item_id=str(params.get("itemId", "")) or None,
                     )
+                elif method == "item/completed":
+                    item_value = params.get("item", {})
+                    item = (
+                        cast(dict[str, JsonValue], item_value)
+                        if isinstance(item_value, dict)
+                        else {}
+                    )
+                    item_type = str(item.get("type", ""))
+                    item_id = str(item.get("id", "")) or None
+                    if item_type == "agentMessage":
+                        phase = str(item.get("phase", ""))
+                        yield StreamEvent(
+                            kind=StreamEventKind.TEXT_COMPLETED,
+                            text=str(item.get("text", "")),
+                            provider_item_id=item_id,
+                            message_phase=(
+                                phase if phase in {"commentary", "final_answer"} else None
+                            ),
+                        )
+                    elif item_type == "reasoning":
+                        summary = item.get("summary", item.get("content", []))
+                        parts = (
+                            [str(part) for part in summary]
+                            if isinstance(summary, list)
+                            else [str(summary)]
+                            if summary
+                            else []
+                        )
+                        yield StreamEvent(
+                            kind=StreamEventKind.REASONING_COMPLETED,
+                            text="\n\n".join(parts),
+                            provider_item_id=item_id,
+                        )
                 elif method == "thread/tokenUsage/updated":
                     latest_usage = _codex_usage(params.get("tokenUsage"))
                 elif method == "turn/completed":

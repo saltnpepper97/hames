@@ -43,7 +43,6 @@ use crate::api::{
 use crate::local::{LocalPaths, write_private_export};
 use crate::repl::ensure_gateway;
 
-const RECENT_SESSION_SECONDS: u64 = 7 * 24 * 60 * 60;
 static TERMINAL_ACTIVE: AtomicBool = AtomicBool::new(false);
 static TERMINAL_PANIC_HOOK: Once = Once::new();
 
@@ -64,27 +63,15 @@ pub async fn run() -> Result<()> {
     if !health.database_ready {
         bail!("gateway database is not ready");
     }
-    let cwd = env::current_dir()?.canonicalize()?;
-    let cwd_text = cwd.to_string_lossy();
-    let (session, created_session) = match client
-        .recent_session(&cwd_text, RECENT_SESSION_SECONDS)
-        .await?
-    {
-        Some(session) => (session, false),
-        None => (create_session(&client, &paths, None).await?, true),
-    };
+    let session = create_session(&client, &paths, None).await?;
     match ensure_workspace_trust(&client, &session).await {
         Ok(true) => {}
         Ok(false) => {
-            if created_session {
-                client.close_session(&session.id).await?;
-            }
+            client.close_session(&session.id).await?;
             return Ok(());
         }
         Err(error) => {
-            if created_session {
-                let _ = client.close_session(&session.id).await;
-            }
+            let _ = client.close_session(&session.id).await;
             return Err(error);
         }
     }
@@ -114,8 +101,7 @@ pub async fn run() -> Result<()> {
         let tick_delay = if app.animating() {
             Duration::from_millis(80)
         } else {
-            app.next_patch_collapse_delay()
-                .unwrap_or(Duration::from_secs(3600))
+            Duration::from_secs(3600)
         };
         let mut suppress_redraw = false;
         let effect = tokio::select! {
@@ -165,6 +151,14 @@ pub async fn run() -> Result<()> {
                                 && let Ok(agent) = client.agent(&agent_id).await
                             {
                                 app.agent_name = agent.agent.name;
+                            }
+                            if app.diff_details {
+                                let failures = load_pending_diff_details(&client, &mut app).await;
+                                if failures > 0 {
+                                    app.notice = Some(format!(
+                                        "Expanded edit details · {failures} unavailable"
+                                    ));
+                                }
                             }
                         }
                         StreamPayload::Warning(message) => app.notice = Some(message),
@@ -618,13 +612,18 @@ fn repeat_safe_key(app: &App, key: KeyEvent) -> bool {
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
+    if key.code != KeyCode::Esc {
+        app.clear_escape_confirmation();
+    }
     if app.modal.is_some() {
+        app.clear_escape_confirmation();
         return handle_modal_key(app, key);
     }
     if app.question.is_some() {
         return handle_question_key(app, key);
     }
     if app.inline_editor.is_some() {
+        app.clear_escape_confirmation();
         return handle_inline_editor_key(app, key);
     }
     if key.code == KeyCode::BackTab
@@ -708,23 +707,41 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
         return Some(Effect::Quit);
     }
-    if key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Up {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Enter {
         return send_now(app);
+    }
+    if key.modifiers.contains(KeyModifiers::ALT)
+        && app.sheet.is_none()
+        && matches!(key.code, KeyCode::Up | KeyCode::Down)
+    {
+        if !app.queued_messages.is_empty() {
+            app.move_queue_selection(if key.code == KeyCode::Up { -1 } else { 1 });
+            app.notice = Some("Queued message selected · Ctrl+Enter sends now".to_owned());
+        }
+        return None;
     }
     match key.code {
         KeyCode::Esc => {
             if app.sheet.is_some() {
+                app.clear_escape_confirmation();
                 app.sheet = None;
                 return None;
             }
             if app.active_run.is_some() {
                 if app.active_run_is_goal_step() {
+                    if !app.confirm_escape_for_active_run("pause the autonomous goal") {
+                        return None;
+                    }
                     app.notice = Some("Pausing autonomous goal…".to_owned());
                     return Some(Effect::PauseGoal);
+                }
+                if !app.confirm_escape_for_active_run("interrupt current work") {
+                    return None;
                 }
                 app.notice = Some("Interrupting current work…".to_owned());
                 return Some(Effect::Cancel);
             }
+            app.clear_escape_confirmation();
             app.focused_thought = None;
             None
         }
@@ -827,6 +844,15 @@ fn handle_question_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
     }
     let question = app.question.as_mut()?;
     if key.code == KeyCode::Esc {
+        if question.input_kind == Some(QuestionInputKind::Note) {
+            question.input_kind = None;
+            question.response_input.clear();
+            app.clear_escape_confirmation();
+            return None;
+        }
+        if !app.confirm_escape_for_active_run("interrupt current work") {
+            return None;
+        }
         app.notice = Some("Interrupting current work…".to_owned());
         return Some(Effect::Cancel);
     }
@@ -1767,10 +1793,14 @@ fn send_message(
 
 fn send_now(app: &mut App) -> Option<Effect> {
     if app.composer.is_empty()
-        && let Some(item) = app.queued_messages.last()
+        && let Some(queue_id) = app.selected_queued_message().map(|item| item.id.clone())
     {
         app.notice = Some("Promoting queued message · interrupting current work…".to_owned());
-        return Some(Effect::SendQueuedNow(item.id.clone()));
+        return Some(Effect::SendQueuedNow(queue_id));
+    }
+    if app.composer.is_empty() && app.queued_messages.len() > 1 {
+        app.notice = Some("Select a queued message with Alt+↑/↓ first".to_owned());
+        return None;
     }
     if app.session.interaction_mode == "plan" {
         return send_or_command(app);
@@ -1781,7 +1811,7 @@ fn send_now(app: &mut App) -> Option<Effect> {
     }
     let (content, pastes) = app.composer.message();
     if content.trim().is_empty() {
-        app.notice = Some("Type a message before using Alt+↑ send now".to_owned());
+        app.notice = Some("Type a message before using Ctrl+Enter send now".to_owned());
         return None;
     }
     if app.queued_messages.len() >= 2 {
@@ -1877,6 +1907,7 @@ fn parse_command(value: &str) -> Option<MenuAction> {
         "/events" => Some(MenuAction::Events),
         "/inspect" => Some(MenuAction::Inspect),
         "/context" => Some(MenuAction::Context),
+        "/details" => Some(MenuAction::Details),
         "/memory" => Some(MenuAction::Memory),
         "/skills" => Some(MenuAction::Skills),
         "/evolution" | "/scars" => Some(MenuAction::Scars),
@@ -2054,6 +2085,7 @@ async fn apply_effect(
         Effect::SendQueuedNow(queue_id) => {
             let accepted = client.send_queued_now(&app.session.id, &queue_id).await?;
             app.queued_messages.retain(|queued| queued.id != queue_id);
+            app.reconcile_queue_selection();
             if let Some(item) = accepted.queued {
                 app.insert_queued_message(item);
             }
@@ -2067,11 +2099,13 @@ async fn apply_effect(
         Effect::TakeQueued(queue_id) => {
             let item = client.take_queued(&app.session.id, &queue_id).await?;
             app.queued_messages.retain(|queued| queued.id != queue_id);
+            app.reconcile_queue_selection();
             app.load_queued_message(item);
         }
         Effect::TakeLatestQueued => {
             let item = client.take_latest_queued(&app.session.id).await?;
             app.queued_messages.retain(|queued| queued.id != item.id);
+            app.reconcile_queue_selection();
             app.load_queued_message(item);
         }
         Effect::Cancel => {
@@ -2418,6 +2452,7 @@ async fn apply_menu_action(
         MenuAction::EditQueued(queue_id) => {
             let item = client.take_queued(&app.session.id, &queue_id).await?;
             app.queued_messages.retain(|queued| queued.id != queue_id);
+            app.reconcile_queue_selection();
             app.load_queued_message(item);
             app.sheet = None;
         }
@@ -2714,6 +2749,20 @@ async fn apply_menu_action(
                 ],
             ));
         }
+        MenuAction::Details => {
+            app.diff_details = !app.diff_details;
+            app.sheet = None;
+            if app.diff_details {
+                let failures = load_pending_diff_details(client, app).await;
+                app.notice = Some(if failures == 0 {
+                    "Expanded edit details inline".to_owned()
+                } else {
+                    format!("Expanded edit details · {failures} unavailable")
+                });
+            } else {
+                app.notice = Some("Compacted edit details".to_owned());
+            }
+        }
         MenuAction::Memory => {
             let mut memories = client.memories(&app.session.id, "active", "").await?;
             memories.retain(|memory| memory.status == "active");
@@ -2897,6 +2946,21 @@ async fn apply_menu_action(
         }
     }
     Ok(None)
+}
+
+async fn load_pending_diff_details(client: &GatewayClient, app: &mut App) -> usize {
+    let event_ids = app.pending_diff_detail_events();
+    let mut failures = 0usize;
+    for event_id in event_ids {
+        match client.tool_result_details(&event_id).await {
+            Ok(details) => app.apply_tool_result_details(details),
+            Err(error) => {
+                failures += 1;
+                app.mark_tool_result_details_failed(&event_id, action_error_message(&error));
+            }
+        }
+    }
+    failures
 }
 
 fn ingest_envelope(app: &mut App, envelope: LiveEnvelope) -> bool {
@@ -3241,7 +3305,11 @@ fn terminal_tab_title(app: &App, frame: usize) -> String {
     };
     format!(
         "{icon} {} · {status}",
-        app.agent_name.replace(['\n', '\r', '\t'], " ")
+        app.session
+            .title
+            .as_deref()
+            .unwrap_or("New session")
+            .replace(['\n', '\r', '\t'], " ")
     )
 }
 
@@ -3550,6 +3618,10 @@ mod tests {
         ));
         assert!(matches!(parse_command("/heal"), Some(MenuAction::Heal)));
         assert!(matches!(
+            parse_command("/details"),
+            Some(MenuAction::Details)
+        ));
+        assert!(matches!(
             parse_command("/stop"),
             Some(MenuAction::StopTerminals)
         ));
@@ -3747,13 +3819,18 @@ mod tests {
     }
 
     #[test]
-    fn alt_up_sends_the_composer_next_without_losing_its_text_early() {
+    fn ctrl_enter_sends_the_composer_next_without_losing_its_text_early() {
         let mut app = App::new(session(), Vec::new(), true);
         app.active_run = Some("run-active".to_owned());
+        app.queued_messages = vec![queued("queue-1", "existing")];
+        app.selected_queue_id = Some("queue-1".to_owned());
         app.composer.insert_text("urgent correction");
 
         assert!(matches!(
-            handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::ALT)),
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)
+            ),
             Some(Effect::SendNow(content, _)) if content == "urgent correction"
         ));
         assert_eq!(app.composer.text(), "urgent correction");
@@ -3761,14 +3838,17 @@ mod tests {
     }
 
     #[test]
-    fn alt_up_promotes_the_latest_queued_message_when_the_composer_is_empty() {
+    fn ctrl_enter_sends_the_only_queued_message_without_explicit_selection() {
         let mut app = App::new(session(), Vec::new(), true);
         app.active_run = Some("run-active".to_owned());
-        app.queued_messages = vec![queued("queue-1", "older"), queued("queue-2", "latest")];
+        app.queued_messages = vec![queued("queue-1", "only")];
 
         assert!(matches!(
-            handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::ALT)),
-            Some(Effect::SendQueuedNow(queue_id)) if queue_id == "queue-2"
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)
+            ),
+            Some(Effect::SendQueuedNow(queue_id)) if queue_id == "queue-1"
         ));
         assert!(
             app.notice
@@ -3776,6 +3856,35 @@ mod tests {
                 .unwrap()
                 .contains("Promoting queued message")
         );
+    }
+
+    #[test]
+    fn alt_arrows_select_queued_messages_for_ctrl_enter() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-active".to_owned());
+        app.queued_messages = vec![queued("queue-1", "older"), queued("queue-2", "latest")];
+
+        assert!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)
+            )
+            .is_none()
+        );
+        assert!(app.notice.as_deref().unwrap().contains("Select a queued"));
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::ALT)).is_none());
+        assert_eq!(app.selected_queue_id.as_deref(), Some("queue-2"));
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::ALT)).is_none());
+        assert_eq!(app.selected_queue_id.as_deref(), Some("queue-1"));
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::ALT)).is_none());
+        assert_eq!(app.selected_queue_id.as_deref(), Some("queue-2"));
+        assert!(matches!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)
+            ),
+            Some(Effect::SendQueuedNow(queue_id)) if queue_id == "queue-2"
+        ));
     }
 
     #[test]
@@ -3853,6 +3962,27 @@ mod tests {
                 KeyEvent::new(KeyCode::Char(value), KeyModifiers::NONE),
             );
         }
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).is_none());
+        let question = app.question.as_ref().unwrap();
+        assert_eq!(question.input_kind, None);
+        assert!(question.response_input.is_empty());
+        assert_eq!(question.selected, 0);
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).is_none());
+        assert!(matches!(
+            handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            Some(Effect::Cancel)
+        ));
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        );
+        for value in "Keep it calm".chars() {
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(value), KeyModifiers::NONE),
+            );
+        }
         assert!(matches!(
             handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             Some(Effect::ResolveQuestion { selected_option: Some(option), note, custom_answer })
@@ -3883,11 +4013,12 @@ mod tests {
     }
 
     #[test]
-    fn terminal_tab_title_shows_a_pulsing_mark_agent_and_live_state() {
+    fn terminal_tab_title_shows_session_name_and_live_state() {
         let mut app = App::new(session(), Vec::new(), true);
         app.agent_name = "Careful Reviewer".to_owned();
+        app.session.title = Some("Transcript polish".to_owned());
 
-        assert_eq!(terminal_tab_title(&app, 0), "◇ Careful Reviewer · Ready");
+        assert_eq!(terminal_tab_title(&app, 0), "◇ Transcript polish · Ready");
         app.active_run = Some("run-title".to_owned());
         app.transcript.push(TranscriptItem::Thought {
             run_id: "run-title".to_owned(),
@@ -3897,10 +4028,22 @@ mod tests {
             live: true,
             collapsed: true,
         });
-        assert_eq!(terminal_tab_title(&app, 0), "◇ Careful Reviewer · Thinking");
-        assert_eq!(terminal_tab_title(&app, 1), "◈ Careful Reviewer · Thinking");
-        assert_eq!(terminal_tab_title(&app, 2), "◆ Careful Reviewer · Thinking");
-        assert_eq!(terminal_tab_title(&app, 3), "◈ Careful Reviewer · Thinking");
+        assert_eq!(
+            terminal_tab_title(&app, 0),
+            "◇ Transcript polish · Thinking"
+        );
+        assert_eq!(
+            terminal_tab_title(&app, 1),
+            "◈ Transcript polish · Thinking"
+        );
+        assert_eq!(
+            terminal_tab_title(&app, 2),
+            "◆ Transcript polish · Thinking"
+        );
+        assert_eq!(
+            terminal_tab_title(&app, 3),
+            "◈ Transcript polish · Thinking"
+        );
     }
 
     #[test]
@@ -4326,9 +4469,14 @@ mod tests {
     }
 
     #[test]
-    fn escape_interrupts_an_active_run() {
+    fn two_escapes_interrupt_an_active_run() {
         let mut app = App::new(session(), Vec::new(), true);
         app.active_run = Some("run-1".to_owned());
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).is_none());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Press Esc again to interrupt current work")
+        );
         assert!(matches!(
             handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
             Some(Effect::Cancel)
@@ -4336,7 +4484,23 @@ mod tests {
     }
 
     #[test]
-    fn escape_pauses_an_active_goal_step() {
+    fn another_key_disarms_escape_confirmation() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-1".to_owned());
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).is_none());
+        assert!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)
+            )
+            .is_none()
+        );
+        assert!(app.notice.is_none());
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).is_none());
+    }
+
+    #[test]
+    fn two_escapes_pause_an_active_goal_step() {
         let mut app = App::new(session(), Vec::new(), true);
         app.active_run = Some("run-goal".to_owned());
         app.goal = Some(Goal {
@@ -4354,6 +4518,7 @@ mod tests {
             created_at: "2026-08-24T00:00:00Z".to_owned(),
             updated_at: "2026-08-24T00:00:00Z".to_owned(),
         });
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).is_none());
         assert!(matches!(
             handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
             Some(Effect::PauseGoal)
@@ -4416,6 +4581,7 @@ mod tests {
             run_id: "run-1".to_owned(),
             rows: Vec::new(),
             collapsed: false,
+            created_at: None,
         });
         app.transcript_viewport = TranscriptViewport {
             x: 2,

@@ -1,5 +1,7 @@
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::collections::HashMap;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use chrono::{DateTime, Local};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::prelude::Stylize;
@@ -52,9 +54,12 @@ const ACTIVITY_IDLE: Duration = Duration::from_millis(3_500);
 const ACTIVITY_SWEEP: Duration = Duration::from_millis(1_600);
 const TRANSCRIPT_GUTTER: &str = "  ";
 const ASSISTANT_BODY_INDENT: &str = "  ";
+const DIFF_CONTEXT_LINES: usize = 3;
+const MAX_RENDERED_DIFF_LINES: usize = 400;
+const MAX_DETAILED_DIFF_LINES_PER_ITEM: usize = 2_000;
+const MAX_DETAILED_DIFF_LINES_TOTAL: usize = 10_000;
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    app.collapse_stale_patch_work(Instant::now());
     app.hits.clear();
     if app.modal.is_none() {
         app.modal_viewport = TranscriptViewport::default();
@@ -228,17 +233,15 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         ));
     }
     let left = Line::from(left_spans);
-    let session = Line::from(vec![
-        Span::styled(
-            app.session.title.as_deref().unwrap_or("New session"),
-            Style::default().fg(INPUT).bold(),
-        ),
+    let context_text = context_header(app);
+    let context = Line::from(vec![
+        Span::styled(context_text.clone(), Style::default().fg(MUTED)),
         Span::styled("  ", Style::default().fg(MUTED)),
     ])
     .right_aligned();
     let block = Block::default()
         .borders(Borders::BOTTOM)
-        .border_style(Style::default().fg(Color::Rgb(54, 63, 78)));
+        .border_style(Style::default().fg(Color::DarkGray));
     let desired_left = u16::try_from(
         6 + UnicodeWidthStr::width(agent_name.as_str())
             + UnicodeWidthStr::width(workspace.as_str())
@@ -248,16 +251,18 @@ fn render_header(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 .map_or(0, |reference| 3 + reference.chars().count()),
     )
     .unwrap_or(area.width);
+    let desired_right =
+        u16::try_from(UnicodeWidthStr::width(context_text.as_str()) + 2).unwrap_or(area.width);
     let right_start = (area.width / 2)
         .max(desired_left)
-        .min(area.width.saturating_sub(24));
+        .min(area.width.saturating_sub(desired_right));
     frame.render_widget(
         Paragraph::new(left),
         Rect::new(area.x, area.y, right_start.max(1), 1),
     );
     frame.render_widget(block, area);
     frame.render_widget(
-        Paragraph::new(session),
+        Paragraph::new(context),
         Rect::new(
             area.x + right_start,
             area.y,
@@ -285,6 +290,7 @@ fn render_queue(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(index, item)| {
+            let selected = total == 1 || app.selected_queue_id.as_deref() == Some(item.id.as_str());
             let content = item
                 .content
                 .split_whitespace()
@@ -297,10 +303,15 @@ fn render_queue(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             };
             let prefix = format!("  {label} {}/{}  ", index + 1, total);
             let body_width = width.saturating_sub(prefix.width());
-            Line::from(vec![
+            let line = Line::from(vec![
                 Span::styled(prefix, Style::default().fg(INPUT)),
                 Span::styled(fit(&content, body_width), Style::default().fg(MUTED)),
-            ])
+            ]);
+            if selected {
+                line.style(Style::default().bg(PANEL_BRIGHT))
+            } else {
+                line
+            }
         })
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(lines), area);
@@ -544,12 +555,21 @@ fn lighter_color(color: Color) -> Color {
 
 fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
     let mut lines = Vec::new();
+    let detailed_diff_limits = detailed_diff_limits(app);
     for (index, item) in app.transcript.iter().enumerate() {
         match item {
-            TranscriptItem::User { content } => {
+            TranscriptItem::User {
+                content,
+                created_at,
+            } => {
                 let start = lines.len();
                 lines.push(RenderLine {
-                    line: Line::from(Span::styled("You", Style::default().fg(INPUT).bold())),
+                    line: message_heading(
+                        vec![Span::styled("You", Style::default().fg(INPUT).bold())],
+                        created_at.as_deref(),
+                        width.saturating_sub(2),
+                        MUTED_LIGHT,
+                    ),
                     thought: None,
                     sheen: None,
                 });
@@ -572,7 +592,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 let interactive = !(*interrupted && !*live && content.is_empty());
                 let label = if *live {
                     let mut spans = vec![Span::styled(
-                        "◈ Thinking",
+                        "◇ Thinking",
                         Style::default().fg(INPUT).bold(),
                     )];
                     if interactive {
@@ -584,7 +604,10 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                     Line::from(spans)
                 } else {
                     let mut spans = vec![
-                        Span::styled("◈ ", Style::default().fg(MUTED)),
+                        Span::styled(
+                            if *interrupted { "◇ " } else { "◆ " },
+                            Style::default().fg(MUTED),
+                        ),
                         Span::styled(
                             thought_label(*duration_seconds),
                             Style::default().fg(INPUT).bold(),
@@ -609,20 +632,38 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 });
                 if !*collapsed && !content.is_empty() {
                     let content = content.trim_start_matches(['\r', '\n']);
+                    let body_start = lines.len();
                     push_markdown(
                         &mut lines,
                         content,
-                        width,
-                        Style::default().fg(Color::Rgb(174, 180, 192)),
+                        width.saturating_sub(2).max(1),
+                        Style::default()
+                            .fg(Color::Rgb(174, 180, 192))
+                            .add_modifier(Modifier::DIM | Modifier::ITALIC),
+                    );
+                    prefix_render_lines(
+                        &mut lines[body_start..],
+                        "│ ",
+                        Style::default().fg(MUTED).add_modifier(Modifier::DIM),
                     );
                 }
             }
-            TranscriptItem::Assistant { content, live, .. } if !content.trim().is_empty() => {
+            TranscriptItem::Assistant {
+                content,
+                live,
+                created_at,
+                ..
+            } if !content.trim().is_empty() => {
                 lines.push(RenderLine {
-                    line: Line::from(vec![
-                        Span::raw(TRANSCRIPT_GUTTER),
-                        Span::styled(app.agent_name.clone(), Style::default().fg(MINT).bold()),
-                    ]),
+                    line: message_heading(
+                        vec![
+                            Span::raw(TRANSCRIPT_GUTTER),
+                            Span::styled(app.agent_name.clone(), Style::default().fg(MINT).bold()),
+                        ],
+                        created_at.as_deref(),
+                        width,
+                        MUTED,
+                    ),
                     thought: None,
                     sheen: live.then_some((2, 7)),
                 });
@@ -752,7 +793,10 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 }
             }
             TranscriptItem::Activity {
-                rows, collapsed, ..
+                rows,
+                collapsed,
+                created_at,
+                ..
             } => {
                 let visible_rows = rows
                     .iter()
@@ -777,37 +821,50 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                 };
                 let count = visible_rows.len();
                 let patch_work = visible_rows.iter().all(|row| is_diff_write_tool(&row.name));
+                let effectively_collapsed = *collapsed && !(app.diff_details && patch_work);
                 let collapsible = count > 1 || patch_work;
                 let disclosure = if collapsible {
-                    format!("  {}", if *collapsed { "▸" } else { "▾" })
+                    format!("  {}", if effectively_collapsed { "▸" } else { "▾" })
                 } else {
                     String::new()
                 };
-                let heading = if visible_rows.iter().all(|row| is_task_tool(&row.name)) {
-                    "Tasks"
-                } else if patch_work {
+                let heading = if patch_work {
                     "Work"
-                } else if visible_rows.iter().all(|row| is_run_tool(&row.name)) {
-                    "Run"
                 } else {
-                    "Explore"
+                    match visible_rows[0].category() {
+                        ActivityCategory::Tasks => "Tasks",
+                        ActivityCategory::Explore => "Explore",
+                        ActivityCategory::Change => "Change",
+                        ActivityCategory::Run => "Run",
+                        ActivityCategory::Delegate => "Delegate",
+                        ActivityCategory::Skills => "Skills",
+                        ActivityCategory::Memory => "Memory",
+                        ActivityCategory::Scars => "Scars",
+                        ActivityCategory::Plugin => "Plugin",
+                    }
                 };
+                let heading_glyph = if complete { "◆ " } else { "◇ " };
                 lines.push(RenderLine {
-                    line: Line::from(vec![
-                        Span::styled("◆ ", Style::default().fg(INPUT)),
-                        Span::styled(heading, Style::default().fg(INPUT).bold()),
-                        Span::styled(
-                            format!(
-                                " · {count} {} · {state}{disclosure}",
-                                if count == 1 { "action" } else { "actions" },
+                    line: message_heading(
+                        vec![
+                            Span::styled(heading_glyph, Style::default().fg(INPUT)),
+                            Span::styled(heading, Style::default().fg(INPUT).bold()),
+                            Span::styled(
+                                format!(
+                                    " · {count} {} · {state}{disclosure}",
+                                    if count == 1 { "action" } else { "actions" },
+                                ),
+                                Style::default().fg(MUTED),
                             ),
-                            Style::default().fg(MUTED),
-                        ),
-                    ]),
+                        ],
+                        created_at.as_deref(),
+                        width,
+                        MUTED,
+                    ),
                     thought: collapsible.then_some(TranscriptDisclosure::Activity(index)),
                     sheen: None,
                 });
-                let first_visible_row = if *collapsed && count > 1 && !patch_work {
+                let first_visible_row = if effectively_collapsed && count > 1 && !patch_work {
                     visible_rows.len().saturating_sub(1)
                 } else {
                     0
@@ -877,13 +934,42 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                         sheen: active
                             .then_some((4, u16::try_from(row.verb().width()).unwrap_or(0))),
                     });
-                    if !*collapsed
+                    if !effectively_collapsed
                         && row.phase == ActivityPhase::Completed
                         && !row.content.is_empty()
                         && (matches!(row.name.as_str(), "edit_file" | "write_file")
                             || looks_like_unified_diff(&row.content))
                     {
-                        push_diff(&mut lines, &row.content, width, row.truncated);
+                        let detailed = app.diff_details && is_diff_write_tool(&row.name);
+                        let content = if detailed {
+                            row.detailed_content.as_deref().unwrap_or(&row.content)
+                        } else {
+                            &row.content
+                        };
+                        let limit = if detailed {
+                            row.result_event_id
+                                .as_ref()
+                                .and_then(|event_id| detailed_diff_limits.get(event_id))
+                                .copied()
+                                .unwrap_or(MAX_DETAILED_DIFF_LINES_PER_ITEM)
+                        } else {
+                            MAX_RENDERED_DIFF_LINES
+                        };
+                        let incomplete = if row.detailed_content.is_some() {
+                            !row.detailed_complete
+                        } else {
+                            row.truncated
+                        };
+                        push_diff_with_options(
+                            &mut lines,
+                            content,
+                            width,
+                            incomplete,
+                            detailed,
+                            limit,
+                            row.detailed_total_lines,
+                            row.details_error.as_deref(),
+                        );
                     }
                 }
             }
@@ -1606,10 +1692,17 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
                 Span::styled(" add note · ", Style::default().fg(MUTED)),
             ]);
         }
-        spans.extend([
-            Span::styled("Esc", Style::default().fg(INPUT).bold()),
-            Span::styled(" interrupt", Style::default().fg(MUTED)),
-        ]);
+        spans.extend(if question.input_kind == Some(QuestionInputKind::Note) {
+            [
+                Span::styled("Esc", Style::default().fg(INPUT).bold()),
+                Span::styled(" choices", Style::default().fg(MUTED)),
+            ]
+        } else {
+            [
+                Span::styled("Esc×2", Style::default().fg(INPUT).bold()),
+                Span::styled(" interrupt", Style::default().fg(MUTED)),
+            ]
+        });
         Line::from(spans)
     } else if app.inline_editor.is_some() {
         Line::from(vec![
@@ -1657,7 +1750,6 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
             Span::styled(" commands", Style::default().fg(MUTED)),
         ])
     };
-    let left_width = UnicodeWidthStr::width(line_text(&left).as_str());
     frame.render_widget(Paragraph::new(left), area);
     if app.sheet.is_none()
         && app.active_run.is_some()
@@ -1676,26 +1768,21 @@ fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta:
         app.activity_bar_effect = None;
     }
     let mut right = Vec::new();
-    let (connection_label, connection_color) = match &app.connection_state {
-        ConnectionState::Connecting => ("connecting".to_owned(), GOLD),
-        ConnectionState::Connected => ("connected".to_owned(), MINT),
-        ConnectionState::Reconnecting { attempt } => (format!("reconnecting {attempt}"), GOLD),
-        ConnectionState::Offline { .. } => ("offline".to_owned(), CORAL),
-    };
-    if let Some(context) = context_footer(app) {
-        let right_width = UnicodeWidthStr::width(context.as_str())
-            + UnicodeWidthStr::width(connection_label.as_str())
-            + 7;
-        if left_width + right_width + 2 <= usize::from(area.width) {
-            right.push(Span::styled(context, Style::default().fg(MUTED)));
-            right.push(Span::styled(" · ", Style::default().fg(MUTED)));
+    let connection = match &app.connection_state {
+        ConnectionState::Connecting => Some(("connecting".to_owned(), GOLD)),
+        ConnectionState::Connected => None,
+        ConnectionState::Reconnecting { attempt } => {
+            Some((format!("reconnecting {attempt}"), GOLD))
         }
+        ConnectionState::Offline { .. } => Some(("offline".to_owned(), CORAL)),
+    };
+    if let Some((connection_label, connection_color)) = connection {
+        right.extend([
+            Span::styled("[", Style::default().fg(MUTED)),
+            Span::styled(connection_label, Style::default().fg(connection_color)),
+            Span::styled("]  ", Style::default().fg(MUTED)),
+        ]);
     }
-    right.extend([
-        Span::styled("[", Style::default().fg(MUTED)),
-        Span::styled(connection_label, Style::default().fg(connection_color)),
-        Span::styled("]  ", Style::default().fg(MUTED)),
-    ]);
     frame.render_widget(
         Paragraph::new(Line::from(right)).alignment(Alignment::Right),
         area,
@@ -1709,16 +1796,59 @@ fn context_percent(used: u64, window: u64) -> u64 {
     ((used as f64 / window as f64) * 100.0).round() as u64
 }
 
-fn context_footer(app: &App) -> Option<String> {
-    let context = app.current_context_usage()?;
-    Some(format!(
-        "{} ({}%)",
-        format_token_count(context.estimated_input_tokens),
-        context_percent(
-            context.estimated_input_tokens,
-            context.context_window_tokens
-        )
-    ))
+fn context_header(app: &App) -> String {
+    if let Some(context) = app.current_context_usage() {
+        return format!(
+            "Context {} / {} · {}%",
+            format_token_count(context.estimated_input_tokens),
+            format_token_count(context.context_window_tokens),
+            context_percent(
+                context.estimated_input_tokens,
+                context.context_window_tokens
+            )
+        );
+    }
+    format!(
+        "Context {}",
+        format_token_count(app.session.context_window_tokens)
+    )
+}
+
+fn message_heading(
+    mut spans: Vec<Span<'static>>,
+    created_at: Option<&str>,
+    width: usize,
+    timestamp_color: Color,
+) -> Line<'static> {
+    let right_inset = TRANSCRIPT_GUTTER.len();
+    let Some(timestamp) = created_at.and_then(format_message_timestamp) else {
+        return Line::from(spans);
+    };
+    let left_width = spans.iter().map(Span::width).sum::<usize>();
+    let timestamp_width = UnicodeWidthStr::width(timestamp.as_str());
+    if left_width + timestamp_width + right_inset + 2 > width {
+        return Line::from(spans);
+    }
+    spans.push(Span::raw(
+        " ".repeat(width - left_width - timestamp_width - right_inset),
+    ));
+    spans.push(Span::styled(
+        timestamp,
+        Style::default().fg(timestamp_color),
+    ));
+    spans.push(Span::raw(" ".repeat(right_inset)));
+    Line::from(spans)
+}
+
+fn format_message_timestamp(created_at: &str) -> Option<String> {
+    DateTime::parse_from_rfc3339(created_at)
+        .ok()
+        .map(|timestamp| {
+            timestamp
+                .with_timezone(&Local)
+                .format("%-I:%M %p")
+                .to_string()
+        })
 }
 
 fn sheet_shortcuts(app: &App) -> Line<'static> {
@@ -1814,21 +1944,29 @@ fn activity_bar(app: &App) -> Line<'static> {
                 },
                 Style::default().fg(MUTED),
             ));
-            spans.push(Span::styled("Alt+↑", Style::default().fg(INPUT).bold()));
+            spans.push(Span::styled(
+                "Ctrl+Enter",
+                Style::default().fg(INPUT).bold(),
+            ));
             spans.push(Span::styled(" send now", Style::default().fg(MUTED)));
         }
     }
     if !app.queued_messages.is_empty() {
         spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
         if app.composer.is_empty() {
-            spans.push(Span::styled("Alt+↑", Style::default().fg(INPUT).bold()));
+            spans.push(Span::styled(
+                "Ctrl+Enter",
+                Style::default().fg(INPUT).bold(),
+            ));
             spans.push(Span::styled(" send now · ", Style::default().fg(MUTED)));
         }
+        spans.push(Span::styled("Alt+↑/↓", Style::default().fg(INPUT).bold()));
+        spans.push(Span::styled(" select · ", Style::default().fg(MUTED)));
         spans.push(Span::styled("↑", Style::default().fg(INPUT).bold()));
         spans.push(Span::styled(" edit", Style::default().fg(MUTED)));
     }
     spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
-    spans.push(Span::styled("Esc", Style::default().fg(INPUT).bold()));
+    spans.push(Span::styled("Esc×2", Style::default().fg(INPUT).bold()));
     spans.push(Span::styled(
         if app.active_run_is_goal_step() {
             " pause"
@@ -3756,18 +3894,82 @@ fn looks_like_unified_diff(value: &str) -> bool {
         && value.lines().any(|line| line.starts_with("+++ "))
 }
 
+fn detailed_diff_limits(app: &App) -> HashMap<String, usize> {
+    if !app.diff_details {
+        return HashMap::new();
+    }
+    let mut remaining = MAX_DETAILED_DIFF_LINES_TOTAL;
+    let mut limits = HashMap::new();
+    for item in app.transcript.iter().rev() {
+        let TranscriptItem::Activity { rows, .. } = item else {
+            continue;
+        };
+        for row in rows.iter().rev() {
+            if !is_diff_write_tool(&row.name) || row.phase != ActivityPhase::Completed {
+                continue;
+            }
+            let Some(event_id) = &row.result_event_id else {
+                continue;
+            };
+            let content = row.detailed_content.as_deref().unwrap_or(&row.content);
+            let available = full_diff_lines_bounded(content, 0).1;
+            if available <= MAX_RENDERED_DIFF_LINES {
+                limits.insert(event_id.clone(), available);
+                continue;
+            }
+            let limit = available
+                .min(MAX_DETAILED_DIFF_LINES_PER_ITEM)
+                .min(remaining)
+                .max(MAX_RENDERED_DIFF_LINES.min(available));
+            limits.insert(event_id.clone(), limit);
+            remaining = remaining.saturating_sub(limit);
+        }
+    }
+    limits
+}
+
+#[cfg(test)]
 fn push_diff(lines: &mut Vec<RenderLine<'static>>, value: &str, width: usize, truncated: bool) {
-    let source_lines = compact_diff_lines(value);
-    let additions = source_lines
-        .iter()
-        .flatten()
-        .filter(|line| line.value.starts_with('+'))
-        .count();
-    let removals = source_lines
-        .iter()
-        .flatten()
-        .filter(|line| line.value.starts_with('-'))
-        .count();
+    push_diff_with_options(
+        lines,
+        value,
+        width,
+        truncated,
+        false,
+        MAX_RENDERED_DIFF_LINES,
+        None,
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_diff_with_options(
+    lines: &mut Vec<RenderLine<'static>>,
+    value: &str,
+    width: usize,
+    incomplete: bool,
+    detailed: bool,
+    limit: usize,
+    total_lines: Option<usize>,
+    details_error: Option<&str>,
+) {
+    let (source_lines, total_source_lines, additions, removals) = if detailed {
+        full_diff_lines_bounded(value, limit)
+    } else {
+        let source_lines = compact_diff_lines(value);
+        let additions = source_lines
+            .iter()
+            .filter_map(CompactDiffLine::source)
+            .filter(|line| line.value.starts_with('+'))
+            .count();
+        let removals = source_lines
+            .iter()
+            .filter_map(CompactDiffLine::source)
+            .filter(|line| line.value.starts_with('-'))
+            .count();
+        let total = source_lines.len();
+        (source_lines, total, additions, removals)
+    };
     lines.push(RenderLine {
         line: Line::from(vec![
             Span::styled("  ── ", Style::default().fg(RULE)),
@@ -3781,25 +3983,90 @@ fn push_diff(lines: &mut Vec<RenderLine<'static>>, value: &str, width: usize, tr
         thought: None,
         sheen: None,
     });
-    for line in source_lines.iter().take(160) {
-        if let Some(line) = line {
-            push_numbered_diff_source_line(lines, *line, width);
-        } else {
-            push_styled_wrapped(
-                lines,
-                vec![Span::styled("⋯".to_owned(), Style::default().fg(MUTED))],
-                width,
-                "    ",
-                Style::default(),
-            );
+    for line in source_lines.iter().take(limit) {
+        match line {
+            CompactDiffLine::Source(line) => push_numbered_diff_source_line(lines, *line, width),
+            CompactDiffLine::Omitted(count) => {
+                let label = if *count == 0 {
+                    "⋯ next hunk".to_owned()
+                } else if *count == 1 {
+                    "⋯ 1 unchanged line".to_owned()
+                } else {
+                    format!("⋯ {count} unchanged lines")
+                };
+                push_styled_wrapped(
+                    lines,
+                    vec![Span::styled(label, Style::default().fg(MUTED))],
+                    width,
+                    "    ",
+                    Style::default(),
+                );
+            }
         }
     }
-    if truncated || source_lines.len() > 160 {
+    let hidden_render_rows = total_source_lines.saturating_sub(limit);
+    if hidden_render_rows > 0 {
+        let spans = if detailed {
+            vec![Span::styled(
+                format!("Diff detail limit · {hidden_render_rows} rendered rows hidden"),
+                Style::default().fg(GOLD),
+            )]
+        } else {
+            vec![
+                Span::styled(
+                    format!("Diff shortened · {hidden_render_rows} rendered rows hidden · "),
+                    Style::default().fg(MUTED),
+                ),
+                Span::styled("/details", Style::default().fg(INPUT).bold()),
+                Span::styled(" expands edit diffs", Style::default().fg(MUTED)),
+            ]
+        };
+        push_styled_wrapped(lines, spans, width, "    ", Style::default());
+    }
+    let unavailable_lines = total_lines
+        .unwrap_or_default()
+        .saturating_sub(value.lines().count());
+    if detailed && incomplete && unavailable_lines > 0 {
         push_styled_wrapped(
             lines,
             vec![Span::styled(
-                "Diff truncated; full result is retained by Hames.".to_owned(),
+                format!("Detail response limit · {unavailable_lines} retained lines not loaded"),
                 Style::default().fg(GOLD),
+            )],
+            width,
+            "    ",
+            Style::default(),
+        );
+    } else if detailed && incomplete {
+        push_styled_wrapped(
+            lines,
+            vec![Span::styled(
+                "Detail response limit · additional retained content not loaded".to_owned(),
+                Style::default().fg(GOLD),
+            )],
+            width,
+            "    ",
+            Style::default(),
+        );
+    } else if !detailed && incomplete && hidden_render_rows == 0 {
+        push_styled_wrapped(
+            lines,
+            vec![
+                Span::styled("Diff result shortened · ", Style::default().fg(MUTED)),
+                Span::styled("/details", Style::default().fg(INPUT).bold()),
+                Span::styled(" loads the retained edit", Style::default().fg(MUTED)),
+            ],
+            width,
+            "    ",
+            Style::default(),
+        );
+    }
+    if detailed && let Some(error) = details_error {
+        push_styled_wrapped(
+            lines,
+            vec![Span::styled(
+                format!("Details unavailable · {error}"),
+                Style::default().fg(CORAL),
             )],
             width,
             "    ",
@@ -3815,7 +4082,22 @@ struct NumberedDiffLine<'a> {
     value: &'a str,
 }
 
-fn compact_diff_lines(value: &str) -> Vec<Option<NumberedDiffLine<'_>>> {
+#[derive(Clone, Copy)]
+enum CompactDiffLine<'a> {
+    Source(NumberedDiffLine<'a>),
+    Omitted(usize),
+}
+
+impl<'a> CompactDiffLine<'a> {
+    fn source(&self) -> Option<&NumberedDiffLine<'a>> {
+        match self {
+            Self::Source(line) => Some(line),
+            Self::Omitted(_) => None,
+        }
+    }
+}
+
+fn compact_diff_lines(value: &str) -> Vec<CompactDiffLine<'_>> {
     let mut result = Vec::new();
     let mut hunk = Vec::new();
     let mut old_line = 0usize;
@@ -3856,6 +4138,68 @@ fn compact_diff_lines(value: &str) -> Vec<Option<NumberedDiffLine<'_>>> {
     result
 }
 
+fn full_diff_lines_bounded(
+    value: &str,
+    limit: usize,
+) -> (Vec<CompactDiffLine<'_>>, usize, usize, usize) {
+    let mut result = Vec::new();
+    let mut total = 0usize;
+    let mut additions = 0usize;
+    let mut removals = 0usize;
+    let mut old_line = 0usize;
+    let mut new_line = 0usize;
+    let mut in_hunk = false;
+    for line in value.lines() {
+        if line.starts_with("--- ") || line.starts_with("+++ ") {
+            continue;
+        }
+        if line.starts_with("@@") {
+            if in_hunk && total > 0 {
+                if result.len() < limit {
+                    result.push(CompactDiffLine::Omitted(0));
+                }
+                total += 1;
+            }
+            if let Some((old_start, new_start)) = hunk_starts(line) {
+                old_line = old_start;
+                new_line = new_start;
+                in_hunk = true;
+            }
+        } else if in_hunk && line.starts_with('+') {
+            if result.len() < limit {
+                result.push(CompactDiffLine::Source(NumberedDiffLine {
+                    line_number: new_line,
+                    value: line,
+                }));
+            }
+            total += 1;
+            additions += 1;
+            new_line += 1;
+        } else if in_hunk && line.starts_with('-') {
+            if result.len() < limit {
+                result.push(CompactDiffLine::Source(NumberedDiffLine {
+                    line_number: old_line,
+                    value: line,
+                }));
+            }
+            total += 1;
+            removals += 1;
+            old_line += 1;
+        } else if in_hunk && line.starts_with(' ') {
+            if result.len() < limit {
+                result.push(CompactDiffLine::Source(NumberedDiffLine {
+                    line_number: new_line,
+                    value: line,
+                }));
+            }
+            total += 1;
+            old_line += 1;
+            new_line += 1;
+        }
+    }
+    (result, total, additions, removals)
+}
+
 fn hunk_starts(value: &str) -> Option<(usize, usize)> {
     let mut parts = value.split_whitespace();
     (parts.next()? == "@@").then_some(())?;
@@ -3868,10 +4212,7 @@ fn diff_range_start(value: &str) -> Option<usize> {
     value.split(',').next()?.parse().ok()
 }
 
-fn append_compact_hunk<'a>(
-    result: &mut Vec<Option<NumberedDiffLine<'a>>>,
-    hunk: &[NumberedDiffLine<'a>],
-) {
+fn append_compact_hunk<'a>(result: &mut Vec<CompactDiffLine<'a>>, hunk: &[NumberedDiffLine<'a>]) {
     if hunk.is_empty() {
         return;
     }
@@ -3886,11 +4227,22 @@ fn append_compact_hunk<'a>(
         return;
     }
     if !result.is_empty() {
-        result.push(None);
+        result.push(CompactDiffLine::Omitted(0));
     }
+    let mut previous = None;
     for (index, line) in hunk.iter().enumerate() {
-        if changed.iter().any(|changed| changed.abs_diff(index) <= 1) {
-            result.push(Some(*line));
+        if changed
+            .iter()
+            .any(|changed| changed.abs_diff(index) <= DIFF_CONTEXT_LINES)
+        {
+            if let Some(previous) = previous {
+                let omitted = index.saturating_sub(previous + 1);
+                if omitted > 0 {
+                    result.push(CompactDiffLine::Omitted(omitted));
+                }
+            }
+            result.push(CompactDiffLine::Source(*line));
+            previous = Some(index);
         }
     }
 }
@@ -3916,10 +4268,6 @@ fn is_diff_write_tool(name: &str) -> bool {
     matches!(name, "edit_file" | "write_file")
 }
 
-fn is_run_tool(name: &str) -> bool {
-    matches!(name, "shell" | "skill_run" | "terminal_stop")
-}
-
 fn indent_render_lines(lines: &mut [RenderLine<'static>], indent: &str) {
     if indent.is_empty() {
         return;
@@ -3929,6 +4277,14 @@ fn indent_render_lines(lines: &mut [RenderLine<'static>], indent: &str) {
             continue;
         }
         let mut spans = vec![Span::raw(indent.to_owned())];
+        spans.append(&mut item.line.spans);
+        item.line = Line::from(spans);
+    }
+}
+
+fn prefix_render_lines(lines: &mut [RenderLine<'static>], prefix: &str, style: Style) {
+    for item in lines {
+        let mut spans = vec![Span::styled(prefix.to_owned(), style)];
         spans.append(&mut item.line.spans);
         item.line = Line::from(spans);
     }
@@ -4173,13 +4529,24 @@ fn apply_theme(frame: &mut Frame<'_>, area: Rect, theme: ThemeKind) {
             let Some(cell) = buffer.cell_mut((x, y)) else {
                 continue;
             };
-            cell.fg = terminal_color(cell.fg);
-            cell.bg = match cell.bg {
-                Color::White => Color::White,
-                other => terminal_color(other),
-            };
+            (cell.fg, cell.bg) = terminal_cell_colors(cell.fg, cell.bg);
         }
     }
+}
+
+fn terminal_cell_colors(foreground: Color, background: Color) -> (Color, Color) {
+    let foreground = match background {
+        ADDITION_BG => Color::LightGreen,
+        REMOVAL_BG => Color::LightRed,
+        _ => terminal_color(foreground),
+    };
+    let background = match background {
+        ADDITION_BG => Color::Indexed(22),
+        REMOVAL_BG => Color::Indexed(52),
+        Color::White => Color::White,
+        other => terminal_color(other),
+    };
+    (foreground, background)
 }
 
 fn terminal_color(color: Color) -> Color {
@@ -4202,8 +4569,8 @@ fn terminal_color(color: Color) -> Color {
         PANEL => Color::Black,
         PANEL_BRIGHT => Color::DarkGray,
         DELETE_BG => Color::Red,
-        ADDITION_BG => Color::DarkGray,
-        REMOVAL_BG => Color::DarkGray,
+        ADDITION_BG => Color::Green,
+        REMOVAL_BG => Color::Red,
         TASK_DONE_BG => Color::Green,
         TASK_CURRENT_BG => Color::Yellow,
         Color::White => Color::Reset,
@@ -4305,8 +4672,9 @@ fn help_body(wide: bool) -> Vec<Line<'static>> {
             help_pair_line("Ctrl+P", "Preview paste", "Ctrl+Q", "Quit Hames"),
             Line::from(""),
             help_section("While working"),
-            help_pair_line("Esc", "Interrupt turn", "Enter", "Queue message"),
-            help_pair_line("Alt+↑", "Send now", "Ctrl+C", "Cancel or pause"),
+            help_pair_line("Esc×2", "Interrupt turn", "Enter", "Queue message"),
+            help_pair_line("Ctrl+Enter", "Send now", "Ctrl+C", "Cancel or pause"),
+            help_pair_line("Alt+↑/↓", "Select queued", "Ctrl+U", "Clear logical line"),
             Line::from(""),
             help_section("Navigation"),
             help_pair_line(
@@ -4338,9 +4706,11 @@ fn help_body(wide: bool) -> Vec<Line<'static>> {
         help_line("Shift+Tab", "Change mode"),
         Line::from(""),
         help_section("While working"),
-        help_line("Esc", "Interrupt turn"),
+        help_line("Esc×2", "Interrupt turn"),
         help_line("Enter", "Queue message"),
-        help_line("Alt+↑", "Send now"),
+        help_line("Ctrl+Enter", "Send now"),
+        help_line("Alt+↑/↓", "Select queued"),
+        help_line("Ctrl+U", "Clear logical line"),
         help_line("Ctrl+C", "Cancel or pause"),
         Line::from(""),
         help_section("Navigation"),
@@ -4625,14 +4995,16 @@ mod tests {
     use unicode_width::UnicodeWidthStr;
 
     use super::{
-        ADDITION_BG, CORAL, CORAL_LIGHT, CYAN, DELETE_BG, GOLD, INPUT, INPUT_LIGHT, MINT,
-        MINT_LIGHT, MUTED, PANEL_BRIGHT, REMOVAL_BG, RULE, RULE_LIGHT, SKY, TASK_CURRENT_BG,
+        ADDITION_BG, CORAL, CORAL_LIGHT, CYAN, CompactDiffLine, DELETE_BG, GOLD, INPUT,
+        INPUT_LIGHT, MAX_DETAILED_DIFF_LINES_PER_ITEM, MAX_RENDERED_DIFF_LINES, MINT, MINT_LIGHT,
+        MUTED, MUTED_LIGHT, PANEL_BRIGHT, REMOVAL_BG, RULE, RULE_LIGHT, SKY, TASK_CURRENT_BG,
         TASK_DONE_BG, agent_access_body, agent_identity_body, approval_detail_lines,
-        compact_diff_lines, compact_home, composer_caret_color, context_footer, context_gauge,
-        context_percent, draw, format_elapsed, format_token_count, goal_elapsed, help_body,
-        line_text, memory_browser_body, mode_color, mode_outline, scar_browser_body,
-        scar_editor_body, scrollbar_position, sheet_text_color, single_line_editor, split_width,
-        terminal_color, thought_label, transcript_lines, traveling_sheen, usage_body,
+        compact_diff_lines, compact_home, composer_caret_color, context_gauge, context_header,
+        context_percent, draw, format_elapsed, format_message_timestamp, format_token_count,
+        goal_elapsed, help_body, line_text, memory_browser_body, mode_color, mode_outline,
+        push_diff, push_diff_with_options, scar_browser_body, scar_editor_body, scrollbar_position,
+        sheet_text_color, single_line_editor, split_width, terminal_cell_colors, terminal_color,
+        thought_label, transcript_lines, traveling_sheen, usage_body,
     };
 
     use crate::api::{
@@ -4772,7 +5144,28 @@ mod tests {
     }
 
     #[test]
-    fn live_reasoning_stays_collapsed_until_explicitly_opened() {
+    fn completed_thought_uses_a_filled_diamond_and_hides_its_body() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::Thought {
+            run_id: "run-thought-complete".to_owned(),
+            content: "Finished reasoning".to_owned(),
+            duration_seconds: 12.0,
+            interrupted: false,
+            live: false,
+            collapsed: true,
+        });
+
+        let rendered = transcript_lines(&app, 80)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("◆ Thought (12s)  ▸"));
+        assert!(!rendered.contains("Finished reasoning"));
+    }
+
+    #[test]
+    fn manually_collapsed_live_reasoning_opens_with_its_full_markdown_body() {
         let mut app = App::new(session(), Vec::new(), true);
         app.active_run = Some("run-thinking".to_owned());
         app.transcript.push(TranscriptItem::Thought {
@@ -4811,7 +5204,7 @@ mod tests {
             line_text(&expanded_lines[header + 1].line)
                 .contains("Inspecting fullscreen toggle behavior")
         );
-        assert_eq!(line_text(&expanded_lines[header + 2].line), "");
+        assert_eq!(line_text(&expanded_lines[header + 2].line), "│ ");
         assert!(line_text(&expanded_lines[header + 3].line).contains("Planning fix"));
         assert!(
             expanded_lines
@@ -4929,6 +5322,7 @@ mod tests {
         for index in 0..20 {
             app.transcript.push(TranscriptItem::User {
                 content: format!("message {index}"),
+                created_at: None,
             });
         }
         app.scroll = usize::MAX;
@@ -4981,6 +5375,7 @@ mod tests {
         let mut app = App::new(session(), Vec::new(), true);
         app.transcript.push(TranscriptItem::User {
             content: "hello".to_owned(),
+            created_at: None,
         });
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -5015,12 +5410,14 @@ mod tests {
         app.agent_name = "Hames".to_owned();
         app.transcript.push(TranscriptItem::User {
             content: "hello".to_owned(),
+            created_at: None,
         });
         app.transcript.push(TranscriptItem::Assistant {
             run_id: "run-align".to_owned(),
             content: "reply".to_owned(),
             live: false,
             durable: true,
+            created_at: None,
         });
         let lines = transcript_lines(&app, 40);
         let you = lines
@@ -5056,6 +5453,130 @@ mod tests {
     }
 
     #[test]
+    fn user_and_assistant_headings_show_grok_style_timestamps_at_the_right_edge() {
+        let created_at = "2026-08-24T00:30:00Z";
+        let expected = format_message_timestamp(created_at).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::User {
+            content: "hello".to_owned(),
+            created_at: Some(created_at.to_owned()),
+        });
+        app.transcript.push(TranscriptItem::Assistant {
+            run_id: "run-time".to_owned(),
+            content: "reply".to_owned(),
+            live: false,
+            durable: true,
+            created_at: Some(created_at.to_owned()),
+        });
+
+        let headings = transcript_lines(&app, 48)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .filter(|line| line.contains("You") || line.contains("Hames"))
+            .collect::<Vec<_>>();
+        assert_eq!(headings.len(), 2);
+        assert!(
+            headings
+                .iter()
+                .all(|line| line.trim_end().ends_with(&expected))
+        );
+        assert!(headings.iter().all(|line| line.width() == 48));
+        assert!(headings.iter().all(|line| line.ends_with("  ")));
+
+        let user_heading = transcript_lines(&app, 48)
+            .into_iter()
+            .find(|item| line_text(&item.line).contains("You"))
+            .unwrap();
+        let timestamp = user_heading
+            .line
+            .spans
+            .iter()
+            .find(|span| span.content == expected)
+            .unwrap();
+        assert_eq!(timestamp.style.fg, Some(MUTED_LIGHT));
+        assert_eq!(timestamp.style.bg, Some(PANEL_BRIGHT));
+    }
+
+    #[test]
+    fn activity_clump_headings_show_timestamps_for_every_category() {
+        let created_at = "2026-08-24T00:30:00Z";
+        let expected = format_message_timestamp(created_at).unwrap();
+        for (name, heading) in [
+            ("task_update", "Tasks"),
+            ("shell", "Run"),
+            ("read_file", "Explore"),
+            ("edit_file", "Work"),
+            ("memory_search", "Memory"),
+            ("plugin.inspect", "Plugin"),
+        ] {
+            let mut app = App::new(session(), Vec::new(), true);
+            app.transcript.push(TranscriptItem::Activity {
+                run_id: format!("run-{name}"),
+                rows: vec![ActivityRow {
+                    index: 0,
+                    tool_call_id: Some(format!("call-{name}")),
+                    name: name.to_owned(),
+                    arguments: json!({}),
+                    argument_parts: String::new(),
+                    phase: ActivityPhase::Completed,
+                    summary: String::new(),
+                    content: String::new(),
+                    structured_data: json!({}),
+                    truncated: false,
+                    result_event_id: None,
+                    blob_references: Vec::new(),
+                    detailed_content: None,
+                    detailed_total_lines: None,
+                    detailed_complete: false,
+                    details_error: None,
+                    duration_seconds: 0.0,
+                }],
+                collapsed: false,
+                created_at: Some(created_at.to_owned()),
+            });
+
+            let line = transcript_lines(&app, 64)
+                .iter()
+                .map(|item| line_text(&item.line))
+                .find(|line| line.contains(heading))
+                .unwrap();
+            assert!(
+                line.trim_end().ends_with(&expected) && line.ends_with("  "),
+                "missing timestamp from {heading}"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_theme_user_timestamp_is_lighter_than_its_panel() {
+        let created_at = "2026-08-24T00:30:00Z";
+        let expected = format_message_timestamp(created_at).unwrap();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.theme = crate::tui::app::ThemeKind::Terminal;
+        app.transcript.push(TranscriptItem::User {
+            content: "hello".to_owned(),
+            created_at: Some(created_at.to_owned()),
+        });
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let (timestamp_x, timestamp_y) = (0..buffer.area.height)
+            .find_map(|y| {
+                let row = (0..buffer.area.width)
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol())
+                    .collect::<String>();
+                row.find(&expected).map(|x| (u16::try_from(x).unwrap(), y))
+            })
+            .expect("timestamp should be rendered");
+        let timestamp_cell = buffer.cell((timestamp_x, timestamp_y)).unwrap();
+        assert_eq!(timestamp_cell.fg, Color::Gray);
+        assert_eq!(timestamp_cell.bg, Color::DarkGray);
+        assert_ne!(timestamp_cell.fg, timestamp_cell.bg);
+    }
+
+    #[test]
     fn header_uses_the_selected_agent_name_instead_of_fixed_brand_text() {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -5076,6 +5597,7 @@ mod tests {
         let content = "before\n```rust\nfn main() {}\n```\nafter";
         app.transcript.push(TranscriptItem::User {
             content: content.to_owned(),
+            created_at: None,
         });
         let rendered = transcript_lines(&app, 80)
             .iter()
@@ -5104,6 +5626,7 @@ mod tests {
                 .to_owned(),
             live: false,
             durable: true,
+            created_at: None,
         });
         let lines = transcript_lines(&app, 80);
         let code = lines
@@ -5166,6 +5689,7 @@ mod tests {
             content: "Done.".to_owned(),
             live: false,
             durable: true,
+            created_at: None,
         });
         app.transcript.push(TranscriptItem::Worked {
             duration_seconds: 251.0,
@@ -5192,6 +5716,7 @@ mod tests {
         app.transcript.push(TranscriptItem::Activity {
             run_id: "run-diff".to_owned(),
             collapsed: false,
+            created_at: None,
             rows: vec![ActivityRow {
                 index: 0,
                 tool_call_id: Some("edit-1".to_owned()),
@@ -5214,6 +5739,12 @@ mod tests {
                 .to_owned(),
                 structured_data: json!({"path": "src/main.rs"}),
                 truncated: false,
+                result_event_id: Some("event-edit-1".to_owned()),
+                blob_references: Vec::new(),
+                detailed_content: None,
+                detailed_total_lines: None,
+                detailed_complete: false,
+                details_error: None,
                 duration_seconds: 0.01,
             }],
         });
@@ -5227,8 +5758,8 @@ mod tests {
         assert!(text.iter().any(|line| line.contains("(+1 -1)")));
         assert!(!text.iter().any(|line| line.contains("--- a/src/main.rs")));
         assert!(!text.iter().any(|line| line.contains("@@ -2,5")));
-        assert!(!text.iter().any(|line| line.contains("before two")));
-        assert!(!text.iter().any(|line| line.contains("after two")));
+        assert!(text.iter().any(|line| line.contains("before two")));
+        assert!(text.iter().any(|line| line.contains("after two")));
         assert!(text.iter().any(|line| line.contains("before one")));
         assert!(text.iter().any(|line| line.contains("after one")));
         assert!(text.iter().any(|line| line.contains("4 -old")));
@@ -5298,6 +5829,23 @@ mod tests {
         assert!(collapsed.iter().any(|line| line.contains("src/main.rs")));
         assert!(!collapsed.iter().any(|line| line.contains("── diff")));
         assert!(!collapsed.iter().any(|line| line.contains("+new")));
+
+        app.diff_details = true;
+        let detailed = transcript_lines(&app, 80)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>();
+        assert!(detailed.iter().any(|line| line.contains("Completed  ▾")));
+        assert!(detailed.iter().any(|line| line.contains("── diff")));
+        assert!(detailed.iter().any(|line| line.contains("+new")));
+
+        app.diff_details = false;
+        let restored = transcript_lines(&app, 80)
+            .iter()
+            .map(|item| line_text(&item.line))
+            .collect::<Vec<_>>();
+        assert!(restored.iter().any(|line| line.contains("Completed  ▸")));
+        assert!(!restored.iter().any(|line| line.contains("── diff")));
     }
 
     #[test]
@@ -5428,6 +5976,7 @@ mod tests {
         let mut app = App::new(session(), Vec::new(), true);
         app.transcript.push(TranscriptItem::User {
             content: "hello".to_owned(),
+            created_at: None,
         });
         let lines = transcript_lines(&app, 40);
         let you = lines
@@ -5551,11 +6100,162 @@ mod tests {
         ));
         let values = compact
             .iter()
-            .flatten()
+            .filter_map(CompactDiffLine::source)
             .map(|line| line.value)
             .collect::<Vec<_>>();
         assert_eq!(values.iter().filter(|line| **line == " between").count(), 1);
-        assert!(!compact.iter().any(Option::is_none));
+        assert!(
+            !compact
+                .iter()
+                .any(|line| matches!(line, CompactDiffLine::Omitted(_)))
+        );
+    }
+
+    #[test]
+    fn distant_diff_edits_report_the_number_of_omitted_context_lines() {
+        let compact = compact_diff_lines(concat!(
+            "--- a/file.py\n",
+            "+++ b/file.py\n",
+            "@@ -1,14 +1,14 @@\n",
+            "-old first\n",
+            "+new first\n",
+            " keep 1\n",
+            " keep 2\n",
+            " keep 3\n",
+            " keep 4\n",
+            " keep 5\n",
+            " keep 6\n",
+            " keep 7\n",
+            " keep 8\n",
+            " keep 9\n",
+            " keep 10\n",
+            "-old last\n",
+            "+new last\n",
+        ));
+
+        assert!(
+            compact
+                .iter()
+                .any(|line| matches!(line, CompactDiffLine::Omitted(4)))
+        );
+    }
+
+    #[test]
+    fn inline_diff_has_a_generous_bounded_rendering_limit() {
+        let mut diff = "--- /dev/null\n+++ b/generated.txt\n@@ -0,0 +1,410 @@\n".to_owned();
+        for index in 0..410 {
+            diff.push_str(&format!("+line {index}\n"));
+        }
+        let mut rendered = Vec::new();
+        push_diff(&mut rendered, &diff, 80, false);
+        let text = rendered
+            .iter()
+            .map(|line| line_text(&line.line))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            text.iter().filter(|line| line.contains("+line ")).count(),
+            MAX_RENDERED_DIFF_LINES
+        );
+        assert!(
+            text.iter()
+                .any(|line| line.contains("Diff shortened · 10 rendered rows hidden · /details"))
+        );
+        let shortened = rendered
+            .iter()
+            .flat_map(|line| &line.line.spans)
+            .find(|span| span.content.trim() == "Diff")
+            .unwrap();
+        let details = rendered
+            .iter()
+            .flat_map(|line| &line.line.spans)
+            .find(|span| span.content == "/details")
+            .unwrap();
+        assert_eq!(shortened.style.fg, Some(MUTED));
+        assert_eq!(details.style.fg, Some(INPUT));
+        assert!(details.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn detailed_diff_renders_past_the_compact_limit_inline() {
+        let mut diff = "--- /dev/null\n+++ b/generated.txt\n@@ -0,0 +1,410 @@\n".to_owned();
+        for index in 0..410 {
+            diff.push_str(&format!("+line {index}\n"));
+        }
+        let mut rendered = Vec::new();
+        push_diff_with_options(
+            &mut rendered,
+            &diff,
+            80,
+            false,
+            true,
+            MAX_DETAILED_DIFF_LINES_PER_ITEM,
+            None,
+            None,
+        );
+        let text = rendered
+            .iter()
+            .map(|line| line_text(&line.line))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            text.iter().filter(|line| line.contains("+line ")).count(),
+            410
+        );
+        assert!(!text.iter().any(|line| line.contains("rows hidden")));
+    }
+
+    #[test]
+    fn detailed_diff_reports_render_and_response_safety_limits() {
+        let mut diff = "--- /dev/null\n+++ b/generated.txt\n@@ -0,0 +1,2010 @@\n".to_owned();
+        for index in 0..2010 {
+            diff.push_str(&format!("+line {index}\n"));
+        }
+        let returned_lines = diff.lines().count();
+        let mut rendered = Vec::new();
+        push_diff_with_options(
+            &mut rendered,
+            &diff,
+            80,
+            true,
+            true,
+            MAX_DETAILED_DIFF_LINES_PER_ITEM,
+            Some(returned_lines + 25),
+            None,
+        );
+        let text = rendered
+            .iter()
+            .map(|line| line_text(&line.line))
+            .collect::<Vec<_>>();
+
+        assert!(
+            text.iter()
+                .any(|line| line.contains("Diff detail limit · 10 rendered rows hidden"))
+        );
+        assert!(
+            text.iter()
+                .any(|line| line.contains("Detail response limit · 25 retained lines not loaded"))
+        );
+    }
+
+    #[test]
+    fn terminal_theme_uses_native_semantic_diff_bands() {
+        assert_eq!(
+            terminal_cell_colors(MINT, ADDITION_BG),
+            (Color::LightGreen, Color::Indexed(22))
+        );
+        assert_eq!(
+            terminal_cell_colors(CORAL, REMOVAL_BG),
+            (Color::LightRed, Color::Indexed(52))
+        );
+        assert_eq!(
+            terminal_cell_colors(INPUT, Color::Reset),
+            (Color::Gray, Color::Reset)
+        );
+        assert_eq!(
+            terminal_cell_colors(MUTED_LIGHT, PANEL_BRIGHT),
+            (Color::Gray, Color::DarkGray)
+        );
     }
 
     #[test]
@@ -5632,10 +6332,12 @@ mod tests {
             content: "Next, I'll write it:\n\n".to_owned(),
             live: false,
             durable: true,
+            created_at: None,
         });
         app.transcript.push(TranscriptItem::Activity {
             run_id: "run-handoff".to_owned(),
             collapsed: false,
+            created_at: None,
             rows: vec![ActivityRow {
                 index: 0,
                 tool_call_id: Some("write-1".to_owned()),
@@ -5647,6 +6349,12 @@ mod tests {
                 content: String::new(),
                 structured_data: json!({}),
                 truncated: false,
+                result_event_id: None,
+                blob_references: Vec::new(),
+                detailed_content: None,
+                detailed_total_lines: None,
+                detailed_complete: false,
+                details_error: None,
                 duration_seconds: 0.0,
             }],
         });
@@ -5659,7 +6367,7 @@ mod tests {
             .position(|line| line.contains("Next, I'll write it:"))
             .unwrap();
         assert!(rendered[preface + 1].is_empty());
-        assert!(rendered[preface + 2].contains("◆ Work"));
+        assert!(rendered[preface + 2].contains("◇ Work"));
     }
 
     #[test]
@@ -5679,12 +6387,17 @@ mod tests {
         assert!(rendered.contains("◈ Hames"));
         assert!(rendered.contains("/tmp/project · main"));
         assert!(!rendered.contains("· default"));
-        assert!(rendered.contains("New session"));
-        assert!(!rendered.contains("New session · Ready"));
-        assert!(rendered.contains("[connected]"));
+        assert!(rendered.contains("Context 32.8k"));
+        assert!(!rendered.contains("New session"));
+        assert!(!rendered.contains("[connected]"));
         assert!(rendered.contains("Message Hames"));
         assert!(rendered.contains("─ fixture (medium) · Auto"));
         assert!(rendered.contains("A fresh canvas"));
+        assert!(
+            (0..100).all(|x| {
+                terminal.backend().buffer().cell((x, 1)).unwrap().fg == Color::DarkGray
+            })
+        );
     }
 
     #[test]
@@ -5858,10 +6571,10 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("──────"));
-        assert!(rendered.contains("Waiting · 12s · Esc interrupt"));
+        assert!(rendered.contains("Waiting · 12s · Esc×2 interrupt"));
         assert!(!rendered.contains("Enter queue"));
-        assert!(!rendered.contains("Alt+↑ send now"));
-        assert!(rendered.contains("[connected]"));
+        assert!(!rendered.contains("Ctrl+Enter send now"));
+        assert!(!rendered.contains("[connected]"));
         assert!(!rendered.contains("Shift+Tab mode"));
         let footer_y = terminal.size().unwrap().height - 1;
         let buffer = terminal.backend().buffer();
@@ -5891,13 +6604,14 @@ mod tests {
         let footer = (0..terminal.size().unwrap().width)
             .map(|x| buffer.cell((x, footer_y)).unwrap().symbol())
             .collect::<String>();
-        assert!(footer.contains("Enter queue · Alt+↑ send now · Esc interrupt"));
+        assert!(footer.contains("Enter queue · Ctrl+Enter send now · Esc×2 interrupt"));
 
         let enter_x = UnicodeWidthStr::width(&footer[..footer.find("Enter").unwrap()]) as u16;
-        let alt_x = UnicodeWidthStr::width(&footer[..footer.find("Alt+↑").unwrap()]) as u16;
+        let control_x =
+            UnicodeWidthStr::width(&footer[..footer.find("Ctrl+Enter").unwrap()]) as u16;
         let escape_x = UnicodeWidthStr::width(&footer[..footer.find("Esc").unwrap()]) as u16;
         assert_eq!(buffer.cell((enter_x, footer_y)).unwrap().fg, INPUT);
-        assert_eq!(buffer.cell((alt_x, footer_y)).unwrap().fg, INPUT);
+        assert_eq!(buffer.cell((control_x, footer_y)).unwrap().fg, INPUT);
         assert_eq!(buffer.cell((escape_x, footer_y)).unwrap().fg, INPUT);
     }
 
@@ -5921,7 +6635,7 @@ mod tests {
                     .symbol()
             })
             .collect::<String>();
-        assert!(footer.contains("Alt+↑ send now · ↑ edit · Esc interrupt"));
+        assert!(footer.contains("Ctrl+Enter send now · Alt+↑/↓ select · ↑ edit · Esc×2 interrupt"));
     }
 
     #[test]
@@ -5953,7 +6667,7 @@ mod tests {
             })
             .collect::<String>();
         assert!(footer.contains("Thinking"));
-        assert!(footer.contains("4s · Esc interrupt"));
+        assert!(footer.contains("4s · Esc×2 interrupt"));
     }
 
     #[test]
@@ -5981,6 +6695,7 @@ mod tests {
             queued_message("queue-1", "first queued request", 1),
             queued_message("queue-2", "second queued request", 2),
         ];
+        app.selected_queue_id = Some("queue-2".to_owned());
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let rendered = terminal
@@ -5993,6 +6708,14 @@ mod tests {
         assert!(rendered.contains("Queued 1/2  first queued request"));
         assert!(rendered.contains("Queued 2/2  second queued request"));
         assert!(!rendered.contains("Queue full 2/2"));
+        let buffer = terminal.backend().buffer();
+        let selected_y = (0..terminal.size().unwrap().height)
+            .find(|y| {
+                row_text(buffer, terminal.size().unwrap().width, *y)
+                    .contains("Queued 2/2  second queued request")
+            })
+            .expect("selected queued turn");
+        assert_eq!(buffer.cell((2, selected_y)).unwrap().bg, PANEL_BRIGHT);
         assert!(app.hits.iter().any(|region| matches!(
             &region.action,
             HitAction::QueuedMessage(id) if id == "queue-1"
@@ -6273,7 +6996,7 @@ mod tests {
     #[test]
     fn help_uses_sectioned_wide_and_compact_layouts() {
         let wide = help_body(true).iter().map(line_text).collect::<Vec<_>>();
-        assert_eq!(wide.len(), 16);
+        assert_eq!(wide.len(), 17);
         assert!(wide.iter().any(|line| line.contains("BASICS")));
         assert!(wide.iter().any(|line| line.contains("WHILE WORKING")));
         assert!(wide.iter().any(|line| line.contains("NAVIGATION")));
@@ -6288,7 +7011,7 @@ mod tests {
         );
 
         let compact = help_body(false).iter().map(line_text).collect::<Vec<_>>();
-        assert_eq!(compact.len(), 20);
+        assert_eq!(compact.len(), 22);
         assert!(
             compact
                 .iter()
@@ -6316,7 +7039,7 @@ mod tests {
     }
 
     #[test]
-    fn footer_shows_valid_context_before_connected_when_space_allows() {
+    fn header_shows_context_and_footer_omits_redundant_connected_status() {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(session(), Vec::new(), true);
@@ -6330,8 +7053,9 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(rendered.contains("28.5k (25%) · [connected]"));
-        assert_eq!(context_footer(&app).as_deref(), Some("28.5k (25%)"));
+        assert!(rendered.contains("Context 28.5k / 114k · 25%"));
+        assert!(!rendered.contains("[connected]"));
+        assert_eq!(context_header(&app), "Context 28.5k / 114k · 25%");
 
         let narrow_backend = TestBackend::new(60, 24);
         let mut narrow_terminal = Terminal::new(narrow_backend).unwrap();
@@ -6343,8 +7067,8 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(!narrow.contains("28.5k (25%)"));
-        assert!(narrow.contains("[connected]"));
+        assert!(narrow.contains("Context 28.5k / 114k · 25%"));
+        assert!(!narrow.contains("[connected]"));
     }
 
     #[test]
@@ -6684,6 +7408,7 @@ mod tests {
         app.transcript.push(TranscriptItem::Activity {
             run_id: "run-memory".to_owned(),
             collapsed: false,
+            created_at: None,
             rows: vec![
                 ActivityRow {
                     index: 0,
@@ -6696,6 +7421,12 @@ mod tests {
                     content: String::new(),
                     structured_data: json!(null),
                     truncated: false,
+                    result_event_id: None,
+                    blob_references: Vec::new(),
+                    detailed_content: None,
+                    detailed_total_lines: None,
+                    detailed_complete: false,
+                    details_error: None,
                     duration_seconds: 0.0,
                 },
                 ActivityRow {
@@ -6709,6 +7440,12 @@ mod tests {
                     content: String::new(),
                     structured_data: json!(null),
                     truncated: false,
+                    result_event_id: None,
+                    blob_references: Vec::new(),
+                    detailed_content: None,
+                    detailed_total_lines: None,
+                    detailed_complete: false,
+                    details_error: None,
                     duration_seconds: 0.003,
                 },
             ],
@@ -6718,6 +7455,7 @@ mod tests {
             content: String::new(),
             live: true,
             durable: false,
+            created_at: None,
         });
 
         let rendered = transcript_lines(&app, 90)
@@ -6725,7 +7463,7 @@ mod tests {
             .map(|item| line_text(&item.line))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains("◆ Explore"));
+        assert!(rendered.contains("◆ Memory"));
         assert!(rendered.contains("1 action · Completed"));
         assert!(!rendered.contains("1 action · Completed  ▾"));
         assert!(rendered.contains("✓ Forgot  memory 8f9b40f1"));
@@ -6739,7 +7477,7 @@ mod tests {
             .map(|item| line_text(&item.line))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(!still_single.contains("◆ Explore · 1 action · Completed  ▸"));
+        assert!(!still_single.contains("◆ Memory · 1 action · Completed  ▸"));
         assert!(still_single.contains("✓ Forgot  memory 8f9b40f1"));
     }
 
@@ -6749,6 +7487,7 @@ mod tests {
         app.transcript.push(TranscriptItem::Activity {
             run_id: "run-preview".to_owned(),
             collapsed: true,
+            created_at: None,
             rows: vec![
                 ActivityRow {
                     index: 0,
@@ -6761,6 +7500,12 @@ mod tests {
                     content: String::new(),
                     structured_data: json!(null),
                     truncated: false,
+                    result_event_id: None,
+                    blob_references: Vec::new(),
+                    detailed_content: None,
+                    detailed_total_lines: None,
+                    detailed_complete: false,
+                    details_error: None,
                     duration_seconds: 0.01,
                 },
                 ActivityRow {
@@ -6774,6 +7519,12 @@ mod tests {
                     content: String::new(),
                     structured_data: json!(null),
                     truncated: false,
+                    result_event_id: None,
+                    blob_references: Vec::new(),
+                    detailed_content: None,
+                    detailed_total_lines: None,
+                    detailed_complete: false,
+                    details_error: None,
                     duration_seconds: 1.2,
                 },
             ],
@@ -6805,6 +7556,7 @@ mod tests {
         app.transcript.push(TranscriptItem::Activity {
             run_id: "run-change".to_owned(),
             collapsed: false,
+            created_at: None,
             rows: vec![ActivityRow {
                 index: 0,
                 tool_call_id: Some("edit-1".to_owned()),
@@ -6816,6 +7568,12 @@ mod tests {
                 content: "--- a/src/main.rs\n+++ b/src/main.rs\n-old\n+new\n".to_owned(),
                 structured_data: json!(null),
                 truncated: false,
+                result_event_id: Some("event-edit-1".to_owned()),
+                blob_references: Vec::new(),
+                detailed_content: None,
+                detailed_total_lines: None,
+                detailed_complete: false,
+                details_error: None,
                 duration_seconds: 0.1,
             }],
         });
@@ -6835,6 +7593,7 @@ mod tests {
         app.transcript.push(TranscriptItem::Activity {
             run_id: "run-command".to_owned(),
             collapsed: false,
+            created_at: None,
             rows: vec![ActivityRow {
                 index: 0,
                 tool_call_id: Some("shell-1".to_owned()),
@@ -6846,6 +7605,12 @@ mod tests {
                 content: String::new(),
                 structured_data: json!(null),
                 truncated: false,
+                result_event_id: None,
+                blob_references: Vec::new(),
+                detailed_content: None,
+                detailed_total_lines: None,
+                detailed_complete: false,
+                details_error: None,
                 duration_seconds: 1.0,
             }],
         });

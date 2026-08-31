@@ -2600,6 +2600,12 @@ class RunManager:
     ) -> ModelTurn:
         reasoning_parts: list[str] = []
         answer_parts: list[str] = []
+        provider_reasoning_parts: dict[str, list[str]] = {}
+        provider_message_parts: dict[str, list[str]] = {}
+        completed_reasoning_items: set[str] = set()
+        completed_message_items: set[str] = set()
+        structured_final_answer: str | None = None
+        structured_final_item_id: str | None = None
         tool_calls: dict[int, ToolCallAssembly] = {}
         session = await self._ensure_provider_context_window(session)
         capsule = await asyncio.to_thread(
@@ -2906,7 +2912,27 @@ class RunManager:
                     if stream_event.text and reasoning_started_at is None:
                         reasoning_started_at = time.monotonic()
                     reasoning_parts.append(stream_event.text)
+                    if stream_event.provider_item_id:
+                        provider_reasoning_parts.setdefault(
+                            stream_event.provider_item_id, []
+                        ).append(stream_event.text)
                     await self._publish_transient(session.id, run_id, stream_event)
+                elif stream_event.kind is StreamEventKind.REASONING_COMPLETED:
+                    item_id = stream_event.provider_item_id
+                    content = stream_event.text or (
+                        "".join(provider_reasoning_parts.get(item_id, [])) if item_id else ""
+                    )
+                    if content and (item_id is None or item_id not in completed_reasoning_items):
+                        await self._persist_reasoning(
+                            session,
+                            run_id,
+                            content,
+                            "completed",
+                            request_event.id,
+                            reasoning_duration_seconds=reasoning_duration(),
+                        )
+                    if item_id:
+                        completed_reasoning_items.add(item_id)
                 elif stream_event.kind is StreamEventKind.TEXT_DELTA:
                     tagged, visible = think_splitter.feed(stream_event.text)
                     if tagged:
@@ -2923,6 +2949,10 @@ class RunManager:
                     if reasoning_started_at is not None and reasoning_finished_at is None:
                         reasoning_finished_at = time.monotonic()
                     answer_parts.append(visible)
+                    if stream_event.provider_item_id:
+                        provider_message_parts.setdefault(stream_event.provider_item_id, []).append(
+                            visible
+                        )
                     if plan_response:
                         assembled = "".join(answer_parts)
                         safe_end = max(0, len(assembled) - len(PLAN_READY_MARKER))
@@ -2942,6 +2972,31 @@ class RunManager:
                             run_id,
                             StreamEvent(kind=StreamEventKind.TEXT_DELTA, text=visible),
                         )
+                elif stream_event.kind is StreamEventKind.TEXT_COMPLETED:
+                    item_id = stream_event.provider_item_id
+                    content = stream_event.text or (
+                        "".join(provider_message_parts.get(item_id, [])) if item_id else ""
+                    )
+                    tagged_item, visible_item = split_think_document(content)
+                    if tagged_item:
+                        reasoning_parts.append(tagged_item)
+                    if stream_event.message_phase == "commentary":
+                        if visible_item and (
+                            item_id is None or item_id not in completed_message_items
+                        ):
+                            await self._persist_message(
+                                session,
+                                run_id,
+                                visible_item,
+                                "completed",
+                                request_event.id,
+                                provider_item_id=item_id,
+                            )
+                    elif stream_event.message_phase == "final_answer":
+                        structured_final_answer = visible_item
+                        structured_final_item_id = item_id
+                    if item_id:
+                        completed_message_items.add(item_id)
                 elif stream_event.kind is StreamEventKind.TOOL_CALL_DELTA:
                     if reasoning_started_at is not None and reasoning_finished_at is None:
                         reasoning_finished_at = time.monotonic()
@@ -2985,7 +3040,11 @@ class RunManager:
                 answer_parts.append(visible)
             invocations = [tool_calls[index].invocation() for index in sorted(tool_calls)]
             pending = [] if handled_inline else invocations
-            answer = "".join(answer_parts)
+            answer = (
+                structured_final_answer
+                if structured_final_answer is not None
+                else "".join(answer_parts)
+            )
             tagged_answer, visible_answer = split_think_document(answer)
             if tagged_answer:
                 reasoning_parts.append(tagged_answer)
@@ -3007,12 +3066,13 @@ class RunManager:
             await self._persist_output(
                 session,
                 run_id,
-                "".join(reasoning_parts),
+                "" if completed_reasoning_items else "".join(reasoning_parts),
                 visible_answer,
                 "interrupted" if output_interrupted else "completed",
                 request_event.id,
                 force_message=output_interrupted,
                 reasoning_duration_seconds=reasoning_duration(),
+                provider_item_id=structured_final_item_id,
             )
             if provider_items:
                 await self._append(
@@ -3069,22 +3129,32 @@ class RunManager:
             await self._persist_output(
                 session,
                 run_id,
-                "".join(reasoning_parts),
-                "".join(answer_parts),
+                "" if completed_reasoning_items else "".join(reasoning_parts),
+                (
+                    structured_final_answer or ""
+                    if completed_message_items
+                    else "".join(answer_parts)
+                ),
                 "interrupted",
                 request_event.id,
                 reasoning_duration_seconds=reasoning_duration(),
+                provider_item_id=structured_final_item_id,
             )
             raise
         except ProviderError as exc:
             await self._persist_output(
                 session,
                 run_id,
-                "".join(reasoning_parts),
-                "".join(answer_parts),
+                "" if completed_reasoning_items else "".join(reasoning_parts),
+                (
+                    structured_final_answer or ""
+                    if completed_message_items
+                    else "".join(answer_parts)
+                ),
                 "interrupted",
                 request_event.id,
                 reasoning_duration_seconds=reasoning_duration(),
+                provider_item_id=structured_final_item_id,
             )
             await self._append(
                 session_id=session.id,
@@ -4693,44 +4763,87 @@ class RunManager:
         *,
         force_message: bool = False,
         reasoning_duration_seconds: float = 0.0,
+        provider_item_id: str | None = None,
     ) -> None:
         if reasoning:
-            await self._append(
-                session_id=session.id,
-                run_id=run_id,
-                agent_id=session.agent_id,
-                event_type="assistant.reasoning",
-                payload={
-                    "content": reasoning,
-                    "status": status,
-                    "duration_seconds": reasoning_duration_seconds,
-                },
-                causation_id=causation_id,
-                correlation_id=run_id,
+            await self._persist_reasoning(
+                session,
+                run_id,
+                reasoning,
+                status,
+                causation_id,
+                reasoning_duration_seconds=reasoning_duration_seconds,
             )
         if answer or status == "completed" or force_message:
-            if answer:
-                previous = next(
-                    (
-                        event
-                        for event in reversed(
-                            await asyncio.to_thread(self.ledger.list_run_events, run_id)
-                        )
-                        if event.type == "assistant.message"
-                    ),
-                    None,
-                )
-                if previous is not None and previous.payload.get("content") == answer:
-                    return
-            await self._append(
-                session_id=session.id,
-                run_id=run_id,
-                agent_id=session.agent_id,
-                event_type="assistant.message",
-                payload={"content": answer, "status": status},
-                causation_id=causation_id,
-                correlation_id=run_id,
+            await self._persist_message(
+                session,
+                run_id,
+                answer,
+                status,
+                causation_id,
+                provider_item_id=provider_item_id,
             )
+
+    async def _persist_reasoning(
+        self,
+        session: Session,
+        run_id: str,
+        content: str,
+        status: str,
+        causation_id: str,
+        *,
+        reasoning_duration_seconds: float = 0.0,
+    ) -> None:
+        await self._append(
+            session_id=session.id,
+            run_id=run_id,
+            agent_id=session.agent_id,
+            event_type="assistant.reasoning",
+            payload={
+                "content": content,
+                "status": status,
+                "duration_seconds": reasoning_duration_seconds,
+            },
+            causation_id=causation_id,
+            correlation_id=run_id,
+        )
+
+    async def _persist_message(
+        self,
+        session: Session,
+        run_id: str,
+        content: str,
+        status: str,
+        causation_id: str,
+        *,
+        provider_item_id: str | None = None,
+    ) -> None:
+        if content:
+            previous = next(
+                (
+                    event
+                    for event in reversed(
+                        await asyncio.to_thread(self.ledger.list_run_events, run_id)
+                    )
+                    if event.type == "assistant.message"
+                ),
+                None,
+            )
+            if (
+                provider_item_id is None
+                and previous is not None
+                and previous.payload.get("content") == content
+            ):
+                return
+        await self._append(
+            session_id=session.id,
+            run_id=run_id,
+            agent_id=session.agent_id,
+            event_type="assistant.message",
+            payload={"content": content, "status": status},
+            causation_id=causation_id,
+            correlation_id=run_id,
+        )
 
     async def _append(self, **kwargs: Any) -> Event:
         event = await asyncio.to_thread(self.ledger.append, **kwargs)

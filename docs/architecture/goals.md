@@ -26,9 +26,9 @@ current bounded step, serves the foreground turn, and resumes the goal only afte
 foreground work and queued messages settle. This behavior is runtime-owned and is
 identical for the TUI, classic REPL, and future clients.
 
-In the TUI, `Esc` during a goal step means pause, not a transient cancellation that
-would immediately restart. `/goal resume` is then required. Exiting the TUI leaves
-an active goal with the gateway; `/new` moves the client to a new session while the
+In the TUI, pressing `Esc` twice during a goal step means pause, not a transient
+cancellation that would immediately restart. `/goal resume` is then required.
+Exiting the TUI leaves an active goal with the gateway; `/new` moves the client to a new session while the
 old session's goal continues. `/clear` explicitly cancels the old goal before
 retiring that conversation.
 

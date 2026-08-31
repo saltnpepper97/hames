@@ -29,6 +29,9 @@ def test_core_contract_keeps_model_and_harness_authority_separate() -> None:
     assert "never claim that a workspace root must be exposed" in CORE_CONTRACT
     assert "do not describe yourself as stateless per turn" in CORE_CONTRACT
     assert "Do not claim hidden\nmemory, Skills" in CORE_CONTRACT
+    assert "brief, meaningful checkpoint\nupdates" in CORE_CONTRACT
+    assert "what the\nevidence shows, what you think it means" in CORE_CONTRACT
+    assert "Do not narrate\nevery trivial tool call" in CORE_CONTRACT
     assert "session_title_set" in CORE_CONTRACT
     assert "terminal_stop" in CORE_CONTRACT
     assert "materially unrelated work" in CORE_CONTRACT

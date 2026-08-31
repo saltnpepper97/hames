@@ -84,7 +84,9 @@ class ToolCallDelta(ProviderBoundary):
 class StreamEventKind(StrEnum):
     STARTED = "response.started"
     REASONING_DELTA = "response.reasoning_delta"
+    REASONING_COMPLETED = "response.reasoning_completed"
     TEXT_DELTA = "response.text_delta"
+    TEXT_COMPLETED = "response.text_completed"
     TOOL_CALL_DELTA = "response.tool_call_delta"
     USAGE = "response.usage"
     COMPLETED = "response.completed"
@@ -93,6 +95,8 @@ class StreamEventKind(StrEnum):
 class StreamEvent(ProviderBoundary):
     kind: StreamEventKind
     text: str = ""
+    provider_item_id: str | None = None
+    message_phase: str | None = None
     usage: Usage | None = None
     tool_call: ToolCallDelta | None = None
     finish_reason: str | None = None

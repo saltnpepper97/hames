@@ -29,6 +29,7 @@ from hames.agent import (
     load_agent,
     skill_permitted,
 )
+from hames.blobs import BlobIntegrityError
 from hames.broker import EventBroker
 from hames.config import HamesConfig, ProviderProfileConfig, load_config
 from hames.control import ControlStore
@@ -438,6 +439,47 @@ class BackgroundTerminal(ApiModel):
 
 class BackgroundTerminalsStopped(ApiModel):
     closed: int
+
+
+class ToolResultDetails(ApiModel):
+    event_id: str
+    tool_call_id: str
+    content: str
+    total_chars: int
+    returned_chars: int
+    total_lines: int
+    returned_lines: int
+    complete: bool
+    retained: bool
+
+
+TOOL_RESULT_DETAIL_BYTE_LIMIT = 1_048_576
+
+
+def _bounded_tool_result_details(
+    event: Event, content: str, *, retained: bool
+) -> ToolResultDetails:
+    encoded = content.encode()
+    returned = encoded[:TOOL_RESULT_DETAIL_BYTE_LIMIT]
+    while returned:
+        try:
+            display = returned.decode()
+            break
+        except UnicodeDecodeError:
+            returned = returned[:-1]
+    else:
+        display = ""
+    return ToolResultDetails(
+        event_id=event.id,
+        tool_call_id=str(event.payload.get("tool_call_id", "")),
+        content=display,
+        total_chars=len(content),
+        returned_chars=len(display),
+        total_lines=len(content.splitlines()),
+        returned_lines=len(display.splitlines()),
+        complete=len(returned) == len(encoded),
+        retained=retained,
+    )
 
 
 class ApiError(Exception):
@@ -1894,6 +1936,37 @@ def create_app(state: GatewayState) -> FastAPI:
             return await asyncio.to_thread(state.ledger.get_event, event_id)
         except KeyError as exc:
             raise ApiError(404, "event_not_found", f"unknown event: {event_id}") from exc
+
+    @app.get(
+        "/v1/events/{event_id}/tool-result-details",
+        dependencies=auth,
+        response_model=ToolResultDetails,
+    )
+    async def get_tool_result_details(event_id: str) -> ToolResultDetails:
+        try:
+            event = await asyncio.to_thread(state.ledger.get_event, event_id)
+        except KeyError as exc:
+            raise ApiError(404, "event_not_found", f"unknown event: {event_id}") from exc
+        if event.type not in {"tool.completed", "tool.failed", "tool.rejected"}:
+            raise ApiError(
+                409,
+                "event_has_no_tool_result",
+                f"event {event_id} is not a durable tool result",
+            )
+        content = str(event.payload.get("content", ""))
+        references = cast(list[object], event.payload.get("blob_references", []))
+        retained = False
+        if bool(event.payload.get("truncated")) and references:
+            digest = references[0]
+            if not isinstance(digest, str):
+                raise ApiError(409, "tool_result_details_unavailable", "invalid blob reference")
+            try:
+                encoded = await asyncio.to_thread(state.ledger.blob_store.read, digest)
+                content = encoded.decode()
+                retained = True
+            except (BlobIntegrityError, UnicodeDecodeError, ValueError) as exc:
+                raise ApiError(409, "tool_result_details_unavailable", str(exc)) from exc
+        return _bounded_tool_result_details(event, content, retained=retained)
 
     @app.get("/v1/events/{event_id}/verify", dependencies=auth, response_model=IntegrityResult)
     async def verify_event(event_id: str) -> IntegrityResult:

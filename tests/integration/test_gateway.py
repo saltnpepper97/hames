@@ -117,6 +117,100 @@ async def test_session_environment_endpoint_exposes_current_workspace(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_tool_result_details_resolve_only_the_event_retained_blob(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        session = state.ledger.create_session(
+            working_directory=tmp_path,
+            agent_id="default",
+            provider="fake",
+            model="fixture",
+        )
+        full = "--- a/file\n+++ b/file\n@@ -1 +1 @@\n" + "+expanded detail\n" * 70_000
+        digest = state.ledger.blob_store.put(full.encode())
+        result = state.ledger.append(
+            session_id=session.id,
+            event_type="tool.completed",
+            payload={
+                "tool_call_id": "call-details",
+                "name": "edit_file",
+                "status": "completed",
+                "summary": "edited file",
+                "content": full[:100] + "\n[output truncated]",
+                "truncated": True,
+                "blob_references": [digest],
+            },
+        )
+        inline_result = state.ledger.append(
+            session_id=session.id,
+            event_type="tool.completed",
+            payload={
+                "tool_call_id": "call-inline",
+                "name": "edit_file",
+                "status": "completed",
+                "summary": "edited small file",
+                "content": "--- a/small\n+++ b/small\n@@ -1 +1 @@\n-old\n+new\n",
+            },
+        )
+        missing_result = state.ledger.append(
+            session_id=session.id,
+            event_type="tool.completed",
+            payload={
+                "tool_call_id": "call-missing",
+                "name": "edit_file",
+                "status": "completed",
+                "summary": "edited missing file",
+                "content": "[output truncated]",
+                "truncated": True,
+                "blob_references": ["0" * 64],
+            },
+        )
+        ordinary = state.ledger.append(
+            session_id=session.id,
+            event_type="user.message",
+            payload={"content": "hello"},
+        )
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(
+                f"/v1/events/{result.id}/tool-result-details", headers=headers
+            )
+            invalid = await client.get(
+                f"/v1/events/{ordinary.id}/tool-result-details", headers=headers
+            )
+            inline = await client.get(
+                f"/v1/events/{inline_result.id}/tool-result-details", headers=headers
+            )
+            missing = await client.get(
+                f"/v1/events/{missing_result.id}/tool-result-details", headers=headers
+            )
+
+        assert response.status_code == 200
+        details = response_object(response)
+        assert details["event_id"] == result.id
+        assert details["tool_call_id"] == "call-details"
+        assert details["retained"] is True
+        assert details["complete"] is False
+        assert details["returned_chars"] == 1_048_576
+        assert details["total_chars"] == len(full)
+        assert str(details["content"]).startswith("--- a/file")
+        assert inline.status_code == 200
+        inline_details = response_object(inline)
+        assert inline_details["complete"] is True
+        assert inline_details["retained"] is False
+        assert inline_details["content"] == inline_result.payload["content"]
+        assert invalid.status_code == 409
+        assert response_object(invalid)["error"]["code"] == "event_has_no_tool_result"  # type: ignore[index]
+        assert missing.status_code == 409
+        assert response_object(missing)["error"]["code"] == "tool_result_details_unavailable"  # type: ignore[index]
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
 async def test_message_submission_ids_replay_without_duplicate_runs_or_queue_entries(
     tmp_path: Path,
 ) -> None:
@@ -424,6 +518,76 @@ class QwenFakeProvider(FakeProvider):
                 reasoning_efforts=["low", "medium", "xhigh"],
             )
         ]
+
+
+class StructuredMessageProvider:
+    profile_id = "structured"
+    adapter = "codex"
+    base_url = ""
+
+    async def list_models(self) -> list[ProviderModel]:
+        return [ProviderModel(id="fixture", provider=self.profile_id, status="available")]
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+        yield StreamEvent(kind=StreamEventKind.STARTED, provider_request_id="turn-1")
+        yield StreamEvent(
+            kind=StreamEventKind.REASONING_DELTA,
+            text="Inspect the workspace.",
+            provider_item_id="reasoning-1",
+        )
+        yield StreamEvent(
+            kind=StreamEventKind.REASONING_COMPLETED,
+            text="Inspect the workspace.",
+            provider_item_id="reasoning-1",
+        )
+        yield StreamEvent(
+            kind=StreamEventKind.TEXT_DELTA,
+            text="I'll inspect this first.",
+            provider_item_id="commentary-1",
+        )
+        yield StreamEvent(
+            kind=StreamEventKind.TEXT_COMPLETED,
+            text="I'll inspect this first.",
+            provider_item_id="commentary-1",
+            message_phase="commentary",
+        )
+        yield StreamEvent(
+            kind=StreamEventKind.TOOL_CALL_DELTA,
+            tool_call=ToolCallDelta(
+                index=0,
+                provider_call_id="call-1",
+                name="list_dir",
+                arguments_delta=json.dumps({"path": "."}),
+            ),
+        )
+        assert request.tool_handler is not None
+        result = await request.tool_handler("list_dir", {"path": "."}, "call-1")
+        assert result.status == "completed"
+        yield StreamEvent(
+            kind=StreamEventKind.REASONING_DELTA,
+            text="The evidence is sufficient.",
+            provider_item_id="reasoning-2",
+        )
+        yield StreamEvent(
+            kind=StreamEventKind.REASONING_COMPLETED,
+            text="The evidence is sufficient.",
+            provider_item_id="reasoning-2",
+        )
+        yield StreamEvent(
+            kind=StreamEventKind.TEXT_DELTA,
+            text="Final answer only.",
+            provider_item_id="answer-1",
+        )
+        yield StreamEvent(
+            kind=StreamEventKind.TEXT_COMPLETED,
+            text="Final answer only.",
+            provider_item_id="answer-1",
+            message_phase="final_answer",
+        )
+        yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
+
+    async def aclose(self) -> None:
+        return None
 
 
 class BlockingPostRunObserver:
@@ -945,7 +1109,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 31
+            assert health_body["protocol_version"] == 32
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -1178,6 +1342,74 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                 f"/v1/sessions/{session_id}/usage", headers=headers
             )
             assert invalidated_usage.json()["latest_context"] is None
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_structured_commentary_and_reasoning_keep_their_tool_boundaries(
+    tmp_path: Path,
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text("[memory]\nenabled = false\n", encoding="utf-8")
+    provider = StructuredMessageProvider()
+    state = GatewayState.create(paths, providers={provider.profile_id: provider})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": provider.profile_id,
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            assert (
+                await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            ).status_code == 200
+            accepted = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Inspect, then answer."},
+            )
+            run_id = str(response_object(accepted)["run_id"])
+            events = await _wait_for_event(client, headers, session_id, "run.completed")
+            run_events = [event for event in events if event.get("run_id") == run_id]
+            visible = [
+                event
+                for event in run_events
+                if event["type"] in {"assistant.reasoning", "assistant.message", "model.tool_call"}
+            ]
+            assert [event["type"] for event in visible] == [
+                "assistant.reasoning",
+                "assistant.message",
+                "model.tool_call",
+                "assistant.reasoning",
+                "assistant.message",
+            ]
+            messages = [
+                JSON_OBJECT.validate_python(event["payload"])
+                for event in visible
+                if event["type"] == "assistant.message"
+            ]
+            assert [message["content"] for message in messages] == [
+                "I'll inspect this first.",
+                "Final answer only.",
+            ]
+            reasoning = [
+                JSON_OBJECT.validate_python(event["payload"])
+                for event in visible
+                if event["type"] == "assistant.reasoning"
+            ]
+            assert [item["content"] for item in reasoning] == [
+                "Inspect the workspace.",
+                "The evidence is sufficient.",
+            ]
     finally:
         await state.runs.close()
 

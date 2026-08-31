@@ -897,6 +897,9 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
                     elif "USE TOOL" in prompt:
                         emit_tool(900, "call-1", "read_file", {"path": "README.md"})
                     else:
+                        print(json.dumps({"method": "item/started", "params": {
+                            "item": {"id": "r1", "type": "reasoning", "summary": []},
+                            "threadId": "thread-1", "turnId": "turn-1"}}), flush=True)
                         print(json.dumps({"method": "item/reasoning/summaryPartAdded",
                                           "params": {"itemId": "r1", "threadId": "thread-1",
                                                      "turnId": "turn-1", "summaryIndex": 0}}),
@@ -913,10 +916,22 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
                                           "params": {"delta": "decide", "itemId": "r1",
                                                      "threadId": "thread-1", "turnId": "turn-1",
                                                      "summaryIndex": 1}}), flush=True)
+                        print(json.dumps({"method": "item/completed", "params": {
+                            "item": {"id": "r1", "type": "reasoning",
+                                     "summary": ["consider ", "decide"]},
+                            "threadId": "thread-1", "turnId": "turn-1"}}), flush=True)
+                        print(json.dumps({"method": "item/started", "params": {
+                            "item": {"id": "a1", "type": "agentMessage", "text": "",
+                                     "phase": "final_answer"},
+                            "threadId": "thread-1", "turnId": "turn-1"}}), flush=True)
                         print(json.dumps({"method": "item/agentMessage/delta",
                                           "params": {"delta": "answer", "itemId": "a1",
                                                      "threadId": "thread-1", "turnId": "turn-1"}}),
                               flush=True)
+                        print(json.dumps({"method": "item/completed", "params": {
+                            "item": {"id": "a1", "type": "agentMessage", "text": "answer",
+                                     "phase": "final_answer"},
+                            "threadId": "thread-1", "turnId": "turn-1"}}), flush=True)
                         print(json.dumps({"method": "thread/tokenUsage/updated", "params": {
                             "threadId": "thread-1", "turnId": "turn-1", "tokenUsage": {
                                 "last": {"inputTokens": 9, "outputTokens": 4,
@@ -974,7 +989,9 @@ async def test_codex_subscription_discovers_models_and_normalizes_app_server_str
         StreamEventKind.STARTED,
         StreamEventKind.REASONING_DELTA,
         StreamEventKind.REASONING_DELTA,
+        StreamEventKind.REASONING_COMPLETED,
         StreamEventKind.TEXT_DELTA,
+        StreamEventKind.TEXT_COMPLETED,
         StreamEventKind.USAGE,
         StreamEventKind.COMPLETED,
     ]
@@ -984,6 +1001,9 @@ async def test_codex_subscription_discovers_models_and_normalizes_app_server_str
     )
     assert events[-2].usage is not None
     assert events[-2].usage.cached_input_tokens == 2
+    assert events[3].provider_item_id == "r1"
+    assert events[5].provider_item_id == "a1"
+    assert events[5].message_phase == "final_answer"
 
     limits = await provider.account_rate_limits()
     assert limits["plan_type"] == "plus"
