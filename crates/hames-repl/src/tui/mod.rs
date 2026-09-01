@@ -3679,6 +3679,21 @@ mod tests {
     }
 
     #[test]
+    fn resume_command_opens_sessions_on_first_enter() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.composer.insert_text("/resume");
+        app.update_slash_sheet();
+
+        let effect = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(matches!(
+            effect,
+            Some(Effect::Menu(MenuAction::OpenSessions))
+        ));
+        assert!(app.composer.is_empty());
+    }
+
+    #[test]
     fn user_invocable_skills_join_the_palette_and_send_as_turns_in_plan_mode() {
         let mut app = App::new(session(), Vec::new(), true);
         app.session.interaction_mode = "plan".to_owned();

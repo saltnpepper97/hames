@@ -2214,6 +2214,7 @@ impl App {
                 MenuAction::ClearSession,
             ),
             option("/sessions", "resume recent work", MenuAction::OpenSessions),
+            option("/resume", "resume recent work", MenuAction::OpenSessions),
             option("/queue", "inspect pending turns", MenuAction::OpenQueue),
             option("/tasks", "current session checklist", MenuAction::OpenTasks),
             option("/compact", "summarize older context", MenuAction::Compact),
