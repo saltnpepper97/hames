@@ -318,7 +318,7 @@ async fn replace_session(
 async fn open_sessions_sheet(client: &GatewayClient, app: &mut App) -> Result<()> {
     app.notice = Some("Loading sessions…".to_owned());
     let sessions = client
-        .sessions()
+        .sessions_for_directory(&app.session.working_directory)
         .await?
         .into_iter()
         .filter(|session| session.status == "open")

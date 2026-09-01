@@ -1048,6 +1048,13 @@ impl GatewayClient {
         decode(self.get("/v1/sessions").send().await?).await
     }
 
+    pub async fn sessions_for_directory(&self, working_directory: &str) -> Result<Vec<Session>> {
+        Ok(sessions_for_directory(
+            self.sessions().await?,
+            working_directory,
+        ))
+    }
+
     #[allow(dead_code)] // Consumed by the Ratatui entrypoint in the next implementation slice.
     pub async fn recent_session(
         &self,
@@ -2092,11 +2099,58 @@ async fn ensure_success(response: Response) -> Result<Response> {
     Err(GatewayStatusError { status, body }.into())
 }
 
+fn sessions_for_directory(sessions: Vec<Session>, working_directory: &str) -> Vec<Session> {
+    sessions
+        .into_iter()
+        .filter(|session| session.working_directory == working_directory)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
-    use super::{SseDecoder, event_reconnect_delay};
+    use super::{Session, SseDecoder, event_reconnect_delay, sessions_for_directory};
+
+    fn session(id: &str, working_directory: &str) -> Session {
+        Session {
+            id: id.to_owned(),
+            created_at: "2026-09-01T00:00:00Z".to_owned(),
+            status: "open".to_owned(),
+            title: None,
+            working_directory: working_directory.to_owned(),
+            agent_id: "default".to_owned(),
+            provider: "fake".to_owned(),
+            model: "fixture".to_owned(),
+            reasoning_effort: String::new(),
+            context_window_tokens: 32_768,
+            context_window_source: "fixture".to_owned(),
+            parent_session_id: None,
+            fork_event_id: None,
+            lineage_kind: "root".to_owned(),
+            delegation_depth: 0,
+            interaction_mode: "auto".to_owned(),
+        }
+    }
+
+    #[test]
+    fn session_listing_is_scoped_to_exact_working_directory() {
+        let sessions = vec![
+            session("current", "/workspace/project"),
+            session("child", "/workspace/project/subdir"),
+            session("other", "/workspace/other"),
+        ];
+
+        let selected = sessions_for_directory(sessions, "/workspace/project");
+
+        assert_eq!(
+            selected
+                .into_iter()
+                .map(|session| session.id)
+                .collect::<Vec<_>>(),
+            vec!["current"]
+        );
+    }
 
     #[test]
     fn sse_decoder_preserves_split_unicode_and_multiline_crlf_data() {

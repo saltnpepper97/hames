@@ -359,7 +359,7 @@ async fn handle_command(
                 style::success(&format!("Fresh session {}", session.id))
             );
         }
-        "/sessions" => print_open_sessions(client).await?,
+        "/sessions" => print_open_sessions(client, &session.working_directory).await?,
         "/session" => print_session(session),
         "/project" => {
             println!("{}", style::section("Project"));
@@ -469,7 +469,7 @@ async fn handle_command(
         "/resume" => {
             *remember_next = false;
             let Some(id) = parts.get(1) else {
-                print_open_sessions(client).await?;
+                print_open_sessions(client, &session.working_directory).await?;
                 return Ok(CommandOutcome::Continue);
             };
             let selected = client.session(id).await?;
@@ -780,10 +780,10 @@ async fn handle_command(
     Ok(CommandOutcome::Continue)
 }
 
-async fn print_open_sessions(client: &GatewayClient) -> Result<()> {
+async fn print_open_sessions(client: &GatewayClient, working_directory: &str) -> Result<()> {
     let mut sessions = Vec::new();
     for session in client
-        .sessions()
+        .sessions_for_directory(working_directory)
         .await?
         .into_iter()
         .filter(|session| session.status == "open")
