@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
+import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -54,6 +56,7 @@ from hames.inspection import (
     session_usage,
 )
 from hames.ledger import Event, EventIntegrityError, IntegrityResult, Ledger, Session
+from hames.mcp_runtime import McpManager, McpServerSpec, McpServerView
 from hames.memory import (
     MemoryJob,
     MemoryLayer,
@@ -424,6 +427,9 @@ class Health(ApiModel):
     active_runs: int
     active_terminals: int
     search: SearchRuntimeStatus
+    mcp_servers: int
+    mcp_ready: int
+    mcp_degraded: int
 
 
 class BackgroundTerminal(ApiModel):
@@ -513,6 +519,7 @@ class GatewayState:
     evolution: EvolutionManager
     plugins: PluginManager
     search: SearchMcpManager
+    mcp: McpManager
     token: str
 
     @classmethod
@@ -529,6 +536,39 @@ class GatewayState:
         ledger = Ledger(database, blob_threshold_bytes=config.ledger.blob_threshold_bytes)
         controls = ControlStore(database)
         broker = EventBroker()
+        last_mcp_notice: dict[tuple[str, str, str | None], float] = {}
+
+        async def publish_mcp_notice(
+            server_id: str,
+            code: str,
+            message: str,
+            error: bool,
+            session_id: str | None,
+        ) -> None:
+            normalized = " ".join(message.split())[:500]
+            key = (server_id, code, session_id)
+            now = time.monotonic()
+            if code in {"mcp.tool.progress", "mcp.server.log"}:
+                previous = last_mcp_notice.get(key, 0.0)
+                if now - previous < 0.25:
+                    return
+                last_mcp_notice[key] = now
+            envelope: dict[str, object] = {
+                "durable": False,
+                "run_id": f"mcp:{server_id}",
+                "event_type": "runtime.notice",
+                "payload": {
+                    "code": code,
+                    "message": normalized,
+                    "details": {"server_id": server_id, "error": error},
+                },
+            }
+            if session_id is None:
+                await broker.publish_all(envelope)
+            else:
+                await broker.publish(session_id, envelope)
+
+        mcp = McpManager(database, publish_mcp_notice)
         raw_providers = providers or configured_providers(config)
         selected_providers: dict[str, Provider] = {
             profile_id: ScheduledProvider(provider)
@@ -543,6 +583,7 @@ class GatewayState:
             providers=selected_providers,
             broker=broker,
             search=search,
+            mcp=mcp,
         )
         memory = MemoryManager(
             ledger=ledger,
@@ -592,6 +633,7 @@ class GatewayState:
             evolution,
             plugins,
             search,
+            mcp,
             paths.read_gateway_token(),
         )
 
@@ -607,6 +649,7 @@ def create_app(state: GatewayState) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
         await state.search.start()
+        await state.mcp.start_enabled()
         await state.plugins.start_enabled()
         await state.runs.recover_queues()
         await state.runs.recover_goals()
@@ -672,6 +715,7 @@ def create_app(state: GatewayState) -> FastAPI:
 
     @app.get("/v1/health", response_model=Health)
     async def health() -> Health:
+        mcp_servers = state.mcp.list()
         return Health(
             status="ok",
             version=__version__,
@@ -682,6 +726,9 @@ def create_app(state: GatewayState) -> FastAPI:
             active_runs=state.runs.active_run_count,
             active_terminals=state.runs.active_background_terminal_count,
             search=state.search.status(),
+            mcp_servers=len(mcp_servers),
+            mcp_ready=sum(server.status == "ready" for server in mcp_servers),
+            mcp_degraded=sum(server.status == "degraded" for server in mcp_servers),
         )
 
     @app.get("/v1/providers", dependencies=auth, response_model=list[ProviderProfile])
@@ -885,7 +932,7 @@ def create_app(state: GatewayState) -> FastAPI:
     @app.get("/v1/tools", dependencies=auth, response_model=list[str])
     async def list_tools() -> list[str]:
         """Return every tool currently available to an agent capsule."""
-        return sorted(state.runs.tools.names() | state.plugins.names())
+        return sorted(state.runs.tools.names() | state.plugins.names() | state.mcp.names())
 
     @app.get("/v1/agents/{agent_id}", dependencies=auth, response_model=AgentDetail)
     async def get_agent(agent_id: str) -> AgentDetail:
@@ -952,6 +999,84 @@ def create_app(state: GatewayState) -> FastAPI:
     @app.get("/v1/plugins", dependencies=auth, response_model=list[PluginView])
     async def list_plugins() -> list[PluginView]:
         return await asyncio.to_thread(state.plugins.list_plugins)
+
+    @app.get("/v1/mcp/servers", dependencies=auth, response_model=list[McpServerView])
+    async def list_mcp_servers() -> list[McpServerView]:
+        return await asyncio.to_thread(state.mcp.list)
+
+    @app.post(
+        "/v1/mcp/servers",
+        dependencies=auth,
+        response_model=McpServerView,
+        status_code=201,
+    )
+    async def add_mcp_server(request: McpServerSpec) -> McpServerView:
+        try:
+            return await state.mcp.add(request)
+        except sqlite3.IntegrityError as exc:
+            raise ApiError(
+                409, "mcp_server_exists", f"MCP server already exists: {request.id}"
+            ) from exc
+        except (OSError, ValueError) as exc:
+            raise ApiError(400, "invalid_mcp_server", str(exc)) from exc
+
+    @app.get(
+        "/v1/mcp/servers/{server_id}", dependencies=auth, response_model=McpServerView
+    )
+    async def get_mcp_server(server_id: str) -> McpServerView:
+        try:
+            return await asyncio.to_thread(state.mcp.describe, server_id)
+        except KeyError as exc:
+            raise ApiError(404, "mcp_server_not_found", f"unknown MCP server: {server_id}") from exc
+
+    @app.post(
+        "/v1/mcp/servers/{server_id}/inspect",
+        dependencies=auth,
+        response_model=McpServerView,
+    )
+    async def inspect_mcp_server(server_id: str) -> McpServerView:
+        try:
+            return await state.mcp.inspect(server_id)
+        except KeyError as exc:
+            raise ApiError(404, "mcp_server_not_found", f"unknown MCP server: {server_id}") from exc
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ApiError(409, "mcp_inspection_failed", str(exc)) from exc
+
+    @app.post(
+        "/v1/mcp/servers/{server_id}/enable",
+        dependencies=auth,
+        response_model=McpServerView,
+    )
+    async def enable_mcp_server(server_id: str) -> McpServerView:
+        try:
+            return await state.mcp.enable(server_id)
+        except KeyError as exc:
+            raise ApiError(404, "mcp_server_not_found", f"unknown MCP server: {server_id}") from exc
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ApiError(409, "mcp_enable_failed", str(exc)) from exc
+
+    @app.post(
+        "/v1/mcp/servers/{server_id}/disable",
+        dependencies=auth,
+        response_model=McpServerView,
+    )
+    async def disable_mcp_server(server_id: str) -> McpServerView:
+        try:
+            return await state.mcp.disable(server_id)
+        except KeyError as exc:
+            raise ApiError(404, "mcp_server_not_found", f"unknown MCP server: {server_id}") from exc
+        except RuntimeError as exc:
+            raise ApiError(409, "mcp_server_busy", str(exc)) from exc
+
+    @app.delete("/v1/mcp/servers/{server_id}", dependencies=auth)
+    async def remove_mcp_server(server_id: str) -> dict[str, bool]:
+        try:
+            await state.mcp.remove(server_id)
+        except KeyError as exc:
+            raise ApiError(404, "mcp_server_not_found", f"unknown MCP server: {server_id}") from exc
+        except RuntimeError as exc:
+            raise ApiError(409, "mcp_server_busy", str(exc)) from exc
+        return {"removed": True}
 
     @app.get("/v1/plugins/proposals", dependencies=auth, response_model=list[PluginProposalView])
     async def list_plugin_proposals() -> list[PluginProposalView]:

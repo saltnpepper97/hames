@@ -145,6 +145,7 @@ class PolicyGate:
         interaction_mode: str = "auto",
         session_tool_granted: bool = False,
         user_requested_memory_maintenance: bool = False,
+        mcp_read_only: bool | None = None,
     ) -> PolicyDecision:
         if allowed_tools is not None and tool_name not in allowed_tools:
             return PolicyDecision(
@@ -152,11 +153,21 @@ class PolicyGate:
                 "the active agent is not allowed to use this tool",
                 "agent_scope",
             )
-        if interaction_mode == "plan" and (tool_name in _PLAN_DENIED_TOOLS or "." in tool_name):
+        if interaction_mode == "plan" and (
+            tool_name in _PLAN_DENIED_TOOLS
+            or "." in tool_name
+            or (tool_name.startswith("mcp__") and not mcp_read_only)
+        ):
             return PolicyDecision(
                 PolicyDecisionKind.DENY,
                 "plan mode does not permit code or durable state changes",
                 "plan_mode",
+            )
+        if tool_name.startswith("mcp__") and not mcp_read_only:
+            return PolicyDecision(
+                PolicyDecisionKind.REQUIRE_CONFIRMATION,
+                "external MCP tool is not declared read-only",
+                "external_mcp",
             )
         if (
             interaction_mode == "plan"

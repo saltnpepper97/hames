@@ -33,6 +33,10 @@ class ToolArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class McpToolArguments(ToolArguments):
+    model_config = ConfigDict(extra="allow")
+
+
 class WorkspaceArguments(ToolArguments):
     workspace: Literal["project", "scratch", "home"] = Field(
         default="project",
@@ -346,6 +350,16 @@ class WebFetchArguments(ToolArguments):
     url: str = Field(min_length=1, max_length=4096)
 
 
+class McpResourceListArguments(ToolArguments):
+    server: str | None = Field(default=None, min_length=1, max_length=63)
+    cursor: str | None = Field(default=None, min_length=1, max_length=4096)
+
+
+class McpResourceReadArguments(ToolArguments):
+    server: str = Field(min_length=1, max_length=63)
+    uri: str = Field(min_length=1, max_length=8192)
+
+
 class ToolResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -379,6 +393,27 @@ class SearchCallOutcome(Protocol):
 
     @property
     def structured_data(self) -> dict[str, JsonValue]: ...
+
+
+class McpResourceOutcome(SearchCallOutcome, Protocol):
+    @property
+    def summary(self) -> str: ...
+
+    @property
+    def truncated(self) -> bool: ...
+
+    @property
+    def blob_references(self) -> list[str]: ...
+
+
+class McpResourceExecutor(Protocol):
+    async def list_resources(
+        self, server_id: str | None, cursor: str | None = None
+    ) -> dict[str, JsonValue]: ...
+
+    async def read_resource(
+        self, server_id: str, uri: str, context: ToolContext
+    ) -> McpResourceOutcome: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -925,8 +960,65 @@ class WebFetchTool(_WebMcpTool):
         return f"fetched {target}"
 
 
+class McpResourceListTool(ToolBase):
+    name = "mcp_resource_list"
+    description = (
+        "List concrete resources and URI templates advertised by enabled external MCP servers. "
+        "Pass a server and returned cursor to continue one server's listing."
+    )
+    arguments_type: ClassVar[type[ToolArguments]] = McpResourceListArguments
+
+    def __init__(self, executor: McpResourceExecutor) -> None:
+        self.executor = executor
+
+    async def execute(self, context: ToolContext, arguments: ToolArguments) -> ToolResult:
+        del context
+        started = time.monotonic()
+        try:
+            args = McpResourceListArguments.model_validate(arguments)
+            structured = await self.executor.list_resources(args.server, args.cursor)
+            servers = structured.get("servers", [])
+            count = len(servers) if isinstance(servers, list) else 0
+            return ToolResult(
+                status="completed",
+                summary=f"listed MCP resources from {count} server{'s' if count != 1 else ''}",
+                structured_data=structured,
+                duration_seconds=time.monotonic() - started,
+            )
+        except asyncio.CancelledError:
+            raise
+        except (RuntimeError, ValueError) as exc:
+            return _failure(self.name, exc, started)
+
+
+class McpResourceReadTool(ToolBase):
+    name = "mcp_resource_read"
+    description = "Read one exact URI from an enabled external MCP server."
+    arguments_type: ClassVar[type[ToolArguments]] = McpResourceReadArguments
+
+    def __init__(self, executor: McpResourceExecutor) -> None:
+        self.executor = executor
+
+    async def execute(self, context: ToolContext, arguments: ToolArguments) -> ToolResult:
+        args = McpResourceReadArguments.model_validate(arguments)
+        outcome = await self.executor.read_resource(args.server, args.uri, context)
+        return ToolResult(
+            status="failed" if outcome.failed else "completed",
+            summary=outcome.summary,
+            content=outcome.content,
+            structured_data=outcome.structured_data,
+            truncated=outcome.truncated,
+            blob_references=outcome.blob_references,
+        )
+
+
 class ToolRegistry:
-    def __init__(self, *, search: SearchToolExecutor | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        search: SearchToolExecutor | None = None,
+        mcp: McpResourceExecutor | None = None,
+    ) -> None:
         values: list[ToolBase] = [
             AskUserTool(),
             ReadFileTool(),
@@ -955,6 +1047,8 @@ class ToolRegistry:
         ]
         if search is not None:
             values.extend([WebSearchTool(search), WebFetchTool(search)])
+        if mcp is not None:
+            values.extend([McpResourceListTool(mcp), McpResourceReadTool(mcp)])
         self._tools = {tool.name: tool for tool in values}
 
     def definitions(self, allowed: frozenset[str] | None = None) -> list[ToolDefinition]:

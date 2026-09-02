@@ -31,6 +31,8 @@ READ_ONLY_TOOLS = frozenset(
         "task_update",
         "web_search",
         "web_fetch",
+        "mcp_resource_list",
+        "mcp_resource_read",
     }
 )
 DEFAULT_INSTRUCTIONS = (

@@ -41,6 +41,7 @@ from hames.evolution import ScarStore
 from hames.evolution_runtime import MODEL_BEHAVIOR_REPAIR_LAYERS
 from hames.goals import Goal, GoalStore, project_goals
 from hames.ledger import Event, Ledger, Session, new_id
+from hames.mcp_runtime import McpManager
 from hames.memory import (
     MemoryCandidate,
     MemoryStatus,
@@ -76,6 +77,7 @@ from hames.tasks import SessionTaskList, TaskStore
 from hames.tools import (
     AskUserArguments,
     GoalReportArguments,
+    McpToolArguments,
     MemoryAddArguments,
     MemoryEditArguments,
     MemoryForgetArguments,
@@ -386,6 +388,7 @@ class RunManager:
         providers: dict[str, Provider],
         broker: EventBroker,
         search: SearchMcpManager | None = None,
+        mcp: McpManager | None = None,
     ) -> None:
         self.ledger = ledger
         self.paths = paths
@@ -394,7 +397,8 @@ class RunManager:
         self.providers = providers
         self.broker = broker
         self.search = search
-        self.tools = ToolRegistry(search=search)
+        self.mcp = mcp
+        self.tools = ToolRegistry(search=search, mcp=mcp)
         self.environment = EnvironmentSnapshotter()
         self.skills = SkillRegistry(
             paths.skills,
@@ -1754,6 +1758,8 @@ class RunManager:
             await self.plugin_manager.close()
         if self.search is not None:
             await self.search.close()
+        if self.mcp is not None:
+            await self.mcp.close()
         for provider in self.providers.values():
             await provider.aclose()
 
@@ -2615,7 +2621,10 @@ class RunManager:
         plugin_names: set[str] = (
             self.plugin_manager.names() if self.plugin_manager is not None else set()
         )
-        allowed_tools = permitted_tools(capsule, set(self.tools.names()) | plugin_names)
+        mcp_names: set[str] = self.mcp.names() if self.mcp is not None else set()
+        allowed_tools = permitted_tools(
+            capsule, set(self.tools.names()) | plugin_names | mcp_names
+        )
         if (
             not capsule.metadata.delegation.allow
             or session.delegation_depth >= self.config.runtime.max_delegation_depth
@@ -2636,6 +2645,8 @@ class RunManager:
         definitions = self.tools.definitions(allowed_tools)
         if self.plugin_manager is not None:
             definitions = [*definitions, *self.plugin_manager.definitions(allowed_tools)]
+        if self.mcp is not None:
+            definitions = [*definitions, *self.mcp.definitions(allowed_tools)]
         plugin_sources: list[PluginContextItem] = []
         if self.plugin_manager is not None:
             query = ""
@@ -3525,7 +3536,9 @@ class RunManager:
                 requested.id,
             )
         try:
-            if is_plugin_tool(invocation.name):
+            if self.mcp is not None and self.mcp.is_tool(invocation.name):
+                arguments = McpToolArguments.model_validate(invocation.arguments)
+            elif is_plugin_tool(invocation.name):
                 arguments = PluginToolArguments.model_validate(invocation.arguments)
             else:
                 arguments = self.tools.validate(invocation.name, invocation.arguments)
@@ -3572,6 +3585,11 @@ class RunManager:
             interaction_mode=forced_interaction_mode or current_session.interaction_mode,
             session_tool_granted=session_tool_granted,
             user_requested_memory_maintenance=user_requested_memory_maintenance,
+            mcp_read_only=(
+                self.mcp.tool_is_read_only(invocation.name)
+                if self.mcp is not None and self.mcp.is_tool(invocation.name)
+                else None
+            ),
         )
         policy_decided = await self._append(
             session_id=session.id,
@@ -3675,6 +3693,33 @@ class RunManager:
             )
             result = await self._handle_self_management_tool(
                 run_id, session, arguments, invocation.name, started.id
+            )
+            return await self._persist_tool_result(session, run_id, invocation, result, started.id)
+        if self.mcp is not None and self.mcp.is_tool(invocation.name):
+            started = await self._append(
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                event_type="tool.started",
+                payload={"tool_call_id": invocation.tool_call_id, "name": invocation.name},
+                causation_id=policy_decided.id,
+                correlation_id=run_id,
+            )
+            outcome = await clock.measure(
+                self.mcp.call_tool(
+                    invocation.name,
+                    invocation.arguments,
+                    context,
+                    session_id=session.id,
+                )
+            )
+            result = ToolResult(
+                status="failed" if outcome.failed else "completed",
+                summary=outcome.summary,
+                content=outcome.content,
+                structured_data=outcome.structured_data,
+                truncated=outcome.truncated,
+                blob_references=outcome.blob_references,
             )
             return await self._persist_tool_result(session, run_id, invocation, result, started.id)
         if is_plugin_tool(invocation.name):

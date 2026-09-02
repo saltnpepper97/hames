@@ -710,6 +710,30 @@ MIGRATIONS = (
             ON message_submissions(updated_at);
         """,
     ),
+    Migration(
+        18,
+        "external MCP servers",
+        """
+        CREATE TABLE mcp_servers (
+            id TEXT PRIMARY KEY,
+            transport TEXT NOT NULL CHECK (transport IN ('stdio', 'http')),
+            enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+            command TEXT,
+            args_json TEXT NOT NULL DEFAULT '[]',
+            cwd TEXT,
+            url TEXT,
+            env_json TEXT NOT NULL DEFAULT '{}',
+            headers_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK (
+                (transport = 'stdio' AND command IS NOT NULL AND url IS NULL)
+                OR (transport = 'http' AND command IS NULL AND cwd IS NULL AND url IS NOT NULL)
+            )
+        );
+        CREATE INDEX mcp_servers_enabled_idx ON mcp_servers(enabled, id);
+        """,
+    ),
 )
 
 

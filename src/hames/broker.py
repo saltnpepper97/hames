@@ -16,6 +16,21 @@ class EventBroker:
     async def publish(self, session_id: str, event: dict[str, object]) -> None:
         async with self._lock:
             subscribers = tuple(self._subscribers.get(session_id, ()))
+        self._deliver(subscribers, event)
+
+    async def publish_all(self, event: dict[str, object]) -> None:
+        """Publish one transient runtime event to every connected session."""
+
+        async with self._lock:
+            subscribers = tuple(
+                queue for session_queues in self._subscribers.values() for queue in session_queues
+            )
+        self._deliver(subscribers, event)
+
+    @staticmethod
+    def _deliver(
+        subscribers: tuple[asyncio.Queue[dict[str, object]], ...], event: dict[str, object]
+    ) -> None:
         for queue in subscribers:
             try:
                 queue.put_nowait(event)
