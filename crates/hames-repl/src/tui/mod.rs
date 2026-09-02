@@ -27,7 +27,8 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode, enable_raw_mode,
+    BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
+    SetTitle, disable_raw_mode, enable_raw_mode,
 };
 use futures_util::StreamExt;
 use futures_util::future::join_all;
@@ -3300,6 +3301,7 @@ struct TerminalGuard {
     title_frame: usize,
     title_frame_at: Instant,
     title_working: bool,
+    was_animating: bool,
 }
 
 impl TerminalGuard {
@@ -3315,6 +3317,7 @@ impl TerminalGuard {
             title_frame: 0,
             title_frame_at: Instant::now(),
             title_working: false,
+            was_animating: false,
         })
     }
 
@@ -3337,9 +3340,27 @@ impl TerminalGuard {
             execute!(self.terminal.backend_mut(), SetTitle(&title))?;
             self.last_title = title;
         }
-        self.terminal.draw(|frame| view::draw(frame, app))?;
+
+        let animating = app.animating();
+        let force_full_repaint = should_force_full_repaint(self.was_animating, animating);
+        execute!(self.terminal.backend_mut(), BeginSynchronizedUpdate)?;
+        let draw_result = (|| -> io::Result<()> {
+            if force_full_repaint {
+                self.terminal.clear()?;
+            }
+            self.terminal.draw(|frame| view::draw(frame, app))?;
+            Ok(())
+        })();
+        let end_result = execute!(self.terminal.backend_mut(), EndSynchronizedUpdate);
+        draw_result?;
+        end_result?;
+        self.was_animating = animating;
         Ok(())
     }
+}
+
+fn should_force_full_repaint(was_animating: bool, animating: bool) -> bool {
+    was_animating && !animating
 }
 
 impl Drop for TerminalGuard {
@@ -3523,7 +3544,8 @@ mod tests {
     use super::{
         Effect, action_error_message, agent_source, handle_key, handle_mouse,
         handle_terminal_event, model_effort_selection, model_efforts, next_mode, parse_command,
-        pointer_top, repeat_safe_key, session_exit_notice, terminal_tab_title, workspace_identity,
+        pointer_top, repeat_safe_key, session_exit_notice, should_force_full_repaint,
+        terminal_tab_title, workspace_identity,
     };
     use crate::api::{
         Goal, MemoryRecord, PlanRevision, PlanState, ProviderModel, QueuedMessage, Scar, Session,
@@ -3535,6 +3557,14 @@ mod tests {
         QuestionInputKind, QuestionOption, QuestionTray, ScarBrowser, ScarEditField, ScrollDrag,
         ScrollTarget, Sheet, SheetKind, ThemeKind, TranscriptItem, TranscriptViewport,
     };
+
+    #[test]
+    fn settling_animation_forces_one_full_terminal_repaint() {
+        assert!(!should_force_full_repaint(false, false));
+        assert!(!should_force_full_repaint(false, true));
+        assert!(!should_force_full_repaint(true, true));
+        assert!(should_force_full_repaint(true, false));
+    }
 
     #[test]
     fn sse_decoder_handles_fragmented_frames() {
