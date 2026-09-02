@@ -284,6 +284,7 @@ pub enum ActivityCategory {
     Memory,
     Scars,
     Plugin,
+    Mcp,
     Tasks,
 }
 
@@ -1046,6 +1047,7 @@ pub enum MenuAction {
     Scars,
     Heal,
     Plugins,
+    Mcp,
     StopTerminals,
     Trust,
     RevokeTrust,
@@ -2274,6 +2276,7 @@ impl App {
                 MenuAction::Heal,
             ),
             option("/plugins", "installed capabilities", MenuAction::Plugins),
+            option("/mcp", "external MCP servers", MenuAction::Mcp),
             option("/help", "keyboard and mouse guide", MenuAction::Help),
             option("/cancel", "stop current work", MenuAction::CancelRun),
             option(
@@ -2524,6 +2527,23 @@ impl App {
                     }
                 }
             }
+            "runtime.notice" => {
+                let code = string(payload, "code");
+                if code.starts_with("mcp.") {
+                    let message = string(payload, "message");
+                    let error = payload
+                        .get("details")
+                        .and_then(|details| details.get("error"))
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    if error {
+                        self.notice = None;
+                        self.error_notice = Some(message);
+                    } else {
+                        self.notice = Some(message);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -2609,6 +2629,20 @@ impl App {
                         text: string(&event.payload, "message"),
                         error: false,
                     });
+                } else if code.starts_with("mcp.") {
+                    let message = string(&event.payload, "message");
+                    let error = event
+                        .payload
+                        .get("details")
+                        .and_then(|details| details.get("error"))
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    if error {
+                        self.notice = None;
+                        self.error_notice = Some(message);
+                    } else {
+                        self.notice = Some(message);
+                    }
                 }
             }
             "plan.proposed" => {
@@ -4252,6 +4286,7 @@ fn category_for_tool(name: &str) -> ActivityCategory {
         }
         "scar_list" | "scar_record" | "scar_control" => ActivityCategory::Scars,
         "task_update" | "task_list" => ActivityCategory::Tasks,
+        value if value.starts_with("mcp__") => ActivityCategory::Mcp,
         value if value.contains('.') => ActivityCategory::Plugin,
         _ => ActivityCategory::Run,
     }
@@ -7199,6 +7234,34 @@ mod tests {
                 "Closed 1 background terminal."
             ]
         );
+    }
+
+    #[test]
+    fn mcp_runtime_messages_use_the_notice_row() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_transient(
+            "mcp:fixture",
+            "runtime.notice",
+            &json!({
+                "code": "mcp.connection.ready",
+                "message": "MCP fixture connected",
+                "details": {"server_id": "fixture", "error": false}
+            }),
+        );
+        assert_eq!(app.notice.as_deref(), Some("MCP fixture connected"));
+        assert!(app.error_notice.is_none());
+
+        app.ingest_transient(
+            "mcp:fixture",
+            "runtime.notice",
+            &json!({
+                "code": "mcp.tool.failed",
+                "message": "MCP fixture failed",
+                "details": {"server_id": "fixture", "error": true}
+            }),
+        );
+        assert!(app.notice.is_none());
+        assert_eq!(app.error_notice.as_deref(), Some("MCP fixture failed"));
     }
 
     fn event(sequence: u64, event_type: &str, run_id: &str, payload: serde_json::Value) -> Event {

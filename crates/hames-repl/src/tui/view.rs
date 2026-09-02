@@ -369,6 +369,7 @@ pub(super) fn current_activity(app: &App) -> &'static str {
                         ActivityCategory::Memory => "Memory",
                         ActivityCategory::Scars => "Scars",
                         ActivityCategory::Plugin => "Plugin",
+                        ActivityCategory::Mcp => "MCP",
                         ActivityCategory::Tasks => "Updating tasks",
                     };
                 }
@@ -841,6 +842,7 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                         ActivityCategory::Memory => "Memory",
                         ActivityCategory::Scars => "Scars",
                         ActivityCategory::Plugin => "Plugin",
+                        ActivityCategory::Mcp => "MCP",
                     }
                 };
                 let heading_glyph = if complete { "◆ " } else { "◇ " };

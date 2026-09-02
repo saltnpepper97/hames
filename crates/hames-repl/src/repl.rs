@@ -910,6 +910,16 @@ async fn print_statuses(client: &GatewayClient) -> Result<()> {
         "{}",
         style::key_value("Background terminals", health.active_terminals)
     );
+    println!(
+        "{}",
+        style::key_value(
+            "External MCP",
+            format!(
+                "{} configured · {} ready · {} degraded",
+                health.mcp_servers, health.mcp_ready, health.mcp_degraded
+            )
+        )
+    );
     if let Some(search) = &health.search {
         println!("{}", style::key_value("Web search", &search.mcp_status));
         if !search.protocol_version.is_empty() {

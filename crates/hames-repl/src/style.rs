@@ -22,6 +22,7 @@ pub enum Badge {
     Memory,
     Scars,
     Plugin,
+    Mcp,
     Hames,
     You,
     Error,
@@ -181,6 +182,7 @@ impl Badge {
             Self::Memory => "Memory",
             Self::Scars => "Scars",
             Self::Plugin => "Plugin",
+            Self::Mcp => "MCP",
             Self::Hames => "Hames",
             Self::You => "You",
             Self::Error => "Error",
@@ -225,7 +227,7 @@ impl Badge {
                 g: 142,
                 b: 93,
             },
-            Self::Skills | Self::Plugin => Rgb {
+            Self::Skills | Self::Plugin | Self::Mcp => Rgb {
                 r: 153,
                 g: 162,
                 b: 180,

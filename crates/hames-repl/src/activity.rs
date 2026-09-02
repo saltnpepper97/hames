@@ -14,6 +14,7 @@ pub enum ActivityCategory {
     Memory,
     Scars,
     Plugin,
+    Mcp,
 }
 
 impl ActivityCategory {
@@ -27,6 +28,7 @@ impl ActivityCategory {
             Self::Memory => Badge::Memory,
             Self::Scars => Badge::Scars,
             Self::Plugin => Badge::Plugin,
+            Self::Mcp => Badge::Mcp,
         }
     }
 }
@@ -97,6 +99,7 @@ enum ToolKind {
     SkillCatalog,
     SkillControl,
     Plugin,
+    Mcp,
     Unknown,
 }
 
@@ -123,6 +126,7 @@ impl ToolKind {
             "scar_control" => Self::ScarControl,
             "skill_catalog" => Self::SkillCatalog,
             "skill_control" => Self::SkillControl,
+            value if value.starts_with("mcp__") => Self::Mcp,
             value if value.contains('.') => Self::Plugin,
             _ => Self::Unknown,
         }
@@ -142,6 +146,7 @@ impl ToolKind {
             }
             Self::ScarList | Self::ScarRecord | Self::ScarControl => ActivityCategory::Scars,
             Self::Plugin => ActivityCategory::Plugin,
+            Self::Mcp => ActivityCategory::Mcp,
             Self::Unknown => ActivityCategory::Run,
         }
     }
@@ -206,6 +211,8 @@ impl ToolKind {
             (Self::SkillControl, ActivityPhase::Completed) => "Updated skill",
             (Self::Plugin, ActivityPhase::Preparing | ActivityPhase::Running) => "Using plugin",
             (Self::Plugin, ActivityPhase::Completed) => "Used plugin",
+            (Self::Mcp, ActivityPhase::Preparing | ActivityPhase::Running) => "Using MCP",
+            (Self::Mcp, ActivityPhase::Completed) => "Used MCP",
             (Self::Unknown, ActivityPhase::Preparing | ActivityPhase::Running) => "Working",
             (Self::Unknown, ActivityPhase::Completed) => "Completed",
             (_, ActivityPhase::Checking) => "Checking policy",
@@ -283,7 +290,7 @@ impl ToolActivity {
             ToolKind::ScarRecord => self.arguments.get("title").and_then(Value::as_str),
             ToolKind::ScarControl => self.arguments.get("scar_id").and_then(Value::as_str),
             ToolKind::SkillControl => self.arguments.get("id").and_then(Value::as_str),
-            ToolKind::Plugin => Some(self.name.as_str()),
+            ToolKind::Plugin | ToolKind::Mcp => Some(self.name.as_str()),
             ToolKind::Unknown => (!self.name.is_empty()).then_some(self.name.as_str()),
         };
         let Some(value) = value else {

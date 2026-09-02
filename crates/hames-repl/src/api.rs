@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 32;
+pub const PROTOCOL_VERSION: u32 = 33;
 pub const HEAL_SCARS_PROMPT: &str = "Heal behavioral scars now.";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -128,6 +128,12 @@ pub struct Health {
     pub active_terminals: u64,
     #[serde(default)]
     pub search: Option<SearchRuntimeStatus>,
+    #[serde(default)]
+    pub mcp_servers: u64,
+    #[serde(default)]
+    pub mcp_ready: u64,
+    #[serde(default)]
+    pub mcp_degraded: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -288,6 +294,58 @@ pub struct PluginProposal {
     #[serde(default)]
     pub permissions: Vec<String>,
     pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct McpTool {
+    pub name: String,
+    pub exposed_name: String,
+    pub description: String,
+    pub read_only: bool,
+    pub destructive: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct McpResource {
+    pub name: String,
+    pub uri: String,
+    pub description: String,
+    pub mime_type: String,
+    pub template: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct McpServer {
+    pub id: String,
+    pub transport: String,
+    pub enabled: bool,
+    pub status: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub cwd: String,
+    pub url: String,
+    pub env: std::collections::BTreeMap<String, String>,
+    pub headers: std::collections::BTreeMap<String, String>,
+    pub protocol_version: String,
+    pub server_name: String,
+    pub server_version: String,
+    pub tools: Vec<McpTool>,
+    pub resources: Vec<McpResource>,
+    pub resource_templates: Vec<McpResource>,
+    pub active_calls: u64,
+    pub error: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct McpServerSpec {
+    pub id: String,
+    pub transport: String,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub cwd: Option<String>,
+    pub url: Option<String>,
+    pub env: std::collections::BTreeMap<String, String>,
+    pub headers: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1153,6 +1211,52 @@ impl GatewayClient {
 
     pub async fn plugins(&self) -> Result<Vec<Plugin>> {
         decode(self.get("/v1/plugins").send().await?).await
+    }
+
+    pub async fn mcp_servers(&self) -> Result<Vec<McpServer>> {
+        decode(self.get("/v1/mcp/servers").send().await?).await
+    }
+
+    pub async fn add_mcp_server(&self, spec: &McpServerSpec) -> Result<McpServer> {
+        decode(self.post("/v1/mcp/servers").json(spec).send().await?).await
+    }
+
+    pub async fn inspect_mcp_server(&self, id: &str) -> Result<McpServer> {
+        decode(
+            self.post(&format!("/v1/mcp/servers/{id}/inspect"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn enable_mcp_server(&self, id: &str) -> Result<McpServer> {
+        decode(
+            self.post(&format!("/v1/mcp/servers/{id}/enable"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn disable_mcp_server(&self, id: &str) -> Result<McpServer> {
+        decode(
+            self.post(&format!("/v1/mcp/servers/{id}/disable"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn remove_mcp_server(&self, id: &str) -> Result<Value> {
+        decode(
+            self.http
+                .delete(format!("{}/v1/mcp/servers/{id}", self.base_url))
+                .bearer_auth(&self.token)
+                .send()
+                .await?,
+        )
+        .await
     }
 
     pub async fn plugin(&self, id: &str) -> Result<Plugin> {

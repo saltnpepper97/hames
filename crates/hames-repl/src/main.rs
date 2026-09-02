@@ -6,6 +6,7 @@ mod style;
 mod trust;
 mod tui;
 
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal};
@@ -54,6 +55,11 @@ enum Command {
     Search {
         #[command(subcommand)]
         action: SearchAction,
+    },
+    /// Add and manage external MCP servers.
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
     },
     /// Inspect and branch durable sessions.
     Session {
@@ -105,6 +111,49 @@ enum SearchAction {
     Stop,
     Restart,
     Update,
+}
+
+#[derive(Clone, Debug, Subcommand)]
+enum McpAction {
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    Inspect {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Add {
+        id: String,
+        #[arg(long)]
+        url: Option<String>,
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        #[arg(long = "env", value_name = "TARGET=SOURCE_ENV")]
+        env: Vec<String>,
+        #[arg(long = "header", value_name = "HEADER=SOURCE_ENV")]
+        header: Vec<String>,
+        #[arg(long)]
+        json: bool,
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+    Enable {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Disable {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Remove {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Clone, Debug, Subcommand)]
@@ -392,6 +441,7 @@ async fn main() -> Result<()> {
             };
             local::run_backend(["search", action, "--json"])
         }
+        Some(Command::Mcp { action }) => run_mcp_command(action).await,
         Some(Command::Session { action }) => run_session_command(action).await,
         Some(Command::Agent { action }) => run_agent_command(action).await,
         Some(Command::Skill { action }) => run_skill_command(action).await,
@@ -627,6 +677,223 @@ async fn run_agent_command(action: AgentAction) -> Result<()> {
                 Ok(())
             }
         }
+    }
+}
+
+async fn run_mcp_command(action: McpAction) -> Result<()> {
+    let (_, client) = connected_client().await?;
+    match action {
+        McpAction::List { json } => {
+            let servers = client.mcp_servers().await?;
+            if json {
+                print_json(&servers)
+            } else {
+                if servers.is_empty() {
+                    println!("no external MCP servers configured");
+                    return Ok(());
+                }
+                for server in servers {
+                    println!(
+                        "{:<20} {:<10} {:<6} {} tools  {} resources",
+                        server.id,
+                        server.status,
+                        server.transport,
+                        server.tools.len(),
+                        server.resources.len()
+                    );
+                }
+                Ok(())
+            }
+        }
+        McpAction::Inspect { id, json } => {
+            let server = client.inspect_mcp_server(&id).await?;
+            if json {
+                print_json(&server)
+            } else {
+                print_mcp_server(&server);
+                Ok(())
+            }
+        }
+        McpAction::Add {
+            id,
+            url,
+            cwd,
+            env,
+            header,
+            json,
+            command,
+        } => {
+            let env = parse_references(env, "--env")?;
+            let headers = parse_references(header, "--header")?;
+            let spec = match (url, command.split_first()) {
+                (Some(url), None) => {
+                    if cwd.is_some() || !env.is_empty() {
+                        bail!("HTTP MCP servers do not accept --cwd or --env");
+                    }
+                    api::McpServerSpec {
+                        id,
+                        transport: "http".to_owned(),
+                        command: None,
+                        args: Vec::new(),
+                        cwd: None,
+                        url: Some(url),
+                        env: BTreeMap::new(),
+                        headers,
+                    }
+                }
+                (None, Some((program, args))) => {
+                    if !headers.is_empty() {
+                        bail!("stdio MCP servers do not accept --header");
+                    }
+                    api::McpServerSpec {
+                        id,
+                        transport: "stdio".to_owned(),
+                        command: Some(program.clone()),
+                        args: args.to_vec(),
+                        cwd: cwd
+                            .map(|path| path.canonicalize())
+                            .transpose()?
+                            .map(|path| path.display().to_string()),
+                        url: None,
+                        env,
+                        headers: BTreeMap::new(),
+                    }
+                }
+                (Some(_), Some(_)) => bail!("choose either --url or a command after --"),
+                (None, None) => bail!("supply --url URL or a command after --"),
+            };
+            let server = client.add_mcp_server(&spec).await?;
+            if json {
+                print_json(&server)
+            } else {
+                println!("added MCP server {} (disabled)", server.id);
+                Ok(())
+            }
+        }
+        McpAction::Enable { id, json } => {
+            let server = client.enable_mcp_server(&id).await?;
+            if json {
+                print_json(&server)
+            } else {
+                println!("enabled MCP server {}", server.id);
+                Ok(())
+            }
+        }
+        McpAction::Disable { id, json } => {
+            let server = client.disable_mcp_server(&id).await?;
+            if json {
+                print_json(&server)
+            } else {
+                println!("disabled MCP server {}", server.id);
+                Ok(())
+            }
+        }
+        McpAction::Remove { id, json } => {
+            let result = client.remove_mcp_server(&id).await?;
+            if json {
+                print_json(&result)
+            } else {
+                println!("removed MCP server {id}");
+                Ok(())
+            }
+        }
+    }
+}
+
+fn parse_references(values: Vec<String>, flag: &str) -> Result<BTreeMap<String, String>> {
+    let mut result = BTreeMap::new();
+    for value in values {
+        let Some((target, source)) = value.split_once('=') else {
+            bail!("{flag} expects TARGET=SOURCE_ENV");
+        };
+        if target.is_empty() || source.is_empty() {
+            bail!("{flag} expects non-empty TARGET=SOURCE_ENV");
+        }
+        if result
+            .insert(target.to_owned(), source.to_owned())
+            .is_some()
+        {
+            bail!("{flag} repeats target {target}");
+        }
+    }
+    Ok(result)
+}
+
+fn print_mcp_server(server: &api::McpServer) {
+    println!(
+        "{}  {}  {}  protocol {}",
+        server.id,
+        server.status,
+        server.transport,
+        if server.protocol_version.is_empty() {
+            "—"
+        } else {
+            &server.protocol_version
+        }
+    );
+    if !server.command.is_empty() {
+        println!("command: {} {}", server.command, server.args.join(" "));
+    }
+    if !server.url.is_empty() {
+        println!("url: {}", server.url);
+    }
+    if !server.env.is_empty() {
+        println!(
+            "env refs: {}",
+            server
+                .env
+                .iter()
+                .map(|(target, source)| format!("{target}={source}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !server.headers.is_empty() {
+        println!(
+            "header refs: {}",
+            server
+                .headers
+                .iter()
+                .map(|(target, source)| format!("{target}={source}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !server.tools.is_empty() {
+        println!(
+            "tools: {}",
+            server
+                .tools
+                .iter()
+                .map(|tool| tool.exposed_name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !server.resources.is_empty() {
+        println!(
+            "resources: {}",
+            server
+                .resources
+                .iter()
+                .map(|resource| resource.uri.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !server.resource_templates.is_empty() {
+        println!(
+            "resource templates: {}",
+            server
+                .resource_templates
+                .iter()
+                .map(|resource| resource.uri.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !server.error.is_empty() {
+        println!("error: {}", server.error);
     }
 }
 
