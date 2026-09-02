@@ -156,8 +156,9 @@ class McpCallOutcome:
 @dataclass(slots=True)
 class _Handle:
     spec: McpServerSpec
-    stack: AsyncExitStack
     client: Client
+    owner_task: asyncio.Task[None]
+    stop: asyncio.Event
     status: Literal["connecting", "ready", "degraded"] = "connecting"
     protocol_version: str = ""
     server_name: str = ""
@@ -277,7 +278,7 @@ class McpManager:
             handles = list(self._handles.values())
             self._handles.clear()
         for handle in handles:
-            await handle.stack.aclose()
+            await self._stop_handle(handle)
 
     async def add(self, spec: McpServerSpec) -> McpServerView:
         if spec.transport == "stdio" and shutil.which(cast(str, spec.command)) is None:
@@ -329,7 +330,7 @@ class McpManager:
         try:
             return self._view(spec, False, handle)
         finally:
-            await handle.stack.aclose()
+            await self._stop_handle(handle)
 
     def list(self) -> list[McpServerView]:
         return [
@@ -537,8 +538,27 @@ class McpManager:
         return handle
 
     async def _open(self, spec: McpServerSpec) -> _Handle:
+        ready = asyncio.get_running_loop().create_future()
+        stop = asyncio.Event()
+        owner = asyncio.create_task(self._own_connection(spec, ready, stop))
+        try:
+            async with asyncio.timeout(_CONNECT_TIMEOUT_SECONDS):
+                return await asyncio.shield(ready)
+        except BaseException:
+            stop.set()
+            owner.cancel()
+            await asyncio.gather(owner, return_exceptions=True)
+            raise
+
+    async def _own_connection(
+        self,
+        spec: McpServerSpec,
+        ready: asyncio.Future[_Handle],
+        stop: asyncio.Event,
+    ) -> None:
         stack = AsyncExitStack()
         await stack.__aenter__()
+        handle: _Handle | None = None
 
         async def message_handler(message: Any) -> None:
             if isinstance(message, Exception):
@@ -597,17 +617,20 @@ class McpManager:
                 message_handler=message_handler,
                 log_level="debug",
             )
-            async with asyncio.timeout(_CONNECT_TIMEOUT_SECONDS):
-                await stack.enter_async_context(client)
-                tools = await _all_tools(client)
-                resources = await _all_resources(client)
-                templates = await _all_templates(client)
+            await stack.enter_async_context(client)
+            tools = await _all_tools(client)
+            resources = await _all_resources(client)
+            templates = await _all_templates(client)
             exposed = _exposed_tool_names(spec.id, [tool.name for tool in tools])
             info = client.server_info
-            return _Handle(
+            owner_task = asyncio.current_task()
+            if owner_task is None:
+                raise RuntimeError("MCP connection owner task is unavailable")
+            handle = _Handle(
                 spec=spec,
-                stack=stack,
                 client=client,
+                owner_task=owner_task,
+                stop=stop,
                 status="ready",
                 protocol_version=client.protocol_version,
                 server_name="" if info is None else info.name,
@@ -617,9 +640,20 @@ class McpManager:
                 resources=[_resource_view(item, False) for item in resources],
                 templates=[_resource_view(item, True) for item in templates],
             )
-        except BaseException:
+            ready.set_result(handle)
+            await stop.wait()
+        except BaseException as exc:
+            if not ready.done():
+                ready.set_exception(exc)
+            elif handle is not None and not stop.is_set() and not self._closing:
+                handle.status = "degraded"
+                handle.error = str(exc)
+                self._errors[spec.id] = str(exc)
+                await self._notice(spec.id, "mcp.connection.failed", str(exc), True, None)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+        finally:
             await stack.aclose()
-            raise
 
     async def _disconnect(self, server_id: str, *, require_idle: bool) -> None:
         async with self._lock:
@@ -629,7 +663,12 @@ class McpManager:
             if require_idle and handle.active_calls:
                 raise RuntimeError(f"MCP server {server_id} has active tool calls")
             self._handles.pop(server_id)
-        await handle.stack.aclose()
+        await self._stop_handle(handle)
+
+    @staticmethod
+    async def _stop_handle(handle: _Handle) -> None:
+        handle.stop.set()
+        await handle.owner_task
 
     def _schedule_maintenance(self, coroutine: Coroutine[Any, Any, None]) -> None:
         if self._closing:

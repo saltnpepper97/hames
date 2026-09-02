@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -77,7 +78,7 @@ async def test_stdio_server_exposes_tools_and_resources(
             )
         )
         assert added.status == "disabled"
-        enabled = await manager.enable("fixture")
+        enabled = await asyncio.create_task(manager.enable("fixture"))
         assert enabled.status == "ready"
         assert {tool.name for tool in enabled.tools} == {"echo", "change"}
         echo = next(tool for tool in enabled.tools if tool.name == "echo")
@@ -94,6 +95,8 @@ async def test_stdio_server_exposes_tools_and_resources(
         resource = await manager.read_resource("fixture", "fixture://hello", context)
         assert resource.content == "hello from an MCP resource"
         assert any(code == "mcp.connection.ready" for _, code, *_ in notices)
+        disabled = await asyncio.create_task(manager.disable("fixture"))
+        assert disabled.status == "disabled"
     finally:
         await manager.close()
 
