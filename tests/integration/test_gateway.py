@@ -3838,9 +3838,11 @@ async def test_runtime_delegates_with_an_explicit_task_card(tmp_path: Path) -> N
                 "memory_search",
                 "scar_list",
                 "skill_catalog",
-                "session_title_set",
-                "task_list",
-                "task_update",
+                    "session_title_set",
+                    "task_list",
+                    "task_update",
+                    "mcp_resource_list",
+                    "mcp_resource_read",
             ]
             assert fake.requests[2].messages[-1].tool_name == "spawn_agent"
             assert run_id
@@ -3920,9 +3922,11 @@ async def test_agent_selection_changes_only_future_turns(tmp_path: Path) -> None
                 "memory_search",
                 "scar_list",
                 "skill_catalog",
-                "session_title_set",
-                "task_list",
-                "task_update",
+                    "session_title_set",
+                    "task_list",
+                    "task_update",
+                    "mcp_resource_list",
+                    "mcp_resource_read",
             ]
     finally:
         await state.runs.close()
