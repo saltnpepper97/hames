@@ -59,7 +59,7 @@ curl -fsSL https://raw.githubusercontent.com/saltnpepper97/hames/main/install.sh
 ~~~
 
 The installer uses locked dependencies, never invokes <code>sudo</code>, and
-installs <code>hames</code to uv's user tool bin directory (normally
+installs <code>hames</code> to uv's user tool bin directory (normally
 <code>~/.local/bin</code>). It keeps the source and Python environment under
 <code>~/.local/share/hames/source</code> so the Rust client can launch its matching
 gateway. Running the command again performs a fast-forward update.
