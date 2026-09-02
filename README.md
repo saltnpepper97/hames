@@ -5,7 +5,7 @@
 </p>
 
 <h1 align="center">
-  <a href="https://github.com/saltnpepper97/hames">Hames</a>
+  Hames
 </h1>
 
 <p align="center">
