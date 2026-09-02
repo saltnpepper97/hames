@@ -1,7 +1,5 @@
 <p align="center">
-  <a href="https://github.com/saltnpepper97/hames">
-    <img src="docs/assets/hames.png" width="280" alt="Hames horse and harness mark">
-  </a>
+  <img src="docs/assets/hames.png" width="280" alt="Hames horse and harness mark">
 </p>
 
 <h1 align="center">
