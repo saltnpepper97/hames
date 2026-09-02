@@ -1958,6 +1958,7 @@ fn parse_command(value: &str) -> Option<MenuAction> {
         "/evolution" | "/scars" => Some(MenuAction::Scars),
         "/heal" => Some(MenuAction::Heal),
         "/plugins" => Some(MenuAction::Plugins),
+        "/mcp" => Some(MenuAction::Mcp),
         "/export" => parts.next().map(|path| MenuAction::Export {
             path: path.to_owned(),
             format: parts.next().unwrap_or("markdown").to_owned(),
@@ -2690,6 +2691,10 @@ async fn apply_menu_action(
                 ),
                 format!("Active runs  {}", health.active_runs),
                 format!("Terminals    {}", health.active_terminals),
+                format!(
+                    "External MCP {} configured · {} ready · {} degraded",
+                    health.mcp_servers, health.mcp_ready, health.mcp_degraded
+                ),
                 format!("Provider     {}", health.default_provider),
             ];
             if let Some(search) = health.search {
@@ -2856,6 +2861,29 @@ async fn apply_menu_action(
                 )
             }));
             app.modal = Some(info("Plugins", lines));
+        }
+        MenuAction::Mcp => {
+            let servers = client.mcp_servers().await?;
+            let mut lines = vec![
+                format!("{} external MCP servers", servers.len()),
+                String::new(),
+            ];
+            lines.extend(servers.into_iter().take(16).map(|server| {
+                let detail = if server.error.is_empty() {
+                    format!(
+                        "{} tools · {} resources",
+                        server.tools.len(),
+                        server.resources.len()
+                    )
+                } else {
+                    server.error
+                };
+                format!(
+                    "{:<16} {:<10} {:<6} {}",
+                    server.id, server.status, server.transport, detail
+                )
+            }));
+            app.modal = Some(info("MCP servers", lines));
         }
         MenuAction::StopTerminals => {
             let stopped = client.stop_background_terminals(&app.session.id).await?;
@@ -3592,6 +3620,7 @@ mod tests {
             parse_command("/clear"),
             Some(MenuAction::ClearSession)
         ));
+        assert!(matches!(parse_command("/mcp"), Some(MenuAction::Mcp)));
         assert!(matches!(
             parse_command("/resume"),
             Some(MenuAction::OpenSessions)
