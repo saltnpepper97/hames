@@ -115,6 +115,25 @@ modern MCP `2026-07-28`. Models receive `web_search` for structured results and
 Explore, available in Plan mode, and guarded against local/private fetch targets.
 See [`docs/architecture/web-search.md`](docs/architecture/web-search.md).
 
+Hames can also host user-configured MCP servers over stdio or Streamable HTTP.
+Servers are added disabled and must be enabled explicitly:
+
+```bash
+hames mcp add filesystem --cwd "$PWD" -- npx -y @modelcontextprotocol/server-filesystem "$PWD"
+hames mcp add remote --url https://example.com/mcp --header Authorization=MCP_AUTH_HEADER
+hames mcp inspect filesystem
+hames mcp enable filesystem
+hames mcp list
+hames mcp disable filesystem
+hames mcp remove filesystem
+```
+
+`--env TARGET=SOURCE_ENV` and `--header HEADER=SOURCE_ENV` store only the source
+environment-variable name, never its value. Enabled tools appear to models as
+`mcp__<server>__<tool>`. `/mcp` shows connection and capability state in the TUI;
+connection, log, progress, and failure messages use the notification row directly
+above the composer. See [`docs/architecture/mcp.md`](docs/architecture/mcp.md).
+
 In a terminal, `hames` opens the transcript-first Ratatui interface. Use
 `target/debug/hames tui` to request it explicitly, or `target/debug/hames repl`
 and `target/debug/hames --repl` for the classic line-oriented client. Piped and

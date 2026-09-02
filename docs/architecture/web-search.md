@@ -29,8 +29,9 @@ The gateway is an MCP host distinct from Hames's private plugin protocol. It
 launches the bundled `hames-search-mcp` process over stdio, probes
 `server/discover`, and requires protocol `2026-07-28`. Each tool call owns its
 child lifecycle and retries once with a fresh child after an unexpected protocol
-or process failure. No MCP network port or arbitrary third-party MCP server is
-enabled by this slice.
+or process failure. This managed search path remains separate from the persistent
+external MCP registry described in [`mcp.md`](mcp.md); enabling an external server
+does not change the search service or expose an MCP listening port from Hames.
 
 The MCP server talks to SearXNG's loopback JSON API. `web_fetch` performs direct
 public HTTP(S) retrieval without browser execution. It validates and pins DNS

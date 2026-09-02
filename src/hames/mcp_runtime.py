@@ -9,7 +9,7 @@ import json
 import os
 import re
 import shutil
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -167,6 +167,7 @@ class _Handle:
     resources: list[McpResourceView] = field(default_factory=lambda: list[McpResourceView]())
     templates: list[McpResourceView] = field(default_factory=lambda: list[McpResourceView]())
     active_calls: int = 0
+    refresh_pending: bool = False
     error: str = ""
 
 
@@ -249,6 +250,9 @@ class McpManager:
         self.store = McpStore(database)
         self._notice = notice
         self._handles: dict[str, _Handle] = {}
+        self._errors: dict[str, str] = {}
+        self._maintenance: set[asyncio.Task[None]] = set()
+        self._closing = False
         self._lock = asyncio.Lock()
 
     async def start_enabled(self) -> None:
@@ -258,9 +262,17 @@ class McpManager:
             try:
                 await self._connect(spec)
             except Exception as exc:
+                self._errors[spec.id] = str(exc)
                 await self._notice(spec.id, "mcp.connection.failed", str(exc), True, None)
 
     async def close(self) -> None:
+        self._closing = True
+        maintenance = tuple(self._maintenance)
+        for task in maintenance:
+            task.cancel()
+        if maintenance:
+            await asyncio.gather(*maintenance, return_exceptions=True)
+        self._maintenance.clear()
         async with self._lock:
             handles = list(self._handles.values())
             self._handles.clear()
@@ -282,7 +294,8 @@ class McpManager:
             return self.describe(server_id)
         try:
             await self._connect(spec)
-        except Exception:
+        except Exception as exc:
+            self._errors[server_id] = str(exc)
             await asyncio.to_thread(self.store.set_enabled, server_id, False)
             raise
         await asyncio.to_thread(self.store.set_enabled, server_id, True)
@@ -293,6 +306,7 @@ class McpManager:
         spec, _ = await asyncio.to_thread(self.store.get, server_id)
         await self._disconnect(server_id, require_idle=True)
         await asyncio.to_thread(self.store.set_enabled, server_id, False)
+        self._errors.pop(server_id, None)
         await self._notice(
             server_id, "mcp.server.disabled", f"MCP {server_id} disabled", False, None
         )
@@ -302,6 +316,7 @@ class McpManager:
         await asyncio.to_thread(self.store.get, server_id)
         await self._disconnect(server_id, require_idle=True)
         await asyncio.to_thread(self.store.remove, server_id)
+        self._errors.pop(server_id, None)
         await self._notice(server_id, "mcp.server.removed", f"MCP {server_id} removed", False, None)
 
     async def inspect(self, server_id: str) -> McpServerView:
@@ -376,11 +391,7 @@ class McpManager:
 
         async def progress(progress: float, total: float | None, message: str | None) -> None:
             if message:
-                suffix = (
-                    f" · {progress:g}/{total:g}"
-                    if total is not None
-                    else f" · {progress:g}"
-                )
+                suffix = f" · {progress:g}/{total:g}" if total is not None else f" · {progress:g}"
                 await self._notice(
                     handle.spec.id,
                     "mcp.tool.progress",
@@ -403,6 +414,7 @@ class McpManager:
         except Exception as exc:
             handle.status = "degraded"
             handle.error = str(exc)
+            self._errors[handle.spec.id] = str(exc)
             await self._notice(
                 handle.spec.id,
                 "mcp.tool.failed",
@@ -413,6 +425,11 @@ class McpManager:
             return McpCallOutcome(True, f"MCP tool failed: {exc}", "", {}, False, [])
         finally:
             handle.active_calls -= 1
+            if handle.status == "degraded" and handle.active_calls == 0:
+                self._schedule_maintenance(self._reconnect(handle.spec.id, handle))
+            elif handle.refresh_pending and handle.active_calls == 0:
+                handle.refresh_pending = False
+                self._schedule_maintenance(self._refresh(handle.spec.id))
 
     async def list_resources(
         self, server_id: str | None, cursor: str | None = None
@@ -445,10 +462,9 @@ class McpManager:
             )
         return {"servers": servers}
 
-    async def read_resource(
-        self, server_id: str, uri: str, context: ToolContext
-    ) -> McpCallOutcome:
+    async def read_resource(self, server_id: str, uri: str, context: ToolContext) -> McpCallOutcome:
         handle = self._ready_handle(server_id)
+        handle.active_calls += 1
         try:
             async with asyncio.timeout(_REQUEST_TIMEOUT_SECONDS):
                 result = await handle.client.read_resource(uri)
@@ -485,10 +501,20 @@ class McpManager:
                 references,
             )
         except Exception as exc:
+            handle.status = "degraded"
+            handle.error = str(exc)
+            self._errors[server_id] = str(exc)
             await self._notice(
                 server_id, "mcp.resource.failed", f"MCP {server_id} · {exc}", True, None
             )
             return McpCallOutcome(True, f"MCP resource read failed: {exc}", "", {}, False, [])
+        finally:
+            handle.active_calls -= 1
+            if handle.status == "degraded" and handle.active_calls == 0:
+                self._schedule_maintenance(self._reconnect(server_id, handle))
+            elif handle.refresh_pending and handle.active_calls == 0:
+                handle.refresh_pending = False
+                self._schedule_maintenance(self._refresh(server_id))
 
     async def _connect(self, spec: McpServerSpec) -> _Handle:
         async with self._lock:
@@ -497,6 +523,7 @@ class McpManager:
                 return existing
             handle = await self._open(spec)
             self._handles[spec.id] = handle
+            self._errors.pop(spec.id, None)
         await self._notice(
             spec.id,
             "mcp.connection.ready",
@@ -534,10 +561,11 @@ class McpManager:
                 await self._notice(
                     spec.id,
                     "mcp.capabilities.changed",
-                    f"MCP {spec.id} capabilities changed · refresh with /mcp",
+                    f"MCP {spec.id} capabilities changed · refreshing",
                     False,
                     None,
                 )
+                self._schedule_maintenance(self._refresh(spec.id))
 
         try:
             server: Any
@@ -603,6 +631,49 @@ class McpManager:
             self._handles.pop(server_id)
         await handle.stack.aclose()
 
+    def _schedule_maintenance(self, coroutine: Coroutine[Any, Any, None]) -> None:
+        if self._closing:
+            coroutine.close()
+            return
+        task = asyncio.create_task(coroutine)
+        self._maintenance.add(task)
+        task.add_done_callback(self._maintenance.discard)
+
+    async def _refresh(self, server_id: str) -> None:
+        await asyncio.sleep(0)
+        handle = self._handles.get(server_id)
+        if handle is None:
+            return
+        if handle.active_calls:
+            handle.refresh_pending = True
+            return
+        if self._closing or self._handles.get(server_id) is not handle:
+            return
+        await self._reconnect(server_id, handle)
+
+    async def _reconnect(self, server_id: str, failed_handle: _Handle) -> None:
+        try:
+            spec, enabled = await asyncio.to_thread(self.store.get, server_id)
+        except KeyError:
+            return
+        if not enabled or self._closing or self._handles.get(server_id) is not failed_handle:
+            return
+        try:
+            await self._disconnect(server_id, require_idle=True)
+            await self._connect(spec)
+            await self._notice(
+                server_id,
+                "mcp.connection.recovered",
+                f"MCP {server_id} reconnected",
+                False,
+                None,
+            )
+        except Exception as exc:
+            self._errors[server_id] = str(exc)
+            await self._notice(
+                server_id, "mcp.connection.failed", f"MCP {server_id} · {exc}", True, None
+            )
+
     def _resolve_tool(self, exposed: str) -> tuple[_Handle, str]:
         for handle in self._handles.values():
             native = handle.exposed_tools.get(exposed)
@@ -621,9 +692,9 @@ class McpManager:
             id=spec.id,
             transport=spec.transport,
             enabled=enabled,
-            status="disabled" if handle is None and not enabled else (
-                "degraded" if handle is None else handle.status
-            ),
+            status="disabled"
+            if handle is None and not enabled
+            else ("degraded" if handle is None else handle.status),
             command=spec.command or "",
             args=spec.args,
             cwd=spec.cwd or "",
@@ -642,7 +713,7 @@ class McpManager:
             resources=[] if handle is None else handle.resources,
             resource_templates=[] if handle is None else handle.templates,
             active_calls=0 if handle is None else handle.active_calls,
-            error="" if handle is None else handle.error,
+            error=self._errors.get(spec.id, "") if handle is None else handle.error,
         )
 
 
