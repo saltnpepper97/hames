@@ -127,6 +127,12 @@ function successfulFetch() {
     if (path === "/v1/runs/run-one/cancel" && init?.method === "POST") {
       return jsonResponse({ cancelled: true });
     }
+    if (path === "/v1/approvals/approval-one" && init?.method === "POST") {
+      return jsonResponse({ status: "approved" });
+    }
+    if (path === "/v1/questions/question-one" && init?.method === "POST") {
+      return jsonResponse({ answer: "Proceed" });
+    }
     return jsonResponse({ error: { message: "not found" } }, 404);
   });
 }
@@ -263,6 +269,53 @@ describe("Hames web shell", () => {
         method: "POST",
         body: JSON.stringify({ working_directory: "/work/hames" }),
       }),
+    );
+  });
+
+  it("resolves approval and question events through gateway mutations", async () => {
+    const fetchMock = successfulFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    render(() => <App />);
+    fireEvent.click(await screen.findByRole("link", { name: /Build the web foundation/ }));
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    const source = MockEventSource.instances[0]!;
+
+    source.emit(
+      "approval.requested",
+      durableEvent("approval.requested", 1, {
+        approval_id: "approval-one",
+        tool_call_id: "tool-one",
+        name: "shell",
+        arguments: { command: "cargo test" },
+        request_hash: "a".repeat(64),
+        working_directory: "/work/hames",
+        reason: "Run the test suite",
+        allow_session: true,
+      }),
+    );
+    source.emit(
+      "question.requested",
+      durableEvent("question.requested", 2, {
+        question_id: "question-one",
+        tool_call_id: "tool-two",
+        question: "Continue with the change?",
+        options: [{ label: "Proceed", description: "Continue implementation" }],
+      }),
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Allow once" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/v1/approvals/approval-one",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Proceed/ }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/v1/questions/question-one",
+        expect.objectContaining({ method: "POST" }),
+      ),
     );
   });
 

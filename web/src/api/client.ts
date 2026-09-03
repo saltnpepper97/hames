@@ -96,6 +96,29 @@ export function cancelRun(runId: string): Promise<{ cancelled: boolean }> {
   });
 }
 
+export function resolveApproval(
+  approvalId: string,
+  requestHash: string,
+  decision: "approved" | "approved_session" | "denied",
+): Promise<{ status: string }> {
+  return request<{ status: string }>(`/v1/approvals/${encodeURIComponent(approvalId)}`, {
+    method: "POST",
+    body: JSON.stringify({ decision, request_hash: requestHash }),
+  });
+}
+
+export function answerQuestion(
+  questionId: string,
+  answer:
+    | { selected_option: string; note: string; custom_answer: "" }
+    | { selected_option: null; note: ""; custom_answer: string },
+): Promise<{ answer: string }> {
+  return request<{ answer: string }>(`/v1/questions/${encodeURIComponent(questionId)}`, {
+    method: "POST",
+    body: JSON.stringify(answer),
+  });
+}
+
 export async function loadDashboard(): Promise<DashboardSnapshot> {
   const bootstrap = await request<WebBootstrap>("/_hames/v1/bootstrap");
   csrfToken = bootstrap.csrf_token;

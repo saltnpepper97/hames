@@ -96,8 +96,9 @@ semantic icon-pack contract, composable surface and conversation-renderer
 registry, durable transcript reconstruction, live assistant output, message
 submission, run cancellation, and gateway-backed session creation. A newly
 created empty session opens directly in the composer but enters sidebar history
-only after its first message. Approvals, questions, commands, settings
-contributions, and all management editors remain future gateway-backed slices.
-See
+only after its first message. Pending approvals and agent questions render as
+composable transcript cards and resolve through the existing gateway controls.
+Commands, settings contributions, and all management editors remain future
+gateway-backed slices. See
 [M10 Web Control](../implementation-plan/M10-WEB-CONTROL.md) for their acceptance
 criteria.

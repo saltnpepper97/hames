@@ -41,9 +41,12 @@ claiming unfinished controls:
 - the Chat sidebar can create a real gateway session and route into its
   composer; it joins history after the first durable message rather than
   leaving an empty sidebar row;
+- pending approval and question events render in the transcript and resolve
+  through CSRF-protected gateway mutations, including session-scoped approval,
+  option notes, and custom answers;
 
-The next vertical slice adds approvals, questions, and richer agent activity.
-Those mutations and the management capabilities listed below remain deferred.
+The next vertical slice adds richer plans, tasks, and child-agent activity.
+Those controls and the management capabilities listed below remain deferred.
 The gateway protocol and persistence schema were not changed for the web
 implementation.
 

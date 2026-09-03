@@ -56,4 +56,38 @@ describe("conversation projection", () => {
       expect.objectContaining({ kind: "assistant", content: "Answering", live: true }),
     ]);
   });
+
+  it("folds resolved approvals and answered questions into their request cards", () => {
+    const projection = projectConversation([
+      event(1, "approval.requested", {
+        approval_id: "approval-one",
+        tool_call_id: "tool-one",
+        request_hash: "a".repeat(64),
+        name: "shell",
+        reason: "Run tests",
+        arguments: { command: "cargo test" },
+        allow_session: true,
+      }),
+      event(2, "approval.resolved", {
+        approval_id: "approval-one",
+        request_hash: "a".repeat(64),
+        decision: "approved",
+      }),
+      event(3, "question.requested", {
+        question_id: "question-one",
+        tool_call_id: "tool-two",
+        question: "Continue?",
+        options: ["Yes"],
+      }),
+      event(4, "question.answered", {
+        question_id: "question-one",
+        answer: "Yes",
+      }),
+    ]);
+
+    expect(projection.nodes).toEqual([
+      expect.objectContaining({ kind: "approval", status: "approved" }),
+      expect.objectContaining({ kind: "question", status: "answered", answer: "Yes" }),
+    ]);
+  });
 });

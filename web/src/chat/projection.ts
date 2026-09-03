@@ -21,6 +21,26 @@ export type ConversationNode =
       kind: "notice";
       tone: "neutral" | "danger";
       content: string;
+    }
+  | {
+      id: string;
+      kind: "approval";
+      approvalId: string;
+      requestHash: string;
+      name: string;
+      reason: string;
+      arguments: Record<string, unknown>;
+      allowSession: boolean;
+      status: string;
+    }
+  | {
+      id: string;
+      kind: "question";
+      questionId: string;
+      question: string;
+      options: { label: string; description: string }[];
+      status: string;
+      answer?: string;
     };
 
 export interface LiveOutput {
@@ -49,6 +69,8 @@ export function projectConversation(
 ): ConversationProjection {
   const nodes: ConversationNode[] = [];
   const tools = new Map<string, Extract<ConversationNode, { kind: "tool" }>>();
+  const approvals = new Map<string, Extract<ConversationNode, { kind: "approval" }>>();
+  const questions = new Map<string, Extract<ConversationNode, { kind: "question" }>>();
   const activeRuns = new Set<string>();
 
   for (const event of [...events].sort((left, right) => left.sequence - right.sequence)) {
@@ -113,6 +135,63 @@ export function projectConversation(
       tool.status = text(event.payload, "status") || event.type.split(".")[1] || tool.status;
       tool.summary = text(event.payload, "summary");
       tool.content = text(event.payload, "content");
+      continue;
+    }
+    if (event.type === "approval.requested") {
+      const approvalId = text(event.payload, "approval_id");
+      const argumentsValue = event.payload.arguments;
+      const approval: Extract<ConversationNode, { kind: "approval" }> = {
+        id: event.id,
+        kind: "approval",
+        approvalId,
+        requestHash: text(event.payload, "request_hash"),
+        name: text(event.payload, "name") || "Tool",
+        reason: text(event.payload, "reason"),
+        arguments:
+          argumentsValue && typeof argumentsValue === "object" && !Array.isArray(argumentsValue)
+            ? (argumentsValue as Record<string, unknown>)
+            : {},
+        allowSession: event.payload.allow_session === true,
+        status: "pending",
+      };
+      approvals.set(approvalId, approval);
+      nodes.push(approval);
+      continue;
+    }
+    if (event.type === "approval.resolved") {
+      const approval = approvals.get(text(event.payload, "approval_id"));
+      if (approval) approval.status = text(event.payload, "decision") || "resolved";
+      continue;
+    }
+    if (event.type === "question.requested") {
+      const questionId = text(event.payload, "question_id");
+      const rawOptions = Array.isArray(event.payload.options) ? event.payload.options : [];
+      const question: Extract<ConversationNode, { kind: "question" }> = {
+        id: event.id,
+        kind: "question",
+        questionId,
+        question: text(event.payload, "question"),
+        options: rawOptions.flatMap((option) => {
+          if (typeof option === "string") return [{ label: option, description: "" }];
+          if (!option || typeof option !== "object" || Array.isArray(option)) return [];
+          const value = option as Record<string, unknown>;
+          return [{
+            label: typeof value.label === "string" ? value.label : "",
+            description: typeof value.description === "string" ? value.description : "",
+          }];
+        }).filter((option) => option.label),
+        status: "pending",
+      };
+      questions.set(questionId, question);
+      nodes.push(question);
+      continue;
+    }
+    if (event.type === "question.answered") {
+      const question = questions.get(text(event.payload, "question_id"));
+      if (question) {
+        question.status = "answered";
+        question.answer = text(event.payload, "answer");
+      }
       continue;
     }
     if (event.type === "run.failed" || event.type === "runtime.error") {
