@@ -75,11 +75,16 @@ a {
 }
 
 .hames-icon {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: none;
-  background: currentColor;
-  mask: var(--hames-icon-source) center / contain no-repeat;
-  -webkit-mask: var(--hames-icon-source) center / contain no-repeat;
+}
+
+.hames-icon > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .app-frame {

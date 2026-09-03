@@ -1,5 +1,5 @@
 import { createContext, useContext } from "solid-js";
-import type { JSX, ParentProps } from "solid-js";
+import type { Component, ParentProps } from "solid-js";
 
 export const semanticIconNames = [
   "brand.mark",
@@ -16,10 +16,19 @@ export const semanticIconNames = [
 
 export type SemanticIconName = (typeof semanticIconNames)[number];
 
+export interface IconGlyphProps {
+  size?: string | number;
+  strokeWidth?: string | number;
+  class?: string;
+  "aria-hidden"?: boolean;
+}
+
+export type IconGlyph = Component<IconGlyphProps>;
+
 export interface IconPackPlugin {
   readonly id: string;
   readonly label: string;
-  readonly icons: Readonly<Record<SemanticIconName, string>>;
+  readonly icons: Readonly<Record<SemanticIconName, IconGlyph>>;
 }
 
 interface IconProviderProps extends ParentProps {
@@ -47,21 +56,19 @@ export function Icon(props: IconProps) {
   const pack = useContext(IconPackContext);
   if (!pack) throw new Error("Icon rendered without an icon pack plugin");
   const size = () => `${props.size ?? 18}px`;
-  const style = (): JSX.CSSProperties => ({
-    "--hames-icon-source": `url("${pack.icons[props.name]}")`,
-    width: size(),
-    height: size(),
-  });
+  const Glyph = pack.icons[props.name];
 
   return (
     <span
       class={`hames-icon ${props.class ?? ""}`}
-      style={style()}
+      style={{ width: size(), height: size() }}
       role={props.label ? "img" : undefined}
       aria-label={props.label}
       aria-hidden={props.label ? undefined : true}
       data-icon={props.name}
       data-icon-pack={pack.id}
-    />
+    >
+      <Glyph size="100%" strokeWidth={1.7} aria-hidden={true} />
+    </span>
   );
 }

@@ -10,8 +10,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@phosphor-icons/core": "2.1.1",
     "@solidjs/router": "1.0.0",
+    "@tabler/icons-solidjs": "3.46.0",
     "solid-js": "1.9.15"
   },
   "devDependencies": {

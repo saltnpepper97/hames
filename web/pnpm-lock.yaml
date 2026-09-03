@@ -8,12 +8,12 @@ importers:
 
   .:
     dependencies:
-      '@phosphor-icons/core':
-        specifier: 2.1.1
-        version: 2.1.1
       '@solidjs/router':
         specifier: 1.0.0
         version: 1.0.0(solid-js@1.9.15)
+      '@tabler/icons-solidjs':
+        specifier: 3.46.0
+        version: 3.46.0(solid-js@1.9.15)
       solid-js:
         specifier: 1.9.15
         version: 1.9.15
@@ -209,9 +209,6 @@ packages:
   '@oxc-project/types@0.147.0':
     resolution: {integrity: sha512-IJ3s6ltHLp45S0bh7phkX+gJO7A1Wuz2EaqpAhb8WjqDwbzMiWKHhyyT42tskaWjEYXtHtVCPpnBJVT9+dcRLg==}
 
-  '@phosphor-icons/core@2.1.1':
-    resolution: {integrity: sha512-v4ARvrip4qBCImOE5rmPUylOEK4iiED9ZyKjcvzuezqMaiRASCHKcRIuvvxL/twvLpkfnEODCOJp5dM4eZilxQ==}
-
   '@rolldown/binding-android-arm-eabi@1.2.6':
     resolution: {integrity: sha512-b+jTcARdTiFLI6jB4a5XjTm0RWd6KcRfQj/I2356fxUZemiho9zQLxo0RtCuMDAyKcLo6cEltkgbQp6d1+sjjQ==}
     engines: {node: ^20.19.0 || >=22.12.0}
@@ -328,6 +325,14 @@ packages:
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
+
+  '@tabler/icons-solidjs@3.46.0':
+    resolution: {integrity: sha512-urJx0IwNCYsXMghjBCAVHpMJzCr4dWo5g/Eq9T9gxarJArJw0LksOrN4RlOXMVGzY3OTxbW4DTQx9ongQ/wyfw==}
+    peerDependencies:
+      solid-js: ^1.4.7
+
+  '@tabler/icons@3.46.0':
+    resolution: {integrity: sha512-f2RYFl3fzPwj5WO82x6en0dmkjefxEfOm16D1ByM6cj/McNiwOkL4VaPUoP9VVIrXAD9WnTSVFr70px703b//A==}
 
   '@testing-library/dom@10.4.1':
     resolution: {integrity: sha512-o4PXJQidqJl82ckFaXUeoAW+XysPLauYI43Abki5hABd853iMhitooc6znOnczgbTYmEP6U6/y1ZyKAIsvMKGg==}
@@ -1265,8 +1270,6 @@ snapshots:
 
   '@oxc-project/types@0.147.0': {}
 
-  '@phosphor-icons/core@2.1.1': {}
-
   '@rolldown/binding-android-arm-eabi@1.2.6':
     optional: true
 
@@ -1326,6 +1329,13 @@ snapshots:
       '@solidjs/router': 1.0.0(solid-js@1.9.15)
 
   '@standard-schema/spec@1.1.0': {}
+
+  '@tabler/icons-solidjs@3.46.0(solid-js@1.9.15)':
+    dependencies:
+      '@tabler/icons': 3.46.0
+      solid-js: 1.9.15
+
+  '@tabler/icons@3.46.0': {}
 
   '@testing-library/dom@10.4.1':
     dependencies:

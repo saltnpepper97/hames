@@ -100,6 +100,19 @@ describe("Hames web shell", () => {
     expect(screen.getByText("2")).toBeInTheDocument();
     expect(screen.getAllByText("Connected").length).toBeGreaterThan(0);
     expect(document.querySelectorAll('[data-icon^="nav."]')).toHaveLength(8);
+    expect(document.querySelector('[data-icon="nav.scars"]')).toHaveAttribute(
+      "data-icon-pack",
+      "tabler",
+    );
+    expect(document.querySelector('[data-icon="nav.scars"] svg')).toHaveClass(
+      "tabler-icon-bandage",
+    );
+    expect(document.querySelector('[data-icon="nav.plugins"] svg')).toHaveClass(
+      "tabler-icon-plug",
+    );
+    expect(document.querySelector('[data-icon="nav.agents"] svg')).toHaveClass(
+      "tabler-icon-robot-face",
+    );
 
     fireEvent.click(screen.getByRole("link", { name: /Build the web foundation/ }));
     expect(

@@ -41,8 +41,8 @@ plugins.
 
 The icon-pack contract lets application components request semantic names such
 as `nav.chat` or `state.empty`; the selected pack maps those names to assets.
-Phosphor Regular is the initial pack, but product components do not import
-Phosphor names directly. The surface registry composes route, icon-rail, and
+Tabler Icons is the initial pack, but product components do not import Tabler
+names directly. The surface registry composes route, icon-rail, and
 context-sidebar contributions from web plugins. The built-in areas are the first
 `hames.core` plugin rather than hard-coded shell navigation.
 
