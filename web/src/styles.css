@@ -1829,7 +1829,7 @@ a {
   z-index: 20;
   bottom: calc(100% + 0.45rem);
   left: 0;
-  min-width: 9.5rem;
+  min-width: 8rem;
   overflow: hidden;
   padding: 0.3rem;
   border: 1px solid var(--rule-soft);
