@@ -2,6 +2,8 @@ import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
 import { inspectScar } from "../api/client";
 import type { Scar, ScarInspection } from "../api/types";
 import { Button } from "../components/Button";
+import { DetailHeading } from "../components/DetailHeading";
+import { DetailStatStrip } from "../components/DetailStatStrip";
 import { Separator } from "../components/Separator";
 import { useScarDirectory } from "../scars/ScarDirectory";
 import { ScarDiagnosis } from "../scars/ScarDiagnosis";
@@ -34,25 +36,29 @@ function ScarDetail(props: { scar: Scar; inspection: ScarInspection }) {
     : "No repair attached";
   return (
     <section class="page scar-page" aria-labelledby="scar-title">
-      <header class="scar-heading">
-        <div>
-          <span class="eyebrow">Scar · {shortScarId(props.scar.id)}</span>
-          <h1 id="scar-title">{props.inspection.title}</h1>
-          <p>{protectionCopy(props.inspection)}</p>
-        </div>
-        <div class="scar-heading-badges" aria-label="Scar classification">
+      <DetailHeading
+        id="scar-title"
+        class="scar-heading"
+        eyebrow={<>Scar · {shortScarId(props.scar.id)}</>}
+        title={scarLabel(props.inspection.detection)}
+        summary={props.inspection.title}
+        context={<p>{protectionCopy(props.inspection)}</p>}
+        badges={<div class="scar-heading-badges" aria-label="Scar classification">
           <ScarStatusBadge status={props.inspection.status} />
           <ScarStatusBadge severity={props.inspection.severity} />
           <span class="scar-scope-badge">{scarLabel(props.inspection.scope)}</span>
-        </div>
-      </header>
+        </div>}
+      />
 
-      <div class="scar-stat-strip" aria-label="Scar protection status">
-        <div><span>Evidence</span><strong>{props.inspection.evidence_timeline.length}</strong></div>
-        <div><span>Clean guards</span><strong>{props.inspection.successful_guard_count}</strong></div>
-        <div><span>Regressions</span><strong>{props.inspection.regression_count}</strong></div>
-        <div><span>Repair layer</span><strong>{repair()}</strong></div>
-      </div>
+      <DetailStatStrip
+        label="Scar protection status"
+        items={[
+          { label: "Evidence", value: props.inspection.evidence_timeline.length },
+          { label: "Clean guards", value: props.inspection.successful_guard_count },
+          { label: "Regressions", value: props.inspection.regression_count },
+          { label: "Repair layer", value: repair() },
+        ]}
+      />
 
       <ScarDiagnosis inspection={props.inspection} />
 

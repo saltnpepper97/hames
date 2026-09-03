@@ -1,5 +1,7 @@
 import { For, Show } from "solid-js";
 import type { MemoryRecord, MemoryValue } from "../api/types";
+import { DetailHeading } from "../components/DetailHeading";
+import { DetailStatStrip } from "../components/DetailStatStrip";
 import { Markdown } from "../components/Markdown";
 import { Separator } from "../components/Separator";
 import { useMemoryDirectory } from "../memory/MemoryDirectory";
@@ -41,18 +43,24 @@ function MemoryDetail(props: { record: MemoryRecord }) {
   const record = () => props.record;
   return (
     <section class="page memory-page" aria-labelledby="memory-title">
-      <header class="memory-heading">
-        <span class="eyebrow">{label(record().layer)} memory</span>
-        <h1 id="memory-title">{record().summary}</h1>
-        <p>{record().subject} <span aria-hidden="true">·</span> {label(record().predicate)}</p>
-      </header>
+      <DetailHeading
+        id="memory-title"
+        class="memory-heading"
+        eyebrow={<>{label(record().layer)} memory</>}
+        title={label(record().predicate)}
+        summary={record().summary}
+        context={<code>{record().subject}</code>}
+      />
 
-      <div class="memory-stat-strip" aria-label="Memory status">
-        <div><span>Status</span><strong>{label(record().status)}</strong></div>
-        <div><span>Visibility</span><strong>{label(record().visibility)}</strong></div>
-        <div><span>Confidence</span><strong>{percentage(record().confidence)}</strong></div>
-        <div><span>Importance</span><strong>{percentage(record().importance)}</strong></div>
-      </div>
+      <DetailStatStrip
+        label="Memory status"
+        items={[
+          { label: "Status", value: label(record().status) },
+          { label: "Visibility", value: label(record().visibility) },
+          { label: "Confidence", value: percentage(record().confidence) },
+          { label: "Importance", value: percentage(record().importance) },
+        ]}
+      />
 
       <Separator label="Stored value" />
       <div class="memory-value-panel">

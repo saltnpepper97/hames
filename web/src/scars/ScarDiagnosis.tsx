@@ -1,7 +1,6 @@
 import type { ScarInspection } from "../api/types";
 import { Markdown } from "../components/Markdown";
 import { Icon } from "../shell/icons";
-import { scarLabel } from "./format";
 
 export function ScarDiagnosis(props: { inspection: ScarInspection }) {
   return (
@@ -10,7 +9,7 @@ export function ScarDiagnosis(props: { inspection: ScarInspection }) {
         <span class="scar-why-icon" aria-hidden="true"><Icon name="nav.scars" size={19} /></span>
         <div>
           <span class="eyebrow">Why this Scar exists</span>
-          <h2 id="scar-diagnosis-title">{scarLabel(props.inspection.detection)}</h2>
+          <h2 id="scar-diagnosis-title">Why it triggered</h2>
           <p>{props.inspection.explanation}</p>
         </div>
       </div>

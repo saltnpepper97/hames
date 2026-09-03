@@ -680,9 +680,11 @@ describe("Hames web shell", () => {
     expect(sidebar.querySelector('[role="separator"][aria-label="Semantic"]')).toBeInTheDocument();
     expect(sidebar.querySelector('[role="separator"][aria-label="Episodes"]')).toBeInTheDocument();
     expect(await screen.findByRole("heading", {
-      name: "The user prefers concise, complete documentation.",
+      name: "Prefers documentation style",
       level: 1,
     })).toBeInTheDocument();
+    expect(document.querySelector(".memory-heading .detail-heading-summary"))
+      .toHaveTextContent("The user prefers concise, complete documentation.");
     expect(screen.queryByText("This surface is intentionally quiet for now.")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Collapse Relationships" }));
@@ -692,9 +694,11 @@ describe("Hames web shell", () => {
 
     fireEvent.click(screen.getByRole("link", { name: /Hames Web is served by/ }));
     expect(await screen.findByRole("heading", {
-      name: "Hames Web is served by the persistent gateway.",
+      name: "Uses web runtime",
       level: 1,
     })).toBeInTheDocument();
+    expect(document.querySelector(".memory-heading .detail-heading-summary"))
+      .toHaveTextContent("Hames Web is served by the persistent gateway.");
     expect(document.querySelector(".memory-json-value")).toHaveTextContent('"framework": "SolidJS"');
     expect(screen.getByText("Workspace", { selector: "dt" })).toBeInTheDocument();
   });
@@ -731,10 +735,12 @@ describe("Hames web shell", () => {
     expect(sidebar.querySelector('[role="separator"][aria-label="History"]')).toBeInTheDocument();
 
     expect(await screen.findByRole("heading", {
-      name: "Read the milestone source before reporting status",
+      name: "Explicit correction",
       level: 1,
     })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Explicit correction" })).toBeInTheDocument();
+    expect(document.querySelector(".scar-heading .detail-heading-summary"))
+      .toHaveTextContent("Read the milestone source before reporting status");
+    expect(screen.getByRole("heading", { name: "Why it triggered" })).toBeInTheDocument();
     expect(screen.getByText(/authoritative diagnosis/)).toBeInTheDocument();
     expect(screen.getByText("correction:milestone-source")).toBeInTheDocument();
     expect(screen.getByRole("separator", { name: "Repair history" })).toBeInTheDocument();
