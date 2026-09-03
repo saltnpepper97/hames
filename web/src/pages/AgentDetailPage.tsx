@@ -46,6 +46,14 @@ function accessUpdate(all: string[], selected: Set<string>, pins?: Set<string>) 
 
 export function AgentDetailPage(props: AgentDetailPageProps) {
   const directory = useAgentDirectory();
+  const loadTarget = createMemo(
+    () => ({ agentId: props.agentId, workingDirectory: props.workingDirectory }),
+    undefined,
+    {
+      equals: (left, right) =>
+        left?.agentId === right?.agentId && left?.workingDirectory === right?.workingDirectory,
+    },
+  );
   const [agent, setAgent] = createSignal<AgentDetail>();
   const [name, setName] = createSignal("");
   const [instructions, setInstructions] = createSignal("");
@@ -64,14 +72,14 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
   const [editingAvatar, setEditingAvatar] = createSignal(false);
   let requestGeneration = 0;
 
-  const load = async (agentId: string) => {
+  const load = async (agentId: string, workingDirectory: string) => {
     const generation = ++requestGeneration;
     setLoading(true);
     setError("");
     try {
       const [nextAgent, nextCapabilities] = await Promise.all([
         getAgent(agentId),
-        getAgentCapabilities(agentId, props.workingDirectory),
+        getAgentCapabilities(agentId, workingDirectory),
       ]);
       if (generation !== requestGeneration) return;
       const allTools = withConfigured(
@@ -113,9 +121,9 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
   };
 
   createEffect(() => {
-    const agentId = props.agentId;
-    if (!props.workingDirectory) return;
-    void load(agentId);
+    const target = loadTarget();
+    if (!target.workingDirectory) return;
+    void load(target.agentId, target.workingDirectory);
   });
 
   const setMembership = (
@@ -196,7 +204,10 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
       <Show when={error()}>
         <div class="error-state">
           <div><span class="eyebrow">Agent error</span><h2>This agent could not be loaded.</h2><p>{error()}</p></div>
-          <Button onClick={() => void load(props.agentId)}>Try again</Button>
+          <Button onClick={() => {
+            const target = loadTarget();
+            void load(target.agentId, target.workingDirectory);
+          }}>Try again</Button>
         </div>
       </Show>
       <Show when={!loading() && !error() && agent()} keyed>{(current) => {
