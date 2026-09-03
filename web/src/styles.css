@@ -1848,6 +1848,7 @@ a {
   width: 100%;
   min-height: 2.25rem;
   align-items: center;
+  justify-content: flex-start;
   padding: 0.4rem 0.55rem;
   border-radius: 0.4rem;
   gap: 0.5rem;
