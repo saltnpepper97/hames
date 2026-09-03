@@ -48,6 +48,7 @@ function MessageNode(props: { node: ConversationNode }): JSX.Element {
   const node = props.node;
   return (
     <article class={`message-node ${node.kind}`}>
+      <div class="message-role">{node.kind === "user" ? "You" : "Hames"}</div>
       <div class="message-copy">{node.content}</div>
       <Show when={node.live}>
         <span class="live-cursor" aria-label="Streaming response" />

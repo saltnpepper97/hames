@@ -5,6 +5,7 @@ import { PlaceholderPage } from "../../pages/PlaceholderPage";
 import type { WebPlugin } from "../../shell/plugins";
 import { useWorkspace } from "../../shell/workspace";
 import { coreConversationNodes } from "./conversationNodes";
+import { coreComposerControls } from "./composerControls";
 
 function ChatSurface() {
   const params = useParams<{ sessionId?: string }>();
@@ -20,6 +21,7 @@ function ChatSurface() {
       selectedSession={selectedSession()}
       onRetry={() => void workspace.refresh()}
       onSessionChanged={() => void workspace.refresh()}
+      onSessionUpdated={workspace.updateSession}
     />
   );
 }
@@ -41,6 +43,7 @@ const placeholder = (
 export const coreWebPlugin = {
   id: "hames.core",
   conversationNodes: coreConversationNodes,
+  composerControls: coreComposerControls,
   surfaces: [
     {
       id: "chat",

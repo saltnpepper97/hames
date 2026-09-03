@@ -2,13 +2,19 @@ import brain from "@phosphor-icons/core/regular/brain.svg";
 import horse from "@phosphor-icons/core/regular/horse.svg";
 import robot from "@phosphor-icons/core/regular/robot.svg";
 import {
+  IconArrowUp,
   IconBandage,
+  IconChevronDown,
   IconGitBranch,
+  IconHandStop,
+  IconListCheck,
   IconMessageCircle,
   IconMessages,
   IconPlug,
   IconPlus,
   IconSettings,
+  IconSparkles,
+  IconSquare,
   IconTool,
 } from "@tabler/icons-solidjs";
 import type { Component, JSX } from "solid-js";
@@ -52,6 +58,14 @@ export const hamesIconPack = {
     "nav.plugins": tablerIcon(IconPlug),
     "nav.settings": tablerIcon(IconSettings),
     "action.newChat": tablerIcon(IconPlus),
+    "action.attach": tablerIcon(IconPlus),
+    "action.send": tablerIcon(IconArrowUp),
+    "action.stop": tablerIcon(IconSquare),
+    "action.expand": tablerIcon(IconChevronDown),
+    "mode.auto": tablerIcon(IconSparkles),
+    "mode.plan": tablerIcon(IconListCheck),
+    "mode.manual": tablerIcon(IconHandStop),
+    "thinking.level": phosphorIcon(brain),
     "state.empty": tablerIcon(IconMessages),
   },
 } satisfies IconPackPlugin;

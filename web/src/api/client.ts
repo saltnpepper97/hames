@@ -4,6 +4,7 @@ import type {
   GatewayHealth,
   MessageAccepted,
   Session,
+  SessionMode,
   WebBootstrap,
 } from "./types";
 
@@ -86,6 +87,24 @@ export function sendMessage(sessionId: string, content: string): Promise<Message
       send_now: false,
       purpose: "turn",
       paste_spans: [],
+    }),
+  });
+}
+
+export function updateSessionMode(sessionId: string, mode: SessionMode): Promise<Session> {
+  return request<Session>(`/v1/sessions/${encodeURIComponent(sessionId)}/mode`, {
+    method: "PUT",
+    body: JSON.stringify({ mode }),
+  });
+}
+
+export function updateSessionReasoning(session: Session, reasoningEffort: string): Promise<Session> {
+  return request<Session>(`/v1/sessions/${encodeURIComponent(session.id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      provider: session.provider,
+      model: session.model,
+      reasoning_effort: reasoningEffort,
     }),
   });
 }

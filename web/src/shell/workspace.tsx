@@ -21,6 +21,7 @@ interface WorkspaceContextValue {
   sessions: Accessor<DashboardSnapshot["sessions"]>;
   session: (id: string) => Session | undefined;
   createChat: () => Promise<Session>;
+  updateSession: (session: Session) => void;
   refresh: () => Promise<void>;
 }
 
@@ -94,6 +95,20 @@ export function WorkspaceProvider(props: ParentProps) {
     return created;
   };
 
+  const updateSession = (updated: Session) => {
+    setSnapshot((current) => current
+      ? {
+        ...current,
+        sessions: current.sessions.map((candidate) =>
+          candidate.id === updated.id ? updated : candidate
+        ),
+      }
+      : current);
+    setDraftSessions((current) => current.map((candidate) =>
+      candidate.id === updated.id ? updated : candidate
+    ));
+  };
+
   createEffect(() => {
     document.documentElement.dataset.connection = connection();
   });
@@ -107,6 +122,7 @@ export function WorkspaceProvider(props: ParentProps) {
         sessions: workspaceSessions,
         session,
         createChat,
+        updateSession,
         refresh,
       }}
     >

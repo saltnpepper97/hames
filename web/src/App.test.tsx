@@ -124,6 +124,12 @@ function successfulFetch() {
         202,
       );
     }
+    if (path === "/v1/sessions/session-current/mode" && init?.method === "PUT") {
+      return jsonResponse({ ...sessions[0], interaction_mode: "plan" });
+    }
+    if (path === "/v1/sessions/session-current" && init?.method === "PATCH") {
+      return jsonResponse({ ...sessions[0], interaction_mode: "plan", reasoning_effort: "medium" });
+    }
     if (path === "/v1/runs/run-one/cancel" && init?.method === "POST") {
       return jsonResponse({ cancelled: true });
     }
@@ -236,7 +242,7 @@ describe("Hames web shell", () => {
     fireEvent.input(screen.getByRole("textbox", { name: "Message Hames" }), {
       target: { value: "Follow up" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Queue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Queue message" }));
     expect(await screen.findByText("Message sent")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
       "/v1/sessions/session-current/messages",
@@ -256,6 +262,45 @@ describe("Hames web shell", () => {
         expect.objectContaining({ method: "POST" }),
       ),
     );
+  });
+
+  it("updates mode and thinking through plugin-contributed composer controls", async () => {
+    const fetchMock = successfulFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    render(() => <App />);
+    fireEvent.click(await screen.findByRole("link", { name: /Build the web foundation/ }));
+    await screen.findByRole("heading", { name: "Build the web foundation", level: 1 });
+
+    fireEvent.click(screen.getByRole("button", { name: "Interaction mode" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Plan" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/v1/sessions/session-current/mode",
+        expect.objectContaining({ method: "PUT", body: JSON.stringify({ mode: "plan" }) }),
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Thinking level" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Medium" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/v1/sessions/session-current",
+        expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({
+            provider: "codex",
+            model: "gpt-5.6-sol",
+            reasoning_effort: "medium",
+          }),
+        }),
+      ),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Interaction mode" })).toHaveTextContent("Plan");
+      expect(screen.getByRole("button", { name: "Thinking level" })).toHaveTextContent("Medium");
+    });
+    expect(screen.getByRole("button", { name: "Add attachment" })).toBeDisabled();
   });
 
   it("creates a durable chat and opens its composer", async () => {

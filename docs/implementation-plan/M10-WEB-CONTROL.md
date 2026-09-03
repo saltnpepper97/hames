@@ -16,7 +16,7 @@ claiming unfinished controls:
   Runs, Agents, Memory, Skills, Scars, Plugins, and Settings;
 - the composable web-plugin boundary provides semantic icon packs and surface
   contributions for routes, the global icon rail, contextual sidebars, and
-  conversation-node renderers;
+  conversation-node renderers, plus ordered left/right composer-control seats;
   the default icon pack uses Phosphor for the brand, agents, and memory and
   Tabler for the remaining controls, while the built-in areas form `hames.core`;
 - the responsive shell uses a global icon rail, a contextual sidebar, and the
@@ -38,6 +38,15 @@ claiming unfinished controls:
 - selecting a real session reconstructs user, reasoning, assistant, and tool
   activity from durable gateway events, follows live assistant deltas, submits
   messages, and cancels the active run without a frontend-only transcript;
+- dashboard polling preserves an unchanged session stream, replay and token
+  updates are frame-batched, and live output does not repeatedly project the
+  complete durable history;
+- the chat frame, header, transcript viewport, composer, menus, and contribution
+  seats are separate application components; the core plugin supplies the
+  attachment affordance and live mode/reasoning controls through those seats;
+- the composer uses a capped auto-growing textarea, Enter submission,
+  Shift+Enter line breaks, and inner scrolling after eight lines; its circular
+  send control continues to queue while a run is active;
 - the Chat sidebar can create a real gateway session and route into its
   composer; it joins history after the first durable message rather than
   leaving an empty sidebar row;

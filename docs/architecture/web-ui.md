@@ -48,6 +48,15 @@ icon-rail, and context-sidebar contributions from web plugins. The built-in
 areas are the first `hames.core` plugin rather than hard-coded shell navigation.
 Conversation messages, reasoning, tool activity, and notices use the same
 registry for their renderers, keeping the transcript itself composable.
+The resident chat frame is assembled from focused header, viewport, composer,
+menu, and contribution-seat components. Web plugins can add ordered controls to
+the composer's typed left and right seats without reaching into its markup or
+owning draft submission. The core plugin currently contributes the disabled
+attachment affordance and the gateway-backed interaction-mode and reasoning
+selectors. The composer retains send, queue, and cancel because those actions
+belong to its input state machine. This follows the useful contribution-seat
+shape of the DeepSeek Harness reference while keeping Hames's SolidJS and
+HTTP/SSE runtime boundary.
 
 On wide screens, the shell uses a narrow global activity rail, a contextual
 sidebar, and the active surface. Chat contributes real, open workspace sessions
@@ -72,6 +81,12 @@ reconnecting, offline, expired-session, retry, and empty states. Routes without
 a gateway-backed vertical slice state what is planned and expose no pretend
 controls.
 
+The session stream is keyed by the stable session identifier, so a periodic
+dashboard metadata refresh cannot clear and replay an unchanged conversation.
+Durable replay and transient deltas are folded at most once per animation frame,
+and live output is layered over the durable projection without rescanning the
+entire event history for every token.
+
 ## Build and packaging
 
 Run the pinned frontend toolchain with:
@@ -93,11 +108,14 @@ source changes.
 
 This slice is a secure dual-sidebar application shell, workspace chat list,
 semantic icon-pack contract, composable surface and conversation-renderer
-registry, durable transcript reconstruction, live assistant output, message
-submission, run cancellation, and gateway-backed session creation. A newly
+registry, componentized chat frame and composer-control seats, durable
+transcript reconstruction, live assistant output, message submission, run
+cancellation, and gateway-backed session creation. A newly
 created empty session opens directly in the composer but enters sidebar history
 only after its first message. Pending approvals and agent questions render as
 composable transcript cards and resolve through the existing gateway controls.
+Interaction mode and reasoning effort are real session settings, while the
+attachment control remains visibly disabled until its gateway contract exists.
 Commands, settings contributions, and all management editors remain future
 gateway-backed slices. See
 [M10 Web Control](../implementation-plan/M10-WEB-CONTROL.md) for their acceptance

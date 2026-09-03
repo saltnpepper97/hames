@@ -29,8 +29,10 @@ export interface Session {
   provider: string;
   model: string;
   reasoning_effort: string;
-  interaction_mode: string;
+  interaction_mode: SessionMode;
 }
+
+export type SessionMode = "manual" | "auto" | "plan";
 
 export interface HamesEvent {
   id: string;

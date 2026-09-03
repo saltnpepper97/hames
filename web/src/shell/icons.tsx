@@ -12,6 +12,14 @@ export const semanticIconNames = [
   "nav.plugins",
   "nav.settings",
   "action.newChat",
+  "action.attach",
+  "action.send",
+  "action.stop",
+  "action.expand",
+  "mode.auto",
+  "mode.plan",
+  "mode.manual",
+  "thinking.level",
   "state.empty",
 ] as const;
 
