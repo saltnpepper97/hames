@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { describe, expect, it, vi } from "vitest";
-import { Markdown } from "./Markdown";
+import { Markdown, MarkdownInline } from "./Markdown";
 import { MarkdownEditor } from "./MarkdownEditor";
 
 describe("Markdown", () => {
@@ -22,6 +22,20 @@ describe("Markdown", () => {
     expect(container.querySelector("script")).not.toBeInTheDocument();
     expect(container.querySelector("img")).not.toBeInTheDocument();
     expect(screen.getByText("unsafe")).not.toHaveAttribute("href");
+  });
+
+  it("repairs adjacent bold boundaries without changing code", () => {
+    const { container } = render(() => (
+      <div>
+        <MarkdownInline content={"**Analyzing...****Designing...**"} />
+        <Markdown content={"`left****right`"} />
+      </div>
+    ));
+
+    expect(container.querySelectorAll(".markdown-inline strong")).toHaveLength(2);
+    expect(container.querySelector(".markdown-inline")).toHaveTextContent("Analyzing... Designing...");
+    expect(container.querySelector(".markdown-inline")).not.toHaveTextContent("**");
+    expect(container.querySelector("code")).toHaveTextContent("left****right");
   });
 });
 

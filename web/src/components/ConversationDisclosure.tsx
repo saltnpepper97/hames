@@ -9,7 +9,7 @@ interface ConversationDisclosureProps extends ParentProps {
   class?: string;
   icon: SemanticIconName;
   title: string;
-  summary?: string;
+  summary?: JSX.Element;
   state?: ConversationDisclosureState;
   statusLabel?: string;
   open?: boolean;

@@ -10,7 +10,7 @@ import {
   ConversationDisclosure,
   type ConversationDisclosureState,
 } from "../../components/ConversationDisclosure";
-import { Markdown } from "../../components/Markdown";
+import { Markdown, MarkdownInline } from "../../components/Markdown";
 import { Icon } from "../../shell/icons";
 import type { ConversationNodeContribution } from "../../shell/plugins";
 
@@ -60,7 +60,7 @@ function ToolNode(props: { node: ConversationNode }): JSX.Element {
       class="tool-node"
       icon="conversation.tool"
       title={node.name}
-      summary={toolSummary(node)}
+      summary={<MarkdownInline content={toolSummary(node)} />}
       state={state()}
       statusLabel={toolStatusLabel(node.status, state())}
     >
@@ -90,7 +90,7 @@ function ReasoningNode(props: { node: ConversationNode }): JSX.Element {
       class="reasoning-node"
       icon="conversation.reasoning"
       title={node.live ? "Thinking" : "Reasoning"}
-      summary={reasoningSummary(node.content, Boolean(node.live))}
+      summary={<MarkdownInline content={reasoningSummary(node.content, Boolean(node.live))} />}
       state={node.live ? "running" : "idle"}
       statusLabel={node.live ? "Running" : undefined}
       open={Boolean(node.live)}
@@ -120,7 +120,6 @@ function MessageAvatar(props: {
           config={props.avatar}
           name={props.agentName}
           size={30}
-          animated={false}
         />
       </Show>
     </div>

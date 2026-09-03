@@ -369,6 +369,13 @@ describe("Hames web shell", () => {
       type: "response.text_delta",
       payload: { text: "Hi there" },
     });
+    source.emit("response.reasoning_delta", {
+      durable: false,
+      session_id: "session-current",
+      run_id: "run-one",
+      type: "response.reasoning_delta",
+      payload: { text: "**Checking transcript Markdown**" },
+    });
     source.emit("tool.requested", durableEvent("tool.requested", 3, {
       tool_call_id: "tool-one",
       name: "shell",
@@ -390,6 +397,11 @@ describe("Hames web shell", () => {
     expect(document.querySelector(".message-node.assistant .agent-avatar")).toHaveAttribute(
       "aria-label",
       "Hames avatar",
+    );
+    expect(document.querySelector(".message-node.assistant .agent-avatar")).toHaveClass("alive");
+    const reasoningNode = document.querySelector(".reasoning-node");
+    expect(reasoningNode?.querySelector(".disclosure-summary strong")).toHaveTextContent(
+      "Checking transcript Markdown",
     );
     const toolNode = screen.getByText("shell").closest(".tool-node");
     expect(toolNode).toHaveAttribute("data-state", "success");
