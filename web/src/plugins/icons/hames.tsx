@@ -1,5 +1,4 @@
 import brain from "@phosphor-icons/core/regular/brain.svg";
-import horse from "@phosphor-icons/core/regular/horse.svg";
 import robot from "@phosphor-icons/core/regular/robot.svg";
 import {
   IconArrowUp,
@@ -23,7 +22,19 @@ import {
   IconUser,
 } from "@tabler/icons-solidjs";
 import type { Component, JSX } from "solid-js";
+import hamesMark from "../../assets/hames.png";
 import type { IconGlyph, IconGlyphProps, IconPackPlugin } from "../../shell/icons";
+
+function imageIcon(source: string): IconGlyph {
+  return (props: IconGlyphProps) => (
+    <img
+      class={`brand-image-icon ${props.class ?? ""}`}
+      src={source}
+      alt=""
+      aria-hidden={props["aria-hidden"]}
+    />
+  );
+}
 
 function phosphorIcon(source: string): IconGlyph {
   return (props: IconGlyphProps) => {
@@ -53,7 +64,7 @@ export const hamesIconPack = {
   id: "hames-default",
   label: "Hames Default (Phosphor + Tabler)",
   icons: {
-    "brand.mark": phosphorIcon(horse),
+    "brand.mark": imageIcon(hamesMark),
     "nav.chat": tablerIcon(IconMessageCircle),
     "nav.runs": tablerIcon(IconGitBranch),
     "nav.agents": phosphorIcon(robot),

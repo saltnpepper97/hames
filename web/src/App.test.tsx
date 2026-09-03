@@ -540,7 +540,7 @@ describe("Hames web shell", () => {
       "phosphor-icon",
     );
     expect(document.querySelector('[data-icon="nav.memory"] .phosphor-icon')).toBeInTheDocument();
-    expect(document.querySelector('[data-icon="brand.mark"] .phosphor-icon')).toBeInTheDocument();
+    expect(document.querySelector('[data-icon="brand.mark"] .brand-image-icon')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("link", { name: /Build the web foundation/ }));
     expect(
