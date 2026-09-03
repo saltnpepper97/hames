@@ -25,7 +25,7 @@ claiming unfinished controls:
   56-pixel icon rail, with New chat and surface navigation above one scrolling
   contextual directory and Settings pinned below it; Chat lists only real
   resumable sessions scoped to the exact launch directory and routes a
-  selection into the main area; the repository identity appears only in Chat;
+  selection into the main area;
 - loading, offline, expired-session, retry, reconnect, and empty states are
   explicit; an expired process-local browser session is not reported as an
   offline gateway;
@@ -45,10 +45,21 @@ claiming unfinished controls:
 - dashboard polling preserves an unchanged session stream, replay and token
   updates are frame-batched, and live output does not repeatedly project the
   complete durable history;
-- the chat frame, header, transcript viewport, composer, menus, and contribution
-  seats are separate application components; the core plugin supplies the
+- the chat frame, compact session bar, Chat/Events tabs, transcript viewport,
+  event overview, event ledger, composer, menus, and contribution seats are
+  separate application components; the core plugin supplies the
   attachment affordance and live mode/model/reasoning controls through those
   seats;
+- the compact chat bar removes the duplicate workspace strip and passive Live
+  label, retaining the session title, meaningful loading/working state, centered
+  Chat/Events tabs, and a real agent picker;
+- the agent picker changes the durable session agent through the gateway and
+  contains a focused creation modal for a permanent slug, authority, and
+  optional `AGENT.md` instructions; newly created capsules are assigned to the
+  current chat immediately;
+- Events uses the resident durable SSE history to draw a category timeline,
+  event/run/error totals, a searchable event ledger, and an exact payload
+  inspector; the composer stays mounted across both tabs so its draft survives;
 - the model picker discovers configured providers and probes them concurrently;
   reasoning-capable model changes require an explicit supported-effort choice,
   one combined toolbar trigger displays both values and drills from a Model or

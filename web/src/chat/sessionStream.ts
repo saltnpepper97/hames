@@ -1,37 +1,11 @@
 import { createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import type { Accessor } from "solid-js";
 import { sessionEventStreamUrl } from "../api/client";
+import { sessionEventTypes } from "../api/eventTypes";
 import type { EventEnvelope, HamesEvent } from "../api/types";
 import type { LiveOutput } from "./projection";
 
 export type StreamState = "connecting" | "live" | "reconnecting";
-
-const eventTypes = [
-  "user.message",
-  "assistant.reasoning",
-  "assistant.message",
-  "run.started",
-  "run.completed",
-  "run.failed",
-  "run.cancelled",
-  "model.tool_call",
-  "tool.requested",
-  "tool.started",
-  "tool.completed",
-  "tool.failed",
-  "tool.rejected",
-  "approval.requested",
-  "approval.resolved",
-  "question.requested",
-  "question.answered",
-  "runtime.notice",
-  "runtime.error",
-  "queue.enqueued",
-  "queue.removed",
-  "response.reasoning_delta",
-  "response.text_delta",
-  "response.tool_call_delta",
-] as const;
 
 function payloadText(payload: Record<string, unknown>): string {
   return typeof payload.text === "string" ? payload.text : "";
@@ -154,7 +128,7 @@ export function createSessionStream(sessionId: Accessor<string>) {
       }
     };
 
-    for (const type of eventTypes) source.addEventListener(type, receive as EventListener);
+    for (const type of sessionEventTypes) source.addEventListener(type, receive as EventListener);
     source.onopen = () => setState("live");
     source.onerror = () => setState("reconnecting");
 

@@ -1,6 +1,7 @@
 import type {
   AgentAvatarConfig,
   AgentCapabilities,
+  AgentCreate,
   AgentDetail,
   AgentPublic,
   AgentUpdate,
@@ -139,6 +140,20 @@ export function listProviders(): Promise<ProviderProfile[]> {
 
 export function listAgents(): Promise<AgentPublic[]> {
   return request<AgentPublic[]>("/v1/agents");
+}
+
+export function createAgent(agent: AgentCreate): Promise<AgentDetail> {
+  return request<AgentDetail>("/v1/agents", {
+    method: "POST",
+    body: JSON.stringify(agent),
+  });
+}
+
+export function updateSessionAgent(sessionId: string, agentId: string): Promise<Session> {
+  return request<Session>(`/v1/sessions/${encodeURIComponent(sessionId)}/agent`, {
+    method: "PUT",
+    body: JSON.stringify({ agent_id: agentId }),
+  });
 }
 
 export function recentSession(workingDirectory: string): Promise<Session | null> {

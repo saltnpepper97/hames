@@ -31,7 +31,7 @@ export function FreshChatHero(props: FreshChatHeroProps) {
           />
         )}
       </Show>
-      <h1 id="chat-title">What should we work on?</h1>
+      <h2>What should we work on?</h2>
       <p>
         <Show when={agent()} fallback="Hames is ready when you are.">
           {(selected) => `${selected().name} is ready when you are.`}

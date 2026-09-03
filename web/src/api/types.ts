@@ -35,6 +35,7 @@ export interface Session {
 export type AgentAvatarShape = "circle" | "square" | "triangle" | "cloud" | "hex";
 export type AgentAvatarEyes = "dots" | "visor" | "pill";
 export type AgentAvatarFace = "solid" | "none";
+export type AgentAuthority = "standard" | "read_only";
 
 export interface AgentAvatarConfig {
   shape: AgentAvatarShape;
@@ -46,10 +47,16 @@ export interface AgentAvatarConfig {
 export interface AgentPublic {
   id: string;
   name: string;
-  authority: string;
+  authority: AgentAuthority;
   path: string;
   content_hash: string;
   avatar: AgentAvatarConfig | null;
+}
+
+export interface AgentCreate {
+  name: string;
+  authority: AgentAuthority;
+  source: string;
 }
 
 export interface AgentDetail extends AgentPublic {

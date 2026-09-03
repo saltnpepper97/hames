@@ -473,6 +473,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 function successfulFetch() {
   let currentSession = { ...sessions[0] };
   let currentAgent = { ...defaultAgentDetail };
+  let currentAgents = agents.map((agent) => ({ ...agent }));
   let createdSessionCount = 0;
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
@@ -481,7 +482,35 @@ function successfulFetch() {
     if (path === "/v1/sessions?has_messages=true") {
       return jsonResponse([currentSession, ...sessions.slice(1)]);
     }
-    if (path === "/v1/agents" && !init?.method) return jsonResponse(agents);
+    if (path === "/v1/agents" && !init?.method) return jsonResponse(currentAgents);
+    if (path === "/v1/agents" && init?.method === "POST") {
+      const request = JSON.parse(String(init.body)) as {
+        name: string;
+        authority: "standard" | "read_only";
+        source: string;
+      };
+      const id = /\"id\":\s*\"([^\"]+)\"/.exec(request.source)?.[1] ?? "new-agent";
+      const created: AgentDetail = {
+        id,
+        name: request.name,
+        authority: request.authority,
+        path: `/home/.hames/agents/${id}/AGENT.md`,
+        content_hash: `agent-hash-${id}`,
+        avatar: null,
+        source: request.source,
+        instructions: request.source.split("---").at(-1)?.trim() ?? "",
+        tools_allow: [],
+        tools_deny: [],
+        skills_allow: [],
+        skills_deny: [],
+        skills_pin: [],
+        delegation_allowed: false,
+        delegation_targets: [],
+        deprecated_fields: [],
+      };
+      currentAgents = [...currentAgents, created];
+      return jsonResponse(created, 201);
+    }
     if (path === "/v1/plugins" && !init?.method) return jsonResponse([installedPlugin]);
     if (path === "/v1/plugins/inspect" && init?.method === "POST") {
       return jsonResponse(inspectedPlugin);
@@ -635,6 +664,11 @@ function successfulFetch() {
       currentSession = { ...currentSession, interaction_mode: "plan" };
       return jsonResponse(currentSession);
     }
+    if (path === "/v1/sessions/session-current/agent" && init?.method === "PUT") {
+      const selection = JSON.parse(String(init.body)) as { agent_id: string };
+      currentSession = { ...currentSession, agent_id: selection.agent_id };
+      return jsonResponse(currentSession);
+    }
     if (path === "/v1/sessions/session-current" && init?.method === "PATCH") {
       const selection = JSON.parse(String(init.body)) as {
         provider: string;
@@ -703,10 +737,13 @@ describe("Hames web shell", () => {
     expect(await screen.findByRole("heading", { name: "Build the web foundation", level: 1 })).toBeInTheDocument();
     const chatSidebar = screen.getByRole("complementary", { name: "Chat sidebar" });
     expect(chatSidebar.querySelector(".context-header .eyebrow")).not.toBeInTheDocument();
-    expect(screen.getByText("Workspace")).toBeInTheDocument();
+    expect(screen.queryByText("Workspace")).not.toBeInTheDocument();
     expect(screen.queryByText("Another project")).not.toBeInTheDocument();
     expect(screen.queryByText("Closed workspace chat")).not.toBeInTheDocument();
     expect(screen.getAllByText("Connected").length).toBeGreaterThan(0);
+    expect(screen.getByRole("tab", { name: "Chat" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Events" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Agent: Hames" })).toBeInTheDocument();
     expect(document.querySelectorAll('[data-icon^="nav."]')).toHaveLength(7);
     expect(document.querySelector('[data-icon="nav.scars"]')).toHaveAttribute(
       "data-icon-pack",
@@ -740,7 +777,7 @@ describe("Hames web shell", () => {
       await screen.findByRole("heading", { name: "Build the web foundation", level: 1 }),
     ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Build the web foundation" }).parentElement)
-      .toHaveTextContent("gpt-5.6-sol");
+      .not.toHaveTextContent("gpt-5.6-sol");
     const chatScroll = document.querySelector("[data-conversation-scroll]");
     expect(chatScroll).toHaveClass("transcript-scroll");
     const chatFrame = chatScroll?.closest(".session-chat");
@@ -918,6 +955,87 @@ describe("Hames web shell", () => {
     );
   });
 
+  it("selects and creates agents from the chat bar", async () => {
+    const fetchMock = successfulFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    render(() => <App />);
+
+    const agentTrigger = await screen.findByRole("button", { name: "Agent: Hames" });
+    fireEvent.click(agentTrigger);
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /Reviewer/ }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/sessions/session-current/agent",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ agent_id: "reviewer" }),
+      }),
+    ));
+    expect(await screen.findByRole("button", { name: "Agent: Reviewer" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Agent: Reviewer" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Create agent" }));
+    expect(screen.getByRole("dialog", { name: "Create an agent" })).toBeInTheDocument();
+    fireEvent.input(screen.getByRole("textbox", { name: "Display name" }), {
+      target: { value: "Careful Reviewer" },
+    });
+    expect(screen.getByRole("textbox", { name: /Agent slug/ })).toHaveValue("careful-reviewer");
+    fireEvent.input(screen.getByRole("textbox", { name: "AGENT.md instructions" }), {
+      target: { value: "Review changes carefully." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create and use agent" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/agents",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/sessions/session-current/agent",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ agent_id: "careful-reviewer" }),
+      }),
+    ));
+    expect(await screen.findByRole("button", { name: "Agent: Careful Reviewer" }))
+      .toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Create an agent" })).not.toBeInTheDocument();
+  });
+
+  it("maps durable activity into the Events view without losing the composer draft", async () => {
+    vi.stubGlobal("fetch", successfulFetch());
+    render(() => <App />);
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    const source = MockEventSource.instances[0]!;
+    source.open();
+    source.emit("user.message", durableEvent("user.message", 1, { content: "Inspect the graph" }));
+    source.emit("run.started", durableEvent("run.started", 2, { model: "gpt-5.6-sol" }));
+    source.emit("tool.completed", durableEvent("tool.completed", 3, {
+      name: "shell",
+      status: "completed",
+      summary: "Tests passed",
+    }));
+
+    const composer = screen.getByRole("textbox", { name: "Message Hames" });
+    fireEvent.input(composer, { target: { value: "Keep this draft" } });
+    fireEvent.click(screen.getByRole("tab", { name: "Events" }));
+
+    expect(await screen.findByRole("heading", { name: "Event map" })).toBeInTheDocument();
+    const overview = screen.getByRole("region", { name: "Event map" });
+    await waitFor(() => expect(overview).toHaveTextContent("Events3"));
+    const toolMarker = screen.getByRole("button", { name: "Event 3: Tool · Completed" });
+    fireEvent.click(toolMarker);
+    expect(screen.getByRole("complementary", { name: "Selected event details" }))
+      .toHaveTextContent("Tests passed");
+    expect(screen.getByRole("textbox", { name: "Message Hames" })).toHaveValue("Keep this draft");
+
+    fireEvent.input(screen.getByRole("textbox", { name: "Filter events" }), {
+      target: { value: "shell" },
+    });
+    expect(screen.getByRole("table", { name: "Durable session events" })).toHaveTextContent("Tests passed");
+    expect(screen.getAllByRole("row")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("tab", { name: "Chat" }));
+    expect(screen.getByRole("textbox", { name: "Message Hames" })).toHaveValue("Keep this draft");
+  });
+
   it("updates mode and thinking through plugin-contributed composer controls", async () => {
     const fetchMock = successfulFetch();
     vi.stubGlobal("fetch", fetchMock);
@@ -1027,7 +1145,7 @@ describe("Hames web shell", () => {
     await waitFor(() => expect(window.location.pathname).toBe("/chat/session-new"));
     expect(await screen.findByRole("heading", { name: "What should we work on?" })).toBeInTheDocument();
     expect(document.querySelector(".session-chat")).toHaveClass("fresh");
-    expect(screen.queryByRole("heading", { name: "New chat" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "New chat" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Starting a new chat" })).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Message Hames" })).not.toBeDisabled();
     expect(fetchMock).toHaveBeenCalledWith(

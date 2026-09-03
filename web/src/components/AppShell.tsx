@@ -1,6 +1,5 @@
 import { useLocation, useNavigate } from "@solidjs/router";
 import {
-  Show,
   createEffect,
   createMemo,
   createSignal,
@@ -17,12 +16,6 @@ import { NavigationSidebar } from "./NavigationSidebar";
 
 interface AppShellProps extends ParentProps {
   registry: WebPluginRegistry;
-}
-
-function workspaceName(path: string): string {
-  if (!path) return "Waiting for gateway";
-  const parts = path.split("/").filter(Boolean);
-  return parts.at(-1) ?? path;
 }
 
 export function AppShell(props: AppShellProps) {
@@ -149,21 +142,6 @@ export function AppShell(props: AppShellProps) {
       </div>
 
       <main id="main-content" class="workspace">
-        <Show when={activeSurface().id === "chat"}>
-          <div class="workspace-bar">
-            <div>
-              <span class="eyebrow">Workspace</span>
-              <strong>{workspaceName(workspace.snapshot()?.bootstrap.working_directory ?? "")}</strong>
-            </div>
-            <Show when={workspace.snapshot()?.bootstrap.working_directory}>
-              {(path) => (
-                <span class="workspace-path" title={path()}>
-                  {path()}
-                </span>
-              )}
-            </Show>
-          </div>
-        </Show>
         <div class="page-stage" classList={{ "chat-stage": activeSurface().id === "chat" }}>
           {props.children}
         </div>

@@ -55,9 +55,10 @@ plugins. The built-in areas are the first `hames.core` plugin rather than
 hard-coded shell navigation.
 Conversation messages, reasoning, tool activity, and notices use the same
 registry for their renderers, keeping the transcript itself composable.
-The resident chat frame is assembled from focused header, viewport, composer,
-menu, and contribution-seat components. Web plugins can add ordered controls to
-the composer's typed left and right seats without reaching into its markup or
+The resident chat frame is assembled from a focused session bar, view tabs,
+viewport, event explorer, composer, menus, and contribution-seat components.
+Web plugins can add ordered controls to the composer's typed left and right
+seats without reaching into its markup or
 owning draft submission. The core plugin currently contributes the disabled
 attachment affordance, gateway-backed interaction mode, and a unified model and
 thinking selector. Beneath the fixed header, the transcript scroll viewport
@@ -95,10 +96,10 @@ one routes its gateway metadata into the main surface. Agents contributes a
 component-rendered capsule directory to the same region; selecting an avatar
 opens its editor directly in the main surface, and the bare Agents route selects
 the first real capsule. The contextual directory names the active surface
-without repeating the repository name. Workspace identity remains in the Chat
-surface bar, where it is relevant to session scope, and is omitted from
-management surfaces. Areas without a gateway-backed slice contribute no
-controls.
+without repeating the repository name. The compact Chat bar avoids a second
+workspace banner: it keeps only the session title, Chat/Events tabs, meaningful
+live-work state, and the selected agent. Areas without a gateway-backed slice
+contribute no controls.
 
 Web plugins remain presentation modules. They call authorized gateway APIs and
 subscribe to gateway events; they do not gain direct filesystem access,
@@ -114,6 +115,21 @@ mutations with browser-session CSRF protection. It renders explicit connecting,
 reconnecting, offline, expired-session, retry, and empty states. Routes without
 a gateway-backed vertical slice state what is planned and expose no pretend
 controls.
+
+Chat and Events are two views over that one resident session stream. Events
+maps every durable record into a real sequence-or-time overview grouped by
+messages, reasoning, tools, decisions, and runtime, followed by a searchable
+ledger and payload inspector. Selecting a graph marker or ledger row reveals
+the stored event without generating summaries or timing data that the gateway
+did not provide. The same composer remains mounted above both views, preserving
+its draft and controls while the user inspects execution activity.
+
+The selected session agent is changed through the gateway rather than stored in
+browser state. The chat-bar picker reads the shared live agent directory, shows
+the capsule avatars, and prevents changes during an active run. Its contained
+creation dialog writes a real `AGENT.md` capsule with a permanent slug,
+authority, and optional Markdown instructions, then assigns that capsule to the
+current chat.
 
 A newly created chat is not represented by a passive blank page or a
 session-selection prompt. The selected agent's animated avatar, a short prompt,
@@ -206,7 +222,8 @@ source changes.
 
 This slice is a secure adaptive-sidebar application shell, workspace chat list,
 semantic icon-pack contract, composable surface and conversation-renderer
-registry, componentized chat frame and composer-control seats, durable
+registry, componentized chat frame, Chat/Events views, event overview and
+ledger, chat-level agent selection and creation, composer-control seats, durable
 transcript reconstruction, live assistant output, message submission, run
 cancellation, and gateway-backed session creation. A newly
 created empty session opens directly in the centered fresh-work composer but
@@ -218,7 +235,7 @@ settings. Entering bare `/chat` creates and opens a fresh durable session rather
 than presenting a selection prompt; it remains absent from the history list
 until its first message. The Agents slice lists real capsules and supports
 atomic display-name, instructions, tool, skill, pinned-skill, and avatar edits.
-Agent creation, retirement, usage, and deeper policy summaries remain planned.
+Agent retirement, usage, and deeper policy summaries remain planned.
 The Scars slice lists real visible records and presents their complete detection,
 repair, evaluation, guard, regression, evidence, and lifecycle breakdown.
 The Plugins slice lists real installed packages and supports manifest inspection,
