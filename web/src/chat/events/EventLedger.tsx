@@ -41,8 +41,8 @@ function EventLedgerRow(props: {
         <Show when={props.groupStart}>
           <span class="event-turn-label">{props.turn > 0 ? `Turn ${props.turn}` : "Session"}</span>
         </Show>
-        <i class="event-turn-rail" aria-hidden="true" />
-        <i data-category={eventCategory(props.event.type)} />
+        <span class="event-turn-rail" aria-hidden="true" />
+        <span class="event-kind-dot" data-category={eventCategory(props.event.type)} aria-hidden="true" />
         <strong>{eventTypeLabel(props.event.type)}</strong>
       </span>
       <span role="cell" class="event-summary">

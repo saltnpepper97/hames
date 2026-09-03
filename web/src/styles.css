@@ -2098,14 +2098,6 @@ a {
   gap: 0.4rem;
 }
 
-.event-kind i {
-  width: 0.42rem;
-  height: 0.42rem;
-  flex: none;
-  border-radius: 50%;
-  background: var(--event-color);
-}
-
 .event-kind strong,
 .event-summary {
   overflow: hidden;
@@ -2547,7 +2539,7 @@ a {
   gap: 0.35rem;
 }
 
-.events-view .event-kind > i:not(.event-turn-rail) {
+.events-view .event-kind-dot {
   width: 0.35rem;
   height: 0.35rem;
   flex: none;

@@ -36,6 +36,10 @@ describe("EventLedger", () => {
     const viewport = document.querySelector<HTMLElement>(".event-ledger-viewport")!;
     Object.defineProperty(viewport, "clientHeight", { configurable: true, value: 300 });
     expect(document.querySelectorAll(".event-ledger-row").length).toBeLessThanOrEqual(21);
+    expect(document.querySelectorAll(".event-kind-dot")).toHaveLength(
+      document.querySelectorAll(".event-ledger-row").length,
+    );
+    expect(document.querySelectorAll(".event-kind > i")).toHaveLength(0);
 
     viewport.scrollTop = 15_000;
     fireEvent.scroll(viewport);
