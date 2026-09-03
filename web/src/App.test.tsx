@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import type { AgentDetail, AgentPublic, MemoryRecord, SkillCatalogEntry, SkillVersion } from "./api/types";
+import type { AgentDetail, AgentPublic, MemoryRecord, Scar, ScarInspection, SkillCatalogEntry, SkillVersion } from "./api/types";
 
 class MockEventSource {
   static instances: MockEventSource[] = [];
@@ -208,6 +208,115 @@ const memories: MemoryRecord[] = [
   },
 ];
 
+const scars: Scar[] = [
+  {
+    id: "scar-one",
+    title: "Read the milestone source before reporting status",
+    scope: "workspace",
+    status: "guarded",
+    severity: "high",
+    failure_signature: "correction:milestone-source",
+    description: "The assistant reported a milestone from memory instead of reading the project source.",
+    trigger: {
+      workspace_paths: ["/work/hames"],
+      agent_ids: ["default"],
+      intent_labels: ["project status"],
+      entity_ids: [],
+      tool_error_signatures: [],
+      skill_ids: [],
+      context_signatures: [],
+    },
+    expected_behavior: "Read the milestone document before stating the current project status.",
+    detection: "explicit_correction",
+    owner_agent_id: "default",
+    workspace_path: "/work/hames",
+    source_session_id: "session-current",
+    source_run_id: "run-one",
+    repair_layer: "semantic_memory",
+    repair_reference: "memory-one",
+    last_triggered_at: "2026-09-02T18:05:00Z",
+    successful_guard_count: 2,
+    regression_count: 0,
+    dismissed_reason: null,
+    created_at: "2026-09-02T18:05:00Z",
+    updated_at: "2026-09-02T18:06:00Z",
+    evidence_event_ids: ["event-correction"],
+  },
+];
+
+const scarInspection: ScarInspection = {
+  scar_id: "scar-one",
+  session_id: "session-current",
+  title: scars[0]!.title,
+  scope: "workspace",
+  status: "guarded",
+  severity: "high",
+  detection: "explicit_correction",
+  failure_signature: scars[0]!.failure_signature,
+  description: scars[0]!.description,
+  expected_behavior: scars[0]!.expected_behavior,
+  trigger: scars[0]!.trigger,
+  repair_layer: "semantic_memory",
+  repair_reference: "memory-one",
+  successful_guard_count: 2,
+  regression_count: 0,
+  created_at: "2026-09-02T18:05:00Z",
+  updated_at: "2026-09-02T18:06:00Z",
+  evidence_timeline: [{
+    sequence: 31,
+    event_id: "event-correction",
+    session_id: "session-current",
+    run_id: "run-one",
+    created_at: "2026-09-02T18:05:00Z",
+    event_type: "user.message",
+    channel: "user",
+    summary: "The milestone source was corrected",
+    payload: { content: "Read docs/plan.md before answering." },
+  }],
+  transitions: [
+    {
+      event_id: "event-scar-recorded",
+      event_type: "scar.recorded",
+      previous_status: null,
+      status: "candidate",
+      reason: "",
+      created_at: "2026-09-02T18:05:00Z",
+    },
+    {
+      event_id: "event-scar-guarded",
+      event_type: "scar.guarded",
+      previous_status: "repair_proposed",
+      status: "guarded",
+      reason: "Memory repair promoted",
+      created_at: "2026-09-02T18:06:00Z",
+    },
+  ],
+  repairs: [{
+    id: "repair-one",
+    version: 1,
+    repair_layer: "semantic_memory",
+    risk: "low",
+    required_authority: "memory_write",
+    status: "promoted",
+    previous_scar_status: "open",
+    rationale: "The correction identifies a stable project fact.",
+    proposal: { kind: "memory_record", summary: "Read the milestone source" },
+    created_by: "automatic",
+    created_at: "2026-09-02T18:05:30Z",
+    decided_at: "2026-09-02T18:06:00Z",
+  }],
+  evaluations: [{
+    event_id: "event-evaluation",
+    repair_id: "repair-one",
+    kind: "deterministic",
+    status: "passed",
+    score: 1,
+    report: { evidence_available: true },
+    created_at: "2026-09-02T18:05:45Z",
+  }],
+  explanation: "The user explicitly corrected Hames; the user's statement is the authoritative diagnosis.",
+};
+
 const skills: SkillCatalogEntry[] = [
   {
     id: "skill-managed",
@@ -370,6 +479,12 @@ function successfulFetch() {
       const offset = Number(parameters.get("offset") ?? 0);
       const limit = Number(parameters.get("limit") ?? 200);
       return jsonResponse(memories.filter((memory) => memory.layer === layer).slice(offset, offset + limit));
+    }
+    if (path === "/v1/sessions/session-current/scars?limit=200") {
+      return jsonResponse(scars);
+    }
+    if (path === "/v1/sessions/session-current/scars/scar-one/inspection") {
+      return jsonResponse(scarInspection);
     }
     if (path === "/v1/sessions/session-current/skills/available") {
       return jsonResponse(skills);
@@ -603,6 +718,32 @@ describe("Hames web shell", () => {
     fireEvent.click(screen.getByRole("link", { name: /Review Patterns/ }));
     expect(await screen.findByRole("heading", { name: "Review Patterns", level: 1 })).toBeInTheDocument();
     expect(screen.getByText("/home/.hames/skills/packages/review-patterns")).toBeInTheDocument();
+  });
+
+  it("explains a Scar through its real repair and evidence lineage", async () => {
+    vi.stubGlobal("fetch", successfulFetch());
+    render(() => <App />);
+
+    fireEvent.click(await screen.findByRole("link", { name: "Scars" }));
+    const sidebar = await screen.findByRole("complementary", { name: "Scars sidebar" });
+    expect(await screen.findByRole("separator", { name: "Needs attention" })).toBeInTheDocument();
+    expect(sidebar.querySelector('[role="separator"][aria-label="Guarded"]')).toBeInTheDocument();
+    expect(sidebar.querySelector('[role="separator"][aria-label="History"]')).toBeInTheDocument();
+
+    expect(await screen.findByRole("heading", {
+      name: "Read the milestone source before reporting status",
+      level: 1,
+    })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Explicit correction" })).toBeInTheDocument();
+    expect(screen.getByText(/authoritative diagnosis/)).toBeInTheDocument();
+    expect(screen.getByText("correction:milestone-source")).toBeInTheDocument();
+    expect(screen.getByRole("separator", { name: "Repair history" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Semantic memory" })).toBeInTheDocument();
+    expect(screen.getByText("The milestone source was corrected")).toBeInTheDocument();
+    expect(screen.queryByText("This surface is intentionally quiet for now.")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse Guarded" }));
+    expect(screen.queryByRole("link", { name: /Read the milestone source/ })).not.toBeInTheDocument();
   });
 
   it("replays live gateway events and submits messages", async () => {

@@ -3,6 +3,7 @@ import type { ParentProps } from "solid-js";
 import { AgentDirectoryProvider } from "./agents/AgentDirectory";
 import { MemoryDirectoryProvider } from "./memory/MemoryDirectory";
 import { SkillDirectoryProvider } from "./skills/SkillDirectory";
+import { ScarDirectoryProvider } from "./scars/ScarDirectory";
 import { ThemeProvider } from "./theme/Theme";
 import { AppShell } from "./components/AppShell";
 import { coreWebPlugin } from "./plugins/core";
@@ -21,7 +22,9 @@ function WorkspaceRoot(props: ParentProps) {
         <AgentDirectoryProvider>
           <MemoryDirectoryProvider>
             <SkillDirectoryProvider>
-              <AppShell registry={registry}>{props.children}</AppShell>
+              <ScarDirectoryProvider>
+                <AppShell registry={registry}>{props.children}</AppShell>
+              </ScarDirectoryProvider>
             </SkillDirectoryProvider>
           </MemoryDirectoryProvider>
         </AgentDirectoryProvider>

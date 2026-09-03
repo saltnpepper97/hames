@@ -227,17 +227,17 @@ Approval calls backend promotion logic, not browser-side file writes.
 
 Implement:
 
-- Scar list by state/severity/project;
+- Scar list by state/severity/project; **Implemented for visible workspace Scars**
 - candidate confirmation/dismissal/deletion;
-- evidence timeline;
-- failure signature;
-- trigger explanation;
-- repair routing;
-- proposed repair diff;
-- evaluation/replay result;
+- evidence timeline; **Implemented**
+- failure signature; **Implemented**
+- trigger explanation; **Implemented**
+- repair routing; **Implemented as an inspection view**
+- proposed repair diff; **Implemented as structured proposal detail**
+- evaluation/replay result; **Implemented for recorded evaluations**
 - approve/reject when required;
-- guarded success count;
-- healed/regressed history.
+- guarded success count; **Implemented**
+- healed/regressed history. **Implemented through lifecycle transitions**
 
 This screen should make self-correction understandable to a human.
 

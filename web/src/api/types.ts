@@ -161,9 +161,10 @@ export interface AgentUpdate {
 export type MemoryLayer = "relationship" | "semantic" | "episodic";
 export type MemoryStatus = "proposed" | "active" | "rejected" | "superseded" | "retracted";
 export type MemoryVisibility = "global" | "agent_private" | "workspace" | "session_team";
-export type MemoryValue = null | boolean | number | string | MemoryValue[] | {
-  [key: string]: MemoryValue;
+export type JsonValue = null | boolean | number | string | JsonValue[] | {
+  [key: string]: JsonValue;
 };
+export type MemoryValue = JsonValue;
 
 export interface MemoryAnchor {
   kind: string;
@@ -194,6 +195,117 @@ export interface MemoryRecord {
   updated_at: string;
   anchors: MemoryAnchor[];
   provenance_event_ids: string[];
+}
+
+export type ScarStatus = "candidate" | "open" | "repair_proposed" | "guarded" | "healed" | "regressed" | "dismissed";
+export type ScarSeverity = "low" | "medium" | "high";
+export type ScarScope = "global" | "workspace" | "agent";
+
+export interface ScarTrigger {
+  workspace_paths: string[];
+  agent_ids: string[];
+  intent_labels: string[];
+  entity_ids: string[];
+  tool_error_signatures: string[];
+  skill_ids: string[];
+  context_signatures: string[];
+}
+
+export interface Scar {
+  id: string;
+  title: string;
+  scope: ScarScope;
+  status: ScarStatus;
+  severity: ScarSeverity;
+  failure_signature: string;
+  description: string;
+  trigger: ScarTrigger;
+  expected_behavior: string;
+  detection: string;
+  owner_agent_id: string | null;
+  workspace_path: string | null;
+  source_session_id: string;
+  source_run_id: string | null;
+  repair_layer: string | null;
+  repair_reference: string | null;
+  last_triggered_at: string;
+  successful_guard_count: number;
+  regression_count: number;
+  dismissed_reason: string | null;
+  created_at: string;
+  updated_at: string;
+  evidence_event_ids: string[];
+}
+
+export interface TimelineItem {
+  sequence: number;
+  event_id: string;
+  session_id: string;
+  run_id: string | null;
+  created_at: string;
+  event_type: string;
+  channel: string;
+  summary: string;
+  payload: Record<string, JsonValue>;
+}
+
+export interface ScarTransition {
+  event_id: string;
+  event_type: string;
+  previous_status: string | null;
+  status: string;
+  reason: string;
+  created_at: string;
+}
+
+export interface ScarRepair {
+  id: string;
+  version: number;
+  repair_layer: string;
+  risk: string;
+  required_authority: string;
+  status: string;
+  previous_scar_status: string;
+  rationale: string;
+  proposal: Record<string, JsonValue>;
+  created_by: string;
+  created_at: string;
+  decided_at: string | null;
+}
+
+export interface ScarEvaluation {
+  event_id: string;
+  repair_id: string;
+  kind: string;
+  status: string;
+  score: number;
+  report: Record<string, JsonValue>;
+  created_at: string;
+}
+
+export interface ScarInspection {
+  scar_id: string;
+  session_id: string;
+  title: string;
+  scope: ScarScope;
+  status: ScarStatus;
+  severity: ScarSeverity;
+  detection: string;
+  failure_signature: string;
+  description: string;
+  expected_behavior: string;
+  trigger: ScarTrigger;
+  repair_layer: string | null;
+  repair_reference: string | null;
+  successful_guard_count: number;
+  regression_count: number;
+  created_at: string;
+  updated_at: string;
+  evidence_timeline: TimelineItem[];
+  transitions: ScarTransition[];
+  repairs: ScarRepair[];
+  evaluations: ScarEvaluation[];
+  explanation: string;
 }
 
 export type SessionMode = "manual" | "auto" | "plan";

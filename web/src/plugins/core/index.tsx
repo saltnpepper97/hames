@@ -9,12 +9,15 @@ import { AgentDetailPage } from "../../pages/AgentDetailPage";
 import { MemoryPage } from "../../pages/MemoryPage";
 import { SkillPage } from "../../pages/SkillPage";
 import { SettingsPage } from "../../pages/SettingsPage";
+import { ScarPage } from "../../pages/ScarPage";
 import { PlaceholderPage } from "../../pages/PlaceholderPage";
 import { Button } from "../../components/Button";
 import type { WebPlugin } from "../../shell/plugins";
 import { useWorkspace } from "../../shell/workspace";
 import { SkillSidebar } from "../../skills/SkillSidebar";
 import { useSkillDirectory } from "../../skills/SkillDirectory";
+import { ScarSidebar } from "../../scars/ScarSidebar";
+import { useScarDirectory } from "../../scars/ScarDirectory";
 import { coreConversationNodes } from "./conversationNodes";
 import { coreComposerControls } from "./composerControls";
 
@@ -206,6 +209,52 @@ function SkillSurface() {
   );
 }
 
+function ScarSurface() {
+  const params = useParams<{ scarId?: string }>();
+  const navigate = useNavigate();
+  const directory = useScarDirectory();
+  const workspace = useWorkspace();
+
+  createEffect(() => {
+    workspace.snapshot()?.bootstrap.working_directory;
+    void directory.ensureLoaded();
+  });
+  createEffect(() => {
+    if (params.scarId || !directory.loaded()) return;
+    const first = directory.scars()[0];
+    if (first) navigate(`/scars/${encodeURIComponent(first.id)}`, { replace: true });
+  });
+
+  return (
+    <Show
+      when={params.scarId}
+      keyed
+      fallback={
+        <section class="page scar-route-state" aria-live="polite">
+          <Show when={directory.loading() || !directory.loaded()}>
+            <div class="scar-detail-loading"><span /><span /><span /></div>
+          </Show>
+          <Show when={directory.error()}>
+            <div class="error-state">
+              <div><span class="eyebrow">Scar error</span><h2>Scars could not be loaded.</h2><p>{directory.error()}</p></div>
+              <Button onClick={() => void directory.refresh()}>Try again</Button>
+            </div>
+          </Show>
+          <Show when={directory.loaded() && !directory.error() && directory.scars().length === 0}>
+            <div class="scar-route-empty">
+              <span class="eyebrow">Scars</span>
+              <h1>No Scars in this workspace.</h1>
+              <p>Meaningful corrections and recurring failures will appear here with their evidence and repair history.</p>
+            </div>
+          </Show>
+        </section>
+      }
+    >
+      {(scarId) => <ScarPage scarId={scarId} />}
+    </Show>
+  );
+}
+
 const placeholder = (
   eyebrow: string,
   title: string,
@@ -264,16 +313,11 @@ export const coreWebPlugin = {
     {
       id: "scars",
       path: "/scars",
-      route: "/scars",
+      route: ["/scars", "/scars/:scarId"],
       label: "Scars",
       icon: "nav.scars",
-      component: placeholder(
-        "Evolution",
-        "Scars",
-        "Understand corrections, repair candidates, guards, and regressions.",
-        "Evidence and repair lineage will be reconstructed from durable gateway events.",
-      ),
-      sidebar: { kind: "section", description: "Corrections and repair" },
+      component: ScarSurface,
+      sidebar: { kind: "component", component: ScarSidebar },
     },
     {
       id: "plugins",

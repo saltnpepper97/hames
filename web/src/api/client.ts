@@ -12,6 +12,8 @@ import type {
   MemoryRecord,
   ProviderProbe,
   ProviderProfile,
+  Scar,
+  ScarInspection,
   Session,
   SessionMode,
   SkillCatalogEntry,
@@ -161,6 +163,18 @@ export function listMemories(
 export function listAvailableSkills(sessionId: string): Promise<SkillCatalogEntry[]> {
   return request<SkillCatalogEntry[]>(
     `/v1/sessions/${encodeURIComponent(sessionId)}/skills/available`,
+  );
+}
+
+export function listScars(sessionId: string): Promise<Scar[]> {
+  return request<Scar[]>(
+    `/v1/sessions/${encodeURIComponent(sessionId)}/scars?limit=200`,
+  );
+}
+
+export function inspectScar(sessionId: string, scarId: string): Promise<ScarInspection> {
+  return request<ScarInspection>(
+    `/v1/sessions/${encodeURIComponent(sessionId)}/scars/${encodeURIComponent(scarId)}/inspection`,
   );
 }
 

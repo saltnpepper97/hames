@@ -149,6 +149,15 @@ in browser storage, and updates the browser color scheme and theme color. A
 small same-origin initializer applies the saved mode before the application
 bundle paints without weakening the gateway's script policy.
 
+The Scars surface reads visible workspace Scars through an existing session and
+derives each detail view from the gateway's ledger-backed inspection endpoint.
+Its collapsible sidebar separates records needing attention, active guards, and
+history. The main surface leads with the diagnosis and expected behavior, then
+progressively exposes trigger conditions, repair proposals and evaluations,
+lifecycle transitions, source evidence, and record provenance. Proposal and
+event payloads remain available in disclosures rather than overwhelming the
+human explanation.
+
 ## Build and packaging
 
 Run the pinned frontend toolchain with:
@@ -182,6 +191,8 @@ than presenting a selection prompt; it remains absent from the history list
 until its first message. The Agents slice lists real capsules and supports
 atomic display-name, instructions, tool, skill, pinned-skill, and avatar edits.
 Agent creation, retirement, usage, and deeper policy summaries remain planned.
+The Scars slice lists real visible records and presents their complete detection,
+repair, evaluation, guard, regression, evidence, and lifecycle breakdown.
 The attachment control remains visibly disabled until its gateway contract exists.
 The browser-local light/dark appearance setting is functional. Commands,
 gateway-backed settings contributions, and the remaining management editors
