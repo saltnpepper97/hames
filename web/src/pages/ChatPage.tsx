@@ -2,7 +2,7 @@ import { Match, Show, Switch } from "solid-js";
 import type { ConnectionState } from "../components/ConnectionStatus";
 import type { Session } from "../api/types";
 import { SessionChat } from "../chat/SessionChat";
-import { Icon } from "../shell/icons";
+import { PendingChatFrame } from "../chat/components/PendingChatFrame";
 import { Button } from "../components/Button";
 
 interface ChatPageProps {
@@ -61,20 +61,13 @@ export function ChatPage(props: ChatPageProps) {
             )}
           </Match>
           <Match when={!props.selectedSession}>
-            <div class="conversation-empty">
-              <Icon name="state.empty" size={24} />
-              <Show
-                when={props.startError}
-                fallback={<>
-                  <h1 id="chat-title">Starting a new chat</h1>
-                  <p>Preparing a fresh workspace session…</p>
-                </>}
-              >
+            <Show when={props.startError} fallback={<PendingChatFrame />}>
+              <div class="conversation-empty">
                 <h1 id="chat-title">New chat could not start</h1>
                 <p>{props.startError}</p>
                 <Button loading={props.startingSession} onClick={props.onStartFresh}>Try again</Button>
-              </Show>
-            </div>
+              </div>
+            </Show>
           </Match>
         </Switch>
       </Show>

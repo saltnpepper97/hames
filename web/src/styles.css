@@ -1129,6 +1129,14 @@ a {
   font-size: 0.68rem;
 }
 
+.pending-chat-header {
+  color: var(--text-soft);
+}
+
+.pending-composer {
+  opacity: 0.72;
+}
+
 .stream-state {
   flex: none;
   color: var(--muted);

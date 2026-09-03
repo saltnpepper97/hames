@@ -438,6 +438,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 function successfulFetch() {
   let currentSession = { ...sessions[0] };
   let currentAgent = { ...defaultAgentDetail };
+  let createdSessionCount = 0;
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     if (path === "/_hames/v1/bootstrap") return jsonResponse(bootstrap);
@@ -558,7 +559,11 @@ function successfulFetch() {
       });
     }
     if (path === "/v1/sessions" && init?.method === "POST") {
-      return jsonResponse(createdSession, 201);
+      createdSessionCount += 1;
+      return jsonResponse({
+        ...createdSession,
+        id: createdSessionCount === 1 ? "session-new" : `session-new-${createdSessionCount}`,
+      }, 201);
     }
     if (path === "/v1/sessions/session-current/messages" && init?.method === "POST") {
       return jsonResponse(
@@ -954,9 +959,10 @@ describe("Hames web shell", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(() => <App />);
 
+    await waitFor(() => expect(window.location.pathname).toBe("/chat/session-new"));
     expect(await screen.findByRole("heading", { name: "New chat" })).toBeInTheDocument();
-    expect(window.location.pathname).toBe("/chat/session-new");
-    expect(screen.getByRole("textbox", { name: "Message Hames" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Starting a new chat" })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Message Hames" })).not.toBeDisabled();
     expect(fetchMock).toHaveBeenCalledWith(
       "/v1/sessions",
       expect.objectContaining({
@@ -971,9 +977,9 @@ describe("Hames web shell", () => {
         url === "/v1/sessions" && init?.method === "POST"
       );
       expect(createCalls).toHaveLength(2);
-      expect(window.location.pathname).toBe("/chat/session-new");
+      expect(window.location.pathname).toBe("/chat/session-new-2");
     });
-    expect(await screen.findByRole("textbox", { name: "Message Hames" })).toBeInTheDocument();
+    expect(await screen.findByRole("textbox", { name: "Message Hames" })).not.toBeDisabled();
   });
 
   it("resolves approval and question events through gateway mutations", async () => {

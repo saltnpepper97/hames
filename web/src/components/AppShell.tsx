@@ -137,6 +137,19 @@ export function AppShell(props: AppShellProps) {
                   end={!Array.isArray(surface.route)}
                   aria-label={surface.label}
                   title={surface.label}
+                  onClick={(event) => {
+                    if (
+                      surface.id !== "chat" ||
+                      workspace.connection() !== "connected" ||
+                      event.button !== 0 ||
+                      event.metaKey ||
+                      event.ctrlKey ||
+                      event.shiftKey ||
+                      event.altKey
+                    ) return;
+                    event.preventDefault();
+                    void createChat();
+                  }}
                 >
                   <Icon name={surface.icon} size={20} />
                 </A>
