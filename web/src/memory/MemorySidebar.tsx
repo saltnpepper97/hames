@@ -2,7 +2,7 @@ import { A } from "@solidjs/router";
 import { For, Show, createEffect } from "solid-js";
 import type { MemoryLayer } from "../api/types";
 import { Button } from "../components/Button";
-import { Separator } from "../components/Separator";
+import { CollapsibleSidebarGroup } from "../components/CollapsibleSidebarGroup";
 import { useWorkspace } from "../shell/workspace";
 import { useMemoryDirectory } from "./MemoryDirectory";
 
@@ -41,12 +41,11 @@ export function MemorySidebar() {
           <For each={groups}>{(group) => {
             const records = () => directory.records().filter((record) => record.layer === group.layer);
             return (
-              <section class="memory-sidebar-group">
-                <Separator
+              <CollapsibleSidebarGroup
                   label={group.label}
                   meta={<span>{records().length}</span>}
-                  class="memory-sidebar-separator"
-                />
+                  class="memory-sidebar-group"
+              >
                 <For each={records()} fallback={<p class="memory-group-empty">No active records</p>}>
                   {(record) => (
                     <A
@@ -60,7 +59,7 @@ export function MemorySidebar() {
                     </A>
                   )}
                 </For>
-              </section>
+              </CollapsibleSidebarGroup>
             );
           }}</For>
         </nav>

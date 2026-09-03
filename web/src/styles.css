@@ -387,6 +387,26 @@ a {
   letter-spacing: 0;
 }
 
+.ui-separator-toggle {
+  min-height: 1.5rem;
+  padding: 0;
+  color: inherit;
+  gap: 0.35rem;
+}
+
+.ui-separator-toggle:hover:not(:disabled) {
+  background: transparent;
+  color: var(--text-soft);
+}
+
+.ui-separator-toggle .hames-icon {
+  transition: transform 140ms ease;
+}
+
+.ui-separator-toggle[aria-expanded="false"] .hames-icon {
+  transform: rotate(-90deg);
+}
+
 .conversation-list {
   min-height: 0;
   flex: 1;
@@ -1918,12 +1938,17 @@ a {
   gap: 0.12rem;
 }
 
-.memory-sidebar-separator {
+.collapsible-sidebar-separator {
   position: sticky;
   z-index: 2;
   top: 0;
   padding: 0.85rem 0.55rem 0.45rem;
   background: var(--surface);
+}
+
+.collapsible-sidebar-content {
+  display: grid;
+  gap: 0.12rem;
 }
 
 .memory-sidebar-item {

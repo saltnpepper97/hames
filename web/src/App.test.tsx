@@ -450,6 +450,11 @@ describe("Hames web shell", () => {
     })).toBeInTheDocument();
     expect(screen.queryByText("This surface is intentionally quiet for now.")).not.toBeInTheDocument();
 
+    fireEvent.click(screen.getByRole("button", { name: "Collapse Relationships" }));
+    expect(screen.queryByRole("link", { name: /The user prefers concise/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Expand Relationships" }));
+    expect(screen.getByRole("link", { name: /The user prefers concise/ })).toBeInTheDocument();
+
     fireEvent.click(screen.getByRole("link", { name: /Hames Web is served by/ }));
     expect(await screen.findByRole("heading", {
       name: "Hames Web is served by the persistent gateway.",
