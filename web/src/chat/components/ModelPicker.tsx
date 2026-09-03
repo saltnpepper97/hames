@@ -93,7 +93,10 @@ export function ModelPicker(props: ModelPickerProps) {
     setFailures([]);
     try {
       const profiles = await listProviders();
-      const results = await Promise.all(profiles.map(async (profile) => {
+      const connectedProfiles = profiles.filter((profile) =>
+        profile.id === props.session.provider || Boolean(profile.configured_model.trim())
+      );
+      const results = await Promise.all(connectedProfiles.map(async (profile) => {
         try {
           const probe = await probeProvider(profile.id);
           if (!probe.reachable) {

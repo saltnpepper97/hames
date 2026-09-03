@@ -513,6 +513,14 @@ function successfulFetch() {
           default_reasoning_effort: "medium",
           supported_reasoning_efforts: ["low", "medium", "high"],
         },
+        {
+          id: "ollama-idle",
+          adapter: "ollama",
+          endpoint: "http://127.0.0.1:11435",
+          configured_model: "",
+          default_reasoning_effort: "",
+          supported_reasoning_efforts: [],
+        },
       ]);
     }
     if (path === "/v1/providers/codex/probe" && init?.method === "POST") {
@@ -910,6 +918,8 @@ describe("Hames web shell", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: /Model/ }));
     expect(document.querySelector(".model-picker-popover")).toHaveAttribute("data-layout", "models");
     fireEvent.click(await screen.findByRole("menuitemradio", { name: /qwen3:8b/ }));
+    expect(fetchMock.mock.calls.some(([url]) => url === "/v1/providers/ollama-idle/probe"))
+      .toBe(false);
 
     expect(screen.getByText("Choose thinking to finish")).toBeInTheDocument();
     expect(document.querySelector(".model-picker-popover")).toHaveAttribute("data-layout", "effort");
