@@ -10,6 +10,8 @@ import type {
   MessageAccepted,
   MemoryLayer,
   MemoryRecord,
+  PluginInspectView,
+  PluginView,
   ProviderProbe,
   ProviderProfile,
   Scar,
@@ -170,6 +172,42 @@ export function listScars(sessionId: string): Promise<Scar[]> {
   return request<Scar[]>(
     `/v1/sessions/${encodeURIComponent(sessionId)}/scars?limit=200`,
   );
+}
+
+export function listPlugins(): Promise<PluginView[]> {
+  return request<PluginView[]>("/v1/plugins");
+}
+
+export function inspectPlugin(path: string): Promise<PluginInspectView> {
+  return request<PluginInspectView>("/v1/plugins/inspect", {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  });
+}
+
+export function installPlugin(path: string): Promise<PluginView> {
+  return request<PluginView>("/v1/plugins/install", {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  });
+}
+
+export function enablePlugin(pluginId: string): Promise<PluginView> {
+  return request<PluginView>(`/v1/plugins/${encodeURIComponent(pluginId)}/enable`, {
+    method: "POST",
+  });
+}
+
+export function disablePlugin(pluginId: string): Promise<PluginView> {
+  return request<PluginView>(`/v1/plugins/${encodeURIComponent(pluginId)}/disable`, {
+    method: "POST",
+  });
+}
+
+export function removePlugin(pluginId: string): Promise<{ removed: boolean }> {
+  return request<{ removed: boolean }>(`/v1/plugins/${encodeURIComponent(pluginId)}`, {
+    method: "DELETE",
+  });
 }
 
 export function inspectScar(sessionId: string, scarId: string): Promise<ScarInspection> {

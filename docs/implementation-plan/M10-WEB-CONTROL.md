@@ -1,8 +1,8 @@
 # M10 — Rich Control Surfaces: Ratatui and Web
 
 The terminal slice is implemented and documented in [M10-TUI.md](M10-TUI.md).
-The web foundation and first functional chat slice are now implemented; this
-document remains the plan for approvals and the remaining rich-management views.
+The web foundation and initial functional management slices are now implemented;
+this document remains the plan for approvals and the remaining rich-management views.
 
 ## Implemented foundation
 
@@ -81,6 +81,14 @@ claiming unfinished controls:
   separates Hames-created, global `~/.agents`, and shipped built-in packages in
   collapsible groups, and renders each real procedure with its metadata, tools,
   requirements, scripts, package origin, and Markdown instructions;
+- the Plugins surface lists the installed registry by enabled state, exposes
+  manifest capabilities and package identity, reports actual worker state and
+  runtime warnings, and uses gateway lifecycle controls for enable, disable, and
+  confirmed removal;
+- adding a plugin is an inspect-first modal flow: a local package path is
+  validated by the gateway, the exact manifest capabilities and broker
+  permissions are reviewed, non-empty permissions require explicit
+  acknowledgement, and installation leaves the plugin disabled;
 
 The next vertical slice adds richer plans, tasks, and child-agent activity.
 Those controls and the management capabilities listed below remain deferred.
@@ -245,16 +253,16 @@ This screen should make self-correction understandable to a human.
 
 Implement:
 
-- installed/disabled plugins;
-- permissions;
-- worker/sandbox status;
-- version;
-- capabilities;
+- installed/disabled plugins; **Implemented**
+- permissions; **Implemented**
+- worker/sandbox status; **Implemented for worker state and runtime warnings**
+- version; **Implemented**
+- capabilities; **Implemented**
 - broker activity;
-- install local package;
-- explicit permission approval;
+- install local package; **Implemented through inspect-first modal flow**
+- explicit permission approval; **Implemented before installation**
 - update permission diff;
-- enable/disable/remove;
+- enable/disable/remove; **Implemented, with confirmation before removal**
 - agent-authored plugin proposal review.
 
 Unsafe unsandboxed state, if configuration permits it, must be visually obvious.

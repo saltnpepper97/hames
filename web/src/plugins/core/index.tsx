@@ -10,14 +10,19 @@ import { MemoryPage } from "../../pages/MemoryPage";
 import { SkillPage } from "../../pages/SkillPage";
 import { SettingsPage } from "../../pages/SettingsPage";
 import { ScarPage } from "../../pages/ScarPage";
-import { PlaceholderPage } from "../../pages/PlaceholderPage";
+import { PluginPage } from "../../pages/PluginPage";
 import { Button } from "../../components/Button";
+import type { PluginView } from "../../api/types";
+import { Icon } from "../../shell/icons";
 import type { WebPlugin } from "../../shell/plugins";
 import { useWorkspace } from "../../shell/workspace";
 import { SkillSidebar } from "../../skills/SkillSidebar";
 import { useSkillDirectory } from "../../skills/SkillDirectory";
 import { ScarSidebar } from "../../scars/ScarSidebar";
 import { useScarDirectory } from "../../scars/ScarDirectory";
+import { usePluginDirectory } from "../PluginDirectory";
+import { PluginInstallDialog } from "../PluginInstallDialog";
+import { PluginSidebar } from "../PluginSidebar";
 import { coreConversationNodes } from "./conversationNodes";
 import { coreComposerControls } from "./composerControls";
 
@@ -259,19 +264,74 @@ function ScarSurface() {
   );
 }
 
-const placeholder = (
-  eyebrow: string,
-  title: string,
-  description: string,
-  detail: string,
-) => () => (
-  <PlaceholderPage
-    eyebrow={eyebrow}
-    title={title}
-    description={description}
-    detail={detail}
-  />
-);
+function PluginSurfaceContent() {
+  const params = useParams<{ pluginId?: string }>();
+  const navigate = useNavigate();
+  const directory = usePluginDirectory();
+  const [addingPlugin, setAddingPlugin] = createSignal(false);
+  const selected = createMemo(() =>
+    params.pluginId ? directory.plugins().find((plugin) => plugin.id === params.pluginId) : undefined,
+  );
+
+  createEffect(() => void directory.ensureLoaded());
+  createEffect(() => {
+    if (params.pluginId || !directory.loaded()) return;
+    const first = directory.plugins()[0];
+    if (first) navigate(`/plugins/${encodeURIComponent(first.id)}`, { replace: true });
+  });
+
+  const installed = (plugin: PluginView) => {
+    directory.upsert(plugin);
+    setAddingPlugin(false);
+    navigate(`/plugins/${encodeURIComponent(plugin.id)}`);
+  };
+
+  const removed = (pluginId: string) => {
+    directory.remove(pluginId);
+    navigate("/plugins", { replace: true });
+  };
+
+  return (
+    <>
+      <Show when={selected()} keyed fallback={
+        <section class="page plugin-route-state" aria-live="polite">
+          <Show when={directory.loading() || !directory.loaded()}>
+            <div class="plugin-detail-loading" aria-label="Loading plugins"><span /><span /><span /></div>
+          </Show>
+          <Show when={directory.error()}>
+            <div class="error-state">
+              <div><span class="eyebrow">Plugin error</span><h2>Plugins could not be loaded.</h2><p>{directory.error()}</p></div>
+              <Button onClick={() => void directory.refresh()}>Try again</Button>
+            </div>
+          </Show>
+          <Show when={directory.loaded() && !directory.error() && directory.plugins().length === 0}>
+            <div class="plugin-route-empty">
+              <span class="plugin-empty-icon"><Icon name="nav.plugins" size={24} /></span>
+              <span class="eyebrow">Plugins</span>
+              <h1>Add capabilities to Hames.</h1>
+              <p>Install a local plugin package, review its manifest and permissions, then enable it when you are ready.</p>
+              <Button variant="primary" onClick={() => setAddingPlugin(true)}>Add plugin</Button>
+            </div>
+          </Show>
+          <Show when={directory.loaded() && !directory.error() && directory.plugins().length > 0 && params.pluginId}>
+            <div class="error-state">
+              <div><span class="eyebrow">Plugins</span><h2>This plugin is not installed.</h2><p>Choose an installed plugin from the sidebar.</p></div>
+            </div>
+          </Show>
+        </section>
+      }>{(plugin) => (
+        <PluginPage plugin={plugin} onAdd={() => setAddingPlugin(true)} onRemoved={removed} />
+      )}</Show>
+      <Show when={addingPlugin()}>
+        <PluginInstallDialog onClose={() => setAddingPlugin(false)} onInstalled={installed} />
+      </Show>
+    </>
+  );
+}
+
+function PluginSurface() {
+  return <PluginSurfaceContent />;
+}
 
 export const coreWebPlugin = {
   id: "hames.core",
@@ -326,16 +386,11 @@ export const coreWebPlugin = {
     {
       id: "plugins",
       path: "/plugins",
-      route: "/plugins",
+      route: ["/plugins", "/plugins/:pluginId"],
       label: "Plugins",
       icon: "nav.plugins",
-      component: placeholder(
-        "Extensions",
-        "Plugins",
-        "Inspect capabilities, permissions, isolation, and runtime health.",
-        "Unsafe execution and permission changes will remain explicit and visually prominent.",
-      ),
-      sidebar: { kind: "section", description: "Extensions and access" },
+      component: PluginSurface,
+      sidebar: { kind: "component", component: PluginSidebar },
     },
     {
       id: "settings",

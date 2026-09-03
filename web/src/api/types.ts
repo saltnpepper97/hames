@@ -140,6 +140,34 @@ export interface SkillVersion {
   pinned: boolean;
 }
 
+export type PluginCapability = "tool" | "context" | "event";
+
+export interface PluginView {
+  id: string;
+  name: string;
+  enabled: boolean;
+  running: boolean;
+  version: string;
+  fingerprint: string;
+  capabilities: PluginCapability[];
+  permissions: string[];
+  entrypoint: string;
+  package_path: string;
+  tools: string[];
+  warning: string;
+}
+
+export interface PluginInspectView {
+  id: string;
+  name: string;
+  version: string;
+  fingerprint: string;
+  permissions: string[];
+  capabilities: PluginCapability[];
+  entrypoint: string;
+  files: string[];
+}
+
 export interface AgentCapabilities {
   tools: string[];
   skills: SkillSummary[];

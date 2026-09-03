@@ -158,6 +158,15 @@ lifecycle transitions, source evidence, and record provenance. Proposal and
 event payloads remain available in disclosures rather than overwhelming the
 human explanation.
 
+The Plugins surface reads the installed registry directly from the gateway and
+separates enabled and disabled packages in its contextual directory. Details
+show the stored manifest capabilities, broker permissions, package fingerprint,
+worker state, registered tools, and any isolation warning. Adding a local
+package uses a contained inspect-first dialog: the gateway validates the
+package, the user reviews and acknowledges requested permissions, and install
+leaves it disabled. Enable, disable, and confirmed removal remain gateway-owned
+lifecycle operations.
+
 ## Build and packaging
 
 Run the pinned frontend toolchain with:
@@ -193,6 +202,8 @@ atomic display-name, instructions, tool, skill, pinned-skill, and avatar edits.
 Agent creation, retirement, usage, and deeper policy summaries remain planned.
 The Scars slice lists real visible records and presents their complete detection,
 repair, evaluation, guard, regression, evidence, and lifecycle breakdown.
+The Plugins slice lists real installed packages and supports manifest inspection,
+permission review, installation, runtime enable/disable, and confirmed removal.
 The attachment control remains visibly disabled until its gateway contract exists.
 The browser-local light/dark appearance setting is functional. Commands,
 gateway-backed settings contributions, and the remaining management editors

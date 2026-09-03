@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import type { AgentDetail, AgentPublic, MemoryRecord, Scar, ScarInspection, SkillCatalogEntry, SkillVersion } from "./api/types";
+import type { AgentDetail, AgentPublic, MemoryRecord, PluginInspectView, PluginView, Scar, ScarInspection, SkillCatalogEntry, SkillVersion } from "./api/types";
 
 class MockEventSource {
   static instances: MockEventSource[] = [];
@@ -428,6 +428,41 @@ const skillDetails: Record<string, SkillVersion> = Object.fromEntries(skills.map
   },
 ]));
 
+const installedPlugin: PluginView = {
+  id: "event-relay",
+  name: "Event Relay",
+  enabled: false,
+  running: false,
+  version: "0.3.0",
+  fingerprint: "84a0c50f469744252766aadd35bccd65c0cd1f5956acc530f511818df89634de",
+  capabilities: ["event"],
+  permissions: ["broker:network_request"],
+  entrypoint: "worker.py",
+  package_path: "/home/.hames/plugins/installed/event-relay/0.3.0-84a0c50f4697",
+  tools: [],
+  warning: "",
+};
+
+const inspectedPlugin: PluginInspectView = {
+  id: "project-stats",
+  name: "Project Stats",
+  version: "0.1.0",
+  fingerprint: "f4750d31e193ec6a8f5dbc0289172903b947cc590d0a29d8768316e97d452ef7",
+  permissions: ["broker:project_read"],
+  capabilities: ["tool", "context"],
+  entrypoint: "worker.py",
+  files: ["README.md", "plugin.toml", "worker.py"],
+};
+
+const addedPlugin: PluginView = {
+  ...inspectedPlugin,
+  enabled: false,
+  running: false,
+  package_path: "/home/.hames/plugins/installed/project-stats/0.1.0-f4750d31e193",
+  tools: [],
+  warning: "",
+};
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -447,6 +482,22 @@ function successfulFetch() {
       return jsonResponse([currentSession, ...sessions.slice(1)]);
     }
     if (path === "/v1/agents" && !init?.method) return jsonResponse(agents);
+    if (path === "/v1/plugins" && !init?.method) return jsonResponse([installedPlugin]);
+    if (path === "/v1/plugins/inspect" && init?.method === "POST") {
+      return jsonResponse(inspectedPlugin);
+    }
+    if (path === "/v1/plugins/install" && init?.method === "POST") {
+      return jsonResponse(addedPlugin, 201);
+    }
+    if (path === "/v1/plugins/event-relay/enable" && init?.method === "POST") {
+      return jsonResponse({ ...installedPlugin, enabled: true, running: true });
+    }
+    if (path === "/v1/plugins/event-relay/disable" && init?.method === "POST") {
+      return jsonResponse({ ...installedPlugin, enabled: false, running: false });
+    }
+    if (path === "/v1/plugins/event-relay" && init?.method === "DELETE") {
+      return jsonResponse({ removed: true });
+    }
     if (path === "/v1/agents/default" && !init?.method) return jsonResponse(currentAgent);
     if (path === "/v1/agents/default/capabilities?working_directory=%2Fwork%2Fhames") {
       return jsonResponse({
@@ -1038,6 +1089,54 @@ describe("Hames web shell", () => {
       expect(screen.getByRole("link", { name: label })).toBeInTheDocument();
     }
     expect(screen.queryByRole("link", { name: "Runs" })).not.toBeInTheDocument();
+  });
+
+  it("manages installed plugins and reviews a local package before installing", async () => {
+    window.history.replaceState({}, "", "/plugins");
+    const fetchMock = successfulFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    render(() => <App />);
+
+    const sidebar = await screen.findByRole("complementary", { name: "Plugins sidebar" });
+    expect(await screen.findByRole("separator", { name: "Enabled" })).toBeInTheDocument();
+    expect(sidebar.querySelector('[role="separator"][aria-label="Disabled"]')).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Event Relay", level: 1 })).toBeInTheDocument();
+    expect(screen.getByText("Make network requests")).toBeInTheDocument();
+    const enableSwitch = screen.getByRole("switch", { name: "Disabled" });
+    expect(enableSwitch).not.toBeChecked();
+    fireEvent.click(enableSwitch);
+    expect(await screen.findByRole("switch", { name: "Enabled" })).toBeChecked();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/plugins/event-relay/enable",
+      expect.objectContaining({ method: "POST" }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Add plugin" }));
+    expect(screen.getByRole("dialog", { name: "Add a plugin" })).toBeInTheDocument();
+    fireEvent.input(screen.getByRole("textbox", { name: /^Package directory/ }), {
+      target: { value: "/work/project-stats" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Inspect package" }));
+
+    expect(await screen.findByRole("dialog", { name: "Review Project Stats" })).toBeInTheDocument();
+    expect(screen.getByText("Adds callable tools")).toBeInTheDocument();
+    expect(screen.getByText("Read project files")).toBeInTheDocument();
+    const installButton = screen.getByRole("button", { name: "Install plugin" });
+    expect(installButton).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: /^I reviewed these permissions/ }));
+    expect(installButton).toBeEnabled();
+    fireEvent.click(installButton);
+
+    expect(await screen.findByRole("heading", { name: "Project Stats", level: 1 })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/plugins/inspect",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ path: "/work/project-stats" }) }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/plugins/install",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ path: "/work/project-stats" }) }),
+    );
   });
 
   it("switches and persists the dark appearance from Settings", async () => {

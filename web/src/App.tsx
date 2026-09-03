@@ -4,6 +4,7 @@ import { AgentDirectoryProvider } from "./agents/AgentDirectory";
 import { MemoryDirectoryProvider } from "./memory/MemoryDirectory";
 import { SkillDirectoryProvider } from "./skills/SkillDirectory";
 import { ScarDirectoryProvider } from "./scars/ScarDirectory";
+import { PluginDirectoryProvider } from "./plugins/PluginDirectory";
 import { ThemeProvider } from "./theme/Theme";
 import { AppShell } from "./components/AppShell";
 import { coreWebPlugin } from "./plugins/core";
@@ -23,7 +24,9 @@ function WorkspaceRoot(props: ParentProps) {
           <MemoryDirectoryProvider>
             <SkillDirectoryProvider>
               <ScarDirectoryProvider>
-                <AppShell registry={registry}>{props.children}</AppShell>
+                <PluginDirectoryProvider>
+                  <AppShell registry={registry}>{props.children}</AppShell>
+                </PluginDirectoryProvider>
               </ScarDirectoryProvider>
             </SkillDirectoryProvider>
           </MemoryDirectoryProvider>

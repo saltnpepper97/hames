@@ -100,7 +100,10 @@ class PluginView(BaseModel):
     running: bool = False
     version: str = ""
     fingerprint: str = ""
+    capabilities: list[str] = Field(default_factory=list)
     permissions: list[str] = Field(default_factory=list)
+    entrypoint: str = ""
+    package_path: str = ""
     tools: list[str] = Field(default_factory=list)
     warning: str = ""
 
@@ -191,7 +194,10 @@ class PluginManager:
             running=handle is not None,
             version="" if version is None else version.version,
             fingerprint="" if version is None else version.fingerprint,
+            capabilities=[] if version is None else list(version.manifest.capabilities),
             permissions=[] if version is None else list(version.permissions),
+            entrypoint="" if version is None else version.manifest.entrypoint,
+            package_path="" if version is None else version.package_path,
             tools=tools,
             warning="" if handle is None else handle.warning,
         )

@@ -65,6 +65,9 @@ async def test_gateway_install_enable_and_disable(tmp_path: Path) -> None:
             installed_body = response_object(installed)
             assert installed_body["enabled"] is False
             assert installed_body["running"] is False
+            assert installed_body["capabilities"] == ["tool"]
+            assert installed_body["entrypoint"] == "worker.py"
+            assert installed_body["package_path"]
 
             listed = await client.get("/v1/plugins", headers=headers)
             assert [item["id"] for item in listed.json()] == ["project-stats"]
