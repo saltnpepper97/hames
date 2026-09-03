@@ -79,11 +79,14 @@ sidebar, and the active surface. Chat contributes real, open workspace sessions
 to the contextual sidebar, matching the TUI's resumable-history boundary;
 empty sessions, closed historical sessions, and sessions from other workspaces
 remain out of the list. Selecting one routes its gateway metadata into the main
-surface. The contextual sidebar names the active surface without repeating the
-repository name. Workspace identity remains in the Chat surface bar, where it
-is relevant to session scope, and is omitted from management surfaces. Other
-areas contribute no controls until their gateway-backed slices exist. The two
-navigation layers become one combined drawer on small screens.
+surface. Agents contributes a component-rendered capsule directory to the same
+sidebar region; selecting an avatar opens its editor directly in the main
+surface, and the bare Agents route selects the first real capsule. The
+contextual sidebar names the active surface without repeating the repository
+name. Workspace identity remains in the Chat surface bar, where it is relevant
+to session scope, and is omitted from management surfaces. Areas without a
+gateway-backed slice contribute no controls. The two navigation layers become
+one combined drawer on small screens.
 
 Web plugins remain presentation modules. They call authorized gateway APIs and
 subscribe to gateway events; they do not gain direct filesystem access,
@@ -107,12 +110,16 @@ and live output is layered over the durable projection without rescanning the
 entire event history for every token.
 
 The Agents surface reads the live capsule registry and contains no sample
-agents. Separate cards lead to a dedicated agent detail surface whose reusable
-settings sections edit the display name, `AGENT.md` instructions, tool access,
-skill access, and pinned skills. The slug is shown but remains immutable. A
-workspace-aware capability endpoint supplies real tools and visible skills;
-saving uses the registry's atomic structured update and preserves `AGENT.md` as
-the source of truth.
+agents. Its plugin-supplied contextual sidebar shows each capsule's animated
+avatar and identity; the selected capsule's reusable settings editor occupies
+the main surface without an intermediate overview. The editor changes the
+display name, `AGENT.md` instructions, tool access, skill access, and pinned
+skills. The slug is shown but remains immutable. A shared agent-directory
+component keeps sidebar identity current after a save. A workspace-aware
+capability endpoint supplies real tools and visible skills; saving uses the
+registry's atomic structured update and preserves `AGENT.md` as the source of
+truth. Editor grids collapse before their contents overflow, and the workspace
+never uses page-level horizontal scrolling.
 
 Its reusable SVG `AgentAvatar` component draws five robot shapes (circle, soft
 square, triangle, scalloped cloud, and hex), three eye styles (dots, visor, and

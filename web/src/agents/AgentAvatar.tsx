@@ -37,7 +37,7 @@ export function AgentAvatar(props: AgentAvatarProps) {
           <path
             class="agent-antenna"
             d={props.config.shape === "cloud"
-              ? "M40 10V1m0 0 5 4m-5-4-5 4"
+              ? "M40 10V5m0 0 5-4m-5 4-5-4"
               : "M40 17V10m0 0 5-4m-5 4-5-4"}
           />
           <Switch>

@@ -1,5 +1,6 @@
 import { Navigate, Route, Router } from "@solidjs/router";
 import type { ParentProps } from "solid-js";
+import { AgentDirectoryProvider } from "./agents/AgentDirectory";
 import { AppShell } from "./components/AppShell";
 import { coreWebPlugin } from "./plugins/core";
 import { hamesIconPack } from "./plugins/icons/hames";
@@ -14,7 +15,9 @@ function WorkspaceRoot(props: ParentProps) {
   return (
     <WebPluginProvider registry={registry}>
       <WorkspaceProvider>
-        <AppShell registry={registry}>{props.children}</AppShell>
+        <AgentDirectoryProvider>
+          <AppShell registry={registry}>{props.children}</AppShell>
+        </AgentDirectoryProvider>
       </WorkspaceProvider>
     </WebPluginProvider>
   );

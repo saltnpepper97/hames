@@ -66,9 +66,10 @@ claiming unfinished controls:
 - shared Button, form-field, selection-row, settings-section, dialog, and avatar
   components keep interaction and accessibility behavior consistent across
   core surfaces;
-- the Agents overview uses real capsule cards and links to a dedicated detail
-  page that atomically edits display name, `AGENT.md` instructions, tool access,
-  skill access, pinned skills, and avatar metadata;
+- the Agents sidebar lists real capsules with their component-rendered avatars
+  and routes directly into the responsive main-surface editor, which atomically
+  edits display name, `AGENT.md` instructions, tool access, skill access, pinned
+  skills, and avatar metadata without an intermediate overview;
 
 The next vertical slice adds richer plans, tasks, and child-agent activity.
 Those controls and the management capabilities listed below remain deferred.

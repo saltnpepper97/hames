@@ -1,7 +1,7 @@
-import { A } from "@solidjs/router";
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import { AgentAvatar } from "../agents/AgentAvatar";
 import { AgentAvatarEditor } from "../agents/AgentAvatarEditor";
+import { useAgentDirectory } from "../agents/AgentDirectory";
 import { fallbackAvatar } from "../agents/color";
 import {
   getAgent,
@@ -18,7 +18,6 @@ import { Button } from "../components/Button";
 import { TextAreaField, TextField } from "../components/FormField";
 import { SelectionRow } from "../components/SelectionRow";
 import { SettingsSection } from "../components/SettingsSection";
-import { Icon } from "../shell/icons";
 
 interface AgentDetailPageProps {
   agentId: string;
@@ -45,6 +44,7 @@ function accessUpdate(all: string[], selected: Set<string>, pins?: Set<string>) 
 }
 
 export function AgentDetailPage(props: AgentDetailPageProps) {
+  const directory = useAgentDirectory();
   const [agent, setAgent] = createSignal<AgentDetail>();
   const [name, setName] = createSignal("");
   const [instructions, setInstructions] = createSignal("");
@@ -87,6 +87,7 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
       );
       const bySlug = new Map(nextCapabilities.skills.map((skill) => [skill.slug, skill]));
       setAgent(nextAgent);
+      directory.update(nextAgent);
       setName(nextAgent.name);
       setInstructions(nextAgent.instructions);
       setToolIds(allTools);
@@ -158,6 +159,7 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
         skills: accessUpdate(skills().map((skill) => skill.slug), selectedSkills(), pinnedSkills()),
       });
       setAgent(updated);
+      directory.update(updated);
       setName(updated.name);
       setInstructions(updated.instructions);
       setSaved(true);
@@ -175,6 +177,7 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
     try {
       const updated = await updateAgentAvatar(props.agentId, avatar);
       setAgent(updated);
+      directory.update(updated);
       setEditingAvatar(false);
       setSaved(true);
     } catch (caught) {
@@ -199,7 +202,6 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
         const avatar = () => current.avatar ?? fallbackAvatar(current.id);
         return <>
           <header class="agent-detail-header">
-            <A class="agent-back" href="/agents"><Icon name="action.back" size={16} />Agents</A>
             <div class="agent-detail-identity">
               <Button variant="bare" class="agent-detail-avatar" aria-label={`Edit ${current.name} appearance`} onClick={() => setEditingAvatar(true)}>
                 <AgentAvatar config={avatar()} name={current.name} size={112} />

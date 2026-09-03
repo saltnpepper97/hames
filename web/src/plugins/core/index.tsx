@@ -1,9 +1,11 @@
 import { useLocation, useNavigate, useParams } from "@solidjs/router";
-import { Show, createEffect, createMemo, createSignal } from "solid-js";
+import { Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
+import { AgentSidebar } from "../../agents/AgentSidebar";
+import { useAgentDirectory } from "../../agents/AgentDirectory";
 import { ChatPage } from "../../pages/ChatPage";
-import { AgentsPage } from "../../pages/AgentsPage";
 import { AgentDetailPage } from "../../pages/AgentDetailPage";
 import { PlaceholderPage } from "../../pages/PlaceholderPage";
+import { Button } from "../../components/Button";
 import type { WebPlugin } from "../../shell/plugins";
 import { useWorkspace } from "../../shell/workspace";
 import { coreConversationNodes } from "./conversationNodes";
@@ -60,9 +62,41 @@ function ChatSurface() {
 
 function AgentSurface() {
   const params = useParams<{ agentId?: string }>();
+  const navigate = useNavigate();
+  const directory = useAgentDirectory();
   const workspace = useWorkspace();
+
+  onMount(() => void directory.ensureLoaded());
+  createEffect(() => {
+    if (params.agentId) return;
+    const first = directory.agents()[0];
+    if (first) navigate(`/agents/${encodeURIComponent(first.id)}`, { replace: true });
+  });
+
   return (
-    <Show when={params.agentId} keyed fallback={<AgentsPage />}>
+    <Show
+      when={params.agentId}
+      keyed
+      fallback={
+        <section class="page agent-route-state" aria-live="polite">
+          <Show when={directory.loading() || !directory.loaded()}>
+            <div class="agent-detail-loading"><span /><span /><span /></div>
+          </Show>
+          <Show when={directory.error()}>
+            <div class="error-state">
+              <div><span class="eyebrow">Agent error</span><h2>Agents could not be loaded.</h2><p>{directory.error()}</p></div>
+              <Button onClick={() => void directory.refresh()}>Try again</Button>
+            </div>
+          </Show>
+          <Show when={directory.loaded() && !directory.error() && directory.agents().length === 0}>
+            <div class="agent-route-empty">
+              <span class="eyebrow">Agents</span>
+              <h1>No agents are installed.</h1>
+            </div>
+          </Show>
+        </section>
+      }
+    >
       {(agentId) => (
         <AgentDetailPage
           agentId={agentId}
@@ -108,7 +142,7 @@ export const coreWebPlugin = {
       label: "Agents",
       icon: "nav.agents",
       component: AgentSurface,
-      sidebar: { kind: "section", description: "Roles and authority" },
+      sidebar: { kind: "component", component: AgentSidebar },
     },
     {
       id: "memory",

@@ -68,11 +68,14 @@ hex color. Clients derive a stable
 fallback for older capsules and write the chosen avatar through the same atomic
 agent update path.
 
-The Web Agents overview links each real capsule to a dedicated breakdown page.
-That page edits the display name, instruction body, tool allow/deny sets, skill
-allow/deny sets, pinned skills, and avatar through structured gateway updates.
-The stable id is visible but immutable, and every save still atomically rewrites
-the existing `AGENT.md` rather than introducing browser-owned agent state.
+The Web Agents contextual sidebar lists every real capsule with its rendered
+avatar and routes directly to the selected capsule's breakdown. The bare Agents
+route selects the first real capsule instead of inserting an overview step. The
+main surface edits the display name, instruction body, tool allow/deny sets,
+skill allow/deny sets, pinned skills, and avatar through structured gateway
+updates. The stable id is visible but immutable, and every save still atomically
+rewrites the existing `AGENT.md` rather than introducing browser-owned agent
+state.
 
 ## Tools vs Skills vs plugins
 

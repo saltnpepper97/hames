@@ -566,14 +566,15 @@ describe("Hames web shell", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(() => <App />);
 
-    expect(await screen.findByRole("heading", { name: "Hames", level: 2 })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Reviewer", level: 2 })).toBeInTheDocument();
-    expect(screen.getByText("Read only")).toBeInTheDocument();
+    const agentSidebar = screen.getByRole("complementary", { name: "Agents sidebar" });
+    expect(await screen.findByRole("heading", { name: "Hames", level: 1 })).toBeInTheDocument();
+    expect(agentSidebar.querySelectorAll(".agent-sidebar-item .agent-avatar")).toHaveLength(2);
+    expect(agentSidebar).toHaveTextContent("Reviewer");
+    expect(agentSidebar).toHaveTextContent("Read only");
     expect(screen.getByRole("heading", { name: "Agents", level: 2 })).toBeInTheDocument();
     expect(screen.queryByText("Workspace")).not.toBeInTheDocument();
 
     expect(screen.queryByRole("button", { name: "Customize avatar" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Edit Hames" }));
     expect(await screen.findByRole("heading", { name: "AGENT.md instructions" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: /Agent slug/ })).toBeDisabled();
     fireEvent.input(screen.getByRole("textbox", { name: "Display name" }), {
@@ -598,6 +599,7 @@ describe("Hames web shell", () => {
       }),
     ));
     await screen.findByRole("heading", { name: "Navigator", level: 1 });
+    expect(agentSidebar).toHaveTextContent("Navigator");
 
     fireEvent.click(screen.getByRole("button", { name: "Edit appearance" }));
     expect(screen.getByRole("dialog", { name: "Customize Navigator" })).toBeInTheDocument();

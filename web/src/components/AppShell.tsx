@@ -62,6 +62,10 @@ export function AppShell(props: AppShellProps) {
     const sidebar = activeSurface().sidebar;
     return sidebar.kind === "section" ? sidebar.description : "";
   });
+  const sidebarComponent = createMemo(() => {
+    const sidebar = activeSurface().sidebar;
+    return sidebar.kind === "component" ? sidebar.component : undefined;
+  });
 
   createEffect(() => {
     location.pathname;
@@ -130,7 +134,7 @@ export function AppShell(props: AppShellProps) {
                   href={surface.path}
                   class="rail-item"
                   activeClass="active"
-                  end={surface.path !== "/chat"}
+                  end={!Array.isArray(surface.route)}
                   aria-label={surface.label}
                   title={surface.label}
                 >
@@ -189,6 +193,9 @@ export function AppShell(props: AppShellProps) {
                   </For>
                 </Show>
               </nav>
+            </Match>
+            <Match when={sidebarComponent()} keyed>
+              {(Sidebar) => <Sidebar />}
             </Match>
             <Match when={activeSurface().sidebar.kind === "section"}>
               <p class="context-empty">{sectionDescription()}</p>

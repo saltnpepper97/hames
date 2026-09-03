@@ -5,6 +5,7 @@ import type { SemanticIconName } from "./icons";
 
 export type ContextSidebarContribution =
   | { readonly kind: "conversations" }
+  | { readonly kind: "component"; readonly component: Component }
   | { readonly kind: "section"; readonly description: string };
 
 export interface WebSurfaceContribution {
