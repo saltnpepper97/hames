@@ -1586,7 +1586,7 @@ a {
   animation-delay: var(--agent-animation-offset);
 }
 
-.avatar-dialog-backdrop {
+.dialog-backdrop {
   position: fixed;
   z-index: 90;
   inset: 0;
@@ -1598,7 +1598,7 @@ a {
   backdrop-filter: blur(3px);
 }
 
-.avatar-dialog {
+.dialog-frame {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   width: min(100%, 68rem);
@@ -1610,27 +1610,27 @@ a {
   box-shadow: 0 22px 70px rgb(0 0 0 / 18%);
 }
 
-.avatar-dialog-header,
-.avatar-dialog-footer {
+.dialog-header,
+.dialog-footer {
   display: flex;
   align-items: center;
   padding: 1.2rem 1.4rem;
   background: var(--background);
 }
 
-.avatar-dialog-header {
+.dialog-header {
   justify-content: space-between;
   border-bottom: 1px solid var(--rule-soft);
 }
 
-.avatar-dialog-header h2 {
+.dialog-header h2 {
   margin: 0.3rem 0 0;
   font-size: 1.1rem;
   font-weight: 680;
   letter-spacing: -0.02em;
 }
 
-.avatar-close {
+.dialog-close {
   width: 2.2rem;
   height: 2.2rem;
   padding: 0;
@@ -1643,7 +1643,7 @@ a {
   line-height: 1;
 }
 
-.avatar-close:hover {
+.dialog-close:hover {
   background: var(--surface);
   color: var(--text);
 }
@@ -1849,19 +1849,19 @@ a {
   box-shadow: 0 0 0 2px var(--text);
 }
 
-.avatar-dialog-footer {
+.dialog-footer {
   justify-content: flex-end;
   border-top: 1px solid var(--rule-soft);
   gap: 0.55rem;
 }
 
-.avatar-dialog-footer .primary {
+.dialog-footer .primary {
   border-color: var(--text);
   background: var(--text);
   color: var(--background);
 }
 
-.avatar-dialog-footer .primary:disabled {
+.dialog-footer .primary:disabled {
   cursor: wait;
   opacity: 0.6;
 }
@@ -2074,12 +2074,12 @@ a {
     flex-direction: column;
   }
 
-  .avatar-dialog-backdrop {
+  .dialog-backdrop {
     padding: 0;
     place-items: stretch;
   }
 
-  .avatar-dialog {
+  .dialog-frame {
     width: 100%;
     height: 100dvh;
     min-height: 0;

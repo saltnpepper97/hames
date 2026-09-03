@@ -1,8 +1,9 @@
-import { For, createSignal, onCleanup, onMount } from "solid-js";
+import { For, createSignal } from "solid-js";
 import type { AgentAvatarConfig, AgentAvatarEyes, AgentAvatarShape } from "../api/types";
 import { AgentAvatar } from "./AgentAvatar";
 import { ColorWheel } from "./ColorWheel";
 import { avatarPalette } from "./color";
+import { DialogFrame } from "../components/DialogFrame";
 
 interface AgentAvatarEditorProps {
   agentName: string;
@@ -29,34 +30,21 @@ const eyes: { id: AgentAvatarEyes; label: string }[] = [
 
 export function AgentAvatarEditor(props: AgentAvatarEditorProps) {
   const [draft, setDraft] = createSignal<AgentAvatarConfig>({ ...props.initial });
-  let closeButton: HTMLButtonElement | undefined;
-  const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-
-  const closeOnEscape = (event: KeyboardEvent) => {
-    if (event.key === "Escape") props.onClose();
-  };
-  onMount(() => {
-    document.addEventListener("keydown", closeOnEscape);
-    closeButton?.focus();
-  });
-  onCleanup(() => {
-    document.removeEventListener("keydown", closeOnEscape);
-    previousFocus?.focus();
-  });
 
   return (
-    <div class="avatar-dialog-backdrop" role="presentation" onMouseDown={(event) => {
-      if (event.target === event.currentTarget) props.onClose();
-    }}>
-      <section class="avatar-dialog" role="dialog" aria-modal="true" aria-labelledby="avatar-editor-title">
-        <header class="avatar-dialog-header">
-          <div>
-            <span class="eyebrow">Visual identity</span>
-            <h2 id="avatar-editor-title">Customize {props.agentName}</h2>
-          </div>
-          <button ref={closeButton} class="avatar-close" type="button" aria-label="Close avatar editor" onClick={props.onClose}>×</button>
-        </header>
-
+    <DialogFrame
+      eyebrow="Visual identity"
+      title={`Customize ${props.agentName}`}
+      class="avatar-dialog"
+      onClose={props.onClose}
+      footer={<>
+        <span class="avatar-save-error" role="alert">{props.error}</span>
+        <button class="button" type="button" onClick={props.onClose}>Cancel</button>
+        <button class="button primary" type="button" disabled={props.saving} onClick={() => props.onSave(draft())}>
+          {props.saving ? "Saving…" : "Save avatar"}
+        </button>
+      </>}
+    >
         <div class="avatar-editor-layout">
           <div class="avatar-preview-panel">
             <AgentAvatar config={draft()} name={props.agentName} size={150} />
@@ -121,15 +109,6 @@ export function AgentAvatarEditor(props: AgentAvatarEditorProps) {
             </fieldset>
           </div>
         </div>
-
-        <footer class="avatar-dialog-footer">
-          <span class="avatar-save-error" role="alert">{props.error}</span>
-          <button class="button" type="button" onClick={props.onClose}>Cancel</button>
-          <button class="button primary" type="button" disabled={props.saving} onClick={() => props.onSave(draft())}>
-            {props.saving ? "Saving…" : "Save avatar"}
-          </button>
-        </footer>
-      </section>
-    </div>
+    </DialogFrame>
   );
 }
