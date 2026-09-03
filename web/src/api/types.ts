@@ -65,11 +65,78 @@ export interface AgentDetail extends AgentPublic {
   deprecated_fields: string[];
 }
 
+export type SkillScope = "global" | "workspace" | "agent";
+export type SkillSource = "managed" | "portable" | "builtin";
+export type SkillInvocation = "model" | "user" | "both";
+export type SkillStatus = "draft" | "verified" | "active" | "stale" | "archived" | "rejected" | "quarantined" | "superseded";
+
+export interface SkillScript {
+  id: string;
+  path: string;
+  interpreter: "python" | "bash";
+  description: string;
+}
+
 export interface SkillSummary {
   slug: string;
   name: string;
   description: string;
-  scope: "global" | "workspace" | "agent";
+  scope: SkillScope;
+}
+
+export interface SkillCatalogEntry extends SkillSummary {
+  id: string;
+  version_id: string;
+  version: number;
+  scope_key: string | null;
+  status: SkillStatus;
+  content_hash: string;
+  triggers: string[];
+  tools: string[];
+  scripts: SkillScript[];
+  score: number;
+  pinned: boolean;
+  invocation: SkillInvocation;
+  argument_hint: string;
+  source: SkillSource;
+}
+
+export interface SkillMetadata {
+  id: string;
+  name: string;
+  description: string;
+  version: number;
+  scope: string;
+  tools: string[];
+  triggers: string[];
+  requires: string[];
+  scripts: SkillScript[];
+  invocation: SkillInvocation;
+  argument_hint: string;
+}
+
+export interface SkillVersion {
+  id: string;
+  skill_id: string;
+  slug: string;
+  version: number;
+  content_hash: string;
+  status: SkillStatus;
+  scope: SkillScope;
+  scope_key: string | null;
+  name: string;
+  description: string;
+  instructions: string;
+  metadata: SkillMetadata;
+  package_path: string;
+  base_version_id: string | null;
+  created_by: string;
+  source_session_id: string;
+  source_run_id: string | null;
+  created_at: string;
+  activated_at: string | null;
+  last_used_at: string | null;
+  pinned: boolean;
 }
 
 export interface AgentCapabilities {

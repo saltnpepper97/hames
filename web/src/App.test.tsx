@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import type { AgentDetail, AgentPublic, MemoryRecord } from "./api/types";
+import type { AgentDetail, AgentPublic, MemoryRecord, SkillCatalogEntry, SkillVersion } from "./api/types";
 
 class MockEventSource {
   static instances: MockEventSource[] = [];
@@ -208,6 +208,114 @@ const memories: MemoryRecord[] = [
   },
 ];
 
+const skills: SkillCatalogEntry[] = [
+  {
+    id: "skill-managed",
+    slug: "review-patterns",
+    version_id: "skill-managed-v2",
+    version: 2,
+    name: "Review Patterns",
+    description: "Review recurring changes using evidence from completed Hames runs.",
+    scope: "workspace",
+    scope_key: "/work/hames",
+    status: "active",
+    content_hash: "managed-hash",
+    triggers: ["review a change"],
+    tools: ["read_file"],
+    scripts: [],
+    score: 0,
+    pinned: false,
+    invocation: "model",
+    argument_hint: "",
+    source: "managed",
+  },
+  {
+    id: "external:workspace:project-checks:path-hash",
+    slug: "project-checks",
+    version_id: "external-project-checks-v1",
+    version: 1,
+    name: "Project Checks",
+    description: "Run this repository's required checks.",
+    scope: "workspace",
+    scope_key: "/work/hames",
+    status: "active",
+    content_hash: "portable-hash",
+    triggers: ["verify the project"],
+    tools: ["shell"],
+    scripts: [],
+    score: 0,
+    pinned: false,
+    invocation: "both",
+    argument_hint: "[target]",
+    source: "portable",
+  },
+  {
+    id: "builtin:visual-verification",
+    slug: "visual-verification",
+    version_id: "builtin-visual-verification-v1",
+    version: 1,
+    name: "Visual Verification",
+    description: "Verify rendered behavior instead of relying only on code inspection.",
+    scope: "global",
+    scope_key: null,
+    status: "active",
+    content_hash: "builtin-hash",
+    triggers: ["visual change"],
+    tools: [],
+    scripts: [],
+    score: 0,
+    pinned: false,
+    invocation: "model",
+    argument_hint: "",
+    source: "builtin",
+  },
+];
+
+const skillDetails: Record<string, SkillVersion> = Object.fromEntries(skills.map((skill) => [
+  skill.slug,
+  {
+    id: skill.version_id,
+    skill_id: skill.id,
+    slug: skill.slug,
+    version: skill.version,
+    content_hash: skill.content_hash,
+    status: skill.status,
+    scope: skill.scope,
+    scope_key: skill.scope_key,
+    name: skill.name,
+    description: skill.description,
+    instructions: skill.slug === "project-checks"
+      ? "## Run checks\n\nUse the repository scripts and report exact failures."
+      : "Read the relevant evidence, perform the procedure, and report the verified result.",
+    metadata: {
+      id: skill.slug,
+      name: skill.name,
+      description: skill.description,
+      version: skill.version,
+      scope: skill.scope,
+      tools: skill.tools,
+      triggers: skill.triggers,
+      requires: skill.slug === "project-checks" ? ["repository checkout"] : [],
+      scripts: skill.scripts,
+      invocation: skill.invocation,
+      argument_hint: skill.argument_hint,
+    },
+    package_path: skill.source === "portable"
+      ? `/work/hames/.agents/skills/${skill.slug}`
+      : skill.source === "managed"
+      ? `/home/.hames/skills/packages/${skill.slug}`
+      : `/app/builtin_skills/${skill.slug}`,
+    base_version_id: null,
+    created_by: skill.source === "portable" ? "external" : skill.source,
+    source_session_id: skill.source === "managed" ? "session-current" : skill.source,
+    source_run_id: skill.source === "managed" ? "run-one" : null,
+    created_at: "2026-09-01T18:00:00Z",
+    activated_at: "2026-09-01T19:00:00Z",
+    last_used_at: null,
+    pinned: skill.pinned,
+  },
+]));
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -259,6 +367,15 @@ function successfulFetch() {
       const offset = Number(parameters.get("offset") ?? 0);
       const limit = Number(parameters.get("limit") ?? 200);
       return jsonResponse(memories.filter((memory) => memory.layer === layer).slice(offset, offset + limit));
+    }
+    if (path === "/v1/sessions/session-current/skills/available") {
+      return jsonResponse(skills);
+    }
+    if (path.startsWith("/v1/sessions/session-current/skills/available/")) {
+      const slug = decodeURIComponent(path.split("/").at(-1) ?? "");
+      return skillDetails[slug]
+        ? jsonResponse(skillDetails[slug])
+        : jsonResponse({ error: { message: "not found" } }, 404);
     }
     if (path === "/v1/providers") {
       return jsonResponse([
@@ -462,6 +579,27 @@ describe("Hames web shell", () => {
     })).toBeInTheDocument();
     expect(document.querySelector(".memory-json-value")).toHaveTextContent('"framework": "SolidJS"');
     expect(screen.getByText("Workspace", { selector: "dt" })).toBeInTheDocument();
+  });
+
+  it("browses Hames and portable Skills grouped by source", async () => {
+    vi.stubGlobal("fetch", successfulFetch());
+    render(() => <App />);
+
+    fireEvent.click(await screen.findByRole("link", { name: "Skills" }));
+    const sidebar = await screen.findByRole("complementary", { name: "Skills sidebar" });
+    expect(await screen.findByRole("separator", { name: "Hames-created" })).toBeInTheDocument();
+    expect(sidebar.querySelector('[role="separator"][aria-label=".agents"]')).toBeInTheDocument();
+    expect(sidebar.querySelector('[role="separator"][aria-label="Built in"]')).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Project Checks", level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Run checks", level: 2 })).toBeInTheDocument();
+    expect(screen.getByText("/work/hames/.agents/skills/project-checks")).toBeInTheDocument();
+    expect(screen.queryByText("Promotion and rollback will call gateway controls rather than writing files in-browser.")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse .agents" }));
+    expect(screen.queryByRole("link", { name: /Project Checks/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: /Review Patterns/ }));
+    expect(await screen.findByRole("heading", { name: "Review Patterns", level: 1 })).toBeInTheDocument();
+    expect(screen.getByText("/home/.hames/skills/packages/review-patterns")).toBeInTheDocument();
   });
 
   it("replays live gateway events and submits messages", async () => {

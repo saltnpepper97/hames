@@ -7,10 +7,13 @@ import { useMemoryDirectory } from "../../memory/MemoryDirectory";
 import { ChatPage } from "../../pages/ChatPage";
 import { AgentDetailPage } from "../../pages/AgentDetailPage";
 import { MemoryPage } from "../../pages/MemoryPage";
+import { SkillPage } from "../../pages/SkillPage";
 import { PlaceholderPage } from "../../pages/PlaceholderPage";
 import { Button } from "../../components/Button";
 import type { WebPlugin } from "../../shell/plugins";
 import { useWorkspace } from "../../shell/workspace";
+import { SkillSidebar } from "../../skills/SkillSidebar";
+import { useSkillDirectory } from "../../skills/SkillDirectory";
 import { coreConversationNodes } from "./conversationNodes";
 import { coreComposerControls } from "./composerControls";
 
@@ -156,6 +159,52 @@ function MemorySurface() {
   );
 }
 
+function SkillSurface() {
+  const params = useParams<{ skillSlug?: string }>();
+  const navigate = useNavigate();
+  const directory = useSkillDirectory();
+  const workspace = useWorkspace();
+
+  createEffect(() => {
+    workspace.snapshot()?.bootstrap.working_directory;
+    void directory.ensureLoaded();
+  });
+  createEffect(() => {
+    if (params.skillSlug || !directory.loaded()) return;
+    const first = directory.skills()[0];
+    if (first) navigate(`/skills/${encodeURIComponent(first.slug)}`, { replace: true });
+  });
+
+  return (
+    <Show
+      when={params.skillSlug}
+      keyed
+      fallback={
+        <section class="page skill-route-state" aria-live="polite">
+          <Show when={directory.loading() || !directory.loaded()}>
+            <div class="skill-detail-loading"><span /><span /><span /></div>
+          </Show>
+          <Show when={directory.error()}>
+            <div class="error-state">
+              <div><span class="eyebrow">Skill error</span><h2>Skills could not be loaded.</h2><p>{directory.error()}</p></div>
+              <Button onClick={() => void directory.refresh()}>Try again</Button>
+            </div>
+          </Show>
+          <Show when={directory.loaded() && !directory.error() && directory.skills().length === 0}>
+            <div class="skill-route-empty">
+              <span class="eyebrow">Skills</span>
+              <h1>No Skills are available.</h1>
+              <p>Add a portable package under .agents/skills or let Hames learn one.</p>
+            </div>
+          </Show>
+        </section>
+      }
+    >
+      {(skillSlug) => <SkillPage skillSlug={skillSlug} />}
+    </Show>
+  );
+}
+
 const placeholder = (
   eyebrow: string,
   title: string,
@@ -205,16 +254,11 @@ export const coreWebPlugin = {
     {
       id: "skills",
       path: "/skills",
-      route: "/skills",
+      route: ["/skills", "/skills/:skillSlug"],
       label: "Skills",
       icon: "nav.skills",
-      component: placeholder(
-        "Procedures",
-        "Skills",
-        "Review active procedures, evidence, validation, and version history.",
-        "Promotion and rollback will call gateway controls rather than writing files in-browser.",
-      ),
-      sidebar: { kind: "section", description: "Procedures and evidence" },
+      component: SkillSurface,
+      sidebar: { kind: "component", component: SkillSidebar },
     },
     {
       id: "scars",

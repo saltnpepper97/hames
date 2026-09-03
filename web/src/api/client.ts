@@ -14,6 +14,8 @@ import type {
   ProviderProfile,
   Session,
   SessionMode,
+  SkillCatalogEntry,
+  SkillVersion,
   WebBootstrap,
 } from "./types";
 
@@ -153,6 +155,18 @@ export function listMemories(
   });
   return request<MemoryRecord[]>(
     `/v1/sessions/${encodeURIComponent(sessionId)}/memories?${parameters.toString()}`,
+  );
+}
+
+export function listAvailableSkills(sessionId: string): Promise<SkillCatalogEntry[]> {
+  return request<SkillCatalogEntry[]>(
+    `/v1/sessions/${encodeURIComponent(sessionId)}/skills/available`,
+  );
+}
+
+export function getAvailableSkill(sessionId: string, slug: string): Promise<SkillVersion> {
+  return request<SkillVersion>(
+    `/v1/sessions/${encodeURIComponent(sessionId)}/skills/available/${encodeURIComponent(slug)}`,
   );
 }
 

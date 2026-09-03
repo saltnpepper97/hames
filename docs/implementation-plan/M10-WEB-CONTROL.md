@@ -75,8 +75,12 @@ claiming unfinished controls:
   skills, and avatar metadata without an intermediate overview;
 - the Memory sidebar paginates real workspace-visible relationship, semantic,
   and episodic records through the gateway, separates those layers in one
-  scrollable directory, and routes into details for value, scope, confidence,
-  status, timestamps, and provenance;
+  scrollable and collapsible directory, and routes into details for value,
+  scope, confidence, status, timestamps, and provenance;
+- the Skills sidebar lists the gateway's complete workspace-visible catalog,
+  separates Hames-created, portable `.agents`, and shipped built-in packages in
+  collapsible groups, and renders each real procedure with its metadata, tools,
+  requirements, scripts, package origin, and Markdown instructions;
 
 The next vertical slice adds richer plans, tasks, and child-agent activity.
 Those controls and the management capabilities listed below remain deferred.
@@ -205,9 +209,9 @@ Memory detail shows why a record was retrieved for selected model request when r
 
 Implement:
 
-- catalog;
+- catalog; **Implemented for active Hames-created, portable, and built-in Skills**
 - active/stale/archive status;
-- full `SKILL.md`;
+- full `SKILL.md`; **Implemented for the active visible version**
 - version history;
 - usage/outcomes;
 - proposal queue;
