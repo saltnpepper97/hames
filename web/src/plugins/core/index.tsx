@@ -1,6 +1,7 @@
 import { useParams } from "@solidjs/router";
 import { createMemo } from "solid-js";
 import { ChatPage } from "../../pages/ChatPage";
+import { AgentsPage } from "../../pages/AgentsPage";
 import { PlaceholderPage } from "../../pages/PlaceholderPage";
 import type { WebPlugin } from "../../shell/plugins";
 import { useWorkspace } from "../../shell/workspace";
@@ -60,12 +61,7 @@ export const coreWebPlugin = {
       route: "/agents",
       label: "Agents",
       icon: "nav.agents",
-      component: placeholder(
-        "Identity",
-        "Agents",
-        "Manage portable agent roles and their effective authority.",
-        "Agent editing will continue to write validated AGENT.md capsules through the gateway.",
-      ),
+      component: AgentsPage,
       sidebar: { kind: "section", description: "Roles and authority" },
     },
     {

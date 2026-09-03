@@ -96,6 +96,25 @@ const createdSession = {
   title: null,
 };
 
+const agents = [
+  {
+    id: "default",
+    name: "Hames",
+    authority: "standard",
+    path: "/home/.hames/agents/default/AGENT.md",
+    content_hash: "agent-hash-one",
+    avatar: null,
+  },
+  {
+    id: "reviewer",
+    name: "Reviewer",
+    authority: "read_only",
+    path: "/home/.hames/agents/reviewer/AGENT.md",
+    content_hash: "agent-hash-two",
+    avatar: { shape: "arch", eyes: "visor", color: "#0d9488" },
+  },
+];
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -111,6 +130,18 @@ function successfulFetch() {
     if (path === "/v1/health") return jsonResponse(health);
     if (path === "/v1/sessions?has_messages=true") {
       return jsonResponse([currentSession, ...sessions.slice(1)]);
+    }
+    if (path === "/v1/agents" && !init?.method) return jsonResponse(agents);
+    if (path === "/v1/agents/default" && init?.method === "PATCH") {
+      const avatar = JSON.parse(String(init.body)).avatar;
+      return jsonResponse({
+        ...agents[0],
+        avatar,
+        source: "---\nid: default\n---\nDefault agent.",
+        instructions: "Default agent.",
+        tools_allow: [], tools_deny: [], skills_allow: [], skills_deny: [], skills_pin: [],
+        delegation_allowed: false, delegation_targets: [], deprecated_fields: [],
+      });
     }
     if (path === "/v1/providers") {
       return jsonResponse([
@@ -494,6 +525,33 @@ describe("Hames web shell", () => {
       expect(screen.getByRole("link", { name: label })).toBeInTheDocument();
     }
     expect(screen.queryByRole("link", { name: "Runs" })).not.toBeInTheDocument();
+  });
+
+  it("lists real agents and persists avatar customization", async () => {
+    window.history.replaceState({}, "", "/agents");
+    const fetchMock = successfulFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    render(() => <App />);
+
+    expect(await screen.findByRole("heading", { name: "Hames", level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Reviewer", level: 2 })).toBeInTheDocument();
+    expect(screen.getByText("Read only")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Customize Hames avatar" }));
+    expect(screen.getByRole("dialog", { name: "Customize Hames" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Hex/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Happy/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Use #db2777" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save avatar" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/agents/default",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ avatar: { shape: "hex", eyes: "happy", color: "#db2777" } }),
+      }),
+    ));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
   it("surfaces a retryable offline state", async () => {

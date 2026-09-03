@@ -32,6 +32,37 @@ export interface Session {
   interaction_mode: SessionMode;
 }
 
+export type AgentAvatarShape = "round" | "square" | "arch" | "capsule" | "hex";
+export type AgentAvatarEyes = "dots" | "visor" | "happy";
+
+export interface AgentAvatarConfig {
+  shape: AgentAvatarShape;
+  eyes: AgentAvatarEyes;
+  color: string;
+}
+
+export interface AgentPublic {
+  id: string;
+  name: string;
+  authority: string;
+  path: string;
+  content_hash: string;
+  avatar: AgentAvatarConfig | null;
+}
+
+export interface AgentDetail extends AgentPublic {
+  source: string;
+  instructions: string;
+  tools_allow: string[];
+  tools_deny: string[];
+  skills_allow: string[];
+  skills_deny: string[];
+  skills_pin: string[];
+  delegation_allowed: boolean;
+  delegation_targets: string[];
+  deprecated_fields: string[];
+}
+
 export type SessionMode = "manual" | "auto" | "plan";
 
 export interface ProviderProfile {

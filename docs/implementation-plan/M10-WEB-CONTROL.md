@@ -133,7 +133,9 @@ A user can click from final answer to model calls and sources that produced it.
 
 Implement:
 
-- list agents;
+- list agents; **Implemented**
+- persist a component-rendered avatar (five shapes, three eye styles, and custom
+  color) as validated `AGENT.md` metadata; **Implemented**
 - create agent;
 - edit `AGENT.md` through text editor;
 - schema/frontmatter validation before save;

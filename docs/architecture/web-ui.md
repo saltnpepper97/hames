@@ -97,6 +97,14 @@ Durable replay and transient deltas are folded at most once per animation frame,
 and live output is layered over the durable projection without rescanning the
 entire event history for every token.
 
+The Agents surface reads the live capsule registry and contains no sample
+agents. Its reusable SVG `AgentAvatar` component draws five simple robot shapes
+and three eye styles, with restrained idle movement and a reduced-motion
+fallback. The avatar editor is a focused component with previews, a suggested
+palette, and a keyboard-operable hue and saturation/value picker. Saving writes
+validated avatar metadata to the agent's `AGENT.md` through the gateway; the
+browser does not retain a second source of truth.
+
 ## Build and packaging
 
 Run the pinned frontend toolchain with:
@@ -125,9 +133,10 @@ created empty session opens directly in the composer but enters sidebar history
 only after its first message. Pending approvals and agent questions render as
 composable transcript cards and resolve through the existing gateway controls.
 Provider, model, interaction mode, and reasoning effort are real session
-settings, while the attachment control remains visibly disabled until its
-gateway contract exists.
-Commands, settings contributions, and all management editors remain future
-gateway-backed slices. See
+settings. The first Agents slice lists real capsules and persists avatar
+customization; deeper identity and capability editing remain planned. The
+attachment control remains visibly disabled until its gateway contract exists.
+Commands, settings contributions, and the remaining management editors are
+future gateway-backed slices. See
 [M10 Web Control](../implementation-plan/M10-WEB-CONTROL.md) for their acceptance
 criteria.

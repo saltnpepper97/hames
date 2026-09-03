@@ -57,6 +57,10 @@ export function AppShell(props: AppShellProps) {
       ) ?? fallback
     );
   });
+  const sectionDescription = createMemo(() => {
+    const sidebar = activeSurface().sidebar;
+    return sidebar.kind === "section" ? sidebar.description : "";
+  });
 
   createEffect(() => {
     location.pathname;
@@ -186,7 +190,7 @@ export function AppShell(props: AppShellProps) {
               </nav>
             </Match>
             <Match when={activeSurface().sidebar.kind === "section"}>
-              <p class="context-empty">No {activeSurface().label.toLowerCase()} controls yet.</p>
+              <p class="context-empty">{sectionDescription()}</p>
             </Match>
           </Switch>
 
