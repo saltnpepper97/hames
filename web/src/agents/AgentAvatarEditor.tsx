@@ -31,7 +31,6 @@ const eyes: { id: AgentAvatarEyes; label: string }[] = [
 
 const faces: { id: AgentAvatarFace; label: string }[] = [
   { id: "solid", label: "Solid" },
-  { id: "outline", label: "Outline" },
   { id: "none", label: "Off" },
 ];
 
@@ -98,7 +97,7 @@ export function AgentAvatarEditor(props: AgentAvatarEditorProps) {
 
             <fieldset>
               <legend>Face plate</legend>
-              <div class="avatar-option-grid eyes">
+              <div class="avatar-option-grid faces">
                 <For each={faces}>{(face) => (
                   <Button
                     variant="choice"

@@ -63,7 +63,7 @@ deleted.
 Web clients can also give an agent a small visual identity. The avatar remains
 portable capsule metadata rather than browser-local state: five body shapes
 (`circle`, `square`, `triangle`, `cloud`, and `hex`), three eye styles (`dots`,
-`visor`, and `pill`), an optional solid or outline face plate, and a six-digit
+`visor`, and `pill`), a solid or disabled face plate, and a six-digit
 hex color. Clients derive a stable
 fallback for older capsules and write the chosen avatar through the same atomic
 agent update path.

@@ -116,7 +116,7 @@ the source of truth.
 
 Its reusable SVG `AgentAvatar` component draws five robot shapes (circle, soft
 square, triangle, scalloped cloud, and hex), three eye styles (dots, visor, and
-vertical pills), and an optional solid or outlined face plate. The face assembly
+vertical pills), and a solid or disabled face plate. The face assembly
 looks around as a unit, the body and antenna add subtle independent motion, and
 reduced-motion clients receive a static fallback. The avatar editor is a focused
 portaled dialog with previews, a suggested palette, and a keyboard-operable hue

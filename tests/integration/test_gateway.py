@@ -1154,7 +1154,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 36
+            assert health_body["protocol_version"] == 37
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -2964,7 +2964,7 @@ async def test_gateway_persists_agent_avatar_in_list_and_detail(tmp_path: Path) 
     state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
     headers = {"Authorization": f"Bearer {state.token}"}
     transport = httpx.ASGITransport(app=create_app(state))
-    avatar = {"shape": "triangle", "eyes": "visor", "face": "outline", "color": "#0EA5E9"}
+    avatar = {"shape": "triangle", "eyes": "visor", "face": "solid", "color": "#0EA5E9"}
     try:
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             updated = await client.patch(

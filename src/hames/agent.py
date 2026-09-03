@@ -110,7 +110,7 @@ class AgentAvatar(BaseModel):
 
     shape: Literal["circle", "square", "triangle", "cloud", "hex"] = "circle"
     eyes: Literal["dots", "visor", "pill"] = "dots"
-    face: Literal["solid", "outline", "none"] = "solid"
+    face: Literal["solid", "none"] = "solid"
     color: str = "#64748b"
 
     @field_validator("shape", mode="before")
@@ -128,6 +128,11 @@ class AgentAvatar(BaseModel):
     @classmethod
     def migrate_early_eyes(cls, value: object) -> object:
         return "pill" if value == "happy" else value
+
+    @field_validator("face", mode="before")
+    @classmethod
+    def migrate_early_faces(cls, value: object) -> object:
+        return "solid" if value == "outline" else value
 
     @field_validator("color")
     @classmethod

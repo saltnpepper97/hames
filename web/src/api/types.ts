@@ -34,7 +34,7 @@ export interface Session {
 
 export type AgentAvatarShape = "circle" | "square" | "triangle" | "cloud" | "hex";
 export type AgentAvatarEyes = "dots" | "visor" | "pill";
-export type AgentAvatarFace = "solid" | "outline" | "none";
+export type AgentAvatarFace = "solid" | "none";
 
 export interface AgentAvatarConfig {
   shape: AgentAvatarShape;

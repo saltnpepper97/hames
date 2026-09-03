@@ -1967,11 +1967,6 @@ a {
   stroke-width: 2;
 }
 
-.agent-avatar-face.outline {
-  fill: transparent;
-  stroke: rgb(255 255 255 / 78%);
-}
-
 .agent-avatar-gaze {
   transform-box: fill-box;
   transform-origin: center;
@@ -2150,6 +2145,10 @@ a {
 
 .avatar-option-grid.eyes {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.avatar-option-grid.faces {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .avatar-option {

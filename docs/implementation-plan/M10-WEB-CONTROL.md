@@ -72,7 +72,7 @@ claiming unfinished controls:
 
 The next vertical slice adds richer plans, tasks, and child-agent activity.
 Those controls and the management capabilities listed below remain deferred.
-The gateway protocol is 36 for the refined avatar schema and the agent editor's
+The gateway protocol is 37 for the refined avatar schema and the agent editor's
 workspace-aware capability catalog. The persistence layout remains unchanged.
 
 ## Goal

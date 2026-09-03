@@ -15,6 +15,10 @@ describe("AgentAvatar", () => {
     const lobes = [...container.querySelectorAll(".agent-avatar-shell circle")];
     expect(lobes).toHaveLength(7);
     expect(new Set(lobes.map((lobe) => lobe.getAttribute("r")))).toEqual(new Set(["18"]));
+    expect(container.querySelector(".agent-antenna")).toHaveAttribute(
+      "d",
+      "M40 10V1m0 0 5 4m-5-4-5 4",
+    );
     expect(container.querySelector(".agent-avatar-eyes")).toHaveClass("on-shell");
   });
 

@@ -32,7 +32,12 @@ export function AgentAvatar(props: AgentAvatarProps) {
     >
       <svg viewBox="0 0 80 80" aria-hidden="true">
         <g class="agent-avatar-body">
-          <path class="agent-antenna" d="M40 17V10m0 0 5-4m-5 4-5-4" />
+          <path
+            class="agent-antenna"
+            d={props.config.shape === "cloud"
+              ? "M40 10V1m0 0 5 4m-5-4-5 4"
+              : "M40 17V10m0 0 5-4m-5 4-5-4"}
+          />
           <Switch>
             <Match when={props.config.shape === "square"}>
               <rect class="agent-avatar-shell" x="13" y="18" width="54" height="52" rx="8" />
@@ -62,7 +67,6 @@ export function AgentAvatar(props: AgentAvatarProps) {
             <Show when={props.config.face !== "none"}>
               <rect
                 class="agent-avatar-face"
-                classList={{ outline: props.config.face === "outline" }}
                 x="22"
                 y={faceY()}
                 width="36"

@@ -163,6 +163,7 @@ def test_agent_avatar_migrates_early_shape_names() -> None:
     assert AgentAvatar.model_validate({"shape": "arch"}).shape == "triangle"
     assert AgentAvatar.model_validate({"shape": "capsule"}).shape == "cloud"
     assert AgentAvatar.model_validate({"eyes": "happy"}).eyes == "pill"
+    assert AgentAvatar.model_validate({"face": "outline"}).face == "solid"
 
 
 def test_agent_update_rejects_identity_change_without_touching_capsule(

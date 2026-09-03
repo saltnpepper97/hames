@@ -32,7 +32,7 @@ class MockEventSource {
 
 const bootstrap = {
   protocol_version: 1,
-  gateway_protocol_version: 36,
+  gateway_protocol_version: 37,
   working_directory: "/work/hames",
   csrf_token: "csrf",
 };
@@ -40,7 +40,7 @@ const bootstrap = {
 const health = {
   status: "ok",
   version: "0.0.0",
-  protocol_version: 36,
+  protocol_version: 37,
   database_ready: true,
   provider_profiles: ["codex"],
   default_provider: "codex",
@@ -112,7 +112,7 @@ const agents: AgentPublic[] = [
     authority: "read_only",
     path: "/home/.hames/agents/reviewer/AGENT.md",
     content_hash: "agent-hash-two",
-    avatar: { shape: "cloud", eyes: "visor", face: "outline", color: "#0d9488" },
+    avatar: { shape: "cloud", eyes: "visor", face: "solid", color: "#0d9488" },
   },
 ];
 
