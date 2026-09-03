@@ -1641,6 +1641,21 @@ def create_app(state: GatewayState) -> FastAPI:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
 
     @app.get(
+        "/v1/sessions/{session_id}/skills/available/{slug}",
+        dependencies=auth,
+        response_model=SkillVersion,
+    )
+    async def get_available_skill(session_id: str, slug: str) -> SkillVersion:
+        """Inspect a workspace-visible Skill without applying one agent's catalog policy."""
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            return await asyncio.to_thread(state.runs.skills.get_visible, session, slug)
+        except KeyError as exc:
+            raise ApiError(404, "skill_not_found", f"unknown visible Skill: {slug}") from exc
+        except ValueError as exc:
+            raise ApiError(409, "skill_integrity_error", str(exc)) from exc
+
+    @app.get(
         "/v1/sessions/{session_id}/skills/{slug}",
         dependencies=auth,
         response_model=SkillVersion,

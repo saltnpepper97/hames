@@ -165,6 +165,9 @@ Verify $0 and report evidence.
     )
 
     catalog = {item.slug: item for item in registry.visible(session)}
+    assert catalog["teach"].source == "portable"
+    assert catalog["verify"].source == "portable"
+    assert catalog["web-app-debugging"].source == "builtin"
     assert catalog["teach"].invocation == "user"
     assert catalog["teach"].argument_hint == "[topic]"
     assert catalog["verify"].invocation == "both"

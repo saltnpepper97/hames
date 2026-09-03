@@ -4394,6 +4394,7 @@ async def test_gateway_exposes_skill_inspection_and_lifecycle_controls(tmp_path:
             )
             assert listed.status_code == 200
             assert listed.json()[0]["slug"] == "inspect-files"
+            assert listed.json()[0]["source"] == "managed"
             complete_catalog = await client.get(
                 f"/v1/sessions/{session_id}/skills", headers=headers
             )
@@ -4484,8 +4485,15 @@ Teach $ARGUMENTS with one example.
             await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
             catalog = await client.get(f"/v1/sessions/{session_id}/skills", headers=headers)
             teach = next(item for item in catalog.json() if item["slug"] == "teach")
+            assert teach["source"] == "portable"
             assert teach["invocation"] == "user"
             assert teach["argument_hint"] == "[topic]"
+            available = await client.get(
+                f"/v1/sessions/{session_id}/skills/available/teach", headers=headers
+            )
+            assert available.status_code == 200
+            assert available.json()["created_by"] == "external"
+            assert available.json()["instructions"].startswith("Teach $ARGUMENTS")
             accepted = await client.post(
                 f"/v1/sessions/{session_id}/messages",
                 headers=headers,

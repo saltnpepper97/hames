@@ -725,10 +725,16 @@ pub struct SkillSummary {
     pub invocation: String,
     #[serde(default)]
     pub argument_hint: String,
+    #[serde(default = "default_skill_source")]
+    pub source: String,
 }
 
 fn default_skill_invocation() -> String {
     "model".to_owned()
+}
+
+fn default_skill_source() -> String {
+    "managed".to_owned()
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

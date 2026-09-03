@@ -25,6 +25,7 @@ SKILL_ID = re.compile(r"[a-z][a-z0-9-]{0,62}")
 TOKEN = re.compile(r"[a-z0-9][a-z0-9_-]+")
 SkillScope = Literal["global", "workspace", "agent"]
 SkillInvocation = Literal["model", "user", "both"]
+SkillSource = Literal["managed", "portable", "builtin"]
 RESERVED_COMMANDS = {
     "agent",
     "cancel",
@@ -207,6 +208,7 @@ class SkillSummary(SkillModel):
     pinned: bool = False
     invocation: SkillInvocation = "model"
     argument_hint: str = ""
+    source: SkillSource = "managed"
 
 
 class SkillJob(SkillModel):
@@ -1142,7 +1144,7 @@ class SkillRegistry:
         return summaries[:limit]
 
     def get_visible(self, session: Session, slug: str) -> SkillVersion:
-        matches = [item for item in self.visible(session) if item.slug == slug]
+        matches = [item for item in self.visible(session, limit=200) if item.slug == slug]
         if len(matches) != 1:
             raise KeyError(slug)
         return self.get(matches[0].version_id)
@@ -1242,6 +1244,13 @@ class SkillRegistry:
         return [self._version_from_row(row) for row in rows]
 
     def summary(self, version: SkillVersion, *, score: float = 0.0) -> SkillSummary:
+        source: SkillSource = (
+            "builtin"
+            if version.id in self._builtin_by_version
+            else "portable"
+            if version.id in self._external_by_version
+            else "managed"
+        )
         return SkillSummary(
             id=version.skill_id,
             slug=version.slug,
@@ -1260,6 +1269,7 @@ class SkillRegistry:
             pinned=version.pinned,
             invocation=version.metadata.invocation,
             argument_hint=version.metadata.argument_hint,
+            source=source,
         )
 
     def set_pinned(self, session: Session, slug: str, *, pinned: bool) -> SkillVersion:

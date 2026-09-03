@@ -3773,6 +3773,7 @@ mod tests {
             pinned: false,
             invocation: "user".to_owned(),
             argument_hint: "[topic]".to_owned(),
+            source: "portable".to_owned(),
         }];
         assert!(
             app.command_options()
