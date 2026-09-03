@@ -18,8 +18,8 @@
 </p>
 
 > [!NOTE]
-> Hames is under active development. M0–M9 and the Ratatui portion of M10 are
-> implemented; interfaces and storage formats may still change.
+> Hames is under active development. M0–M9, the Ratatui client, and the M10 web
+> foundation are implemented; interfaces and storage formats may still change.
 
 Hames is a local coding-agent runtime built around one principle: capable agents
 should remain inspectable and under your control. A trusted Python gateway owns
@@ -30,8 +30,8 @@ work responsive in the terminal.
 
 - **Local-first runtime** — use llama.cpp, Ollama, OpenAI, Codex, or named custom
   provider profiles without moving Hames's durable state out of your home directory.
-- **Terminal-native workflow** — a transcript-first Ratatui UI, classic REPL,
-  mouse selection, themes, session pickers, background terminals, and live usage.
+- **Three local interfaces** — use the transcript-first Ratatui UI, classic REPL,
+  or the new browser workbench backed by the same gateway and durable sessions.
 - **Explicit safety modes** — Manual, Auto, and Plan behavior is enforced by the
   gateway, with exact one-shot approval for high-risk operations.
 - **Durable sessions and goals** — resume or branch conversations, run autonomous
@@ -103,21 +103,26 @@ Useful commands:
 ~~~
 
 Run <code>hames repl</code> for the classic line-oriented client. Piped or
-redirected input selects it automatically.
+redirected input selects it automatically. Run <code>hames web</code> for the
+local browser interface; it starts or verifies the same gateway, serves on
+<code>127.0.0.1:7412</code>, and opens the authenticated launch URL. Use
+<code>hames web --no-open</code> to print the URL instead, or
+<code>hames web --port 0</code> to select a free loopback port.
 
 ## How it works
 
 Hames separates presentation from authority:
 
-1. The **Rust client** renders the TUI or classic REPL and sends typed requests.
+1. The **Rust client** renders the TUI or classic REPL, or securely serves the
+   embedded SolidJS workbench on loopback.
 2. The **Python gateway** owns sessions, providers, context compilation, tools,
    policy decisions, memory, and background work.
 3. The **event ledger** records durable, integrity-checked provenance and
    content-addressed payloads.
 
-Both clients talk to the same gateway and session model. Closing the TUI does not
+All clients talk to the same gateway and session model. Closing a client does not
 discard an active goal or background terminal; <code>/sessions</code> restores
-the durable conversation explicitly.
+the durable conversation explicitly in the terminal clients.
 
 ### Interaction modes
 
@@ -248,6 +253,18 @@ uv run pytest
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+~~~
+
+The web source lives under <code>web/</code> and uses Node 22+ with pnpm. Its
+production output is committed under <code>crates/hames-repl/assets/web/</code>
+and embedded in the Rust binary, so end-user installations do not require Node:
+
+~~~bash
+pnpm --dir web install --frozen-lockfile
+pnpm --dir web check
+pnpm --dir web test
+pnpm --dir web build
+cargo run -p hames-repl -- web --no-open
 ~~~
 
 The backend diagnostic command is also available as

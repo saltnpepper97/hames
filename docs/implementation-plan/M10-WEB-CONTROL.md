@@ -1,8 +1,38 @@
 # M10 — Rich Control Surfaces: Ratatui and Web
 
-The first terminal slice is implemented and documented in
-[M10-TUI.md](M10-TUI.md). This document remains the plan for the broader web
-control surface and the remaining rich-management views.
+The terminal slice is implemented and documented in [M10-TUI.md](M10-TUI.md).
+The web foundation is now implemented; this document remains the plan for the
+chat vertical slice and the remaining rich-management views.
+
+## Implemented foundation
+
+The first web slice establishes the client and its trusted boundary without
+claiming unfinished controls:
+
+- `hames web` starts or verifies the existing gateway, binds a Rust web server
+  to loopback, opens the browser by default, and shuts down only that web server
+  on Ctrl-C;
+- a handcrafted SolidJS/Vite application provides responsive routes for Chat,
+  Runs, Agents, Memory, Skills, Scars, Plugins, and Settings;
+- Chat currently shows live gateway activity and resumable sessions scoped to
+  the exact launch directory, with loading, offline, retry, reconnect, and empty
+  states;
+- unfinished areas are honest, noninteractive route shells rather than local
+  mock implementations;
+- the production bundle is committed and embedded in the Rust executable, with
+  no CDN, analytics, remote fonts, or separate frontend runtime;
+- a one-time launch URL establishes an HttpOnly, SameSite browser session. The
+  same-origin Rust proxy injects the gateway bearer token and enforces exact
+  Host, Origin, and CSRF checks while preserving SSE response streaming and
+  `Last-Event-ID`;
+- CSP and defensive response headers apply to the application, bootstrap API,
+  proxy responses, and error responses.
+
+The next vertical slice is real chat and approvals. Session creation/resume,
+event reconstruction, assistant streaming, tool activity, cancellation, and
+approval mutations remain deferred, as do the management capabilities listed
+below. The gateway protocol and persistence schema were not changed for this
+foundation.
 
 ## Goal
 

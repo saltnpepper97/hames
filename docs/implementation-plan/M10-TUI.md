@@ -171,5 +171,6 @@ web control surface:
   risking the whole session history at shutdown.
 
 Web search, vision input, the web application, and richer management editors are
-outside this terminal slice. They remain future gateway-backed capabilities; the
-TUI introduces no alternate provider or policy path for them.
+outside this terminal slice. The web foundation is documented in
+[M10-WEB-CONTROL.md](M10-WEB-CONTROL.md); remaining controls stay gateway-backed,
+and the TUI introduces no alternate provider or policy path for them.

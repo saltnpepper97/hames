@@ -1,9 +1,10 @@
 # Hames Rewrite — Working Implementation Plan
 
 This directory is the authoritative build plan for Hames. M0 through M9, the
-[M10 Ratatui slice](M10-TUI.md), and its pre-web terminal hardening closure are
-implemented; the M10 web control surface is the next execution phase. Later milestones preserve the design
-inventory but remain subject to refinement as the harness proves its concepts.
+[M10 Ratatui slice](M10-TUI.md), its terminal hardening closure, and the M10 web
+application foundation are implemented; live chat and management capabilities
+are the next execution phase. Later milestones preserve the design inventory but
+remain subject to refinement as the harness proves its concepts.
 
 Hames is a proper local agent harness built around a small trusted Python kernel,
 an append-only event ledger, named agents, layered memory, progressively disclosed
@@ -44,8 +45,8 @@ observability.
 - SQLite in WAL mode plus content-addressed files for large immutable payloads.
 - pytest, pytest-asyncio, Ruff, Pyright, rustfmt, Clippy, and Cargo tests.
 - Linux as the initial host target.
-- A heavily customized Ratatui client for the terminal; web and desktop stacks
-  are not yet selected.
+- A heavily customized Ratatui client for the terminal and a handcrafted SolidJS
+  workbench embedded and served by the Rust client; no desktop stack is selected.
 
 Do not substitute a large orchestration framework for the runtime. Hames owns its
 loop and its invariants.
@@ -94,7 +95,7 @@ Directories are created lazily and user files are never silently overwritten.
 | [M7](M07-SKILLS.md) | Portable Skills gain autonomous evidence-backed authoring, evaluation, versioning, progressive disclosure, and rollback. |
 | [M8](M08-SCARS-EVOLUTION.md) | Scars provide evidence-backed repair routing and regression protection. |
 | [M9](M09-PLUGINS.md) | Optional isolated plugins add genuine capabilities without bypassing policy. |
-| [M10](M10-WEB-CONTROL.md) | The [Ratatui slice](M10-TUI.md) presents the proven gateway behavior; the web control surface remains next. |
+| [M10](M10-WEB-CONTROL.md) | The [Ratatui slice](M10-TUI.md) presents the proven gateway behavior; the embedded web foundation is live and its chat/management vertical slices remain. |
 | [M11](M11-HARDENING-RELEASE.md) | Security, recovery, packaging, documentation, and release gates produce v0.1.0. |
 
 ## Mandatory execution rule
