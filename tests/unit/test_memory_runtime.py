@@ -152,6 +152,37 @@ async def test_background_extraction_activates_important_user_memory(
         payload={"max_model_turns": 1, "max_tool_calls": 1, "max_active_seconds": 30.0},
         causation_id=user.id,
     )
+    previous = started
+    for index, (name, summary) in enumerate(
+        [
+            ("read_file", "read src/hames/memory.py"),
+            ("shell", "shell exited with code 0"),
+            ("task_update", "marked Tighten memory completed"),
+            ("edit_file", "edited src/hames/memory.py"),
+        ]
+    ):
+        previous = ledger.append(
+            session_id=session.id,
+            run_id="run-1",
+            agent_id=session.agent_id,
+            event_type="tool.completed",
+            payload={
+                "tool_call_id": f"call-{index}",
+                "name": name,
+                "status": "completed",
+                "summary": summary,
+                "content": "",
+            },
+            causation_id=previous.id,
+        )
+    ledger.append(
+        session_id=session.id,
+        run_id="run-1",
+        agent_id=session.agent_id,
+        event_type="assistant.message",
+        payload={"content": "An intermediate response.", "status": "completed"},
+        causation_id=previous.id,
+    )
     ledger.append(
         session_id=session.id,
         run_id="run-1",
@@ -188,6 +219,14 @@ async def test_background_extraction_activates_important_user_memory(
         assert records[0].layer == "relationship"
         assert records[0].status == "active"
         assert provider.requests[0].metadata["purpose"] == "memory_extraction"
+        evidence = json.loads(provider.requests[0].messages[0].content)["evidence"]
+        assert [item["type"] for item in evidence] == [
+            "user.message",
+            "tool.completed",
+            "assistant.message",
+        ]
+        assert evidence[1]["payload"]["name"] == "edit_file"
+        assert evidence[2]["payload"]["content"] == "Understood."
         event_types = [event.type for event in ledger.list_events(session.id)]
         assert "memory.job.completed" in event_types
         assert "memory.accepted" in event_types

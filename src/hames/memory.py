@@ -26,6 +26,64 @@ _SECRET = re.compile(
     r"\bAKIA[A-Z0-9]{16}\b)",
     re.IGNORECASE,
 )
+_ROUTINE_EPISODE_TOOLS = {
+    "get_goal",
+    "list_dir",
+    "memory_search",
+    "read_file",
+    "scar_list",
+    "shell",
+    "skill_catalog",
+    "task_list",
+    "task_update",
+}
+_ROUTINE_EPISODE_SUMMARY = re.compile(
+    r"^(?:shell exited with code 0|read\s|listed\s|searched\s|marked\s|added\s)",
+    re.IGNORECASE,
+)
+
+
+def _compact_inline(value: object, limit: int) -> str:
+    if value is None:
+        return ""
+    text = " ".join(str(value).split())
+    if len(text) <= limit:
+        return text
+    clipped = text[: limit - 1].rsplit(" ", 1)[0].rstrip(" ,;:-")
+    return f"{clipped or text[: limit - 1].rstrip()}…"
+
+
+def _compact_block(value: object, limit: int) -> str:
+    if value is None:
+        return ""
+    lines = [line.rstrip() for line in str(value).strip().splitlines()]
+    text = "\n".join(line for line in lines if line.strip())
+    if len(text) <= limit:
+        return text
+    clipped = text[: limit - 1].rsplit(" ", 1)[0].rstrip(" ,;:-\n")
+    return f"{clipped or text[: limit - 1].rstrip()}…"
+
+
+def _unique_bounded(values: list[str], *, count: int, length: int) -> list[str]:
+    selected: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        compact = _compact_inline(value, length)
+        key = compact.casefold()
+        if not compact or key in seen:
+            continue
+        selected.append(compact)
+        seen.add(key)
+        if len(selected) >= count:
+            break
+    return selected
+
+
+@dataclass(frozen=True, slots=True)
+class _EpisodeProjection:
+    summary: str
+    value: dict[str, JsonValue]
+    provenance_event_ids: list[str]
 
 
 class MemoryModel(BaseModel):
@@ -254,9 +312,10 @@ class MemoryStore:
             ).fetchone()
         if existing is not None:
             return MemoryMutation(self.get(str(existing["id"])), ())
-        events = self.ledger.list_run_events(run_id)
-        if not events:
+        projection = self._episode_projection(run_id)
+        if projection is None:
             return None
+        events = self.ledger.list_run_events(run_id)
         notable_types = {
             "tool.completed",
             "tool.failed",
@@ -273,69 +332,20 @@ class MemoryStore:
         notable = [event for event in events if event.type in notable_types]
         if not notable:
             return None
-        started = next((event for event in events if event.type == "run.started"), None)
-        user_event: Event | None = None
-        if started is not None and started.causation_id is not None:
-            candidate = self.ledger.get_event(started.causation_id)
-            if candidate.type == "user.message":
-                user_event = candidate
-        request = str(user_event.payload.get("content", "")) if user_event else ""
-        assistant = next(
-            (
-                str(event.payload.get("content", ""))
-                for event in reversed(events)
-                if event.type == "assistant.message" and event.payload.get("status") == "completed"
-            ),
-            "",
-        )
-        actions = [
-            str(event.payload.get("summary", event.type))
-            for event in events
-            if event.type in {"tool.completed", "tool.failed", "tool.rejected"}
-        ]
-        failures = [
-            str(event.payload.get("message", event.payload.get("summary", event.type)))
-            for event in events
-            if event.type in {"run.failed", "run.cancelled", "delegation.failed"}
-        ]
         terminal = next(
             (event for event in reversed(events) if event.type.startswith("run.")), events[-1]
-        )
-        summary_parts = [f"Request: {request[:500] or '(unavailable)'}"]
-        if actions:
-            summary_parts.append("Actions: " + "; ".join(actions)[:700])
-        if failures:
-            summary_parts.append("Failures: " + "; ".join(failures)[:500])
-        if assistant:
-            summary_parts.append("Outcome: " + assistant[:700])
-        summary = " ".join(summary_parts)[:2000]
-        provenance = [event.id for event in notable]
-        if user_event is not None:
-            provenance.insert(0, user_event.id)
-        if terminal.id not in provenance:
-            provenance.append(terminal.id)
-        episode_value = JSON_OBJECT.validate_python(
-            {
-                "request": request[:1000],
-                "actions": actions,
-                "outcome": assistant[:1000],
-                "failures": failures,
-                "agents": sorted(
-                    {event.agent_id for event in events if event.agent_id is not None}
-                ),
-            }
         )
         candidate = MemoryCandidate(
             layer="episodic",
             visibility="workspace",
             subject=f"run:{run_id}",
             predicate="recorded_outcome",
-            value=episode_value,
-            summary=summary,
+            value=projection.value,
+            summary=projection.summary,
             confidence=1.0,
-            importance=0.9 if failures else 0.75,
+            importance=0.9 if projection.value.get("failures") else 0.75,
             anchors=[],
-            provenance_event_ids=provenance,
+            provenance_event_ids=projection.provenance_event_ids,
             evidence_basis="successful_tool",
         )
         mutation = self.create_candidate(
@@ -360,6 +370,100 @@ class MemoryStore:
             correlation_id=run_id,
         )
         return MemoryMutation(mutation.record, (*mutation.events, projected))
+
+    def _episode_projection(self, run_id: str) -> _EpisodeProjection | None:
+        events = self.ledger.list_run_events(run_id)
+        if not events:
+            return None
+        started = next((event for event in events if event.type == "run.started"), None)
+        user_event: Event | None = None
+        if started is not None and started.causation_id is not None:
+            candidate = self.ledger.get_event(started.causation_id)
+            if candidate.type == "user.message":
+                user_event = candidate
+        assistant_event = next(
+            (
+                event
+                for event in reversed(events)
+                if event.type == "assistant.message" and event.payload.get("status") == "completed"
+            ),
+            None,
+        )
+        terminal = next(
+            (event for event in reversed(events) if event.type.startswith("run.")), events[-1]
+        )
+        action_events: list[tuple[Event, str]] = []
+        for event in events:
+            if event.type != "tool.completed":
+                continue
+            name = str(event.payload.get("name", ""))
+            summary = _compact_inline(event.payload.get("summary", ""), 140)
+            if (
+                not summary
+                or name in _ROUTINE_EPISODE_TOOLS
+                or _ROUTINE_EPISODE_SUMMARY.match(summary)
+            ):
+                continue
+            if summary.casefold() not in {value.casefold() for _, value in action_events}:
+                action_events.append((event, summary))
+            if len(action_events) >= 3:
+                break
+        failure_events = [
+            event
+            for event in events
+            if event.type
+            in {"tool.failed", "tool.rejected", "run.failed", "run.cancelled", "delegation.failed"}
+        ][:3]
+        failures = _unique_bounded(
+            [
+                str(event.payload.get("message", event.payload.get("summary", event.type)))
+                for event in failure_events
+            ],
+            count=3,
+            length=140,
+        )
+        request = _compact_block(
+            "" if user_event is None else user_event.payload.get("content", ""), 320
+        )
+        outcome = _compact_block(
+            "" if assistant_event is None else assistant_event.payload.get("content", ""), 600
+        )
+        summary_parts = [f"Request: {_compact_inline(request, 160) or '(unavailable)'}"]
+        if outcome:
+            summary_parts.append(f"Outcome: {_compact_inline(outcome, 220)}")
+        elif action_events:
+            summary_parts.append(
+                "Changes: " + "; ".join(value for _, value in action_events)[:220]
+            )
+        if failures:
+            summary_parts.append("Issues: " + "; ".join(failures)[:160])
+        summary = " ".join(summary_parts)[:500]
+        provenance = [
+            event.id
+            for event in [
+                user_event,
+                *(event for event, _ in action_events),
+                *failure_events,
+                assistant_event,
+                terminal,
+            ]
+            if event is not None
+        ]
+        return _EpisodeProjection(
+            summary=summary,
+            value=JSON_OBJECT.validate_python(
+                {
+                    "request": request,
+                    "actions": [value for _, value in action_events],
+                    "outcome": outcome,
+                    "failures": failures,
+                    "agents": sorted(
+                        {event.agent_id for event in events if event.agent_id is not None}
+                    ),
+                }
+            ),
+            provenance_event_ids=list(dict.fromkeys(provenance)),
+        )
 
     def transition(
         self,
@@ -720,10 +824,11 @@ class MemoryStore:
         since: datetime,
         causation_id: str,
     ) -> tuple[Event, ...]:
-        """Supersede older visible facts when a newer fact owns the same exact slot."""
+        """Reconcile duplicate facts and compact recent episodic projections."""
 
         records = self.list_visible(session, status="active", limit=10_000)
         groups: dict[tuple[object, ...], list[MemoryRecord]] = {}
+        episodes = [record for record in records if record.layer == "episodic"]
         for record in records:
             if record.layer == "episodic":
                 continue
@@ -744,7 +849,20 @@ class MemoryStore:
             if datetime.fromisoformat(newest.created_at) < since:
                 continue
             replacements.extend((older, newest) for older in values[1:])
-        if not replacements:
+        episode_updates: list[tuple[MemoryRecord, _EpisodeProjection]] = []
+        for record in episodes:
+            if record.source_run_id is None or datetime.fromisoformat(record.updated_at) < since:
+                continue
+            projection = self._episode_projection(record.source_run_id)
+            if projection is None:
+                continue
+            if (
+                record.summary != projection.summary
+                or record.value != projection.value
+                or set(record.provenance_event_ids) != set(projection.provenance_event_ids)
+            ):
+                episode_updates.append((record, projection))
+        if not replacements and not episode_updates:
             return ()
 
         now = utc_now()
@@ -762,6 +880,47 @@ class MemoryStore:
                         causation_id,
                         now,
                         reason="idle_dream_reconciliation",
+                    )
+                )
+            for record, projection in episode_updates:
+                encoded_value = json.dumps(projection.value, separators=(",", ":"), sort_keys=True)
+                connection.execute(
+                    "UPDATE memory_records SET summary = ?, value_json = ?, updated_at = ? "
+                    "WHERE id = ? AND status = 'active'",
+                    (projection.summary, encoded_value, now, record.id),
+                )
+                connection.execute(
+                    "DELETE FROM memory_provenance WHERE memory_id = ?", (record.id,)
+                )
+                connection.executemany(
+                    "INSERT INTO memory_provenance(memory_id, event_id) VALUES (?, ?)",
+                    [(record.id, event_id) for event_id in projection.provenance_event_ids],
+                )
+                connection.execute("DELETE FROM memory_fts WHERE memory_id = ?", (record.id,))
+                connection.execute(
+                    "INSERT INTO memory_fts(memory_id, subject, predicate, summary, value) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        record.id,
+                        record.subject,
+                        record.predicate,
+                        projection.summary,
+                        json.dumps(projection.value, sort_keys=True),
+                    ),
+                )
+                events.append(
+                    self.ledger.append_in_transaction(
+                        connection,
+                        session_id=session.id,
+                        agent_id=session.agent_id,
+                        event_type="memory.episode.projected",
+                        payload={
+                            "memory_id": record.id,
+                            "source_run_id": record.source_run_id,
+                            "reason": "idle_dream_compaction",
+                        },
+                        causation_id=causation_id,
+                        correlation_id=record.source_run_id,
                     )
                 )
             connection.commit()

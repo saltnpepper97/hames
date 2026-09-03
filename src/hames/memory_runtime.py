@@ -16,15 +16,18 @@ from hames.memory import MemoryCandidate, MemoryJob, MemoryStore, should_auto_ac
 from hames.providers import ModelRequest, Provider, ProviderError, StreamEventKind, ToolDefinition
 from hames.providers.base import JSON_OBJECT, ProviderMessage
 
-EXTRACTION_SYSTEM = """You extract only important durable memory from one completed Hames
-turn. Submit zero or more candidates through submit_memory_candidates. Relationship memory is
-about stable user preferences or supported relationships. Semantic memory is a durable known
-fact. Never store procedures, secrets, transient mood, guesses, routine chat, or mundane details.
-Every candidate must cite only supplied evidence event IDs. Direct user statements use
-explicit_user; facts established by successful tools use successful_tool; anything else uses
-assistant_inference. Use global visibility only for facts useful across workspaces, otherwise use
-workspace. Express value as a concise string and always provide anchors, using an empty list when
-none are needed. Episodic memory is created deterministically elsewhere.
+EXTRACTION_SYSTEM = """You extract only important, reusable durable memory from one completed
+Hames turn. Most turns should submit zero candidates. Submit candidates only through
+submit_memory_candidates. Relationship memory is a stable user preference or supported
+relationship. Semantic memory is a durable fact likely to matter in later work. Never store a run
+recap, procedure, plan/task state, command result, successful check count, install status, file
+browsing, transient implementation detail, secret, mood, guess, routine chat, or anything useful
+only inside this turn. Do not copy the assistant's wrap-up into memory. Every candidate must cite
+only supplied evidence event IDs. Direct user statements use explicit_user; durable facts
+established by successful tools use successful_tool; anything else uses assistant_inference. Use
+global visibility only for facts useful across workspaces, otherwise use workspace. Express value
+as one concise string and always provide anchors, using an empty list when none are needed.
+Episodic memory is created and compacted deterministically elsewhere.
 """
 
 
@@ -333,7 +336,24 @@ class MemoryManager:
         evidence: list[dict[str, Any]] = []
         if user is not None:
             evidence.append({"event_id": user.id, "type": user.type, "payload": user.payload})
-        for event in events:
+        assistant_events = [
+            event
+            for event in events
+            if event.type == "assistant.message" and event.payload.get("status") == "completed"
+        ]
+        selected_events = [
+            event
+            for event in events
+            if event.type in {"tool.failed", "tool.rejected"}
+            or (
+                event.type == "tool.completed"
+                and str(event.payload.get("name", ""))
+                not in {"get_goal", "list_dir", "read_file", "shell", "task_list", "task_update"}
+            )
+        ][-6:]
+        if assistant_events:
+            selected_events.append(assistant_events[-1])
+        for event in selected_events:
             if event.type in {
                 "assistant.message",
                 "tool.completed",

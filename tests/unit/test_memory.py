@@ -354,7 +354,7 @@ def test_episode_projection_is_deterministic_and_skips_routine_chat(
         },
         causation_id=started.id,
     )
-    ledger.append(
+    assistant = ledger.append(
         session_id=session.id,
         run_id="notable-run",
         agent_id=session.agent_id,
@@ -362,7 +362,7 @@ def test_episode_projection_is_deterministic_and_skips_routine_chat(
         payload={"content": "The README was inspected.", "status": "completed"},
         causation_id=tool.id,
     )
-    ledger.append(
+    terminal = ledger.append(
         session_id=session.id,
         run_id="notable-run",
         agent_id=session.agent_id,
@@ -374,11 +374,50 @@ def test_episode_projection_is_deterministic_and_skips_routine_chat(
     assert projected is not None
     assert projected.record.layer == "episodic"
     assert projected.events[-1].type == "memory.episode.projected"
-    assert "read README.md" in projected.record.summary
+    assert projected.record.summary == (
+        "Request: Inspect the README. Outcome: The README was inspected."
+    )
+    assert isinstance(projected.record.value, dict)
+    assert projected.record.value["actions"] == []
+    assert set(projected.record.provenance_event_ids) == {user.id, assistant.id, terminal.id}
     restarted_projection = MemoryStore(ledger).project_episode(session, "notable-run")
     assert restarted_projection is not None
     assert restarted_projection.record.id == projected.record.id
     assert restarted_projection.events == ()
+
+    with ledger.database.connect() as connection:
+        connection.execute(
+            "UPDATE memory_records SET summary = ?, value_json = ? WHERE id = ?",
+            (
+                "Request: Inspect the README. Actions: read README.md; shell exited with code 0; "
+                "marked check completed. Outcome: The README was inspected.",
+                '{"request":"Inspect the README.","actions":["read README.md",'
+                '"shell exited with code 0","marked check completed"],'
+                '"outcome":"The README was inspected.","failures":[],"agents":["default"]}',
+                projected.record.id,
+            ),
+        )
+        connection.execute(
+            "DELETE FROM memory_provenance WHERE memory_id = ?", (projected.record.id,)
+        )
+        connection.executemany(
+            "INSERT INTO memory_provenance(memory_id, event_id) VALUES (?, ?)",
+            [
+                (projected.record.id, event_id)
+                for event_id in [user.id, tool.id, assistant.id, terminal.id]
+            ],
+        )
+        connection.commit()
+    reconciled = MemoryStore(ledger).reconcile_recent(
+        session,
+        since=datetime.now(UTC) - timedelta(days=1),
+        causation_id=terminal.id,
+    )
+    assert [event.payload["reason"] for event in reconciled] == ["idle_dream_compaction"]
+    compacted = MemoryStore(ledger).get(projected.record.id)
+    assert compacted.summary == projected.record.summary
+    assert compacted.value == projected.record.value
+    assert set(compacted.provenance_event_ids) == {user.id, assistant.id, terminal.id}
 
     routine_user = ledger.append(
         session_id=session.id,

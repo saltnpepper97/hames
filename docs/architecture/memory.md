@@ -23,10 +23,14 @@ high-importance explicit user facts and successfully established tool facts may 
 activated automatically. Explicit `/remember` captures are activated after the
 same validation and extraction path.
 
-Episodic records are deterministic projections of notable runs. Routine chat does
-not create an episode. Tool activity, failures, cancellations, delegation outcomes,
-and memory corrections make a run notable. Re-projecting the same run returns the
-existing episode, so restart bookkeeping cannot duplicate it.
+Episodic records are compact deterministic projections of notable runs. Routine chat
+does not create an episode. Tool activity, failures, cancellations, delegation outcomes,
+and memory corrections make a run notable, but routine reads, successful shell exits,
+and task bookkeeping are excluded from the stored action list. The projection keeps one
+bounded request, the final completed response, at most three meaningful actions or issues,
+and only their direct provenance. Re-projecting the same run returns the existing episode,
+so restart bookkeeping cannot duplicate it. Idle dream reconciliation also rebuilds recent
+episodes through this compactor, cleaning records produced by an older projection policy.
 
 ## Scope and visibility
 
