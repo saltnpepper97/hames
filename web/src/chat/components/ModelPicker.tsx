@@ -29,6 +29,7 @@ interface ModelIdentity {
 }
 
 type PickerPane = "root" | "models" | "effort";
+type PickerDirection = "forward" | "back";
 
 function providerLabel(profile: ProviderProfile): string {
   if (profile.adapter === "llama_cpp") return "llama.cpp";
@@ -53,6 +54,7 @@ function modelDetail(model: ProviderModel): string {
 export function ModelPicker(props: ModelPickerProps) {
   const [open, setOpen] = createSignal(false);
   const [pane, setPane] = createSignal<PickerPane>("root");
+  const [direction, setDirection] = createSignal<PickerDirection>("forward");
   const [groups, setGroups] = createSignal<ProviderGroup[]>([]);
   const [pending, setPending] = createSignal<ModelIdentity>();
   const [loadingCatalog, setLoadingCatalog] = createSignal(false);
@@ -122,6 +124,7 @@ export function ModelPicker(props: ModelPickerProps) {
       return;
     }
     setPane("root");
+    setDirection("forward");
     setPending();
     setOpen(true);
     void loadCatalog();
@@ -157,15 +160,18 @@ export function ModelPicker(props: ModelPickerProps) {
       return;
     }
     setPending(identity);
+    setDirection("forward");
     setPane("effort");
   };
 
   const openCurrentEffort = () => {
     setPending(currentIdentity());
+    setDirection("forward");
     setPane("effort");
   };
 
   const back = () => {
+    setDirection("back");
     if (pane() === "effort" && pending() && (
       pending()!.provider !== props.session.provider || pending()!.model !== props.session.model
     )) {
@@ -218,11 +224,22 @@ export function ModelPicker(props: ModelPickerProps) {
       <DropdownSurface
         open={open()}
         class="model-picker-popover"
+        morph
+        layout={pane()}
+        direction={direction()}
         role="menu"
         ariaLabel="Model and thinking"
       >
           <Show when={pane() === "root"}>
-            <Button variant="bare" class="model-picker-cell" role="menuitem" onClick={() => setPane("models")}>
+            <Button
+              variant="bare"
+              class="model-picker-cell"
+              role="menuitem"
+              onClick={() => {
+                setDirection("forward");
+                setPane("models");
+              }}
+            >
               <span>Model</span>
               <span>{props.session.model}</span>
               <Icon name="action.next" size={14} />

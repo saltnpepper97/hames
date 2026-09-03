@@ -905,10 +905,14 @@ describe("Hames web shell", () => {
     const modelTrigger = screen.getByRole("button", { name: /Model and thinking/ });
     expect(modelTrigger).toHaveTextContent("gpt-5.6-solHigh");
     fireEvent.click(modelTrigger);
+    expect(document.querySelector(".model-picker-popover")).toHaveAttribute("data-morph");
+    expect(document.querySelector(".model-picker-popover")).toHaveAttribute("data-layout", "root");
     fireEvent.click(screen.getByRole("menuitem", { name: /Model/ }));
+    expect(document.querySelector(".model-picker-popover")).toHaveAttribute("data-layout", "models");
     fireEvent.click(await screen.findByRole("menuitemradio", { name: /qwen3:8b/ }));
 
     expect(screen.getByText("Choose thinking to finish")).toBeInTheDocument();
+    expect(document.querySelector(".model-picker-popover")).toHaveAttribute("data-layout", "effort");
     expect(
       fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH"),
     ).toHaveLength(0);
@@ -950,6 +954,16 @@ describe("Hames web shell", () => {
         body: JSON.stringify({ working_directory: "/work/hames" }),
       }),
     );
+
+    fireEvent.click(screen.getByRole("link", { name: "Chat" }));
+    await waitFor(() => {
+      const createCalls = fetchMock.mock.calls.filter(([url, init]) =>
+        url === "/v1/sessions" && init?.method === "POST"
+      );
+      expect(createCalls).toHaveLength(2);
+      expect(window.location.pathname).toBe("/chat/session-new");
+    });
+    expect(await screen.findByRole("textbox", { name: "Message Hames" })).toBeInTheDocument();
   });
 
   it("resolves approval and question events through gateway mutations", async () => {

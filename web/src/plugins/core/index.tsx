@@ -50,7 +50,11 @@ function ChatSurface() {
   };
 
   createEffect(() => {
-    if (params.sessionId || workspace.connection() !== "connected" || attempted) return;
+    if (params.sessionId) {
+      attempted = false;
+      return;
+    }
+    if (workspace.connection() !== "connected" || attempted) return;
     attempted = true;
     void startFresh();
   });
