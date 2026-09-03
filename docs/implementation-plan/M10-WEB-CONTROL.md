@@ -23,9 +23,10 @@ claiming unfinished controls:
   Tabler for the remaining controls, while the built-in areas form `hames.core`;
 - the responsive shell uses one 280-pixel sidebar that collapses into a
   56-pixel icon rail, with New chat and surface navigation above one scrolling
-  contextual directory and Settings pinned below it; Chat lists only real
-  resumable sessions scoped to the exact launch directory and routes a
-  selection into the main area;
+  contextual directory and Settings pinned below it; intermediate widths
+  automatically choose the rail before the small-screen drawer breakpoint;
+  Chat lists only real resumable sessions scoped to the exact launch directory
+  and routes a selection into the main area;
 - loading, offline, expired-session, retry, reconnect, and empty states are
   explicit; an expired process-local browser session is not reported as an
   offline gateway;
@@ -75,11 +76,12 @@ claiming unfinished controls:
   leaving an empty sidebar row;
 - entering the bare Chat route starts fresh work automatically instead of
   rendering a passive session-selection state; its real composer is centered
-  beneath the selected agent identity until the first conversation node arrives,
-  then the same component moves to its bottom dock; refreshing that empty chat
-  resolves its route directly even while it remains omitted from history, and
-  invalid routes fall through to a real replacement chat rather than a pending
-  phantom state;
+  beneath the selected agent identity in one height-aware grid until the first
+  conversation node arrives, then the same component moves to its bottom dock;
+  short windows compact the identity treatment before prompt or input overlap;
+  refreshing that empty chat resolves its route directly even while it remains
+  omitted from history, and invalid routes fall through to a real replacement
+  chat rather than a pending phantom state;
 - pending approval and question events render in the transcript and resolve
   through CSRF-protected gateway mutations, including session-scoped approval,
   option notes, and custom answers;

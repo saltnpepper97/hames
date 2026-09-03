@@ -1251,10 +1251,6 @@ a {
 }
 
 .fresh-chat-hero {
-  position: absolute;
-  top: clamp(6.5rem, 30%, 17rem);
-  right: 1rem;
-  left: 1rem;
   display: flex;
   align-items: center;
   flex-direction: column;
@@ -1297,6 +1293,31 @@ a {
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
+}
+
+.session-chat.fresh {
+  display: grid;
+  grid-template-rows: auto minmax(7.5rem, 1fr) auto minmax(0, 0.72fr);
+}
+
+.session-chat.fresh .chat-session-bar {
+  grid-row: 1;
+}
+
+.session-chat.fresh .chat-view-panel:not([hidden]) {
+  grid-row: 2;
+}
+
+.session-chat.fresh .transcript-scroll {
+  display: flex;
+}
+
+.session-chat.fresh .transcript-column {
+  display: flex;
+  min-height: 100%;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 1rem 2rem 1.3rem;
 }
 
 .chat-session-bar {
@@ -1994,9 +2015,13 @@ a {
 }
 
 .session-chat.fresh .composer-dock {
-  bottom: 44%;
+  position: relative;
+  right: auto;
+  bottom: auto;
+  left: auto;
+  grid-row: 3;
   background: transparent;
-  transform: translateY(50%);
+  transform: none;
 }
 
 .composer-shell {
@@ -6486,12 +6511,8 @@ a {
     padding: 0.7rem 0.8rem 0.8rem;
   }
 
-  .session-chat.fresh .composer-dock {
-    bottom: 40%;
-  }
-
-  .fresh-chat-hero {
-    top: clamp(5rem, 25%, 12rem);
+  .session-chat.fresh {
+    grid-template-rows: auto minmax(7.5rem, 1fr) auto minmax(0, 0.5fr);
   }
 
   .events-view .events-toolbar {
@@ -6740,6 +6761,27 @@ a {
 
   .plugin-danger-zone .ui-button {
     width: 100%;
+  }
+}
+
+@media (max-height: 480px) {
+  .session-chat.fresh {
+    grid-template-rows: auto minmax(4rem, 1fr) auto minmax(0, 0.18fr);
+  }
+
+  .session-chat.fresh .transcript-column {
+    padding-top: 0.45rem;
+    padding-bottom: 0.6rem;
+  }
+
+  .session-chat.fresh .fresh-chat-mark,
+  .session-chat.fresh .fresh-chat-hero .agent-avatar {
+    display: none;
+  }
+
+  .session-chat.fresh .composer-dock {
+    padding-top: 0.45rem;
+    padding-bottom: 0.55rem;
   }
 }
 

@@ -785,6 +785,28 @@ describe("Hames web shell", () => {
     expect(chatFrame?.querySelector(".composer-dock")).toBeInTheDocument();
   });
 
+  it("automatically collapses the sidebar when the workspace bar becomes compact", async () => {
+    vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
+      matches: query === "(min-width: 821px) and (max-width: 1100px)",
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(() => true),
+    })));
+    vi.stubGlobal("fetch", successfulFetch());
+    render(() => <App />);
+
+    await screen.findByRole("heading", { name: "Build the web foundation", level: 1 });
+    expect(document.querySelector(".app-frame")).toHaveClass("sidebar-collapsed");
+    expect(screen.getByRole("button", { name: "Expand sidebar" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    expect(document.querySelector(".app-frame")).not.toHaveClass("sidebar-collapsed");
+  });
+
   it("browses real memories grouped by layer", async () => {
     vi.stubGlobal("fetch", successfulFetch());
     render(() => <App />);
@@ -1150,7 +1172,10 @@ describe("Hames web shell", () => {
 
     await waitFor(() => expect(window.location.pathname).toBe("/chat/session-new"));
     expect(await screen.findByRole("heading", { name: "What should we work on?" })).toBeInTheDocument();
-    expect(document.querySelector(".session-chat")).toHaveClass("fresh");
+    const freshChat = document.querySelector(".session-chat");
+    expect(freshChat).toHaveClass("fresh");
+    expect(freshChat?.querySelector(".fresh-chat-hero")).toBeInTheDocument();
+    expect(freshChat?.querySelector(".composer-dock")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "New chat" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Starting a new chat" })).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Message Hames" })).not.toBeDisabled();

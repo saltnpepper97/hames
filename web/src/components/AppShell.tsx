@@ -18,12 +18,19 @@ interface AppShellProps extends ParentProps {
   registry: WebPluginRegistry;
 }
 
+const mobileSidebarQuery = "(max-width: 820px)";
+const compactSidebarQuery = "(min-width: 821px) and (max-width: 1100px)";
+
+function initiallyCollapsed(): boolean {
+  return typeof window !== "undefined" && Boolean(window.matchMedia?.(compactSidebarQuery).matches);
+}
+
 export function AppShell(props: AppShellProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const workspace = useWorkspace();
   const [navigationOpen, setNavigationOpen] = createSignal(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = createSignal(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = createSignal(initiallyCollapsed());
   const [creatingChat, setCreatingChat] = createSignal(false);
   const [createChatError, setCreateChatError] = createSignal("");
   const activeSurface = createMemo(() => {
@@ -55,11 +62,15 @@ export function AppShell(props: AppShellProps) {
   };
 
   const toggleSidebar = () => {
-    if (window.matchMedia?.("(max-width: 820px)").matches) {
+    if (window.matchMedia?.(mobileSidebarQuery).matches) {
       setNavigationOpen(false);
       return;
     }
-    setSidebarCollapsed((collapsed) => !collapsed);
+    setSidebarCollapsed((collapsed) => {
+      const next = !collapsed;
+      if (!compactViewport?.matches) preferredSidebarCollapsed = next;
+      return next;
+    });
   };
 
   const createChat = async () => {
@@ -76,22 +87,33 @@ export function AppShell(props: AppShellProps) {
     }
   };
 
+  let preferredSidebarCollapsed = false;
   let mobileViewport: MediaQueryList | undefined;
-  const expandForMobile = (event: MediaQueryListEvent | MediaQueryList) => {
-    if (event.matches) setSidebarCollapsed(false);
+  let compactViewport: MediaQueryList | undefined;
+  const syncResponsiveSidebar = () => {
+    if (mobileViewport?.matches) {
+      setSidebarCollapsed(false);
+      return;
+    }
+    if (compactViewport?.matches) {
+      setSidebarCollapsed(true);
+      return;
+    }
+    setSidebarCollapsed(preferredSidebarCollapsed);
   };
 
   onMount(() => {
     document.addEventListener("keydown", closeOnEscape);
-    mobileViewport = window.matchMedia?.("(max-width: 820px)");
-    if (mobileViewport) {
-      expandForMobile(mobileViewport);
-      mobileViewport.addEventListener("change", expandForMobile);
-    }
+    mobileViewport = window.matchMedia?.(mobileSidebarQuery);
+    compactViewport = window.matchMedia?.(compactSidebarQuery);
+    syncResponsiveSidebar();
+    mobileViewport?.addEventListener("change", syncResponsiveSidebar);
+    compactViewport?.addEventListener("change", syncResponsiveSidebar);
   });
   onCleanup(() => {
     document.removeEventListener("keydown", closeOnEscape);
-    mobileViewport?.removeEventListener("change", expandForMobile);
+    mobileViewport?.removeEventListener("change", syncResponsiveSidebar);
+    compactViewport?.removeEventListener("change", syncResponsiveSidebar);
   });
 
   return (

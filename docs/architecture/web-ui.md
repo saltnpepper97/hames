@@ -86,8 +86,11 @@ navigation, and the active plugin's contextual directory in one visual column;
 Settings remains pinned at the bottom. Collapsing it produces a 56-pixel icon
 rail from the same controls rather than leaving a second sidebar behind. The
 contextual directory is the only scrolling region, while the shell itself stays
-fixed. The sidebar starts expanded and collapses only on explicit request; small
-screens use the expanded column as a closed-by-default drawer.
+fixed. Wide screens start expanded and retain an explicit collapse preference;
+small screens use the expanded column as a closed-by-default drawer.
+Intermediate widths from 821 through 1100 pixels automatically start in the
+icon-rail state so the chat bar and working surface retain usable space; its
+collapse control can still expand the sidebar temporarily.
 
 Chat contributes real, open workspace sessions to that contextual directory,
 matching the TUI's resumable-history boundary; empty sessions, closed historical
@@ -140,7 +143,10 @@ A newly created chat is not represented by a passive blank page or a
 session-selection prompt. The selected agent's animated avatar, a short prompt,
 and the real composer form a centered fresh-work state. The composer instance
 stays mounted and moves to its bottom dock when the first durable conversation
-node arrives, preserving draft and control state through the transition. A
+node arrives, preserving draft and control state through the transition. The
+fresh prompt and composer share a height-aware grid rather than independent
+absolute offsets, and the identity mark yields first on especially short
+windows so the prompt and input cannot cover each other. A
 browser refresh resolves the route's session directly before rendering it, so
 an empty durable session can reopen even though it is intentionally absent from
 resumable history. Unknown, closed, and out-of-workspace session routes are
