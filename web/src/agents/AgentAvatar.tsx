@@ -41,7 +41,15 @@ export function AgentAvatar(props: AgentAvatarProps) {
               <path class="agent-avatar-shell" d="M36 12Q40 5 44 12l27 50q4 8-5 8H14q-9 0-5-8Z" />
             </Match>
             <Match when={props.config.shape === "cloud"}>
-              <path class="agent-avatar-shell" d="M40 10c7 0 11 6 12 12 6-4 14-2 17 5 3 6 1 13-5 17 7 3 9 11 5 18-4 8-14 10-21 4-3 8-13 10-20 4-6-4-7-10-5-15-8 4-17 0-19-8-2-7 3-14 9-16-5-5-5-13 0-18 4-6 12-7 18-3 0-8 4-14 11-14Z" />
+              <g class="agent-avatar-shell">
+                <circle cx="40" cy="23" r="18" />
+                <circle cx="56" cy="32" r="18" />
+                <circle cx="56" cy="50" r="18" />
+                <circle cx="40" cy="59" r="18" />
+                <circle cx="24" cy="50" r="18" />
+                <circle cx="24" cy="32" r="18" />
+                <circle cx="40" cy="41" r="18" />
+              </g>
             </Match>
             <Match when={props.config.shape === "hex"}>
               <path class="agent-avatar-shell" d="m40 10 27 15v30L40 70 13 55V25Z" />
@@ -62,11 +70,15 @@ export function AgentAvatar(props: AgentAvatarProps) {
                 rx="10"
               />
             </Show>
-            <g class="agent-avatar-eyes">
+            <g
+              class="agent-avatar-eyes"
+              classList={{ "on-shell": props.config.face === "none" }}
+            >
               <Switch>
                 <Match when={props.config.eyes === "visor"}>
-                  <rect x="28" y={eyeY() - 4} width="24" height="7" rx="3.5" />
-                  <path class="agent-eye-glint" d={`m33 ${eyeY() - 3} 6 5`} />
+                  <rect class="agent-visor" x="28" y={eyeY() - 4} width="24" height="7" rx="3.5" />
+                  <rect class="agent-visor-eye" x="32" y={eyeY() - 1.5} width="5" height="3" rx="1.5" />
+                  <rect class="agent-visor-eye" x="43" y={eyeY() - 1.5} width="5" height="3" rx="1.5" />
                 </Match>
                 <Match when={props.config.eyes === "pill"}>
                   <rect x="29" y={eyeY() - 5} width="6" height="10" rx="3" />

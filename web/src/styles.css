@@ -1972,7 +1972,11 @@ a {
   stroke: rgb(255 255 255 / 78%);
 }
 
-.agent-avatar-gaze,
+.agent-avatar-gaze {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
 .agent-avatar-eyes {
   fill: color-mix(in srgb, currentColor 72%, #111827);
   stroke: color-mix(in srgb, currentColor 72%, #111827);
@@ -1980,15 +1984,19 @@ a {
   transform-origin: center;
 }
 
-.agent-eye-glint {
-  fill: none;
-  stroke-linecap: round;
-  stroke-width: 2.6;
+.agent-avatar-eyes.on-shell,
+.agent-visor-eye {
+  fill: rgb(255 255 255 / 94%);
+  stroke: rgb(255 255 255 / 94%);
 }
 
-.agent-eye-glint {
-  stroke: rgb(255 255 255 / 62%);
-  stroke-width: 1.5;
+.agent-visor {
+  fill: color-mix(in srgb, currentColor 68%, #111827);
+  stroke: color-mix(in srgb, currentColor 68%, #111827);
+}
+
+.agent-visor-eye {
+  stroke: none;
 }
 
 .agent-avatar.alive .agent-avatar-body {
