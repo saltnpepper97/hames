@@ -7,6 +7,7 @@ import {
 } from "../../api/client";
 import type { ProviderModel, ProviderProfile, Session } from "../../api/types";
 import { Button } from "../../components/Button";
+import { DropdownSurface } from "../../components/DropdownSurface";
 import { Icon } from "../../shell/icons";
 import { modelReasoningEfforts, reasoningEffortLabel } from "../modelCapabilities";
 
@@ -214,8 +215,12 @@ export function ModelPicker(props: ModelPickerProps) {
         <Icon name="action.expand" size={13} />
       </Button>
 
-      <Show when={open()}>
-        <div class="model-picker-popover" role="menu" aria-label="Model and thinking">
+      <DropdownSurface
+        open={open()}
+        class="model-picker-popover"
+        role="menu"
+        ariaLabel="Model and thinking"
+      >
           <Show when={pane() === "root"}>
             <Button variant="bare" class="model-picker-cell" role="menuitem" onClick={() => setPane("models")}>
               <span>Model</span>
@@ -316,8 +321,7 @@ export function ModelPicker(props: ModelPickerProps) {
           <Show when={pickerError()}>
             <div class="model-picker-error" role="alert">{pickerError()}</div>
           </Show>
-        </div>
-      </Show>
+      </DropdownSurface>
     </div>
   );
 }

@@ -850,7 +850,11 @@ describe("Hames web shell", () => {
     expect(document.querySelector('[data-icon="mode.auto"] svg')).toHaveClass(
       "tabler-icon-sparkles",
     );
-    fireEvent.click(screen.getByRole("button", { name: "Interaction mode" }));
+    const modeTrigger = screen.getByRole("button", { name: "Interaction mode" });
+    fireEvent.click(modeTrigger);
+    fireEvent.keyDown(modeTrigger, { key: "Escape" });
+    expect(screen.queryByRole("menu", { name: "Interaction mode" })).not.toBeInTheDocument();
+    fireEvent.click(modeTrigger);
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Plan" }));
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(

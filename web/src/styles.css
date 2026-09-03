@@ -236,7 +236,8 @@ button {
   transition:
     background-color 120ms ease,
     border-color 120ms ease,
-    box-shadow 120ms ease;
+    box-shadow 120ms ease,
+    transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .ui-checkbox-indicator {
@@ -245,12 +246,20 @@ button {
   height: calc(100% - 3px);
   place-items: center;
   opacity: 0;
-  transform: scale(0.72);
-  transition: opacity 100ms ease, transform 120ms ease;
+  transform: scale(0.65);
+  transition:
+    opacity 90ms ease,
+    transform 170ms cubic-bezier(0.2, 0.9, 0.25, 1.35);
 }
 
 .ui-checkbox-indicator svg {
   stroke-width: 2.8;
+}
+
+.ui-checkbox-indicator svg path {
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  transition: stroke-dashoffset 180ms cubic-bezier(0.4, 0, 0.2, 1) 25ms;
 }
 
 .ui-checkbox[data-state="checked"] .ui-checkbox-box,
@@ -259,9 +268,17 @@ button {
   background: var(--text);
 }
 
+.ui-checkbox[data-state="checked"] .ui-checkbox-box {
+  animation: checkbox-pop 180ms cubic-bezier(0.2, 0.9, 0.25, 1.35);
+}
+
 .ui-checkbox[data-state="checked"] .ui-checkbox-indicator {
   opacity: 1;
   transform: scale(1);
+}
+
+.ui-checkbox[data-state="checked"] .ui-checkbox-indicator svg path {
+  stroke-dashoffset: 0;
 }
 
 .ui-checkbox[data-state="indeterminate"] .ui-checkbox-indicator {
@@ -271,7 +288,9 @@ button {
   border-radius: 999px;
   background: currentColor;
   opacity: 1;
-  transform: none;
+  transform: scaleX(1);
+  transform-origin: center;
+  transition: opacity 90ms ease, transform 150ms cubic-bezier(0.2, 0.9, 0.25, 1.2);
 }
 
 .ui-checkbox[data-state="indeterminate"] .ui-checkbox-indicator .hames-icon {
@@ -333,6 +352,12 @@ button {
 .ui-checkbox[data-disabled] .ui-checkbox-copy {
   color: var(--muted);
   opacity: 0.62;
+}
+
+@keyframes checkbox-pop {
+  0% { transform: scale(0.88); }
+  65% { transform: scale(1.06); }
+  100% { transform: scale(1); }
 }
 
 @media (forced-colors: active) {
@@ -1822,6 +1847,52 @@ a {
 
 .composer-chip .hames-icon:last-child {
   color: var(--muted);
+  transition: transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.composer-chip[aria-expanded="true"] .hames-icon:last-child {
+  transform: rotate(180deg);
+}
+
+.dropdown-surface {
+  transform-origin: bottom left;
+  will-change: opacity, transform;
+}
+
+.dropdown-surface[data-state="open"] {
+  animation: dropdown-surface-in 150ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.dropdown-surface[data-state="closed"] {
+  pointer-events: none;
+  animation: dropdown-surface-out 130ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+.composer-menu[data-align="right"] .dropdown-surface,
+.model-picker .dropdown-surface {
+  transform-origin: bottom right;
+}
+
+@keyframes dropdown-surface-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px) scale(0.975);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes dropdown-surface-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(3px) scale(0.985);
+  }
 }
 
 .composer-menu-popover {
@@ -1938,6 +2009,40 @@ a {
   border-radius: 0.8rem;
   background: var(--background);
   box-shadow: 0 14px 42px rgb(0 0 0 / 14%);
+}
+
+.model-picker-popover > .model-picker-cell,
+.model-picker-popover > .model-picker-state,
+.model-picker-popover > .model-groups,
+.model-picker-popover > .model-pane-heading,
+.model-picker-popover > .model-picker-options {
+  animation: model-pane-forward 140ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.model-picker-popover > .model-picker-back {
+  animation: model-pane-back 140ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes model-pane-forward {
+  from {
+    opacity: 0;
+    transform: translateX(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes model-pane-back {
+  from {
+    opacity: 0;
+    transform: translateX(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 
 .model-picker-cell {

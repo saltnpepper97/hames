@@ -1,7 +1,8 @@
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
 import type { SemanticIconName } from "../../shell/icons";
 import { Icon } from "../../shell/icons";
 import { Button } from "../../components/Button";
+import { DropdownSurface } from "../../components/DropdownSurface";
 
 export interface ComposerMenuOption {
   value: string;
@@ -31,6 +32,7 @@ export function ComposerMenu(props: ComposerMenuProps) {
     props.displayValue ??
     props.options.find((option) => option.value === props.value)?.label ??
     props.value;
+  const close = () => setOpen(false);
 
   const toggle = () => {
     const next = !open();
@@ -42,13 +44,13 @@ export function ComposerMenu(props: ComposerMenuProps) {
 
   const select = async (value: string) => {
     if (busy() || value === props.value) {
-      setOpen(false);
+      close();
       return;
     }
     setBusy(true);
     try {
       await props.onSelect(value);
-      setOpen(false);
+      close();
     } catch {
       // The contributing control reports the gateway error through the composer.
     } finally {
@@ -56,13 +58,27 @@ export function ComposerMenu(props: ComposerMenuProps) {
     }
   };
 
+  createEffect(() => {
+    if (!open()) return;
+    const closeOutside = (event: MouseEvent) => {
+      if (!root.contains(event.target as Node)) close();
+    };
+    document.addEventListener("mousedown", closeOutside);
+    onCleanup(() => document.removeEventListener("mousedown", closeOutside));
+  });
+
   return (
     <div
       class="composer-menu"
       data-align={props.align ?? "left"}
       ref={root}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || !open()) return;
+        event.preventDefault();
+        close();
+      }}
       onFocusOut={(event) => {
-        if (!root.contains(event.relatedTarget as Node | null)) setOpen(false);
+        if (!root.contains(event.relatedTarget as Node | null)) close();
       }}
     >
       <Button
@@ -79,31 +95,34 @@ export function ComposerMenu(props: ComposerMenuProps) {
         <span>{selectedLabel()}</span>
         <Icon name="action.expand" size={13} />
       </Button>
-      <Show when={open()}>
-        <div class="composer-menu-popover" role="menu" aria-label={props.ariaLabel}>
-          <Show when={!props.loading} fallback={<div class="composer-menu-state">Loading…</div>}>
-            <For
-              each={props.options}
-              fallback={<div class="composer-menu-state">{props.emptyMessage ?? "No options"}</div>}
-            >
-              {(option) => (
-                <Button
-                  variant="bare"
-                  role="menuitemradio"
-                  aria-checked={option.value === props.value}
-                  disabled={busy()}
-                  onClick={() => void select(option.value)}
-                >
-                  <Show when={option.icon}>
-                    {(icon) => <Icon name={icon()} size={16} />}
-                  </Show>
-                  <span>{option.label}</span>
-                </Button>
-              )}
-            </For>
-          </Show>
-        </div>
-      </Show>
+      <DropdownSurface
+        open={open()}
+        class="composer-menu-popover"
+        role="menu"
+        ariaLabel={props.ariaLabel}
+      >
+        <Show when={!props.loading} fallback={<div class="composer-menu-state">Loading…</div>}>
+          <For
+            each={props.options}
+            fallback={<div class="composer-menu-state">{props.emptyMessage ?? "No options"}</div>}
+          >
+            {(option) => (
+              <Button
+                variant="bare"
+                role="menuitemradio"
+                aria-checked={option.value === props.value}
+                disabled={busy()}
+                onClick={() => void select(option.value)}
+              >
+                <Show when={option.icon}>
+                  {(icon) => <Icon name={icon()} size={16} />}
+                </Show>
+                <span>{option.label}</span>
+              </Button>
+            )}
+          </For>
+        </Show>
+      </DropdownSurface>
     </div>
   );
 }
