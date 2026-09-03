@@ -7,6 +7,9 @@ __pycache__/
 .pyright/
 target/
 dist/
+node_modules/
+.vite/
+*.tsbuildinfo
 *.egg-info/
 .coverage
 htmlcov/
