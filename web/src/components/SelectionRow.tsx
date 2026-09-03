@@ -1,4 +1,5 @@
 import { Show } from "solid-js";
+import { Checkbox } from "./Checkbox";
 
 interface SelectionRowProps {
   label: string;
@@ -13,27 +14,20 @@ interface SelectionRowProps {
 export function SelectionRow(props: SelectionRowProps) {
   return (
     <div class="selection-row">
-      <label class="selection-main">
-        <input
-          type="checkbox"
-          checked={props.selected}
-          onChange={(event) => props.onSelected(event.currentTarget.checked)}
-        />
-        <span class="selection-check" aria-hidden="true" />
-        <span>
-          <strong>{props.label}</strong>
-          <Show when={props.description}><small>{props.description}</small></Show>
-        </span>
-      </label>
+      <Checkbox
+        class="selection-main"
+        label={props.label}
+        description={props.description}
+        checked={props.selected}
+        onCheckedChange={props.onSelected}
+      />
       <Show when={props.pinAvailable && props.selected && props.onPinned}>
-        <label class="selection-pin">
-          <input
-            type="checkbox"
-            checked={props.pinned}
-            onChange={(event) => props.onPinned?.(event.currentTarget.checked)}
-          />
-          <span>Pin</span>
-        </label>
+        <Checkbox
+          class="selection-pin"
+          label="Pin"
+          checked={props.pinned}
+          onCheckedChange={(pinned) => props.onPinned?.(pinned)}
+        />
       </Show>
     </div>
   );
