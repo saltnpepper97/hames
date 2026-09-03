@@ -8,7 +8,7 @@ import { useSkillDirectory } from "./SkillDirectory";
 
 const groups: readonly { source: SkillSource; label: string }[] = [
   { source: "managed", label: "Hames-created" },
-  { source: "portable", label: ".agents" },
+  { source: "portable", label: "Global (~/.agents)" },
   { source: "builtin", label: "Built in" },
 ];
 
@@ -51,7 +51,7 @@ export function SkillSidebar() {
                       end
                     >
                       <strong>{skill.name}</strong>
-                      <span>{skill.slug} · {skill.scope}</span>
+                      <span>{skill.slug} · {skill.archived ? "archived" : skill.status}</span>
                     </A>
                   )}
                 </For>

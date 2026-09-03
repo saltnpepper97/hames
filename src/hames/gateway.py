@@ -1636,7 +1636,7 @@ def create_app(state: GatewayState) -> FastAPI:
         """List workspace-visible Skills before applying the active agent's policy."""
         try:
             session = await asyncio.to_thread(state.ledger.get_session, session_id)
-            return await asyncio.to_thread(state.runs.skills.visible, session, query="", limit=200)
+            return await asyncio.to_thread(state.runs.skills.catalog, session, limit=200)
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
 
@@ -1649,7 +1649,7 @@ def create_app(state: GatewayState) -> FastAPI:
         """Inspect a workspace-visible Skill without applying one agent's catalog policy."""
         try:
             session = await asyncio.to_thread(state.ledger.get_session, session_id)
-            return await asyncio.to_thread(state.runs.skills.get_visible, session, slug)
+            return await asyncio.to_thread(state.runs.skills.latest_visible, session, slug)
         except KeyError as exc:
             raise ApiError(404, "skill_not_found", f"unknown visible Skill: {slug}") from exc
         except ValueError as exc:

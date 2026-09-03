@@ -78,7 +78,7 @@ claiming unfinished controls:
   scrollable and collapsible directory, and routes into details for value,
   scope, confidence, status, timestamps, and provenance;
 - the Skills sidebar lists the gateway's complete workspace-visible catalog,
-  separates Hames-created, portable `.agents`, and shipped built-in packages in
+  separates Hames-created, global `~/.agents`, and shipped built-in packages in
   collapsible groups, and renders each real procedure with its metadata, tools,
   requirements, scripts, package origin, and Markdown instructions;
 

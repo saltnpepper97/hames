@@ -3774,6 +3774,7 @@ mod tests {
             invocation: "user".to_owned(),
             argument_hint: "[topic]".to_owned(),
             source: "portable".to_owned(),
+            archived: false,
         }];
         assert!(
             app.command_options()

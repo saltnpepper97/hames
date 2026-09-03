@@ -209,6 +209,7 @@ class SkillSummary(SkillModel):
     invocation: SkillInvocation = "model"
     argument_hint: str = ""
     source: SkillSource = "managed"
+    archived: bool = False
 
 
 class SkillJob(SkillModel):
@@ -1143,6 +1144,30 @@ class SkillRegistry:
             summaries.sort(key=lambda item: (-item.score, item.slug, item.version))
         return summaries[:limit]
 
+    def catalog(self, session: Session, *, limit: int = 200) -> list[SkillSummary]:
+        """List effective packages plus the latest visible version of inactive managed Skills."""
+
+        effective = self.visible(session, query="", limit=limit)
+        by_slug = {item.slug: item for item in effective}
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT v.*, s.slug, s.scope, s.scope_key, s.pinned_version_id, s.archived
+                FROM skill_versions v JOIN skills s ON s.id = v.skill_id
+                WHERE v.version = (
+                    SELECT MAX(latest.version) FROM skill_versions latest
+                    WHERE latest.skill_id = v.skill_id
+                )
+                ORDER BY s.updated_at DESC, s.slug
+                """
+            ).fetchall()
+        for row in rows:
+            version = self._version_from_row(row)
+            if version.slug in by_slug or not self._visible(session, version):
+                continue
+            by_slug[version.slug] = self.summary(version, archived=bool(row["archived"]))
+        return list(by_slug.values())[:limit]
+
     def get_visible(self, session: Session, slug: str) -> SkillVersion:
         matches = [item for item in self.visible(session, limit=200) if item.slug == slug]
         if len(matches) != 1:
@@ -1243,7 +1268,9 @@ class SkillRegistry:
             ).fetchall()
         return [self._version_from_row(row) for row in rows]
 
-    def summary(self, version: SkillVersion, *, score: float = 0.0) -> SkillSummary:
+    def summary(
+        self, version: SkillVersion, *, score: float = 0.0, archived: bool = False
+    ) -> SkillSummary:
         source: SkillSource = (
             "builtin"
             if version.id in self._builtin_by_version
@@ -1270,6 +1297,7 @@ class SkillRegistry:
             invocation=version.metadata.invocation,
             argument_hint=version.metadata.argument_hint,
             source=source,
+            archived=archived,
         )
 
     def set_pinned(self, session: Session, slug: str, *, pinned: bool) -> SkillVersion:

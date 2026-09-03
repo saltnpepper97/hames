@@ -99,6 +99,7 @@ export interface SkillCatalogEntry extends SkillSummary {
   invocation: SkillInvocation;
   argument_hint: string;
   source: SkillSource;
+  archived: boolean;
 }
 
 export interface SkillMetadata {

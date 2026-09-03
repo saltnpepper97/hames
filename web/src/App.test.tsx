@@ -228,6 +228,7 @@ const skills: SkillCatalogEntry[] = [
     invocation: "model",
     argument_hint: "",
     source: "managed",
+    archived: false,
   },
   {
     id: "external:workspace:project-checks:path-hash",
@@ -248,6 +249,7 @@ const skills: SkillCatalogEntry[] = [
     invocation: "both",
     argument_hint: "[target]",
     source: "portable",
+    archived: false,
   },
   {
     id: "builtin:visual-verification",
@@ -268,6 +270,7 @@ const skills: SkillCatalogEntry[] = [
     invocation: "model",
     argument_hint: "",
     source: "builtin",
+    archived: false,
   },
 ];
 
@@ -588,14 +591,14 @@ describe("Hames web shell", () => {
     fireEvent.click(await screen.findByRole("link", { name: "Skills" }));
     const sidebar = await screen.findByRole("complementary", { name: "Skills sidebar" });
     expect(await screen.findByRole("separator", { name: "Hames-created" })).toBeInTheDocument();
-    expect(sidebar.querySelector('[role="separator"][aria-label=".agents"]')).toBeInTheDocument();
+    expect(sidebar.querySelector('[role="separator"][aria-label="Global (~/.agents)"]')).toBeInTheDocument();
     expect(sidebar.querySelector('[role="separator"][aria-label="Built in"]')).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Project Checks", level: 1 })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Run checks", level: 2 })).toBeInTheDocument();
     expect(screen.getByText("/work/hames/.agents/skills/project-checks")).toBeInTheDocument();
     expect(screen.queryByText("Promotion and rollback will call gateway controls rather than writing files in-browser.")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Collapse .agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "Collapse Global (~/.agents)" }));
     expect(screen.queryByRole("link", { name: /Project Checks/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("link", { name: /Review Patterns/ }));
     expect(await screen.findByRole("heading", { name: "Review Patterns", level: 1 })).toBeInTheDocument();

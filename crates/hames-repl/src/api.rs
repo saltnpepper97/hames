@@ -727,6 +727,8 @@ pub struct SkillSummary {
     pub argument_hint: String,
     #[serde(default = "default_skill_source")]
     pub source: String,
+    #[serde(default)]
+    pub archived: bool,
 }
 
 fn default_skill_invocation() -> String {

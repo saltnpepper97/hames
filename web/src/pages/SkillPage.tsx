@@ -79,7 +79,7 @@ export function SkillPage(props: SkillPageProps) {
           </header>
 
           <div class="skill-stat-strip" aria-label="Skill status">
-            <div><span>Status</span><strong>{label(skill.status)}</strong></div>
+            <div><span>Status</span><strong>{summary()?.archived ? "Archived" : label(skill.status)}</strong></div>
             <div><span>Scope</span><strong>{label(skill.scope)}</strong></div>
             <div><span>Version</span><strong>{skill.version}</strong></div>
             <div><span>Invocation</span><strong>{label(skill.metadata.invocation)}</strong></div>
