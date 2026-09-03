@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from hames import PROTOCOL_VERSION, __version__
 from hames.agent import (
+    AgentAvatar,
     AgentCapsule,
     AgentRegistry,
     AgentSkills,
@@ -275,11 +276,13 @@ class AgentUpdateRequest(ApiModel):
     source: str | None = Field(default=None, min_length=1, max_length=65_536)
     tools: AgentTools | None = None
     skills: AgentSkills | None = None
+    avatar: AgentAvatar | None = None
 
     @model_validator(mode="after")
     def has_one_update_form(self) -> AgentUpdateRequest:
         structured = any(
-            value is not None for value in (self.name, self.instructions, self.tools, self.skills)
+            value is not None
+            for value in (self.name, self.instructions, self.tools, self.skills, self.avatar)
         )
         if self.source is not None and structured:
             raise ValueError("source cannot be combined with structured agent updates")
@@ -379,6 +382,7 @@ class AgentPublic(ApiModel):
     authority: str
     path: str
     content_hash: str
+    avatar: AgentAvatar | None
 
 
 class AgentDetail(AgentPublic):
@@ -984,6 +988,7 @@ def create_app(state: GatewayState) -> FastAPI:
                 instructions=request.instructions,
                 tools=request.tools,
                 skills=request.skills,
+                avatar=request.avatar,
                 source=request.source,
             )
             return _agent_detail(capsule)
@@ -2637,6 +2642,7 @@ def _agent_public(agent: AgentSummary) -> AgentPublic:
         authority=agent.authority,
         path=str(agent.path),
         content_hash=agent.content_hash,
+        avatar=agent.avatar,
     )
 
 
@@ -2649,6 +2655,7 @@ def _agent_detail(capsule: AgentCapsule) -> AgentDetail:
                 authority=capsule.metadata.authority,
                 path=capsule.path,
                 content_hash=capsule.content_hash,
+                avatar=capsule.metadata.avatar,
             )
         ).model_dump(),
         source=capsule.path.read_text(encoding="utf-8"),

@@ -31,7 +31,7 @@ class MockEventSource {
 
 const bootstrap = {
   protocol_version: 1,
-  gateway_protocol_version: 33,
+  gateway_protocol_version: 34,
   working_directory: "/work/hames",
   csrf_token: "csrf",
 };
@@ -39,7 +39,7 @@ const bootstrap = {
 const health = {
   status: "ok",
   version: "0.0.0",
-  protocol_version: 33,
+  protocol_version: 34,
   database_ready: true,
   provider_profiles: ["codex"],
   default_provider: "codex",

@@ -1154,7 +1154,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 33
+            assert health_body["protocol_version"] == 34
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -2954,6 +2954,31 @@ async def test_gateway_customizes_default_agent_without_making_it_deletable(
         assert listed.json()[0]["name"] == "Navigator"
         assert protected.status_code == 409
         assert paths.default_agent.is_file()
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_persists_agent_avatar_in_list_and_detail(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    avatar = {"shape": "arch", "eyes": "visor", "color": "#0EA5E9"}
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            updated = await client.patch(
+                "/v1/agents/default", headers=headers, json={"avatar": avatar}
+            )
+            listed = await client.get("/v1/agents", headers=headers)
+            detailed = await client.get("/v1/agents/default", headers=headers)
+
+        expected = {**avatar, "color": "#0ea5e9"}
+        assert updated.status_code == 200
+        assert updated.json()["avatar"] == expected
+        assert listed.json()[0]["avatar"] == expected
+        assert detailed.json()["avatar"] == expected
+        assert "avatar:" in detailed.json()["source"]
     finally:
         await state.runs.close()
 

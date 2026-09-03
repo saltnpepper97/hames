@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from hames.agent import (
+    AgentAvatar,
     AgentRegistry,
     AgentSkills,
     AgentTools,
@@ -129,6 +130,32 @@ def test_agent_update_changes_access_without_losing_other_metadata(
     assert updated.metadata.tools.deny == ["shell"]
     assert updated.metadata.skills.deny == ["deployment"]
     assert updated.metadata.skills.pin == ["testing"]
+
+
+def test_agent_avatar_is_portable_and_updates_without_losing_metadata(
+    hames_paths: HamesPaths,
+) -> None:
+    hames_paths.ensure_foundation()
+    registry = AgentRegistry(hames_paths.agents)
+    original = registry.load("default")
+
+    updated = registry.update(
+        "default",
+        avatar=AgentAvatar(shape="hex", eyes="happy", color="#A855F7"),
+    )
+
+    assert updated.metadata.name == original.metadata.name
+    assert updated.instructions == original.instructions
+    assert updated.metadata.avatar == AgentAvatar(
+        shape="hex", eyes="happy", color="#a855f7"
+    )
+    assert registry.list()[0].avatar == updated.metadata.avatar
+    assert "avatar:" in updated.path.read_text(encoding="utf-8")
+
+
+def test_agent_avatar_rejects_invalid_color() -> None:
+    with pytest.raises(ValueError, match="six-digit hex"):
+        AgentAvatar(color="purple")
 
 
 def test_agent_update_rejects_identity_change_without_touching_capsule(

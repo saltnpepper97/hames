@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 AGENT_ID = re.compile(r"[a-z][a-z0-9-]{0,62}")
 _NON_SLUG = re.compile(r"[^a-z0-9]+")
+_AVATAR_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
 READ_ONLY_TOOLS = frozenset(
     {
         "ask_user",
@@ -102,6 +103,23 @@ class DelegationPolicy(BaseModel):
         return self
 
 
+class AgentAvatar(BaseModel):
+    """Portable visual identity used by Hames clients."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    shape: Literal["round", "square", "arch", "capsule", "hex"] = "round"
+    eyes: Literal["dots", "visor", "happy"] = "dots"
+    color: str = "#64748b"
+
+    @field_validator("color")
+    @classmethod
+    def valid_color(cls, value: str) -> str:
+        if _AVATAR_COLOR.fullmatch(value) is None:
+            raise ValueError("agent avatar color must be a six-digit hex color")
+        return value.lower()
+
+
 class AgentMetadata(BaseModel):
     """The M05 capsule contract. Provider/model legacy fields are inert compatibility input."""
 
@@ -113,6 +131,7 @@ class AgentMetadata(BaseModel):
     skills: AgentSkills = Field(default_factory=AgentSkills)
     authority: Literal["standard", "read_only"] = "standard"
     delegation: DelegationPolicy = Field(default_factory=DelegationPolicy)
+    avatar: AgentAvatar | None = None
     provider: str | None = None
     model: str | None = None
 
@@ -143,6 +162,7 @@ class AgentSummary:
     authority: str
     path: Path
     content_hash: str
+    avatar: AgentAvatar | None
 
 
 class AgentRegistry:
@@ -178,6 +198,7 @@ class AgentRegistry:
                     authority=capsule.metadata.authority,
                     path=path,
                     content_hash=capsule.content_hash,
+                    avatar=capsule.metadata.avatar,
                 )
             )
         return values
@@ -209,6 +230,7 @@ class AgentRegistry:
         tools = AgentTools()
         skills = AgentSkills()
         delegation = DelegationPolicy()
+        avatar = None
         if source is not None:
             metadata_raw, body = _split_agent_markdown(source)
             if "id" in metadata_raw and metadata_raw["id"] is not None:
@@ -220,6 +242,8 @@ class AgentRegistry:
             tools = AgentTools.model_validate(metadata_raw.get("tools") or {})
             skills = AgentSkills.model_validate(metadata_raw.get("skills") or {})
             delegation = DelegationPolicy.model_validate(metadata_raw.get("delegation") or {})
+            if metadata_raw.get("avatar") is not None:
+                avatar = AgentAvatar.model_validate(metadata_raw["avatar"])
             extra = set(metadata_raw) - {
                 "id",
                 "name",
@@ -227,6 +251,7 @@ class AgentRegistry:
                 "tools",
                 "skills",
                 "delegation",
+                "avatar",
                 "provider",
                 "model",
             }
@@ -257,6 +282,8 @@ class AgentRegistry:
             payload["skills"] = skills.model_dump(mode="json", exclude_defaults=True)
         if delegation.allow or delegation.allowed_agents:
             payload["delegation"] = delegation.model_dump(mode="json", exclude_defaults=True)
+        if avatar is not None:
+            payload["avatar"] = avatar.model_dump(mode="json")
         raw = f"---\n{yaml.safe_dump(payload, sort_keys=False)}---\n{instructions}\n"
         AgentMetadata.model_validate(payload)
         descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -289,17 +316,18 @@ class AgentRegistry:
         instructions: str | None = None,
         tools: AgentTools | None = None,
         skills: AgentSkills | None = None,
+        avatar: AgentAvatar | None = None,
         source: str | None = None,
     ) -> AgentCapsule:
         """Atomically update a capsule without changing its stable identity."""
 
         current = self.load(agent_id)
         if source is not None:
-            if any(value is not None for value in (name, instructions, tools, skills)):
+            if any(value is not None for value in (name, instructions, tools, skills, avatar)):
                 raise ValueError("source cannot be combined with structured agent updates")
             raw = source
         else:
-            if all(value is None for value in (name, instructions, tools, skills)):
+            if all(value is None for value in (name, instructions, tools, skills, avatar)):
                 raise ValueError("agent update requires source or a structured field")
             metadata_raw, current_instructions = _split_agent_markdown(
                 current.path.read_text(encoding="utf-8"), origin=str(current.path)
@@ -313,6 +341,8 @@ class AgentRegistry:
                 metadata_raw["tools"] = tools.model_dump(mode="json")
             if skills is not None:
                 metadata_raw["skills"] = skills.model_dump(mode="json")
+            if avatar is not None:
+                metadata_raw["avatar"] = avatar.model_dump(mode="json")
             body = current_instructions if instructions is None else instructions.strip()
             raw = f"---\n{yaml.safe_dump(metadata_raw, sort_keys=False)}---\n{body}\n"
 
