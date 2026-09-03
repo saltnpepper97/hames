@@ -17,6 +17,7 @@ interface SessionChatProps {
 
 export function SessionChat(props: SessionChatProps) {
   const [view, setView] = createSignal<ChatView>("chat");
+  const [eventsVisited, setEventsVisited] = createSignal(false);
   const stream = createSessionStream(() => props.session.id);
   const durableProjection = createMemo(() => projectConversation(stream.events()));
   const projection = createMemo(() =>
@@ -25,6 +26,10 @@ export function SessionChat(props: SessionChatProps) {
   const fresh = createMemo(() =>
     !props.session.title?.trim() && projection().nodes.length === 0,
   );
+  const changeView = (next: ChatView) => {
+    if (next === "events") setEventsVisited(true);
+    setView(next);
+  };
 
   return (
     <ChatFrame fresh={fresh() && view() === "chat"}>
@@ -33,30 +38,30 @@ export function SessionChat(props: SessionChatProps) {
         view={view()}
         streamState={stream.state()}
         working={Boolean(projection().activeRunId)}
-        onViewChanged={setView}
+        onViewChanged={changeView}
         onSessionUpdated={props.onSessionUpdated}
       />
-      <Show when={view() === "chat"}>
-        <div
-          id="chat-view-panel"
-          class="chat-view-panel"
-          role="tabpanel"
-          aria-labelledby="chat-view-tab"
-        >
-          <ConversationViewport
-            nodes={projection().nodes}
-            streamState={stream.state()}
-            fresh={fresh()}
-            agentId={props.session.agent_id}
-          />
-        </div>
-      </Show>
-      <Show when={view() === "events"}>
+      <div
+        id="chat-view-panel"
+        class="chat-view-panel"
+        role="tabpanel"
+        aria-labelledby="chat-view-tab"
+        hidden={view() !== "chat"}
+      >
+        <ConversationViewport
+          nodes={projection().nodes}
+          streamState={stream.state()}
+          fresh={fresh()}
+          agentId={props.session.agent_id}
+        />
+      </div>
+      <Show when={eventsVisited()}>
         <div
           id="events-view-panel"
           class="chat-view-panel"
           role="tabpanel"
           aria-labelledby="events-view-tab"
+          hidden={view() !== "events"}
         >
           <EventsView events={stream.events()} streamState={stream.state()} />
         </div>

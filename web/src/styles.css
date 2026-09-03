@@ -1989,6 +1989,10 @@ a {
   display: none;
 }
 
+.chat-view-panel[hidden] {
+  display: none;
+}
+
 .session-chat.fresh .composer-dock {
   bottom: 44%;
   background: transparent;
@@ -2329,7 +2333,7 @@ a {
   height: 0.5rem;
   align-items: center;
   justify-content: flex-end;
-  font-size: 0.52rem;
+  font-size: 0.625rem;
   line-height: 1;
 }
 
@@ -2440,7 +2444,17 @@ a {
   background: var(--background);
 }
 
-.event-ledger-scroll {
+.events-view .event-ledger {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  border: 0;
+}
+
+.event-ledger-viewport {
   min-width: 0;
   min-height: 0;
   flex: 1;
@@ -2449,18 +2463,18 @@ a {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
+  contain: layout paint;
 }
 
-.events-view .event-ledger {
-  width: 100%;
-  min-width: 0;
-  border: 0;
+.event-ledger-spacer {
+  width: 1px;
+  pointer-events: none;
 }
 
 .events-view .event-ledger-header,
 .events-view .event-ledger-row {
   display: grid;
-  grid-template-columns: 8.5rem minmax(0, 1fr);
+  grid-template-columns: 7.625rem minmax(0, 1fr);
   align-items: center;
 }
 
@@ -2555,11 +2569,9 @@ a {
   z-index: 2;
   top: 0;
   left: 0;
-  max-width: 2.6rem;
+  width: 1.75rem;
   overflow: hidden;
-  padding: 0.08rem 0.28rem;
-  border-radius: 0 0 0.14rem;
-  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+  padding: 0.08rem 0 0.08rem 0.3rem;
   color: var(--muted);
   font: 0.48rem/0.65rem ui-monospace, SFMono-Regular, Consolas, monospace;
   text-overflow: ellipsis;
@@ -6466,7 +6478,7 @@ a {
 
   .events-view .event-ledger-header,
   .events-view .event-ledger-row {
-    grid-template-columns: 7.2rem minmax(0, 1fr);
+    grid-template-columns: 6.8rem minmax(0, 1fr);
   }
 
   .events-view .event-summary time {

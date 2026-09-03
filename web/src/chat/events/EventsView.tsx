@@ -60,14 +60,13 @@ export function EventsView(props: EventsViewProps) {
         onSelect={select}
       />
       <div class="event-ledger-layout" classList={{ inspecting: Boolean(selected()) }}>
-        <div class="event-ledger-scroll" data-events-scroll>
-          <EventLedger
-            events={filtered()}
-            allEvents={props.events}
-            selectedId={selectedId()}
-            onSelect={select}
-          />
-        </div>
+        <EventLedger
+          events={filtered()}
+          allEvents={props.events}
+          selectedId={selectedId()}
+          resetKey={query()}
+          onSelect={select}
+        />
         <Show when={selected()}>
           {(event) => <EventDetail event={event()} onClose={() => setSelectedId()} />}
         </Show>

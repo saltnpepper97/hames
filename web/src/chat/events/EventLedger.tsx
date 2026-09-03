@@ -1,4 +1,4 @@
-import { For, Show, createMemo } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { HamesEvent } from "../../api/types";
 import { Button } from "../../components/Button";
 import {
@@ -12,8 +12,12 @@ interface EventLedgerProps {
   events: readonly HamesEvent[];
   allEvents: readonly HamesEvent[];
   selectedId?: string;
+  resetKey?: string;
   onSelect: (event: HamesEvent) => void;
 }
+
+const rowHeight = 30;
+const overscan = 10;
 
 function EventLedgerRow(props: {
   event: HamesEvent;
@@ -50,6 +54,10 @@ function EventLedgerRow(props: {
 }
 
 export function EventLedger(props: EventLedgerProps) {
+  const [scrollTop, setScrollTop] = createSignal(0);
+  const [viewportHeight, setViewportHeight] = createSignal(0);
+  let viewport!: HTMLDivElement;
+  let observer: ResizeObserver | undefined;
   const turns = createMemo(() => {
     let turn = 0;
     const values = new Map<string, number>();
@@ -59,6 +67,44 @@ export function EventLedger(props: EventLedgerProps) {
     }
     return values;
   });
+  const visibleWindow = createMemo(() => {
+    const count = props.events.length;
+    const visible = Math.max(1, Math.ceil(viewportHeight() / rowHeight));
+    const lastStart = Math.max(0, count - visible);
+    const start = Math.min(lastStart, Math.max(0, Math.floor(scrollTop() / rowHeight) - overscan));
+    const end = Math.min(count, start + visible + overscan * 2);
+    return { start, end, events: props.events.slice(start, end) };
+  });
+
+  createEffect(() => {
+    props.resetKey;
+    if (!viewport) return;
+    viewport.scrollTop = 0;
+    setScrollTop(0);
+  });
+
+  createEffect(() => {
+    const id = props.selectedId;
+    if (!id || !viewport) return;
+    const index = props.events.findIndex((event) => event.id === id);
+    if (index < 0) return;
+    const top = index * rowHeight;
+    const bottom = top + rowHeight;
+    if (top < viewport.scrollTop || bottom > viewport.scrollTop + viewport.clientHeight) {
+      viewport.scrollTop = Math.max(0, top - Math.max(0, viewport.clientHeight - rowHeight) / 2);
+      setScrollTop(viewport.scrollTop);
+    }
+  });
+
+  onMount(() => {
+    const measure = () => setViewportHeight(viewport.clientHeight);
+    measure();
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(measure);
+      observer.observe(viewport);
+    }
+  });
+  onCleanup(() => observer?.disconnect());
 
   return (
     <div class="event-ledger" role="table" aria-label="Durable session events">
@@ -66,26 +112,47 @@ export function EventLedger(props: EventLedgerProps) {
         <span role="columnheader">Event</span>
         <span role="columnheader">Content</span>
       </div>
-      <Show
-        when={props.events.length > 0}
-        fallback={<div class="event-ledger-empty">No events match this view.</div>}
+      <div
+        class="event-ledger-viewport"
+        data-events-scroll
+        role="rowgroup"
+        ref={viewport}
+        onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
       >
-        <For each={props.events}>
-          {(event, index) => (
-            <EventLedgerRow
-              event={event}
-              turn={turns().get(event.id) ?? 0}
-              groupStart={
-                index() === 0 ||
-                event.type === "user.message" ||
-                turns().get(props.events[index() - 1]?.id ?? "") !== turns().get(event.id)
-              }
-              selected={event.id === props.selectedId}
-              onSelect={() => props.onSelect(event)}
-            />
-          )}
-        </For>
-      </Show>
+        <Show
+          when={props.events.length > 0}
+          fallback={<div class="event-ledger-empty">No events match this view.</div>}
+        >
+          <div
+            class="event-ledger-spacer"
+            style={{ height: `${visibleWindow().start * rowHeight}px` }}
+            aria-hidden="true"
+          />
+          <For each={visibleWindow().events}>
+            {(event, localIndex) => {
+              const index = () => visibleWindow().start + localIndex();
+              return (
+                <EventLedgerRow
+                  event={event}
+                  turn={turns().get(event.id) ?? 0}
+                  groupStart={
+                    index() === 0 ||
+                    event.type === "user.message" ||
+                    turns().get(props.events[index() - 1]?.id ?? "") !== turns().get(event.id)
+                  }
+                  selected={event.id === props.selectedId}
+                  onSelect={() => props.onSelect(event)}
+                />
+              );
+            }}
+          </For>
+          <div
+            class="event-ledger-spacer"
+            style={{ height: `${(props.events.length - visibleWindow().end) * rowHeight}px` }}
+            aria-hidden="true"
+          />
+        </Show>
+      </div>
     </div>
   );
 }

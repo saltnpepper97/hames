@@ -117,11 +117,14 @@ a gateway-backed vertical slice state what is planned and expose no pretend
 controls.
 
 Chat and Events are two views over that one resident session stream. Events
-maps every durable record into a compact sequence-or-time trajectory with
-Input, Agent, and Tools lanes, followed by a searchable two-column ledger and
-an on-demand payload inspector. Selecting a timeline span or ledger row reveals
-the stored event without generating summaries or timing data that the gateway
-did not provide. The same composer remains mounted so its draft and controls
+maps semantic milestones from the durable history into a compact
+sequence-or-time trajectory with Input, Model, and Tools lanes. Its searchable
+two-column ledger still exposes every durable record, but windows the rows in
+the scroll viewport so large sessions do not mount thousands of controls.
+Selecting a timeline span or ledger row reveals the exact stored event without
+generating summaries or timing data that the gateway did not provide. Chat and
+Events remain resident after Events is first opened, avoiding repeated teardown
+and reconstruction. The composer also remains mounted so its draft and controls
 survive a view change, but it is hidden entirely while Events is selected.
 
 The selected session agent is changed through the gateway rather than stored in
@@ -223,7 +226,7 @@ source changes.
 This slice is a secure adaptive-sidebar application shell, workspace chat list,
 semantic icon-pack contract, composable surface and conversation-renderer
 registry, componentized chat frame, Chat/Events views, event overview and
-ledger, chat-level agent selection and creation, composer-control seats, durable
+virtualized ledger, chat-level agent selection and creation, composer-control seats, durable
 transcript reconstruction, live assistant output, message submission, run
 cancellation, and gateway-backed session creation. A newly
 created empty session opens directly in the centered fresh-work composer but

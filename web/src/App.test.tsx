@@ -1019,10 +1019,11 @@ describe("Hames web shell", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Events" }));
 
     const timeline = await screen.findByRole("region", { name: "Event timeline" });
-    expect(timeline).toHaveTextContent("InputAgentTools");
     await waitFor(() => {
       expect(document.querySelector(".events-toolbar-summary")).toHaveTextContent("Events3");
     });
+    expect(timeline).toHaveTextContent("InputModelTools");
+    expect(timeline).not.toHaveTextContent("No durable events yet");
     expect(screen.queryByRole("textbox", { name: "Message Hames" })).not.toBeInTheDocument();
     const toolMarker = screen.getByRole("button", { name: "Event 3: Tool · Completed" });
     fireEvent.click(toolMarker);
@@ -1036,6 +1037,9 @@ describe("Hames web shell", () => {
     expect(screen.getAllByRole("row")).toHaveLength(2);
     fireEvent.click(screen.getByRole("tab", { name: "Chat" }));
     expect(screen.getByRole("textbox", { name: "Message Hames" })).toHaveValue("Keep this draft");
+    fireEvent.click(screen.getByRole("tab", { name: "Events" }));
+    expect(screen.getByRole("searchbox", { name: "Filter events" })).toHaveValue("shell");
+    expect(screen.queryByRole("textbox", { name: "Message Hames" })).not.toBeInTheDocument();
   });
 
   it("updates mode and thinking through plugin-contributed composer controls", async () => {

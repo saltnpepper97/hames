@@ -1,4 +1,4 @@
-import { For, Show, createMemo } from "solid-js";
+import { For, Index, Show, createMemo } from "solid-js";
 import type { HamesEvent } from "../../api/types";
 import { Button } from "../../components/Button";
 import { eventIsError, eventTime, eventTypeLabel } from "./eventFormat";
@@ -30,7 +30,7 @@ interface EventTimelineProps {
 
 const lanes: { id: TimelineLane; label: string }[] = [
   { id: "input", label: "Input" },
-  { id: "agent", label: "Agent" },
+  { id: "agent", label: "Model" },
   { id: "tools", label: "Tools" },
 ];
 
@@ -55,6 +55,7 @@ function timelineLane(event: HamesEvent): TimelineLane {
   if (
     event.type.startsWith("tool.") ||
     event.type.startsWith("terminal.") ||
+    event.type.startsWith("skill.job.") ||
     event.type.startsWith("delegation.") ||
     event.type.startsWith("plugin.broker.")
   ) return "tools";
@@ -107,6 +108,32 @@ function operationPhase(event: HamesEvent): "start" | "end" | "point" {
   return "point";
 }
 
+function belongsOnTimeline(event: HamesEvent, activeStarts: ReadonlySet<string>): boolean {
+  if (activeStarts.has(event.id)) return true;
+  if (
+    event.type === "user.message" ||
+    event.type === "context.compiled" ||
+    event.type === "memory.retrieved" ||
+    event.type === "assistant.reasoning" ||
+    event.type === "assistant.message"
+  ) return true;
+
+  const family = operationFamily(event.type);
+  if (!family) return false;
+  const phase = operationPhase(event);
+  if (phase !== "end") return false;
+  return [
+    "run",
+    "model.response",
+    "tool",
+    "terminal",
+    "context.compaction",
+    "skill.job",
+    "plugin.broker",
+    "delegation",
+  ].includes(family);
+}
+
 function deriveTimeline(events: readonly HamesEvent[]): TimelineModel | undefined {
   if (events.length === 0) return undefined;
   const ordered = [...events].sort((left, right) => left.sequence - right.sequence);
@@ -135,9 +162,10 @@ function deriveTimeline(events: readonly HamesEvent[]): TimelineModel | undefine
       }
     }
   }
+  const activeStarts = new Set([...active.values()].map((event) => event.id));
 
   const spans = ordered.flatMap<TimelineSpan>((event) => {
-    if (consumed.has(event.id)) return [];
+    if (consumed.has(event.id) || !belongsOnTimeline(event, activeStarts)) return [];
     const end = value(event);
     const recordedDuration = numberPayload(event, "duration_seconds");
     const paired = pairedStarts.get(event.id);
@@ -205,28 +233,28 @@ export function EventTimeline(props: EventTimelineProps) {
                   />
                 )}
               </For>
-              <For each={current().spans}>
+              <Index each={current().spans}>
                 {(span) => (
                   <Button
                     variant="bare"
                     class="event-timeline-span"
                     classList={{
-                      selected: props.selectedId === span.event.id,
-                      error: eventIsError(span.event),
-                      filtered: Boolean(props.matchIds && !props.matchIds.has(span.event.id)),
+                      selected: props.selectedId === span().event.id,
+                      error: eventIsError(span().event),
+                      filtered: Boolean(props.matchIds && !props.matchIds.has(span().event.id)),
                     }}
-                    data-lane={span.lane}
-                    data-point={span.point || undefined}
+                    data-lane={span().lane}
+                    data-point={span().point || undefined}
                     style={{
-                      left: `${percent(span.start)}%`,
-                      width: `${Math.max(0, percent(span.end) - percent(span.start))}%`,
+                      left: `${percent(span().start)}%`,
+                      width: `${Math.max(0, percent(span().end) - percent(span().start))}%`,
                     }}
-                    aria-label={`Event ${span.event.sequence}: ${eventTypeLabel(span.event.type)}`}
-                    title={spanTitle(span, current().mode)}
-                    onClick={() => props.onSelect(span.event)}
+                    aria-label={`Event ${span().event.sequence}: ${eventTypeLabel(span().event.type)}`}
+                    title={spanTitle(span(), current().mode)}
+                    onClick={() => props.onSelect(span().event)}
                   />
                 )}
-              </For>
+              </Index>
             </>
           )}
         </Show>
