@@ -39,12 +39,18 @@ accessibility primitives, and typed contribution registries. Product surfaces
 are first-party web plugins using the same contracts available to later optional
 plugins.
 
-The first contribution contract is the icon-pack plugin. Application components
-request semantic names such as `nav.chat` or `state.empty`; the selected pack
-maps those names to assets. Phosphor Regular is the initial pack, but product
-components do not import Phosphor names directly. Route, navigation, panel,
-command, and settings contribution contracts will follow as those surfaces move
-out of the initial hard-coded shell.
+The icon-pack contract lets application components request semantic names such
+as `nav.chat` or `state.empty`; the selected pack maps those names to assets.
+Phosphor Regular is the initial pack, but product components do not import
+Phosphor names directly. The surface registry composes route, icon-rail, and
+context-sidebar contributions from web plugins. The built-in areas are the first
+`hames.core` plugin rather than hard-coded shell navigation.
+
+On wide screens, the shell uses a narrow global activity rail, a contextual
+sidebar, and the active surface. Chat contributes real workspace sessions to
+the contextual sidebar; selecting one routes its gateway metadata into the main
+surface. Other areas contribute no controls until their gateway-backed slices
+exist. The two navigation layers become one combined drawer on small screens.
 
 Web plugins remain presentation modules. They call authorized gateway APIs and
 subscribe to gateway events; they do not gain direct filesystem access,
@@ -55,8 +61,9 @@ package and permission design rather than arbitrary runtime script injection.
 
 The foundation reads only gateway health and session projections. It filters
 sessions by exact canonical launch directory and renders explicit connecting,
-reconnecting, offline, retry, and empty states. Routes without a gateway-backed
-vertical slice state what is planned and expose no pretend controls.
+reconnecting, offline, expired-session, retry, and empty states. Routes without
+a gateway-backed vertical slice state what is planned and expose no pretend
+controls.
 
 ## Build and packaging
 
@@ -77,9 +84,10 @@ source changes.
 
 ## Current capability boundary
 
-This slice is a secure application shell, live runtime summary, and workspace
-session list, plus the semantic icon-pack contract. General route and panel
-registries, chat input, session mutations, transcript/event reconstruction,
-approvals, and all management editors remain future gateway-backed slices. See
+This slice is a secure dual-sidebar application shell, live runtime summary,
+workspace chat list, semantic icon-pack contract, and composable surface
+registry. Chat input, session mutations, transcript/event reconstruction,
+approvals, commands, settings contributions, and all management editors remain
+future gateway-backed slices. See
 [M10 Web Control](../implementation-plan/M10-WEB-CONTROL.md) for their acceptance
 criteria.

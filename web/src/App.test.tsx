@@ -76,20 +76,26 @@ describe("Hames web shell", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders live workspace sessions without leaking other projects", async () => {
+  it("renders real workspace chats in the contextual sidebar", async () => {
     vi.stubGlobal("fetch", successfulFetch());
     render(() => <App />);
 
-    expect(screen.getByRole("heading", { name: "Conversations" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Chat", level: 1 })).toBeInTheDocument();
     expect(await screen.findByText("Build the web foundation")).toBeInTheDocument();
     expect(screen.queryByText("Another project")).not.toBeInTheDocument();
     expect(screen.getByText("1")).toBeInTheDocument();
     expect(screen.getByText("2")).toBeInTheDocument();
     expect(screen.getAllByText("Connected").length).toBeGreaterThan(0);
     expect(document.querySelectorAll('[data-icon^="nav."]')).toHaveLength(8);
+
+    fireEvent.click(screen.getByRole("link", { name: /Build the web foundation/ }));
+    expect(
+      await screen.findByRole("heading", { name: "Build the web foundation", level: 1 }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("gpt-5.6-sol")).toBeInTheDocument();
   });
 
-  it("provides every planned top-level area through handcrafted navigation", async () => {
+  it("provides every core plugin surface through the icon rail", async () => {
     vi.stubGlobal("fetch", successfulFetch());
     render(() => <App />);
     await screen.findByText("Build the web foundation");
@@ -108,7 +114,7 @@ describe("Hames web shell", () => {
     }
 
     fireEvent.click(screen.getByRole("link", { name: "Runs" }));
-    expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Runs", level: 1 })).toBeInTheDocument();
     expect(screen.getByText("This surface is intentionally quiet for now.")).toBeInTheDocument();
   });
 
@@ -123,5 +129,24 @@ describe("Hames web shell", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("connection refused");
     fireEvent.click(screen.getByRole("button", { name: "Retry connection" }));
     await waitFor(() => expect(screen.getAllByText("Connected").length).toBeGreaterThan(0));
+  });
+
+  it("distinguishes an expired browser session from an offline gateway", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(
+          { error: { code: "web_session_required", message: "session expired" } },
+          401,
+        ),
+      ),
+    );
+    render(() => <App />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Run hames web to reconnect securely",
+    );
+    expect(screen.queryByRole("button", { name: "Retry connection" })).not.toBeInTheDocument();
+    expect(screen.getAllByText("Reopen Hames Web").length).toBeGreaterThan(0);
   });
 });

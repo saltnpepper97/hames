@@ -1,7 +1,13 @@
-export type ConnectionState = "connecting" | "connected" | "reconnecting" | "offline";
+export type ConnectionState =
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "offline"
+  | "expired";
 
 interface ConnectionStatusProps {
   state: ConnectionState;
+  compact?: boolean;
 }
 
 const labels: Record<ConnectionState, string> = {
@@ -9,13 +15,20 @@ const labels: Record<ConnectionState, string> = {
   connected: "Connected",
   reconnecting: "Reconnecting",
   offline: "Offline",
+  expired: "Reopen Hames Web",
 };
 
 export function ConnectionStatus(props: ConnectionStatusProps) {
   return (
-    <span class="connection-status" data-state={props.state} role="status">
+    <span
+      class="connection-status"
+      classList={{ compact: props.compact }}
+      data-state={props.state}
+      role="status"
+      title={props.compact ? labels[props.state] : undefined}
+    >
       <span class="connection-dot" aria-hidden="true" />
-      {labels[props.state]}
+      <span class="connection-label">{labels[props.state]}</span>
     </span>
   );
 }

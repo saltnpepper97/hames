@@ -14,12 +14,15 @@ claiming unfinished controls:
   and exits without owning the site's lifetime;
 - a handcrafted SolidJS/Vite application provides responsive routes for Chat,
   Runs, Agents, Memory, Skills, Scars, Plugins, and Settings;
-- the shell begins a composable web-plugin boundary with semantic icon-pack
-  contributions; Phosphor is the first pack and components do not depend on its
-  exported names directly;
-- Chat currently shows live gateway activity and resumable sessions scoped to
-  the exact launch directory, with loading, offline, retry, reconnect, and empty
-  states;
+- the composable web-plugin boundary provides semantic icon packs and surface
+  contributions for routes, the global icon rail, and contextual sidebars;
+  Phosphor is the first icon pack and the built-in areas form `hames.core`;
+- the responsive shell uses a global icon rail, a contextual sidebar, and the
+  selected surface; Chat lists only real resumable sessions scoped to the exact
+  launch directory and routes a selection into the main area;
+- loading, offline, expired-session, retry, reconnect, and empty states are
+  explicit; an expired process-local browser session is not reported as an
+  offline gateway;
 - unfinished areas are honest, noninteractive route shells rather than local
   mock implementations;
 - the production bundle is committed and packaged with the Python gateway, with
