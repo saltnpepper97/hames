@@ -101,7 +101,7 @@ function successfulFetch() {
     const path = String(input);
     if (path === "/_hames/v1/bootstrap") return jsonResponse(bootstrap);
     if (path === "/v1/health") return jsonResponse(health);
-    if (path === "/v1/sessions") return jsonResponse(sessions);
+    if (path === "/v1/sessions?has_messages=true") return jsonResponse(sessions);
     if (path === "/v1/sessions/session-current/messages" && init?.method === "POST") {
       return jsonResponse(
         {

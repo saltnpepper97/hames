@@ -52,10 +52,10 @@ registry for their renderers, keeping the transcript itself composable.
 On wide screens, the shell uses a narrow global activity rail, a contextual
 sidebar, and the active surface. Chat contributes real, open workspace sessions
 to the contextual sidebar, matching the TUI's resumable-history boundary;
-closed historical sessions and sessions from other workspaces remain out of the
-list. Selecting one routes its gateway metadata into the main surface. Other
-areas contribute no controls until their gateway-backed slices exist. The two
-navigation layers become one combined drawer on small screens.
+empty sessions, closed historical sessions, and sessions from other workspaces
+remain out of the list. Selecting one routes its gateway metadata into the main
+surface. Other areas contribute no controls until their gateway-backed slices
+exist. The two navigation layers become one combined drawer on small screens.
 
 Web plugins remain presentation modules. They call authorized gateway APIs and
 subscribe to gateway events; they do not gain direct filesystem access,

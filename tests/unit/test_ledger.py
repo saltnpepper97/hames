@@ -144,6 +144,33 @@ def test_session_title_is_normalized_and_attributed(
     assert event.payload == {"title": "Refine the TUI"}
 
 
+def test_list_sessions_can_exclude_sessions_without_messages(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    empty = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    populated = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+    ledger.append(
+        session_id=populated.id,
+        event_type="user.message",
+        payload={"content": "hello"},
+    )
+
+    assert {session.id for session in ledger.list_sessions()} == {empty.id, populated.id}
+    assert [session.id for session in ledger.list_sessions(has_messages=True)] == [populated.id]
+    assert [session.id for session in ledger.list_sessions(has_messages=False)] == [empty.id]
+
+
 def test_recent_open_session_uses_canonical_cwd_and_latest_activity(
     hames_paths: HamesPaths, tmp_path: Path
 ) -> None:

@@ -926,8 +926,8 @@ def create_app(state: GatewayState) -> FastAPI:
             raise ApiError(400, "invalid_working_directory", str(exc)) from exc
 
     @app.get("/v1/sessions", dependencies=auth, response_model=list[Session])
-    async def list_sessions() -> list[Session]:
-        return await asyncio.to_thread(state.ledger.list_sessions)
+    async def list_sessions(has_messages: bool | None = None) -> list[Session]:
+        return await asyncio.to_thread(state.ledger.list_sessions, has_messages=has_messages)
 
     @app.get("/v1/sessions/recent", dependencies=auth, response_model=Session | None)
     async def recent_session(

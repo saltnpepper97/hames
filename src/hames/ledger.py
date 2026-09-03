@@ -357,9 +357,22 @@ class Ledger:
             raise KeyError(session_id)
         return Session.model_validate(dict(row))
 
-    def list_sessions(self) -> list[Session]:
+    def list_sessions(self, *, has_messages: bool | None = None) -> list[Session]:
         with self.database.connect() as connection:
-            rows = connection.execute("SELECT * FROM sessions ORDER BY created_at DESC").fetchall()
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM sessions
+                WHERE ? IS NULL OR EXISTS (
+                    SELECT 1
+                    FROM events e
+                    WHERE e.session_id = sessions.id
+                      AND e.type IN ('user.message', 'assistant.message')
+                ) = ?
+                ORDER BY created_at DESC
+                """,
+                (has_messages, has_messages),
+            ).fetchall()
         return [Session.model_validate(dict(row)) for row in rows]
 
     def latest_root_session(self, working_directory: Path) -> Session | None:

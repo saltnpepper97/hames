@@ -117,6 +117,51 @@ async def test_session_environment_endpoint_exposes_current_workspace(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_session_list_can_filter_empty_sessions(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            empty = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            populated = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            empty_id = str(response_object(empty)["id"])
+            populated_id = str(response_object(populated)["id"])
+            state.ledger.append(
+                session_id=populated_id,
+                event_type="user.message",
+                payload={"content": "hello"},
+            )
+
+            response = await client.get(
+                "/v1/sessions", headers=headers, params={"has_messages": "true"}
+            )
+
+            assert response.status_code == 200
+            assert [session["id"] for session in response.json()] == [populated_id]
+            assert empty_id not in {session["id"] for session in response.json()}
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
 async def test_tool_result_details_resolve_only_the_event_retained_blob(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     state = GatewayState.create(paths, providers={"fake": FakeProvider([])})

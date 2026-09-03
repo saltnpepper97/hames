@@ -94,7 +94,7 @@ export async function loadDashboard(): Promise<DashboardSnapshot> {
   csrfToken = bootstrap.csrf_token;
   const [health, sessions] = await Promise.all([
     request<GatewayHealth>("/v1/health"),
-    request<Session[]>("/v1/sessions"),
+    request<Session[]>("/v1/sessions?has_messages=true"),
   ]);
   return { bootstrap, health, sessions };
 }
