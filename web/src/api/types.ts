@@ -90,6 +90,44 @@ export interface AgentUpdate {
   skills: AgentAccessUpdate;
 }
 
+export type MemoryLayer = "relationship" | "semantic" | "episodic";
+export type MemoryStatus = "proposed" | "active" | "rejected" | "superseded" | "retracted";
+export type MemoryVisibility = "global" | "agent_private" | "workspace" | "session_team";
+export type MemoryValue = null | boolean | number | string | MemoryValue[] | {
+  [key: string]: MemoryValue;
+};
+
+export interface MemoryAnchor {
+  kind: string;
+  value: string;
+}
+
+export interface MemoryRecord {
+  id: string;
+  layer: MemoryLayer;
+  status: MemoryStatus;
+  visibility: MemoryVisibility;
+  subject: string;
+  predicate: string;
+  value: MemoryValue;
+  summary: string;
+  confidence: number;
+  importance: number;
+  owner_agent_id: string | null;
+  workspace_path: string | null;
+  lineage_root_session_id: string | null;
+  source_session_id: string;
+  source_run_id: string | null;
+  origin_kind: "automatic" | "explicit" | "episode";
+  valid_from: string | null;
+  valid_until: string | null;
+  superseded_by_id: string | null;
+  created_at: string;
+  updated_at: string;
+  anchors: MemoryAnchor[];
+  provenance_event_ids: string[];
+}
+
 export type SessionMode = "manual" | "auto" | "plan";
 
 export interface ProviderProfile {

@@ -358,6 +358,35 @@ a {
   text-transform: uppercase;
 }
 
+.ui-separator {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.7rem;
+  color: var(--muted);
+}
+
+.ui-separator-label,
+.ui-separator-meta {
+  flex: none;
+  font-size: 0.64rem;
+  font-weight: 650;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.ui-separator-rule {
+  min-width: 0;
+  height: 1px;
+  flex: 1;
+  background: var(--rule-soft);
+}
+
+.ui-separator-meta {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
 .conversation-list {
   min-height: 0;
   flex: 1;
@@ -1868,6 +1897,269 @@ a {
   font-size: 1.6rem;
 }
 
+.memory-sidebar-content {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.memory-sidebar-list {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.35rem 0.55rem 0.8rem;
+  scrollbar-gutter: stable;
+}
+
+.memory-sidebar-group {
+  display: grid;
+  gap: 0.12rem;
+}
+
+.memory-sidebar-separator {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  padding: 0.85rem 0.55rem 0.45rem;
+  background: var(--surface);
+}
+
+.memory-sidebar-item {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  padding: 0.58rem 0.6rem;
+  border-radius: 0.5rem;
+  color: var(--text-soft);
+  gap: 0.25rem;
+  text-decoration: none;
+}
+
+.memory-sidebar-item:hover,
+.memory-sidebar-item.active {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.memory-sidebar-item strong {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 0.75rem;
+  font-weight: 610;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.memory-sidebar-item > span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.61rem;
+  text-overflow: ellipsis;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.memory-group-empty {
+  margin: 0;
+  padding: 0.55rem 0.6rem 0.8rem;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.memory-sidebar-loading {
+  display: grid;
+  padding: 0.8rem;
+  gap: 0.5rem;
+}
+
+.memory-sidebar-loading span,
+.memory-detail-loading span {
+  border-radius: 0.5rem;
+  background: linear-gradient(90deg, transparent, rgb(24 24 27 / 5%), transparent);
+  background-size: 220% 100%;
+  animation: loading 1.8s linear infinite;
+}
+
+.memory-sidebar-loading span {
+  height: 3.4rem;
+}
+
+.memory-sidebar-error {
+  padding: 1rem;
+}
+
+.memory-sidebar-error p {
+  margin: 0 0 0.75rem;
+  color: var(--danger);
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
+.memory-detail-loading {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.memory-detail-loading span {
+  height: 6rem;
+}
+
+.memory-route-empty {
+  padding: 3rem 0;
+}
+
+.memory-route-empty h1 {
+  margin: 0.5rem 0 0;
+  font-size: 1.6rem;
+}
+
+.memory-route-empty p {
+  color: var(--muted);
+}
+
+.memory-page {
+  padding-bottom: 4rem;
+}
+
+.memory-heading {
+  max-width: 48rem;
+  margin-bottom: 2rem;
+}
+
+.memory-heading h1 {
+  margin: 0.55rem 0 0.7rem;
+  font-size: clamp(1.65rem, 3vw, 2.35rem);
+  font-weight: 710;
+  letter-spacing: -0.04em;
+  line-height: 1.12;
+}
+
+.memory-heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+.memory-stat-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 2.1rem;
+  border: 1px solid var(--rule-soft);
+  border-radius: 0.75rem;
+  background: var(--surface-soft);
+}
+
+.memory-stat-strip > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  padding: 0.85rem 1rem;
+  gap: 0.28rem;
+}
+
+.memory-stat-strip > div + div {
+  border-left: 1px solid var(--rule-soft);
+}
+
+.memory-stat-strip span,
+.memory-metadata dt {
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 620;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+
+.memory-stat-strip strong {
+  overflow: hidden;
+  font-size: 0.77rem;
+  font-weight: 640;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memory-page > .ui-separator {
+  margin: 1.8rem 0 0.9rem;
+}
+
+.memory-value-panel {
+  max-width: 52rem;
+  color: var(--text-soft);
+  font-size: 0.86rem;
+}
+
+.memory-json-value {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 0;
+  padding: 1rem;
+  border: 1px solid var(--rule-soft);
+  border-radius: 0.65rem;
+  background: var(--surface-soft);
+  color: var(--text-soft);
+  font: 0.75rem/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre-wrap;
+}
+
+.memory-metadata {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  gap: 0.75rem 2rem;
+}
+
+.memory-metadata > div {
+  min-width: 0;
+  padding: 0.65rem 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.memory-metadata dd {
+  margin: 0.35rem 0 0;
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.memory-provenance {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2rem;
+}
+
+.memory-provenance h2 {
+  margin: 0 0 0.65rem;
+  font-size: 0.78rem;
+}
+
+.memory-provenance ul {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  gap: 0.4rem;
+  list-style: none;
+}
+
+.memory-provenance li {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.memory-provenance li span {
+  margin-right: 0.45rem;
+}
+
+.memory-provenance code {
+  overflow-wrap: anywhere;
+  color: var(--text-soft);
+  font-size: 0.68rem;
+}
+
 .agent-detail-page {
   width: 100%;
   min-width: 0;
@@ -2722,6 +3014,24 @@ a {
   .agent-field-grid {
     grid-template-columns: 1fr;
   }
+
+  .memory-stat-strip,
+  .memory-metadata,
+  .memory-provenance {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .memory-stat-strip > div:nth-child(3) {
+    border-left: 0;
+  }
+
+  .memory-stat-strip > div:nth-child(n + 3) {
+    border-top: 1px solid var(--rule-soft);
+  }
+
+  .memory-provenance {
+    gap: 1.25rem;
+  }
 }
 
 @media (max-width: 820px) {
@@ -2952,6 +3262,13 @@ a {
   .agent-save-bar .ui-button,
   .settings-section-heading > .ui-button {
     width: 100%;
+  }
+}
+
+@media (max-width: 520px) {
+  .memory-metadata,
+  .memory-provenance {
+    grid-template-columns: 1fr;
   }
 }
 

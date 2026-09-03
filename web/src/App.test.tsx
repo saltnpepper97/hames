@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import type { AgentDetail, AgentPublic } from "./api/types";
+import type { AgentDetail, AgentPublic, MemoryRecord } from "./api/types";
 
 class MockEventSource {
   static instances: MockEventSource[] = [];
@@ -130,6 +130,84 @@ const defaultAgentDetail: AgentDetail = {
   deprecated_fields: [],
 };
 
+const memories: MemoryRecord[] = [
+  {
+    id: "memory-relationship",
+    layer: "relationship",
+    status: "active",
+    visibility: "global",
+    subject: "user:local",
+    predicate: "prefers_documentation_style",
+    value: "Concise but complete",
+    summary: "The user prefers concise, complete documentation.",
+    confidence: 0.95,
+    importance: 0.9,
+    owner_agent_id: null,
+    workspace_path: null,
+    lineage_root_session_id: null,
+    source_session_id: "session-current",
+    source_run_id: "run-one",
+    origin_kind: "explicit",
+    valid_from: null,
+    valid_until: null,
+    superseded_by_id: null,
+    created_at: "2026-09-01T18:00:00Z",
+    updated_at: "2026-09-01T18:00:00Z",
+    anchors: [{ kind: "workspace", value: "/work/hames" }],
+    provenance_event_ids: ["event-one"],
+  },
+  {
+    id: "memory-semantic",
+    layer: "semantic",
+    status: "active",
+    visibility: "workspace",
+    subject: "project:hames",
+    predicate: "uses_web_runtime",
+    value: { framework: "SolidJS", host: "gateway" },
+    summary: "Hames Web is served by the persistent gateway.",
+    confidence: 1,
+    importance: 0.8,
+    owner_agent_id: null,
+    workspace_path: "/work/hames",
+    lineage_root_session_id: null,
+    source_session_id: "session-current",
+    source_run_id: "run-one",
+    origin_kind: "automatic",
+    valid_from: null,
+    valid_until: null,
+    superseded_by_id: null,
+    created_at: "2026-09-02T18:00:00Z",
+    updated_at: "2026-09-02T18:00:00Z",
+    anchors: [],
+    provenance_event_ids: ["event-two"],
+  },
+  {
+    id: "memory-episode",
+    layer: "episodic",
+    status: "active",
+    visibility: "workspace",
+    subject: "run:one",
+    predicate: "completed",
+    value: "Built the web foundation",
+    summary: "The first web foundation was completed.",
+    confidence: 1,
+    importance: 0.7,
+    owner_agent_id: null,
+    workspace_path: "/work/hames",
+    lineage_root_session_id: null,
+    source_session_id: "session-current",
+    source_run_id: "run-one",
+    origin_kind: "episode",
+    valid_from: null,
+    valid_until: null,
+    superseded_by_id: null,
+    created_at: "2026-09-02T19:00:00Z",
+    updated_at: "2026-09-02T19:00:00Z",
+    anchors: [],
+    provenance_event_ids: [],
+  },
+];
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -174,6 +252,13 @@ function successfulFetch() {
         skills_pin: update.skills?.pin ?? currentAgent.skills_pin,
       };
       return jsonResponse(currentAgent);
+    }
+    if (path.startsWith("/v1/sessions/session-current/memories?")) {
+      const parameters = new URLSearchParams(path.split("?")[1]);
+      const layer = parameters.get("layer");
+      const offset = Number(parameters.get("offset") ?? 0);
+      const limit = Number(parameters.get("limit") ?? 200);
+      return jsonResponse(memories.filter((memory) => memory.layer === layer).slice(offset, offset + limit));
     }
     if (path === "/v1/providers") {
       return jsonResponse([
@@ -348,6 +433,30 @@ describe("Hames web shell", () => {
     const chatFrame = chatScroll?.closest(".session-chat");
     expect(chatFrame).toBeInTheDocument();
     expect(chatFrame?.querySelector(".composer-dock")).toBeInTheDocument();
+  });
+
+  it("browses real memories grouped by layer", async () => {
+    vi.stubGlobal("fetch", successfulFetch());
+    render(() => <App />);
+
+    fireEvent.click(await screen.findByRole("link", { name: "Memory" }));
+    const sidebar = await screen.findByRole("complementary", { name: "Memory sidebar" });
+    expect(await screen.findByRole("separator", { name: "Relationships" })).toBeInTheDocument();
+    expect(sidebar.querySelector('[role="separator"][aria-label="Semantic"]')).toBeInTheDocument();
+    expect(sidebar.querySelector('[role="separator"][aria-label="Episodes"]')).toBeInTheDocument();
+    expect(await screen.findByRole("heading", {
+      name: "The user prefers concise, complete documentation.",
+      level: 1,
+    })).toBeInTheDocument();
+    expect(screen.queryByText("This surface is intentionally quiet for now.")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("link", { name: /Hames Web is served by/ }));
+    expect(await screen.findByRole("heading", {
+      name: "Hames Web is served by the persistent gateway.",
+      level: 1,
+    })).toBeInTheDocument();
+    expect(document.querySelector(".memory-json-value")).toHaveTextContent('"framework": "SolidJS"');
+    expect(screen.getByText("Workspace", { selector: "dt" })).toBeInTheDocument();
   });
 
   it("replays live gateway events and submits messages", async () => {

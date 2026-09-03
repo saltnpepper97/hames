@@ -2,8 +2,11 @@ import { useLocation, useNavigate, useParams } from "@solidjs/router";
 import { Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
 import { AgentSidebar } from "../../agents/AgentSidebar";
 import { useAgentDirectory } from "../../agents/AgentDirectory";
+import { MemorySidebar } from "../../memory/MemorySidebar";
+import { useMemoryDirectory } from "../../memory/MemoryDirectory";
 import { ChatPage } from "../../pages/ChatPage";
 import { AgentDetailPage } from "../../pages/AgentDetailPage";
+import { MemoryPage } from "../../pages/MemoryPage";
 import { PlaceholderPage } from "../../pages/PlaceholderPage";
 import { Button } from "../../components/Button";
 import type { WebPlugin } from "../../shell/plugins";
@@ -107,6 +110,52 @@ function AgentSurface() {
   );
 }
 
+function MemorySurface() {
+  const params = useParams<{ memoryId?: string }>();
+  const navigate = useNavigate();
+  const directory = useMemoryDirectory();
+  const workspace = useWorkspace();
+
+  createEffect(() => {
+    workspace.snapshot()?.bootstrap.working_directory;
+    void directory.ensureLoaded();
+  });
+  createEffect(() => {
+    if (params.memoryId || !directory.loaded()) return;
+    const first = directory.records()[0];
+    if (first) navigate(`/memory/${encodeURIComponent(first.id)}`, { replace: true });
+  });
+
+  return (
+    <Show
+      when={params.memoryId}
+      keyed
+      fallback={
+        <section class="page memory-route-state" aria-live="polite">
+          <Show when={directory.loading() || !directory.loaded()}>
+            <div class="memory-detail-loading"><span /><span /><span /></div>
+          </Show>
+          <Show when={directory.error()}>
+            <div class="error-state">
+              <div><span class="eyebrow">Memory error</span><h2>Memory could not be loaded.</h2><p>{directory.error()}</p></div>
+              <Button onClick={() => void directory.refresh()}>Try again</Button>
+            </div>
+          </Show>
+          <Show when={directory.loaded() && !directory.error() && directory.records().length === 0}>
+            <div class="memory-route-empty">
+              <span class="eyebrow">Memory</span>
+              <h1>No active memories yet.</h1>
+              <p>Ask Hames to remember something durable from a chat.</p>
+            </div>
+          </Show>
+        </section>
+      }
+    >
+      {(memoryId) => <MemoryPage memoryId={memoryId} />}
+    </Show>
+  );
+}
+
 const placeholder = (
   eyebrow: string,
   title: string,
@@ -147,16 +196,11 @@ export const coreWebPlugin = {
     {
       id: "memory",
       path: "/memory",
-      route: "/memory",
+      route: ["/memory", "/memory/:memoryId"],
       label: "Memory",
       icon: "nav.memory",
-      component: placeholder(
-        "Continuity",
-        "Memory",
-        "Inspect semantic, relationship, operational, and episodic memory.",
-        "Memory records will remain provenance-linked and scoped by the existing runtime.",
-      ),
-      sidebar: { kind: "section", description: "Continuity and recall" },
+      component: MemorySurface,
+      sidebar: { kind: "component", component: MemorySidebar },
     },
     {
       id: "skills",

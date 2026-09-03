@@ -73,6 +73,10 @@ claiming unfinished controls:
   and routes directly into the responsive main-surface editor, which atomically
   edits display name, `AGENT.md` instructions, tool access, skill access, pinned
   skills, and avatar metadata without an intermediate overview;
+- the Memory sidebar paginates real workspace-visible relationship, semantic,
+  and episodic records through the gateway, separates those layers in one
+  scrollable directory, and routes into details for value, scope, confidence,
+  status, timestamps, and provenance;
 
 The next vertical slice adds richer plans, tasks, and child-agent activity.
 Those controls and the management capabilities listed below remain deferred.
@@ -171,15 +175,15 @@ Implement management for all M06 layers.
 Semantic:
 
 - search;
-- view;
-- provenance;
-- confidence/status;
+- view; **Implemented**
+- provenance; **Implemented**
+- confidence/status; **Implemented**
 - correct/supersede/retract/delete;
 - approve/reject proposals.
 
 Relationships:
 
-- entity page;
+- entity page; **Initial record detail implemented**
 - incoming/outgoing relationships;
 - bounded relationship view;
 - create/correct/retract/delete relationship.
@@ -192,7 +196,7 @@ Operational:
 
 Episodic:
 
-- search episodes;
+- search episodes; **Grouped browsing implemented; search remains deferred**
 - open linked session timeline.
 
 Memory detail shows why a record was retrieved for selected model request when retrieval events exist.

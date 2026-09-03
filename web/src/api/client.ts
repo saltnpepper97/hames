@@ -8,6 +8,8 @@ import type {
   DashboardSnapshot,
   GatewayHealth,
   MessageAccepted,
+  MemoryLayer,
+  MemoryRecord,
   ProviderProbe,
   ProviderProfile,
   Session,
@@ -127,6 +129,31 @@ export function listProviders(): Promise<ProviderProfile[]> {
 
 export function listAgents(): Promise<AgentPublic[]> {
   return request<AgentPublic[]>("/v1/agents");
+}
+
+export function recentSession(workingDirectory: string): Promise<Session | null> {
+  const parameters = new URLSearchParams({
+    working_directory: workingDirectory,
+    active_within_seconds: "31536000",
+  });
+  return request<Session | null>(`/v1/sessions/recent?${parameters.toString()}`);
+}
+
+export function listMemories(
+  sessionId: string,
+  layer: MemoryLayer,
+  offset = 0,
+  limit = 200,
+): Promise<MemoryRecord[]> {
+  const parameters = new URLSearchParams({
+    status: "active",
+    layer,
+    limit: String(limit),
+    offset: String(offset),
+  });
+  return request<MemoryRecord[]>(
+    `/v1/sessions/${encodeURIComponent(sessionId)}/memories?${parameters.toString()}`,
+  );
 }
 
 export function getAgent(agentId: string): Promise<AgentDetail> {
