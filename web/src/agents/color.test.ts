@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fallbackAvatar, hexToHsv, hsvToHex } from "./color";
+import { contrastingEyeColor, fallbackAvatar, hexToHsv, hsvToHex } from "./color";
 
 describe("agent avatar colors", () => {
   it("round trips representative colors", () => {
@@ -11,5 +11,11 @@ describe("agent avatar colors", () => {
   it("keeps deterministic agent fallbacks", () => {
     expect(fallbackAvatar("default")).toEqual(fallbackAvatar("default"));
     expect(fallbackAvatar("default").color).toMatch(/^#[0-9a-f]{6}$/);
+  });
+
+  it("selects legible eyes for light and dark shells", () => {
+    expect(contrastingEyeColor("#ffffff")).toBe("#111827");
+    expect(contrastingEyeColor("#facc15")).toBe("#111827");
+    expect(contrastingEyeColor("#18181b")).toBe("#ffffff");
   });
 });

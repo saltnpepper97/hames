@@ -6,6 +6,9 @@ export interface HsvColor {
   v: number;
 }
 
+const darkEyeColor = "#111827";
+const lightEyeColor = "#ffffff";
+
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
@@ -50,6 +53,28 @@ export function hexToHsv(hex: string): HsvColor {
     s: maximum === 0 ? 0 : delta / maximum,
     v: maximum,
   };
+}
+
+function relativeLuminance(hex: string): number {
+  const normalized = /^#[0-9a-f]{6}$/i.test(hex) ? hex.slice(1) : "64748b";
+  const channels = [0, 2, 4].map((offset) => {
+    const channel = Number.parseInt(normalized.slice(offset, offset + 2), 16) / 255;
+    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * channels[0]! + 0.7152 * channels[1]! + 0.0722 * channels[2]!;
+}
+
+function contrastRatio(first: number, second: number): number {
+  const lighter = Math.max(first, second);
+  const darker = Math.min(first, second);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+export function contrastingEyeColor(shellColor: string): string {
+  const shellLuminance = relativeLuminance(shellColor);
+  const darkContrast = contrastRatio(shellLuminance, relativeLuminance(darkEyeColor));
+  const lightContrast = contrastRatio(shellLuminance, 1);
+  return darkContrast >= lightContrast ? darkEyeColor : lightEyeColor;
 }
 
 const fallbackColors = [

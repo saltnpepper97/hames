@@ -1,5 +1,6 @@
 import { Match, Show, Switch } from "solid-js";
 import type { AgentAvatarConfig } from "../api/types";
+import { contrastingEyeColor } from "./color";
 
 interface AgentAvatarProps {
   config: AgentAvatarConfig;
@@ -26,6 +27,7 @@ export function AgentAvatar(props: AgentAvatarProps) {
         height: `${size()}px`,
         color: props.config.color,
         "--agent-animation-offset": animationOffset(),
+        "--agent-shell-eye": contrastingEyeColor(props.config.color),
       }}
       role="img"
       aria-label={`${props.name} avatar`}
@@ -76,7 +78,9 @@ export function AgentAvatar(props: AgentAvatarProps) {
             </Show>
             <g
               class="agent-avatar-eyes"
-              classList={{ "on-shell": props.config.face === "none" }}
+              classList={{
+                "on-shell": props.config.face === "none" && props.config.eyes !== "visor",
+              }}
             >
               <Switch>
                 <Match when={props.config.eyes === "visor"}>

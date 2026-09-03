@@ -34,4 +34,18 @@ describe("AgentAvatar", () => {
     expect(container.querySelector(".agent-visor")).toBeInTheDocument();
     expect(container.querySelectorAll(".agent-visor-eye")).toHaveLength(2);
   });
+
+  it("keeps the visor self-contrasting when the face plate is off", () => {
+    const { container } = render(() => (
+      <AgentAvatar
+        name="Visor"
+        animated={false}
+        config={{ shape: "circle", eyes: "visor", face: "none", color: "#ffffff" }}
+      />
+    ));
+
+    expect(container.querySelector(".agent-avatar-eyes")).not.toHaveClass("on-shell");
+    expect(container.querySelector(".agent-visor")).toBeInTheDocument();
+    expect(container.querySelectorAll(".agent-visor-eye")).toHaveLength(2);
+  });
 });

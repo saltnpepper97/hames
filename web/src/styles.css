@@ -1979,7 +1979,11 @@ a {
   transform-origin: center;
 }
 
-.agent-avatar-eyes.on-shell,
+.agent-avatar-eyes.on-shell {
+  fill: var(--agent-shell-eye);
+  stroke: var(--agent-shell-eye);
+}
+
 .agent-visor-eye {
   fill: rgb(255 255 255 / 94%);
   stroke: rgb(255 255 255 / 94%);
@@ -2203,7 +2207,7 @@ a {
   width: 11rem;
   height: 11rem;
   border-radius: 50%;
-  background: conic-gradient(from -90deg, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+  background: conic-gradient(#f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
   cursor: crosshair;
   touch-action: none;
 }
@@ -2239,9 +2243,10 @@ a {
   border: 1px solid var(--rule);
   border-radius: 0.55rem;
   background:
-    linear-gradient(to top, #000, transparent),
-    linear-gradient(to right, #fff, transparent),
-    var(--selected-hue);
+    linear-gradient(to top, #000, rgb(0 0 0 / 0%)),
+    linear-gradient(to right, #fff, var(--selected-hue));
+  background-clip: padding-box;
+  background-repeat: no-repeat;
   cursor: crosshair;
   touch-action: none;
 }
