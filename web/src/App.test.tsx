@@ -754,7 +754,8 @@ describe("Hames web shell", () => {
     await screen.findByRole("heading", { name: "Navigator", level: 1 });
     expect(agentSidebar).toHaveTextContent("Navigator");
 
-    fireEvent.click(screen.getByRole("button", { name: "Edit appearance" }));
+    expect(screen.queryByRole("heading", { name: "Appearance" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Edit Navigator appearance" }));
     expect(screen.getByRole("dialog", { name: "Customize Navigator" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Hex/ }));
     fireEvent.click(screen.getByRole("button", { name: /Pill/ }));

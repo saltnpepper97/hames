@@ -282,16 +282,6 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
               </div>
             </SettingsSection>
 
-            <SettingsSection
-              title="Appearance"
-              description="Shape, face plate, eyes, and color are portable with the agent capsule."
-              action={<Button onClick={() => setEditingAvatar(true)}>Edit appearance</Button>}
-            >
-              <div class="agent-appearance-summary">
-                <AgentAvatar config={avatar()} name={current.name} size={76} />
-                <div><strong>{avatar().shape}</strong><span>{avatar().eyes} eyes · {avatar().face} face · {avatar().color.toUpperCase()}</span></div>
-              </div>
-            </SettingsSection>
           </div>
 
           <Show when={editingAvatar()}>

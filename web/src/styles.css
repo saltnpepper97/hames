@@ -2572,29 +2572,6 @@ a {
   font-size: 0.72rem;
 }
 
-.agent-appearance-summary {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.agent-appearance-summary > div {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
-
-.agent-appearance-summary strong {
-  font-size: 0.8rem;
-  text-transform: capitalize;
-}
-
-.agent-appearance-summary span {
-  color: var(--muted);
-  font-size: 0.68rem;
-  text-transform: capitalize;
-}
-
 .agent-avatar {
   display: inline-grid;
   flex: none;
