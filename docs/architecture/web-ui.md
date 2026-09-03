@@ -40,18 +40,18 @@ are first-party web plugins using the same contracts available to later optional
 plugins.
 
 Shared controls are application components rather than incidental page markup.
-Buttons, form fields, Markdown renderers and editors, selectable capability
-rows, settings sections, dialogs, the chat frame, and agent avatars each own
-their interaction and accessibility contract. Pages compose those primitives
-and do not render native buttons directly.
+Buttons, checkboxes, switches, form fields, Markdown renderers and editors,
+selectable capability rows, settings sections, dialogs, the chat frame, and
+agent avatars each own their interaction and accessibility contract. Pages
+compose those primitives and do not render native buttons directly.
 
 The icon-pack contract lets application components request semantic names such
 as `nav.chat` or `state.empty`; the selected pack maps those names to assets.
-The default pack deliberately mixes Phosphor for the Hames horse, agent, and
-memory symbols with Tabler for the rest of the interface. Product components
-do not import either library directly. The surface registry composes route,
-icon-rail, and context-sidebar contributions from web plugins. The built-in
-areas are the first `hames.core` plugin rather than hard-coded shell navigation.
+The default pack uses the Hames artwork for its brand mark, Phosphor for agent
+and memory symbols, and Tabler for the rest of the interface. Product
+components do not import either library directly. The surface registry composes
+route, icon-rail, and context-sidebar contributions from web plugins. The
+built-in areas are the first `hames.core` plugin rather than hard-coded shell navigation.
 Conversation messages, reasoning, tool activity, and notices use the same
 registry for their renderers, keeping the transcript itself composable.
 The resident chat frame is assembled from focused header, viewport, composer,
@@ -143,6 +143,12 @@ portaled dialog with previews, a suggested palette, and a keyboard-operable hue
 and saturation/value picker. Saving writes validated avatar metadata to the
 agent's `AGENT.md` through the same gateway update path.
 
+The Settings surface owns browser-local appearance preferences. Its shared
+switch component selects the neutral light or dark palette, persists the choice
+in browser storage, and updates the browser color scheme and theme color. A
+small same-origin initializer applies the saved mode before the application
+bundle paints without weakening the gateway's script policy.
+
 ## Build and packaging
 
 Run the pinned frontend toolchain with:
@@ -177,7 +183,8 @@ until its first message. The Agents slice lists real capsules and supports
 atomic display-name, instructions, tool, skill, pinned-skill, and avatar edits.
 Agent creation, retirement, usage, and deeper policy summaries remain planned.
 The attachment control remains visibly disabled until its gateway contract exists.
-Commands, settings contributions, and the remaining management editors are
-future gateway-backed slices. See
+The browser-local light/dark appearance setting is functional. Commands,
+gateway-backed settings contributions, and the remaining management editors
+are future slices. See
 [M10 Web Control](../implementation-plan/M10-WEB-CONTROL.md) for their acceptance
 criteria.

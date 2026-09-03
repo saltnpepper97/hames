@@ -859,6 +859,24 @@ describe("Hames web shell", () => {
     expect(screen.queryByRole("link", { name: "Runs" })).not.toBeInTheDocument();
   });
 
+  it("switches and persists the dark appearance from Settings", async () => {
+    window.history.replaceState({}, "", "/settings");
+    vi.stubGlobal("fetch", successfulFetch());
+    render(() => <App />);
+
+    const darkMode = await screen.findByRole("switch", { name: "Dark mode" });
+    expect(darkMode).not.toBeChecked();
+    expect(document.documentElement).toHaveAttribute("data-theme", "light");
+
+    fireEvent.click(darkMode);
+    await waitFor(() => expect(document.documentElement).toHaveAttribute("data-theme", "dark"));
+    expect(window.localStorage.getItem("hames.theme")).toBe("dark");
+
+    fireEvent.click(darkMode);
+    await waitFor(() => expect(document.documentElement).toHaveAttribute("data-theme", "light"));
+    expect(window.localStorage.getItem("hames.theme")).toBe("light");
+  });
+
   it("opens a real agent breakdown and persists edits", async () => {
     window.history.replaceState({}, "", "/agents");
     const fetchMock = successfulFetch();

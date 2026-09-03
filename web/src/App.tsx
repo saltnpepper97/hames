@@ -3,6 +3,7 @@ import type { ParentProps } from "solid-js";
 import { AgentDirectoryProvider } from "./agents/AgentDirectory";
 import { MemoryDirectoryProvider } from "./memory/MemoryDirectory";
 import { SkillDirectoryProvider } from "./skills/SkillDirectory";
+import { ThemeProvider } from "./theme/Theme";
 import { AppShell } from "./components/AppShell";
 import { coreWebPlugin } from "./plugins/core";
 import { hamesIconPack } from "./plugins/icons/hames";
@@ -32,13 +33,15 @@ function WorkspaceRoot(props: ParentProps) {
 export function App() {
   return (
     <IconProvider pack={hamesIconPack}>
-      <Router root={WorkspaceRoot}>
-        {registry.surfaces.map((surface) => (
-          <Route path={surface.route} component={surface.component} />
-        ))}
-        <Route path="/" component={() => <Navigate href="/chat" />} />
-        <Route path="*404" component={() => <Navigate href="/chat" />} />
-      </Router>
+      <ThemeProvider>
+        <Router root={WorkspaceRoot}>
+          {registry.surfaces.map((surface) => (
+            <Route path={surface.route} component={surface.component} />
+          ))}
+          <Route path="/" component={() => <Navigate href="/chat" />} />
+          <Route path="*404" component={() => <Navigate href="/chat" />} />
+        </Router>
+      </ThemeProvider>
     </IconProvider>
   );
 }

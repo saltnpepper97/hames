@@ -8,6 +8,7 @@ import { ChatPage } from "../../pages/ChatPage";
 import { AgentDetailPage } from "../../pages/AgentDetailPage";
 import { MemoryPage } from "../../pages/MemoryPage";
 import { SkillPage } from "../../pages/SkillPage";
+import { SettingsPage } from "../../pages/SettingsPage";
 import { PlaceholderPage } from "../../pages/PlaceholderPage";
 import { Button } from "../../components/Button";
 import type { WebPlugin } from "../../shell/plugins";
@@ -294,12 +295,7 @@ export const coreWebPlugin = {
       route: "/settings",
       label: "Settings",
       icon: "nav.settings",
-      component: placeholder(
-        "Local configuration",
-        "Settings",
-        "Control safe runtime defaults without exposing stored secrets.",
-        "Provider credentials will never be returned to or retained by the browser.",
-      ),
+      component: SettingsPage,
       sidebar: { kind: "section", description: "Local configuration" },
     },
   ],
