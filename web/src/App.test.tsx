@@ -2,6 +2,33 @@ import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 
+class MockEventSource {
+  static instances: MockEventSource[] = [];
+
+  readonly listeners = new Map<string, EventListener[]>();
+  onopen: ((event: Event) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
+
+  constructor(readonly url: string) {
+    MockEventSource.instances.push(this);
+  }
+
+  addEventListener(type: string, listener: EventListener): void {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+  }
+
+  emit(type: string, data: unknown): void {
+    const event = new MessageEvent(type, { data: JSON.stringify(data) });
+    for (const listener of this.listeners.get(type) ?? []) listener(event);
+  }
+
+  open(): void {
+    this.onopen?.(new Event("open"));
+  }
+
+  close(): void {}
+}
+
 const bootstrap = {
   protocol_version: 1,
   gateway_protocol_version: 33,
@@ -70,18 +97,62 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 function successfulFetch() {
-  return vi.fn(async (input: RequestInfo | URL) => {
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     if (path === "/_hames/v1/bootstrap") return jsonResponse(bootstrap);
     if (path === "/v1/health") return jsonResponse(health);
     if (path === "/v1/sessions") return jsonResponse(sessions);
+    if (path === "/v1/sessions/session-current/messages" && init?.method === "POST") {
+      return jsonResponse(
+        {
+          submission_id: "submission-one",
+          replayed: false,
+          disposition: "started",
+          run_id: "run-one",
+          queued: null,
+        },
+        202,
+      );
+    }
+    if (path === "/v1/runs/run-one/cancel" && init?.method === "POST") {
+      return jsonResponse({ cancelled: true });
+    }
     return jsonResponse({ error: { message: "not found" } }, 404);
   });
+}
+
+function durableEvent(
+  type: string,
+  sequence: number,
+  payload: Record<string, unknown>,
+  runId: string | null = "run-one",
+) {
+  return {
+    durable: true,
+    event: {
+      id: `event-${sequence}`,
+      sequence,
+      session_id: "session-current",
+      run_id: runId,
+      agent_id: "default",
+      type,
+      schema_version: 1,
+      created_at: "2026-09-02T18:00:00Z",
+      causation_id: null,
+      correlation_id: null,
+      payload,
+      blob_hash: null,
+      payload_hash: `hash-${sequence}`,
+      redaction_state: "clear",
+    },
+  };
 }
 
 describe("Hames web shell", () => {
   beforeEach(() => {
     window.history.replaceState({}, "", "/chat");
+    MockEventSource.instances = [];
+    vi.stubGlobal("EventSource", MockEventSource);
   });
 
   afterEach(() => {
@@ -92,12 +163,10 @@ describe("Hames web shell", () => {
     vi.stubGlobal("fetch", successfulFetch());
     render(() => <App />);
 
-    expect(screen.getByRole("heading", { name: "Chat", level: 1 })).toBeInTheDocument();
     expect(await screen.findByText("Build the web foundation")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Select a chat", level: 1 })).toBeInTheDocument();
     expect(screen.queryByText("Another project")).not.toBeInTheDocument();
     expect(screen.queryByText("Closed workspace chat")).not.toBeInTheDocument();
-    expect(screen.getByText("1")).toBeInTheDocument();
-    expect(screen.getByText("2")).toBeInTheDocument();
     expect(screen.getAllByText("Connected").length).toBeGreaterThan(0);
     expect(document.querySelectorAll('[data-icon^="nav."]')).toHaveLength(8);
     expect(document.querySelector('[data-icon="nav.scars"]')).toHaveAttribute(
@@ -120,7 +189,51 @@ describe("Hames web shell", () => {
     expect(
       await screen.findByRole("heading", { name: "Build the web foundation", level: 1 }),
     ).toBeInTheDocument();
-    expect(screen.getByText("gpt-5.6-sol")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Build the web foundation" }).parentElement)
+      .toHaveTextContent("gpt-5.6-sol");
+  });
+
+  it("replays live gateway events and submits messages", async () => {
+    const fetchMock = successfulFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    render(() => <App />);
+    fireEvent.click(await screen.findByRole("link", { name: /Build the web foundation/ }));
+
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    const source = MockEventSource.instances[0]!;
+    expect(source.url).toBe("/v1/events?session_id=session-current");
+    source.open();
+    source.emit("user.message", durableEvent("user.message", 1, { content: "Hello", purpose: "turn" }));
+    source.emit("run.started", durableEvent("run.started", 2, {}));
+    source.emit("response.text_delta", {
+      durable: false,
+      session_id: "session-current",
+      run_id: "run-one",
+      type: "response.text_delta",
+      payload: { text: "Hi there" },
+    });
+
+    expect(await screen.findByText("Hello")).toBeInTheDocument();
+    expect(screen.getByText("Hi there")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+
+    fireEvent.input(screen.getByRole("textbox", { name: "Message Hames" }), {
+      target: { value: "Follow up" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Queue" }));
+    expect(await screen.findByText("Message sent")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/sessions/session-current/messages",
+      expect.objectContaining({ method: "POST" }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/v1/runs/run-one/cancel",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
   });
 
   it("provides every core plugin surface through the icon rail", async () => {

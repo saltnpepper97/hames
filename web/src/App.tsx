@@ -4,6 +4,7 @@ import { AppShell } from "./components/AppShell";
 import { coreWebPlugin } from "./plugins/core";
 import { hamesIconPack } from "./plugins/icons/hames";
 import { IconProvider } from "./shell/icons";
+import { WebPluginProvider } from "./shell/pluginContext";
 import { composeWebPlugins } from "./shell/plugins";
 import { WorkspaceProvider } from "./shell/workspace";
 
@@ -11,9 +12,11 @@ const registry = composeWebPlugins([coreWebPlugin]);
 
 function WorkspaceRoot(props: ParentProps) {
   return (
-    <WorkspaceProvider>
-      <AppShell registry={registry}>{props.children}</AppShell>
-    </WorkspaceProvider>
+    <WebPluginProvider registry={registry}>
+      <WorkspaceProvider>
+        <AppShell registry={registry}>{props.children}</AppShell>
+      </WorkspaceProvider>
+    </WebPluginProvider>
   );
 }
 

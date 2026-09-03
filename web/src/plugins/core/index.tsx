@@ -4,6 +4,7 @@ import { ChatPage } from "../../pages/ChatPage";
 import { PlaceholderPage } from "../../pages/PlaceholderPage";
 import type { WebPlugin } from "../../shell/plugins";
 import { useWorkspace } from "../../shell/workspace";
+import { coreConversationNodes } from "./conversationNodes";
 
 function ChatSurface() {
   const params = useParams<{ sessionId?: string }>();
@@ -16,7 +17,6 @@ function ChatSurface() {
     <ChatPage
       connection={workspace.connection()}
       error={workspace.error()}
-      health={workspace.snapshot()?.health}
       selectedSession={selectedSession()}
       onRetry={() => void workspace.refresh()}
     />
@@ -39,6 +39,7 @@ const placeholder = (
 
 export const coreWebPlugin = {
   id: "hames.core",
+  conversationNodes: coreConversationNodes,
   surfaces: [
     {
       id: "chat",

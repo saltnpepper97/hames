@@ -2,6 +2,7 @@ import type {
   ApiErrorBody,
   DashboardSnapshot,
   GatewayHealth,
+  MessageAccepted,
   Session,
   WebBootstrap,
 } from "./types";
@@ -26,6 +27,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
+  if (init.body !== undefined && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   if (method !== "GET" && method !== "HEAD" && csrfToken) {
     headers.set("X-Hames-CSRF", csrfToken);
   }
@@ -58,6 +62,31 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   return (await response.json()) as T;
+}
+
+export function sessionEventStreamUrl(sessionId: string): string {
+  const parameters = new URLSearchParams({ session_id: sessionId });
+  return `/v1/events?${parameters.toString()}`;
+}
+
+export function sendMessage(sessionId: string, content: string): Promise<MessageAccepted> {
+  return request<MessageAccepted>(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`, {
+    method: "POST",
+    body: JSON.stringify({
+      submission_id: crypto.randomUUID(),
+      content,
+      remember: false,
+      send_now: false,
+      purpose: "turn",
+      paste_spans: [],
+    }),
+  });
+}
+
+export function cancelRun(runId: string): Promise<{ cancelled: boolean }> {
+  return request<{ cancelled: boolean }>(`/v1/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: "POST",
+  });
 }
 
 export async function loadDashboard(): Promise<DashboardSnapshot> {

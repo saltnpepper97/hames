@@ -1,8 +1,8 @@
 # M10 — Rich Control Surfaces: Ratatui and Web
 
 The terminal slice is implemented and documented in [M10-TUI.md](M10-TUI.md).
-The web foundation is now implemented; this document remains the plan for the
-chat vertical slice and the remaining rich-management views.
+The web foundation and first functional chat slice are now implemented; this
+document remains the plan for approvals and the remaining rich-management views.
 
 ## Implemented foundation
 
@@ -15,7 +15,8 @@ claiming unfinished controls:
 - a handcrafted SolidJS/Vite application provides responsive routes for Chat,
   Runs, Agents, Memory, Skills, Scars, Plugins, and Settings;
 - the composable web-plugin boundary provides semantic icon packs and surface
-  contributions for routes, the global icon rail, and contextual sidebars;
+  contributions for routes, the global icon rail, contextual sidebars, and
+  conversation-node renderers;
   the default icon pack uses Phosphor for the brand, agents, and memory and
   Tabler for the remaining controls, while the built-in areas form `hames.core`;
 - the responsive shell uses a global icon rail, a contextual sidebar, and the
@@ -33,13 +34,15 @@ claiming unfinished controls:
   enforce exact Host, Origin, and CSRF checks while preserving native gateway
   SSE streaming and `Last-Event-ID`;
 - CSP and defensive response headers apply to the browser entry points,
-  application assets, bootstrap API, and web errors.
+  application assets, bootstrap API, and web errors;
+- selecting a real session reconstructs user, reasoning, assistant, and tool
+  activity from durable gateway events, follows live assistant deltas, submits
+  messages, and cancels the active run without a frontend-only transcript;
 
-The next vertical slice is real chat and approvals. Session creation/resume,
-event reconstruction, assistant streaming, tool activity, cancellation, and
-approval mutations remain deferred, as do the management capabilities listed
-below. The gateway protocol and persistence schema were not changed for this
-foundation.
+The next vertical slice adds new-session controls, approvals, questions, and
+richer agent activity. Those mutations and the management capabilities listed
+below remain deferred. The gateway protocol and persistence schema were not
+changed for the web implementation.
 
 ## Goal
 

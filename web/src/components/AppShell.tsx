@@ -176,7 +176,9 @@ export function AppShell(props: AppShellProps) {
             )}
           </Show>
         </div>
-        <div class="page-stage">{props.children}</div>
+        <div class="page-stage" classList={{ "chat-stage": activeSurface().id === "chat" }}>
+          {props.children}
+        </div>
       </main>
     </div>
   );

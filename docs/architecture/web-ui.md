@@ -43,9 +43,11 @@ The icon-pack contract lets application components request semantic names such
 as `nav.chat` or `state.empty`; the selected pack maps those names to assets.
 The default pack deliberately mixes Phosphor for the Hames horse, agent, and
 memory symbols with Tabler for the rest of the interface. Product components
-do not import either library directly. The surface registry composes route, icon-rail, and
-context-sidebar contributions from web plugins. The built-in areas are the first
-`hames.core` plugin rather than hard-coded shell navigation.
+do not import either library directly. The surface registry composes route,
+icon-rail, and context-sidebar contributions from web plugins. The built-in
+areas are the first `hames.core` plugin rather than hard-coded shell navigation.
+Conversation messages, reasoning, tool activity, and notices use the same
+registry for their renderers, keeping the transcript itself composable.
 
 On wide screens, the shell uses a narrow global activity rail, a contextual
 sidebar, and the active surface. Chat contributes real, open workspace sessions
@@ -62,8 +64,10 @@ permissions. Initially they are compile-time modules in the locally packaged
 bundle. Loading independently installed JavaScript requires a later signed
 package and permission design rather than arbitrary runtime script injection.
 
-The foundation reads only gateway health and session projections. It filters
-sessions by exact canonical launch directory and renders explicit connecting,
+The chat surface filters sessions by exact canonical launch directory, rebuilds
+the transcript from durable gateway events, and then follows transient assistant
+output over the same SSE connection. Sending and cancellation call gateway
+mutations with browser-session CSRF protection. It renders explicit connecting,
 reconnecting, offline, expired-session, retry, and empty states. Routes without
 a gateway-backed vertical slice state what is planned and expose no pretend
 controls.
@@ -87,10 +91,11 @@ source changes.
 
 ## Current capability boundary
 
-This slice is a secure dual-sidebar application shell, live runtime summary,
-workspace chat list, semantic icon-pack contract, and composable surface
-registry. Chat input, session mutations, transcript/event reconstruction,
-approvals, commands, settings contributions, and all management editors remain
-future gateway-backed slices. See
+This slice is a secure dual-sidebar application shell, workspace chat list,
+semantic icon-pack contract, composable surface and conversation-renderer
+registry, durable transcript reconstruction, live assistant output, message
+submission, and run cancellation. New-session controls, approvals, questions,
+commands, settings contributions, and all management editors remain future
+gateway-backed slices. See
 [M10 Web Control](../implementation-plan/M10-WEB-CONTROL.md) for their acceptance
 criteria.

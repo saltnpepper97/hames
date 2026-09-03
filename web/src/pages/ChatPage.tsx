@@ -1,12 +1,12 @@
 import { Match, Show, Switch } from "solid-js";
 import type { ConnectionState } from "../components/ConnectionStatus";
-import type { GatewayHealth, Session } from "../api/types";
+import type { Session } from "../api/types";
+import { SessionChat } from "../chat/SessionChat";
 import { Icon } from "../shell/icons";
 
 interface ChatPageProps {
   connection: ConnectionState;
   error: string;
-  health?: GatewayHealth;
   selectedSession?: Session;
   onRetry: () => void;
 }
@@ -14,30 +14,6 @@ interface ChatPageProps {
 export function ChatPage(props: ChatPageProps) {
   return (
     <section class="page chat-page" aria-labelledby="chat-title">
-      <div class="page-heading">
-        <div>
-          <span class="eyebrow">Current workspace</span>
-          <h1 id="chat-title">{props.selectedSession?.title?.trim() || "Chat"}</h1>
-          <p>
-            {props.selectedSession
-              ? "Session metadata from the gateway."
-              : "Select an existing chat from the sidebar."}
-          </p>
-        </div>
-        <Show when={props.health}>
-          {(health) => (
-            <div class="runtime-summary" aria-label="Gateway activity">
-              <span>
-                <strong>{health().active_runs}</strong> active runs
-              </span>
-              <span>
-                <strong>{health().active_terminals}</strong> terminals
-              </span>
-            </div>
-          )}
-        </Show>
-      </div>
-
       <Show when={props.connection === "connecting"}>
         <div class="loading-rows" aria-label="Loading sessions" aria-busy="true">
           <span />
@@ -70,38 +46,12 @@ export function ChatPage(props: ChatPageProps) {
       <Show when={props.connection === "connected" || props.connection === "reconnecting"}>
         <Switch>
           <Match when={props.selectedSession}>
-            {(session) => (
-              <div class="conversation-detail">
-                <dl>
-                  <div>
-                    <dt>Agent</dt>
-                    <dd>{session().agent_id}</dd>
-                  </div>
-                  <div>
-                    <dt>Model</dt>
-                    <dd>{session().model}</dd>
-                  </div>
-                  <div>
-                    <dt>Mode</dt>
-                    <dd>{session().interaction_mode}</dd>
-                  </div>
-                  <div>
-                    <dt>Status</dt>
-                    <dd>{session().status}</dd>
-                  </div>
-                </dl>
-                <div class="conversation-empty">
-                  <Icon name="state.empty" size={24} />
-                  <h2>Transcript not wired yet</h2>
-                  <p>This view will read durable events from the gateway in the chat slice.</p>
-                </div>
-              </div>
-            )}
+            {(session) => <SessionChat session={session()} />}
           </Match>
           <Match when={!props.selectedSession}>
             <div class="conversation-empty">
               <Icon name="state.empty" size={24} />
-              <h2>Select a chat</h2>
+              <h1 id="chat-title">Select a chat</h1>
               <p>Workspace chats are listed in the sidebar.</p>
             </div>
           </Match>
