@@ -102,7 +102,7 @@ describe("Hames web shell", () => {
     expect(document.querySelectorAll('[data-icon^="nav."]')).toHaveLength(8);
     expect(document.querySelector('[data-icon="nav.scars"]')).toHaveAttribute(
       "data-icon-pack",
-      "tabler",
+      "hames-default",
     );
     expect(document.querySelector('[data-icon="nav.scars"] svg')).toHaveClass(
       "tabler-icon-bandage",
@@ -110,9 +110,11 @@ describe("Hames web shell", () => {
     expect(document.querySelector('[data-icon="nav.plugins"] svg')).toHaveClass(
       "tabler-icon-plug",
     );
-    expect(document.querySelector('[data-icon="nav.agents"] svg')).toHaveClass(
-      "tabler-icon-robot-face",
+    expect(document.querySelector('[data-icon="nav.agents"] .phosphor-icon')).toHaveClass(
+      "phosphor-icon",
     );
+    expect(document.querySelector('[data-icon="nav.memory"] .phosphor-icon')).toBeInTheDocument();
+    expect(document.querySelector('[data-icon="brand.mark"] .phosphor-icon')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("link", { name: /Build the web foundation/ }));
     expect(

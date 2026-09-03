@@ -2,7 +2,7 @@ import { Navigate, Route, Router } from "@solidjs/router";
 import type { ParentProps } from "solid-js";
 import { AppShell } from "./components/AppShell";
 import { coreWebPlugin } from "./plugins/core";
-import { tablerIconPack } from "./plugins/icons/tabler";
+import { hamesIconPack } from "./plugins/icons/hames";
 import { IconProvider } from "./shell/icons";
 import { composeWebPlugins } from "./shell/plugins";
 import { WorkspaceProvider } from "./shell/workspace";
@@ -19,7 +19,7 @@ function WorkspaceRoot(props: ParentProps) {
 
 export function App() {
   return (
-    <IconProvider pack={tablerIconPack}>
+    <IconProvider pack={hamesIconPack}>
       <Router root={WorkspaceRoot}>
         {registry.surfaces.map((surface) => (
           <Route path={surface.route} component={surface.component} />

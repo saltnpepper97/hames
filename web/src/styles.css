@@ -87,6 +87,12 @@ a {
   height: 100%;
 }
 
+.phosphor-icon {
+  display: block;
+  background: currentColor;
+  mask: var(--hames-icon-source) center / contain no-repeat;
+}
+
 .app-frame {
   display: grid;
   grid-template-columns: 20.5rem minmax(0, 1fr);

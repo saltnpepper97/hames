@@ -18,7 +18,6 @@ export type SemanticIconName = (typeof semanticIconNames)[number];
 
 export interface IconGlyphProps {
   size?: string | number;
-  strokeWidth?: string | number;
   class?: string;
   "aria-hidden"?: boolean;
 }
@@ -68,7 +67,7 @@ export function Icon(props: IconProps) {
       data-icon={props.name}
       data-icon-pack={pack.id}
     >
-      <Glyph size="100%" strokeWidth={1.7} aria-hidden={true} />
+      <Glyph size="100%" aria-hidden={true} />
     </span>
   );
 }

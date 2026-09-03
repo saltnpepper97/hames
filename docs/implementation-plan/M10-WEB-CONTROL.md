@@ -16,7 +16,8 @@ claiming unfinished controls:
   Runs, Agents, Memory, Skills, Scars, Plugins, and Settings;
 - the composable web-plugin boundary provides semantic icon packs and surface
   contributions for routes, the global icon rail, and contextual sidebars;
-  Tabler Icons is the first icon pack and the built-in areas form `hames.core`;
+  the default icon pack uses Phosphor for the brand, agents, and memory and
+  Tabler for the remaining controls, while the built-in areas form `hames.core`;
 - the responsive shell uses a global icon rail, a contextual sidebar, and the
   selected surface; Chat lists only real resumable sessions scoped to the exact
   launch directory and routes a selection into the main area;
