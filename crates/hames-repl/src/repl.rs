@@ -18,7 +18,7 @@ use crate::api::{
     RunInspection, Scar, Session, SessionTaskList, SkillJob, SkillSummary, SkillVersion,
     SseDecoder, event_reconnect_delay,
 };
-use crate::local::{LocalPaths, start_backend, write_private_export};
+use crate::local::{LocalPaths, ensure_gateway, write_private_export};
 use crate::style;
 
 pub async fn run() -> Result<()> {
@@ -235,34 +235,6 @@ fn make_history_private(path: &std::path::Path) -> Result<()> {
 #[cfg(not(unix))]
 fn make_history_private(_: &std::path::Path) -> Result<()> {
     Ok(())
-}
-
-pub(crate) async fn ensure_gateway(paths: &LocalPaths) -> Result<()> {
-    let url = paths.gateway_url()?;
-    if gateway_accepts_local_token(paths, &url).await? {
-        return Ok(());
-    }
-    start_backend()?;
-    if gateway_accepts_local_token(paths, &url).await? {
-        return Ok(());
-    }
-    bail!(
-        "gateway on {url} rejected {}; stop the Hames process occupying that port and retry",
-        paths.token.display()
-    )
-}
-
-async fn gateway_accepts_local_token(paths: &LocalPaths, url: &str) -> Result<bool> {
-    let Ok(health) = GatewayClient::health_unauthenticated(url).await else {
-        return Ok(false);
-    };
-    if health.status != "ok" || health.protocol_version != PROTOCOL_VERSION {
-        return Ok(false);
-    }
-    if !paths.token.exists() {
-        return Ok(false);
-    }
-    GatewayClient::from_paths(paths)?.token_accepted().await
 }
 
 fn read_input(editor: &mut DefaultEditor) -> Result<Option<String>> {

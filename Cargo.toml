@@ -10,6 +10,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 anyhow = "1.0"
+axum = "0.8"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.5", features = ["derive"] }
@@ -17,12 +18,16 @@ crossterm = { version = "0.28", features = ["event-stream"] }
 futures-util = "0.3"
 ratatui = "0.29.0"
 reqwest = { version = "0.12", features = ["json", "stream"] }
+rust-embed = "8.12"
 rustyline = "17.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tachyonfx = { version = "=0.19.0", default-features = false, features = ["std", "std-duration"] }
 tokio = { version = "1.47", features = ["full"] }
 toml = "0.9"
+mime_guess = "2.0"
+tower = "0.5"
 unicode-width = "0.2"
 unicode-segmentation = "1.12"
 uuid = { version = "1.18", features = ["v4"] }
+webbrowser = "1.2"

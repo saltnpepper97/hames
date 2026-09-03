@@ -41,8 +41,7 @@ use crate::api::{
     AgentAccessUpdate, GatewayClient, HEAL_SCARS_PROMPT, LiveEnvelope, PROTOCOL_VERSION, PasteSpan,
     ProviderModel, ScarUpdate, Session, SseDecoder, event_reconnect_delay,
 };
-use crate::local::{LocalPaths, write_private_export};
-use crate::repl::ensure_gateway;
+use crate::local::{LocalPaths, ensure_gateway, write_private_export};
 
 static TERMINAL_ACTIVE: AtomicBool = AtomicBool::new(false);
 static TERMINAL_PANIC_HOOK: Once = Once::new();

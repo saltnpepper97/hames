@@ -5,6 +5,7 @@ mod repl;
 mod style;
 mod trust;
 mod tui;
+mod web;
 
 use std::collections::BTreeMap;
 use std::env;
@@ -44,6 +45,15 @@ enum Command {
     Tui,
     /// Open the classic line-oriented REPL.
     Repl,
+    /// Open the local browser interface.
+    Web {
+        /// Loopback port for the web interface; use 0 to select a free port.
+        #[arg(long, default_value_t = 7412)]
+        port: u16,
+        /// Serve the interface without opening a browser.
+        #[arg(long)]
+        no_open: bool,
+    },
     /// Check the local Hames environment.
     Doctor,
     /// Control the persistent Python gateway.
@@ -417,6 +427,7 @@ async fn main() -> Result<()> {
         }
         Some(Command::Tui) => tui::run().await,
         Some(Command::Repl) => repl::run().await,
+        Some(Command::Web { port, no_open }) => web::run(port, no_open).await,
         Some(Command::Doctor) => local::run_backend(["doctor", "--json"]),
         Some(Command::Gateway { action }) => {
             let paths = LocalPaths::resolve()?;
@@ -1054,7 +1065,7 @@ fn print_plugin(plugin: &api::Plugin) {
 
 async fn connected_client() -> Result<(LocalPaths, GatewayClient)> {
     let paths = LocalPaths::resolve()?;
-    repl::ensure_gateway(&paths).await?;
+    local::ensure_gateway(&paths).await?;
     let client = GatewayClient::from_paths(&paths)?;
     Ok((paths, client))
 }
@@ -1178,5 +1189,34 @@ async fn run_event_command(action: EventAction) -> Result<()> {
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn web_command_uses_safe_defaults() {
+        let cli = Cli::try_parse_from(["hames", "web"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Web {
+                port: 7412,
+                no_open: false
+            })
+        ));
+    }
+
+    #[test]
+    fn web_command_accepts_ephemeral_port_without_browser() {
+        let cli = Cli::try_parse_from(["hames", "web", "--port", "0", "--no-open"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Web {
+                port: 0,
+                no_open: true
+            })
+        ));
     }
 }

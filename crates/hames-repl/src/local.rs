@@ -18,6 +18,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::{Frame, Terminal};
 
+use crate::api::{GatewayClient, PROTOCOL_VERSION};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProviderBackend {
     LlamaCpp,
@@ -238,6 +240,34 @@ pub fn run_backend<const N: usize>(args: [&str; N]) -> Result<()> {
 
 pub fn start_backend() -> Result<()> {
     run_gateway_action("start")
+}
+
+pub async fn ensure_gateway(paths: &LocalPaths) -> Result<()> {
+    let url = paths.gateway_url()?;
+    if gateway_accepts_local_token(paths, &url).await? {
+        return Ok(());
+    }
+    start_backend()?;
+    if gateway_accepts_local_token(paths, &url).await? {
+        return Ok(());
+    }
+    bail!(
+        "gateway on {url} rejected {}; stop the Hames process occupying that port and retry",
+        paths.token.display()
+    )
+}
+
+async fn gateway_accepts_local_token(paths: &LocalPaths, url: &str) -> Result<bool> {
+    let Ok(health) = GatewayClient::health_unauthenticated(url).await else {
+        return Ok(false);
+    };
+    if health.status != "ok" || health.protocol_version != PROTOCOL_VERSION {
+        return Ok(false);
+    }
+    if !paths.token.exists() {
+        return Ok(false);
+    }
+    GatewayClient::from_paths(paths)?.token_accepted().await
 }
 
 pub fn run_gateway_action(action: &str) -> Result<()> {

@@ -6,6 +6,8 @@ export default defineConfig({
   build: {
     target: "es2022",
     sourcemap: false,
+    outDir: "../crates/hames-repl/assets/web",
+    emptyOutDir: true,
   },
   test: {
     environment: "jsdom",
