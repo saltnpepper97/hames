@@ -62,7 +62,7 @@ deleted.
 
 Web clients can also give an agent a small visual identity. The avatar remains
 portable capsule metadata rather than browser-local state: five body shapes
-(`round`, `square`, `arch`, `capsule`, and `hex`), three eye styles (`dots`,
+(`round`, `square`, `triangle`, `cloud`, and `hex`), three eye styles (`dots`,
 `visor`, and `happy`), and a six-digit hex color. Clients derive a stable
 fallback for older capsules and write the chosen avatar through the same atomic
 agent update path.
@@ -118,7 +118,7 @@ delegation:
   allowed_agents:
     - critic
 avatar:
-  shape: arch
+  shape: triangle
   eyes: happy
   color: '#0d9488'
 ```

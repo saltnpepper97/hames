@@ -32,7 +32,7 @@ export interface Session {
   interaction_mode: SessionMode;
 }
 
-export type AgentAvatarShape = "round" | "square" | "arch" | "capsule" | "hex";
+export type AgentAvatarShape = "round" | "square" | "triangle" | "cloud" | "hex";
 export type AgentAvatarEyes = "dots" | "visor" | "happy";
 
 export interface AgentAvatarConfig {

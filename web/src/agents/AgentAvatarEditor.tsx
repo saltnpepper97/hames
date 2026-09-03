@@ -16,8 +16,8 @@ interface AgentAvatarEditorProps {
 const shapes: { id: AgentAvatarShape; label: string }[] = [
   { id: "round", label: "Round" },
   { id: "square", label: "Soft square" },
-  { id: "arch", label: "Arch" },
-  { id: "capsule", label: "Capsule" },
+  { id: "triangle", label: "Triangle" },
+  { id: "cloud", label: "Cloud" },
   { id: "hex", label: "Hex" },
 ];
 

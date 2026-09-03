@@ -158,6 +158,11 @@ def test_agent_avatar_rejects_invalid_color() -> None:
         AgentAvatar(color="purple")
 
 
+def test_agent_avatar_migrates_early_shape_names() -> None:
+    assert AgentAvatar.model_validate({"shape": "arch"}).shape == "triangle"
+    assert AgentAvatar.model_validate({"shape": "capsule"}).shape == "cloud"
+
+
 def test_agent_update_rejects_identity_change_without_touching_capsule(
     hames_paths: HamesPaths,
 ) -> None:

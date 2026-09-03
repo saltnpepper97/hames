@@ -4,6 +4,7 @@ import type { AgentAvatarConfig, AgentPublic } from "../api/types";
 import { AgentAvatar } from "../agents/AgentAvatar";
 import { AgentAvatarEditor } from "../agents/AgentAvatarEditor";
 import { fallbackAvatar } from "../agents/color";
+import { Icon } from "../shell/icons";
 
 export function AgentsPage() {
   const [agents, setAgents] = createSignal<AgentPublic[]>([]);
@@ -76,6 +77,15 @@ export function AgentsPage() {
               const avatar = () => agent.avatar ?? fallbackAvatar(agent.id);
               return (
                 <article class="agent-card">
+                  <button
+                    class="agent-edit"
+                    type="button"
+                    aria-label={`Edit ${agent.name}`}
+                    title={`Edit ${agent.name}`}
+                    onClick={() => setEditing(agent)}
+                  >
+                    <Icon name="action.edit" size={16} />
+                  </button>
                   <button class="agent-avatar-button" type="button" aria-label={`Customize ${agent.name} avatar`} onClick={() => setEditing(agent)}>
                     <AgentAvatar config={avatar()} name={agent.name} size={86} />
                   </button>
@@ -84,7 +94,6 @@ export function AgentsPage() {
                     <span class="agent-id">{agent.id}</span>
                     <span class="agent-authority">{agent.authority === "read_only" ? "Read only" : "Standard authority"}</span>
                   </div>
-                  <button class="agent-customize" type="button" onClick={() => setEditing(agent)}>Customize avatar</button>
                 </article>
               );
             }}
