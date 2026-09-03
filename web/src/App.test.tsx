@@ -343,6 +343,11 @@ describe("Hames web shell", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Build the web foundation" }).parentElement)
       .toHaveTextContent("gpt-5.6-sol");
+    const chatScroll = document.querySelector("[data-conversation-scroll]");
+    expect(chatScroll).toHaveClass("transcript-scroll");
+    const chatFrame = chatScroll?.closest(".session-chat");
+    expect(chatFrame).toBeInTheDocument();
+    expect(chatFrame?.querySelector(".composer-dock")).toBeInTheDocument();
   });
 
   it("replays live gateway events and submits messages", async () => {

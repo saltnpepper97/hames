@@ -59,7 +59,11 @@ menu, and contribution-seat components. Web plugins can add ordered controls to
 the composer's typed left and right seats without reaching into its markup or
 owning draft submission. The core plugin currently contributes the disabled
 attachment affordance, gateway-backed interaction mode, and a unified model and
-thinking selector. The composer retains send, queue, and cancel because those
+thinking selector. Beneath the fixed header, the transcript scroll viewport
+fills the remaining chat pane through its bottom edge, so its scrollbar does not
+stop above the composer. The composer is anchored over that viewport and its
+measured height becomes transcript bottom clearance, keeping messages out from
+underneath the input. The composer retains send, queue, and cancel because those
 actions belong to its input state machine. This follows the useful
 contribution-seat shape of the DeepSeek Harness reference while keeping Hames's
 SolidJS and HTTP/SSE runtime boundary.

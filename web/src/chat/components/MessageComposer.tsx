@@ -79,7 +79,7 @@ export function MessageComposer(props: MessageComposerProps) {
   };
 
   return (
-    <div class="composer-dock">
+    <div class="composer-dock" data-chat-region="composer">
       <div class="composer-shell">
         <textarea
           ref={textarea}

@@ -636,10 +636,12 @@ a {
 }
 
 .session-chat {
+  position: relative;
   display: flex;
   height: 100%;
   min-height: 0;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .chat-header {
@@ -684,16 +686,21 @@ a {
 .transcript-scroll {
   min-height: 0;
   flex: 1;
+  overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
+  scrollbar-width: thin;
 }
 
 .transcript-column {
   width: min(100%, 50rem);
   min-height: 100%;
   margin: 0 auto;
-  padding: 2.4rem 2rem 2rem;
+  padding:
+    2.4rem
+    2rem
+    calc(var(--chat-composer-height, 7.5rem) + 2rem);
 }
 
 .message-node,
@@ -974,6 +981,11 @@ a {
 }
 
 .composer-dock {
+  position: absolute;
+  z-index: 5;
+  right: 0.5rem;
+  bottom: 0;
+  left: 0;
   flex: none;
   padding: 0.8rem 2rem 1.25rem;
   background: linear-gradient(to bottom, rgb(255 255 255 / 0%), var(--background) 1rem);
@@ -1956,9 +1968,8 @@ a {
 }
 
 .agent-avatar-face {
-  fill: rgb(255 255 255 / 88%);
-  stroke: rgb(255 255 255 / 88%);
-  stroke-width: 2;
+  fill: #fff;
+  stroke: none;
 }
 
 .agent-avatar-gaze {
