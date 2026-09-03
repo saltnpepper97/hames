@@ -21,6 +21,8 @@ export const semanticIconNames = [
   "action.back",
   "action.next",
   "action.selected",
+  "action.collapseSidebar",
+  "action.expandSidebar",
   "message.user",
   "conversation.tool",
   "conversation.reasoning",

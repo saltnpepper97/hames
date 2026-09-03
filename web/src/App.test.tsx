@@ -720,6 +720,14 @@ describe("Hames web shell", () => {
     );
     expect(document.querySelector('[data-icon="nav.memory"] .phosphor-icon')).toBeInTheDocument();
     expect(document.querySelector('[data-icon="brand.mark"] .brand-image-icon')).toBeInTheDocument();
+    expect(document.querySelector(".activity-rail")).not.toBeInTheDocument();
+    expect(document.querySelector(".context-sidebar")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+    expect(document.querySelector(".app-frame")).toHaveClass("sidebar-collapsed");
+    expect(screen.getByRole("button", { name: "Expand sidebar" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    expect(document.querySelector(".app-frame")).not.toHaveClass("sidebar-collapsed");
 
     fireEvent.click(screen.getByRole("link", { name: /Build the web foundation/ }));
     expect(
@@ -1011,7 +1019,9 @@ describe("Hames web shell", () => {
     render(() => <App />);
 
     await waitFor(() => expect(window.location.pathname).toBe("/chat/session-new"));
-    expect(await screen.findByRole("heading", { name: "New chat" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "What should we work on?" })).toBeInTheDocument();
+    expect(document.querySelector(".session-chat")).toHaveClass("fresh");
+    expect(screen.queryByRole("heading", { name: "New chat" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Starting a new chat" })).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Message Hames" })).not.toBeDisabled();
     expect(fetchMock).toHaveBeenCalledWith(

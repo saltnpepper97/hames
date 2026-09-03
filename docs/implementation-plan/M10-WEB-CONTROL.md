@@ -17,14 +17,15 @@ claiming unfinished controls:
   is intentionally absent from navigation until it has useful gateway-backed
   content;
 - the composable web-plugin boundary provides semantic icon packs and surface
-  contributions for routes, the global icon rail, contextual sidebars, and
+  contributions for routes, adaptive navigation, contextual directories, and
   conversation-node renderers, plus ordered left/right composer-control seats;
   the default icon pack uses Phosphor for the brand, agents, and memory and
   Tabler for the remaining controls, while the built-in areas form `hames.core`;
-- the responsive shell uses a global icon rail, a contextual sidebar, and the
-  selected surface; Chat lists only real resumable sessions scoped to the exact
-  launch directory and routes a selection into the main area; the repository
-  identity appears only in Chat rather than being repeated by every sidebar;
+- the responsive shell uses one 280-pixel sidebar that collapses into a
+  56-pixel icon rail, with New chat and surface navigation above one scrolling
+  contextual directory and Settings pinned below it; Chat lists only real
+  resumable sessions scoped to the exact launch directory and routes a
+  selection into the main area; the repository identity appears only in Chat;
 - loading, offline, expired-session, retry, reconnect, and empty states are
   explicit; an expired process-local browser session is not reported as an
   offline gateway;
@@ -59,7 +60,9 @@ claiming unfinished controls:
   composer; it joins history after the first durable message rather than
   leaving an empty sidebar row;
 - entering the bare Chat route starts fresh work automatically instead of
-  rendering a passive session-selection state;
+  rendering a passive session-selection state; its real composer is centered
+  beneath the selected agent identity until the first conversation node arrives,
+  then the same component moves to its bottom dock;
 - pending approval and question events render in the transcript and resolve
   through CSRF-protected gateway mutations, including session-scoped approval,
   option notes, and custom answers;

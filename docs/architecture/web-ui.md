@@ -50,8 +50,9 @@ as `nav.chat` or `state.empty`; the selected pack maps those names to assets.
 The default pack uses the Hames artwork for its brand mark, Phosphor for agent
 and memory symbols, and Tabler for the rest of the interface. Product
 components do not import either library directly. The surface registry composes
-route, icon-rail, and context-sidebar contributions from web plugins. The
-built-in areas are the first `hames.core` plugin rather than hard-coded shell navigation.
+route, adaptive-navigation, and contextual-directory contributions from web
+plugins. The built-in areas are the first `hames.core` plugin rather than
+hard-coded shell navigation.
 Conversation messages, reasoning, tool activity, and notices use the same
 registry for their renderers, keeping the transcript itself composable.
 The resident chat frame is assembled from focused header, viewport, composer,
@@ -78,19 +79,26 @@ and effort together only after explicit confirmation. Models without advertised
 reasoning support commit with reasoning off; reasoning models without graduated
 levels offer the explicit on/off choice used by the TUI.
 
-On wide screens, the shell uses a narrow global activity rail, a contextual
-sidebar, and the active surface. Chat contributes real, open workspace sessions
-to the contextual sidebar, matching the TUI's resumable-history boundary;
-empty sessions, closed historical sessions, and sessions from other workspaces
-remain out of the list. Selecting one routes its gateway metadata into the main
-surface. Agents contributes a component-rendered capsule directory to the same
-sidebar region; selecting an avatar opens its editor directly in the main
-surface, and the bare Agents route selects the first real capsule. The
-contextual sidebar names the active surface without repeating the repository
-name. Workspace identity remains in the Chat surface bar, where it is relevant
-to session scope, and is omitted from management surfaces. Areas without a
-gateway-backed slice contribute no controls. The two navigation layers become
-one combined drawer on small screens.
+On wide screens, the shell uses one 280-pixel adaptive sidebar beside the active
+surface. Its expanded state contains the brand, New chat action, compact surface
+navigation, and the active plugin's contextual directory in one visual column;
+Settings remains pinned at the bottom. Collapsing it produces a 56-pixel icon
+rail from the same controls rather than leaving a second sidebar behind. The
+contextual directory is the only scrolling region, while the shell itself stays
+fixed. Mid-sized windows initially collapse the sidebar and small screens use
+the expanded column as a drawer.
+
+Chat contributes real, open workspace sessions to that contextual directory,
+matching the TUI's resumable-history boundary; empty sessions, closed historical
+sessions, and sessions from other workspaces remain out of the list. Selecting
+one routes its gateway metadata into the main surface. Agents contributes a
+component-rendered capsule directory to the same region; selecting an avatar
+opens its editor directly in the main surface, and the bare Agents route selects
+the first real capsule. The contextual directory names the active surface
+without repeating the repository name. Workspace identity remains in the Chat
+surface bar, where it is relevant to session scope, and is omitted from
+management surfaces. Areas without a gateway-backed slice contribute no
+controls.
 
 Web plugins remain presentation modules. They call authorized gateway APIs and
 subscribe to gateway events; they do not gain direct filesystem access,
@@ -106,6 +114,12 @@ mutations with browser-session CSRF protection. It renders explicit connecting,
 reconnecting, offline, expired-session, retry, and empty states. Routes without
 a gateway-backed vertical slice state what is planned and expose no pretend
 controls.
+
+A newly created chat is not represented by a passive blank page or a
+session-selection prompt. The selected agent's animated avatar, a short prompt,
+and the real composer form a centered fresh-work state. The composer instance
+stays mounted and moves to its bottom dock when the first durable conversation
+node arrives, preserving draft and control state through the transition.
 
 User, assistant, and reasoning text is parsed as GitHub-flavored Markdown with
 Marked and sanitized through a restrictive DOMPurify HTML allow-list before it
@@ -186,13 +200,14 @@ source changes.
 
 ## Current capability boundary
 
-This slice is a secure dual-sidebar application shell, workspace chat list,
+This slice is a secure adaptive-sidebar application shell, workspace chat list,
 semantic icon-pack contract, composable surface and conversation-renderer
 registry, componentized chat frame and composer-control seats, durable
 transcript reconstruction, live assistant output, message submission, run
 cancellation, and gateway-backed session creation. A newly
-created empty session opens directly in the composer but enters sidebar history
-only after its first message. Pending approvals and agent questions render as
+created empty session opens directly in the centered fresh-work composer but
+enters sidebar history only after its first message; the old passive empty chat
+state is not reachable. Pending approvals and agent questions render as
 composable transcript cards and resolve through the existing gateway controls.
 Provider, model, interaction mode, and reasoning effort are real session
 settings. Entering bare `/chat` creates and opens a fresh durable session rather

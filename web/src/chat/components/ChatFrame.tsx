@@ -1,7 +1,11 @@
 import { onCleanup, onMount } from "solid-js";
 import type { ParentProps } from "solid-js";
 
-export function ChatFrame(props: ParentProps) {
+interface ChatFrameProps extends ParentProps {
+  fresh?: boolean;
+}
+
+export function ChatFrame(props: ChatFrameProps) {
   let frame!: HTMLDivElement;
   let observer: ResizeObserver | undefined;
 
@@ -25,7 +29,7 @@ export function ChatFrame(props: ParentProps) {
   });
 
   return (
-    <div class="session-chat" ref={frame}>
+    <div class="session-chat" classList={{ fresh: props.fresh }} ref={frame}>
       {props.children}
     </div>
   );

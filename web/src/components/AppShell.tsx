@@ -1,9 +1,6 @@
-import { A, useLocation, useNavigate } from "@solidjs/router";
+import { useLocation, useNavigate } from "@solidjs/router";
 import {
-  For,
-  Match,
   Show,
-  Switch,
   createEffect,
   createMemo,
   createSignal,
@@ -11,12 +8,12 @@ import {
   onMount,
 } from "solid-js";
 import type { ParentProps } from "solid-js";
-import { Icon } from "../shell/icons";
 import type { WebPluginRegistry } from "../shell/plugins";
 import { useWorkspace } from "../shell/workspace";
 import { Brand } from "./Brand";
 import { Button } from "./Button";
 import { ConnectionStatus } from "./ConnectionStatus";
+import { NavigationSidebar } from "./NavigationSidebar";
 
 interface AppShellProps extends ParentProps {
   registry: WebPluginRegistry;
@@ -28,24 +25,12 @@ function workspaceName(path: string): string {
   return parts.at(-1) ?? path;
 }
 
-function sessionTitle(title: string | null): string {
-  return title?.trim() || "Untitled chat";
-}
-
-function formatTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-  }).format(date);
-}
-
 export function AppShell(props: AppShellProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const workspace = useWorkspace();
   const [navigationOpen, setNavigationOpen] = createSignal(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = createSignal(false);
   const [creatingChat, setCreatingChat] = createSignal(false);
   const [createChatError, setCreateChatError] = createSignal("");
   const activeSurface = createMemo(() => {
@@ -76,6 +61,14 @@ export function AppShell(props: AppShellProps) {
     if (event.key === "Escape") setNavigationOpen(false);
   };
 
+  const toggleSidebar = () => {
+    if (window.matchMedia?.("(max-width: 820px)").matches) {
+      setNavigationOpen(false);
+      return;
+    }
+    setSidebarCollapsed((collapsed) => !collapsed);
+  };
+
   const createChat = async () => {
     if (creatingChat()) return;
     setCreatingChat(true);
@@ -90,11 +83,36 @@ export function AppShell(props: AppShellProps) {
     }
   };
 
-  onMount(() => document.addEventListener("keydown", closeOnEscape));
-  onCleanup(() => document.removeEventListener("keydown", closeOnEscape));
+  let compactViewport: MediaQueryList | undefined;
+  let mobileViewport: MediaQueryList | undefined;
+  const collapseForViewport = (event: MediaQueryListEvent | MediaQueryList) => {
+    if (event.matches) setSidebarCollapsed(true);
+  };
+  const expandForMobile = (event: MediaQueryListEvent | MediaQueryList) => {
+    if (event.matches) setSidebarCollapsed(false);
+  };
+
+  onMount(() => {
+    document.addEventListener("keydown", closeOnEscape);
+    compactViewport = window.matchMedia?.("(min-width: 821px) and (max-width: 1024px)");
+    mobileViewport = window.matchMedia?.("(max-width: 820px)");
+    if (compactViewport) {
+      collapseForViewport(compactViewport);
+      compactViewport.addEventListener("change", collapseForViewport);
+    }
+    if (mobileViewport) {
+      expandForMobile(mobileViewport);
+      mobileViewport.addEventListener("change", expandForMobile);
+    }
+  });
+  onCleanup(() => {
+    document.removeEventListener("keydown", closeOnEscape);
+    compactViewport?.removeEventListener("change", collapseForViewport);
+    mobileViewport?.removeEventListener("change", expandForMobile);
+  });
 
   return (
-    <div class="app-frame">
+    <div class="app-frame" classList={{ "sidebar-collapsed": sidebarCollapsed() }}>
       <a class="skip-link" href="#main-content">
         Skip to content
       </a>
@@ -125,101 +143,19 @@ export function AppShell(props: AppShellProps) {
       />
 
       <div id="navigation-stack" class="navigation-stack" classList={{ open: navigationOpen() }}>
-        <aside class="activity-rail" aria-label="Primary navigation">
-          <Brand compact />
-          <nav>
-            <For each={props.registry.surfaces}>
-              {(surface) => (
-                <A
-                  href={surface.path}
-                  class="rail-item"
-                  activeClass="active"
-                  end={!Array.isArray(surface.route)}
-                  aria-label={surface.label}
-                  title={surface.label}
-                  onClick={(event) => {
-                    if (
-                      surface.id !== "chat" ||
-                      workspace.connection() !== "connected" ||
-                      event.button !== 0 ||
-                      event.metaKey ||
-                      event.ctrlKey ||
-                      event.shiftKey ||
-                      event.altKey
-                    ) return;
-                    event.preventDefault();
-                    void createChat();
-                  }}
-                >
-                  <Icon name={surface.icon} size={20} />
-                </A>
-              )}
-            </For>
-          </nav>
-        </aside>
-
-        <aside class="context-sidebar" aria-label={`${activeSurface().label} sidebar`}>
-          <div class="context-header">
-            <div>
-              <h2>{activeSurface().label}</h2>
-            </div>
-            <Show when={activeSurface().sidebar.kind === "conversations"}>
-              <Button
-                variant="bare"
-                class="context-action"
-                type="button"
-                aria-label="New chat"
-                title="New chat"
-                disabled={workspace.connection() !== "connected" || creatingChat()}
-                onClick={() => void createChat()}
-              >
-                <Icon name="action.newChat" size={18} />
-              </Button>
-            </Show>
-          </div>
-
-          <Show when={createChatError()}>
-            <p class="context-action-error" role="alert">{createChatError()}</p>
-          </Show>
-
-          <Switch>
-            <Match when={activeSurface().sidebar.kind === "conversations"}>
-              <nav class="conversation-list" aria-label="Workspace chats">
-                <Show
-                  when={workspace.sessions().length > 0}
-                  fallback={<p class="context-empty">No chats in this workspace.</p>}
-                >
-                  <For each={workspace.sessions()}>
-                    {(session) => (
-                      <A
-                        href={`/chat/${encodeURIComponent(session.id)}`}
-                        class="conversation-item"
-                        activeClass="active"
-                      >
-                        <span class="conversation-title">{sessionTitle(session.title)}</span>
-                        <span class="conversation-meta">
-                          <span>{session.agent_id}</span>
-                          <time dateTime={session.created_at}>{formatTime(session.created_at)}</time>
-                        </span>
-                      </A>
-                    )}
-                  </For>
-                </Show>
-              </nav>
-            </Match>
-            <Match when={sidebarComponent()} keyed>
-              {(Sidebar) => <Sidebar />}
-            </Match>
-            <Match when={activeSurface().sidebar.kind === "section"}>
-              <p class="context-empty">{sectionDescription()}</p>
-            </Match>
-          </Switch>
-
-          <div class="context-footer">
-            <ConnectionStatus state={workspace.connection()} />
-            <span>Local only</span>
-          </div>
-        </aside>
+        <NavigationSidebar
+          registry={props.registry}
+          activeSurface={activeSurface()}
+          sessions={workspace.sessions()}
+          connection={workspace.connection()}
+          collapsed={sidebarCollapsed()}
+          creatingChat={creatingChat()}
+          createChatError={createChatError()}
+          sidebarComponent={sidebarComponent()}
+          sectionDescription={sectionDescription()}
+          onToggleCollapsed={toggleSidebar}
+          onCreateChat={() => void createChat()}
+        />
       </div>
 
       <main id="main-content" class="workspace">

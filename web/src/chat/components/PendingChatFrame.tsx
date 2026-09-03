@@ -1,17 +1,15 @@
 import { Button } from "../../components/Button";
 import { Icon } from "../../shell/icons";
 import { ChatFrame } from "./ChatFrame";
+import { FreshChatHero } from "./FreshChatHero";
 
 export function PendingChatFrame() {
   return (
-    <ChatFrame>
-      <header class="chat-header pending-chat-header">
-        <div>
-          <h1 id="chat-title">New chat</h1>
-        </div>
-      </header>
+    <ChatFrame fresh>
       <div class="transcript-scroll" aria-busy="true">
-        <div class="transcript-column" />
+        <div class="transcript-column">
+          <FreshChatHero pending />
+        </div>
       </div>
       <div class="composer-dock" data-chat-region="composer">
         <div class="composer-shell pending-composer" aria-busy="true">

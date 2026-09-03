@@ -4,10 +4,13 @@ import { useAgentDirectory } from "../../agents/AgentDirectory";
 import type { ConversationNode } from "../projection";
 import type { StreamState } from "../sessionStream";
 import { useWebPlugins } from "../../shell/pluginContext";
+import { FreshChatHero } from "./FreshChatHero";
 
 interface ConversationViewportProps {
   nodes: readonly ConversationNode[];
   streamState: StreamState;
+  fresh?: boolean;
+  agentId: string;
 }
 
 export function ConversationViewport(props: ConversationViewportProps) {
@@ -40,20 +43,14 @@ export function ConversationViewport(props: ConversationViewportProps) {
       <div class="transcript-column" aria-live="polite">
         <Show
           when={props.nodes.length > 0}
-          fallback={
-            <div class="conversation-empty compact">
-              <h2>
-                {props.streamState === "connecting"
-                  ? "Loading conversation…"
-                  : "Start a conversation"}
-              </h2>
-              <p>
-                {props.streamState === "connecting"
-                  ? "Reading durable events from the local gateway."
-                  : "Messages sent here run through the same Hames session as the TUI and REPL."}
-              </p>
-            </div>
-          }
+          fallback={props.fresh
+            ? <FreshChatHero agentId={props.agentId} />
+            : (
+              <div class="conversation-empty compact">
+                <h2>Loading conversation…</h2>
+                <p>Reading durable events from the local gateway.</p>
+              </div>
+            )}
         >
           <For each={props.nodes}>
             {(node) => {

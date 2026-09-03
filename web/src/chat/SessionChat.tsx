@@ -1,4 +1,4 @@
-import { createMemo } from "solid-js";
+import { Show, createMemo } from "solid-js";
 import type { Session } from "../api/types";
 import { ChatFrame } from "./components/ChatFrame";
 import { ChatHeader } from "./components/ChatHeader";
@@ -19,15 +19,25 @@ export function SessionChat(props: SessionChatProps) {
   const projection = createMemo(() =>
     withLiveOutput(durableProjection(), stream.liveOutput(), props.session.agent_id),
   );
+  const fresh = createMemo(() =>
+    !props.session.title?.trim() && projection().nodes.length === 0,
+  );
 
   return (
-    <ChatFrame>
-      <ChatHeader
-        session={props.session}
+    <ChatFrame fresh={fresh()}>
+      <Show when={!fresh()}>
+        <ChatHeader
+          session={props.session}
+          streamState={stream.state()}
+          working={Boolean(projection().activeRunId)}
+        />
+      </Show>
+      <ConversationViewport
+        nodes={projection().nodes}
         streamState={stream.state()}
-        working={Boolean(projection().activeRunId)}
+        fresh={fresh()}
+        agentId={props.session.agent_id}
       />
-      <ConversationViewport nodes={projection().nodes} streamState={stream.state()} />
       <MessageComposer
         session={props.session}
         activeRunId={projection().activeRunId}
