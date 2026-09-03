@@ -20,6 +20,7 @@ import {
   IconSparkles,
   IconSquare,
   IconTool,
+  IconUser,
 } from "@tabler/icons-solidjs";
 import type { Component, JSX } from "solid-js";
 import type { IconGlyph, IconGlyphProps, IconPackPlugin } from "../../shell/icons";
@@ -70,6 +71,7 @@ export const hamesIconPack = {
     "action.back": tablerIcon(IconArrowLeft),
     "action.next": tablerIcon(IconChevronRight),
     "action.selected": tablerIcon(IconCheck),
+    "message.user": tablerIcon(IconUser),
     "mode.auto": tablerIcon(IconSparkles),
     "mode.plan": tablerIcon(IconListCheck),
     "mode.manual": tablerIcon(IconHandStop),

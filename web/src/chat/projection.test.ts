@@ -39,7 +39,7 @@ describe("conversation projection", () => {
     expect(projection.activeRunId).toBe("run-one");
     expect(projection.nodes).toEqual([
       expect.objectContaining({ kind: "user", content: "Inspect it" }),
-      expect.objectContaining({ kind: "reasoning", content: "I will inspect it." }),
+      expect.objectContaining({ kind: "reasoning", content: "I will inspect it.", agentId: "default" }),
       expect.objectContaining({ kind: "tool", name: "read", status: "completed", summary: "Read README" }),
     ]);
   });
@@ -48,12 +48,13 @@ describe("conversation projection", () => {
     const projection = withLiveOutput(
       projectConversation([event(1, "run.started", {}), event(2, "run.completed", {})]),
       { runId: "run-two", reasoning: "Checking", text: "Answering" },
+      "reviewer",
     );
 
     expect(projection.activeRunId).toBeUndefined();
     expect(projection.nodes.slice(-2)).toEqual([
-      expect.objectContaining({ kind: "reasoning", content: "Checking", live: true }),
-      expect.objectContaining({ kind: "assistant", content: "Answering", live: true }),
+      expect.objectContaining({ kind: "reasoning", content: "Checking", live: true, agentId: "reviewer" }),
+      expect.objectContaining({ kind: "assistant", content: "Answering", live: true, agentId: "reviewer" }),
     ]);
   });
 

@@ -1,9 +1,13 @@
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
 import type { JSX } from "solid-js";
+import { AgentAvatar } from "../../agents/AgentAvatar";
+import { useAgentDirectory } from "../../agents/AgentDirectory";
+import { fallbackAvatar } from "../../agents/color";
 import { HamesApiError, answerQuestion, resolveApproval } from "../../api/client";
 import type { ConversationNode } from "../../chat/projection";
 import { Button } from "../../components/Button";
 import { Markdown } from "../../components/Markdown";
+import { Icon } from "../../shell/icons";
 import type { ConversationNodeContribution } from "../../shell/plugins";
 
 function ToolNode(props: { node: ConversationNode }): JSX.Element {
@@ -45,13 +49,52 @@ function NoticeNode(props: { node: ConversationNode }): JSX.Element {
   return <p class={`conversation-notice ${props.node.tone}`}>{props.node.content}</p>;
 }
 
+function MessageAvatar(props: {
+  kind: "user" | "assistant";
+  agentName: string;
+  avatar: ReturnType<typeof fallbackAvatar>;
+}): JSX.Element {
+  return (
+    <div class="message-avatar" aria-hidden="true">
+      <Show
+        when={props.kind === "assistant"}
+        fallback={<span class="user-avatar"><Icon name="message.user" size={15} /></span>}
+      >
+        <AgentAvatar
+          config={props.avatar}
+          name={props.agentName}
+          size={30}
+          animated={false}
+        />
+      </Show>
+    </div>
+  );
+}
+
 function MessageNode(props: { node: ConversationNode }): JSX.Element {
   if (props.node.kind !== "user" && props.node.kind !== "assistant") return <></>;
   const node = props.node;
+  const directory = useAgentDirectory();
+  const agent = createMemo(() =>
+    node.kind === "assistant"
+      ? directory.agents().find((candidate) => candidate.id === node.agentId)
+      : undefined,
+  );
+  const agentId = () => node.agentId || "default";
+  const agentName = () => agent()?.name ?? (agentId() === "default" ? "Hames" : agentId());
+  const messageKind = node.kind === "user" ? "user" : "assistant";
+
   return (
     <article class={`message-node ${node.kind}`}>
-      <div class="message-role">{node.kind === "user" ? "You" : "Hames"}</div>
-      <Markdown content={node.content} class="message-copy" live={node.live} />
+      <MessageAvatar
+        kind={messageKind}
+        agentName={agentName()}
+        avatar={agent()?.avatar ?? fallbackAvatar(agentId())}
+      />
+      <div class="message-content">
+        <div class="message-role">{node.kind === "user" ? "You" : agentName()}</div>
+        <Markdown content={node.content} class="message-copy" live={node.live} />
+      </div>
     </article>
   );
 }

@@ -16,7 +16,9 @@ interface SessionChatProps {
 export function SessionChat(props: SessionChatProps) {
   const stream = createSessionStream(() => props.session.id);
   const durableProjection = createMemo(() => projectConversation(stream.events()));
-  const projection = createMemo(() => withLiveOutput(durableProjection(), stream.liveOutput()));
+  const projection = createMemo(() =>
+    withLiveOutput(durableProjection(), stream.liveOutput(), props.session.agent_id),
+  );
 
   return (
     <ChatFrame>

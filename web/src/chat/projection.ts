@@ -6,6 +6,7 @@ export type ConversationNode =
       kind: "user" | "assistant" | "reasoning";
       content: string;
       live?: boolean;
+      agentId?: string;
     }
   | {
       id: string;
@@ -89,12 +90,26 @@ export function projectConversation(
     }
     if (event.type === "assistant.reasoning") {
       const content = text(event.payload, "content");
-      if (content) nodes.push({ id: event.id, kind: "reasoning", content });
+      if (content) {
+        nodes.push({
+          id: event.id,
+          kind: "reasoning",
+          content,
+          agentId: event.agent_id ?? undefined,
+        });
+      }
       continue;
     }
     if (event.type === "assistant.message") {
       const content = text(event.payload, "content");
-      if (content) nodes.push({ id: event.id, kind: "assistant", content });
+      if (content) {
+        nodes.push({
+          id: event.id,
+          kind: "assistant",
+          content,
+          agentId: event.agent_id ?? undefined,
+        });
+      }
       continue;
     }
     if (["model.tool_call", "tool.requested", "tool.started"].includes(event.type)) {
@@ -211,6 +226,7 @@ export function projectConversation(
 export function withLiveOutput(
   projection: ConversationProjection,
   live?: LiveOutput,
+  agentId?: string,
 ): ConversationProjection {
   if (!live?.reasoning && !live?.text) return projection;
 
@@ -221,6 +237,7 @@ export function withLiveOutput(
       kind: "reasoning",
       content: live.reasoning,
       live: true,
+      agentId,
     });
   }
   if (live.text) {
@@ -229,6 +246,7 @@ export function withLiveOutput(
       kind: "assistant",
       content: live.text,
       live: true,
+      agentId,
     });
   }
 

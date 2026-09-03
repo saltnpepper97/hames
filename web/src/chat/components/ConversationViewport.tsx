@@ -1,5 +1,6 @@
 import { Dynamic } from "solid-js/web";
-import { For, Show, createEffect } from "solid-js";
+import { For, Show, createEffect, onMount } from "solid-js";
+import { useAgentDirectory } from "../../agents/AgentDirectory";
 import type { ConversationNode } from "../projection";
 import type { StreamState } from "../sessionStream";
 import { useWebPlugins } from "../../shell/pluginContext";
@@ -11,8 +12,11 @@ interface ConversationViewportProps {
 
 export function ConversationViewport(props: ConversationViewportProps) {
   const plugins = useWebPlugins();
+  const agents = useAgentDirectory();
   let transcript!: HTMLDivElement;
   let stickToBottom = true;
+
+  onMount(() => void agents.ensureLoaded());
 
   createEffect(() => {
     const lastNode = props.nodes.at(-1);

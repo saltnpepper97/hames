@@ -372,6 +372,12 @@ describe("Hames web shell", () => {
 
     expect(await screen.findByText("Hello")).toBeInTheDocument();
     expect(screen.getByText("Hi there")).toBeInTheDocument();
+    expect(screen.getByText("You").closest(".message-node")).toHaveClass("user");
+    expect(document.querySelector(".message-node.assistant .message-role")).toHaveTextContent("Hames");
+    expect(document.querySelector(".message-node.assistant .agent-avatar")).toHaveAttribute(
+      "aria-label",
+      "Hames avatar",
+    );
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
 
     fireEvent.input(screen.getByRole("textbox", { name: "Message Hames" }), {

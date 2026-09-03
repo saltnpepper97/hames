@@ -712,26 +712,50 @@ a {
 
 .message-node {
   display: grid;
-  grid-template-columns: 3.6rem minmax(0, 1fr);
+  grid-template-columns: 2rem minmax(0, 1fr);
   align-items: start;
-  padding: 0.2rem 0;
+  gap: 0.8rem;
+  padding: 0.15rem 0;
   color: var(--text);
   font-size: 0.91rem;
   line-height: 1.7;
 }
 
 .message-node.user {
-  padding: 1rem 0;
-  border-top: 1px solid var(--rule-soft);
-  border-bottom: 1px solid var(--rule-soft);
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--rule-soft);
+  border-radius: 0.8rem;
+  background: var(--surface-soft);
+}
+
+.message-avatar {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+}
+
+.user-avatar {
+  display: grid;
+  width: 1.85rem;
+  height: 1.85rem;
+  border: 1px solid var(--rule);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text-soft);
+  place-items: center;
+}
+
+.message-content {
+  min-width: 0;
 }
 
 .message-role {
-  padding-top: 0.08rem;
-  color: var(--muted);
-  font-size: 0.66rem;
-  font-weight: 650;
-  letter-spacing: 0.01em;
+  margin: 0 0 0.35rem;
+  color: var(--text-soft);
+  font-size: 0.72rem;
+  font-weight: 680;
+  letter-spacing: -0.005em;
 }
 
 .message-copy {
