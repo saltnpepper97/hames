@@ -9,24 +9,27 @@ chat vertical slice and the remaining rich-management views.
 The first web slice establishes the client and its trusted boundary without
 claiming unfinished controls:
 
-- `hames web` starts or verifies the existing gateway, binds a Rust web server
-  to loopback, opens the browser by default, and shuts down only that web server
-  on Ctrl-C;
+- the persistent gateway serves the API and web application on one loopback
+  origin; `hames web` starts or verifies it, opens a one-time authenticated URL,
+  and exits without owning the site's lifetime;
 - a handcrafted SolidJS/Vite application provides responsive routes for Chat,
   Runs, Agents, Memory, Skills, Scars, Plugins, and Settings;
+- the shell begins a composable web-plugin boundary with semantic icon-pack
+  contributions; Phosphor is the first pack and components do not depend on its
+  exported names directly;
 - Chat currently shows live gateway activity and resumable sessions scoped to
   the exact launch directory, with loading, offline, retry, reconnect, and empty
   states;
 - unfinished areas are honest, noninteractive route shells rather than local
   mock implementations;
-- the production bundle is committed and embedded in the Rust executable, with
+- the production bundle is committed and packaged with the Python gateway, with
   no CDN, analytics, remote fonts, or separate frontend runtime;
-- a one-time launch URL establishes an HttpOnly, SameSite browser session. The
-  same-origin Rust proxy injects the gateway bearer token and enforces exact
-  Host, Origin, and CSRF checks while preserving SSE response streaming and
-  `Last-Event-ID`;
-- CSP and defensive response headers apply to the application, bootstrap API,
-  proxy responses, and error responses.
+- a bearer-authenticated request creates a one-time launch URL and exchanges it
+  for an HttpOnly, SameSite browser session. Browser-authenticated API requests
+  enforce exact Host, Origin, and CSRF checks while preserving native gateway
+  SSE streaming and `Last-Event-ID`;
+- CSP and defensive response headers apply to the browser entry points,
+  application assets, bootstrap API, and web errors.
 
 The next vertical slice is real chat and approvals. Session creation/resume,
 event reconstruction, assistant streaming, tool activity, cancellation, and

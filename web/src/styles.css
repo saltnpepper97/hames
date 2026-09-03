@@ -1,24 +1,23 @@
 :root {
-  color-scheme: dark;
+  color-scheme: light;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --background: #0d1117;
-  --surface: #13171f;
-  --surface-raised: #1d232e;
-  --surface-soft: #171c25;
-  --rule: #313845;
-  --rule-soft: #232a35;
-  --text: #f2f4f7;
-  --text-soft: #bec5d0;
-  --muted: #7e8695;
-  --mint: #74e2c0;
-  --mint-soft: #a4efda;
-  --sky: #70b1ff;
-  --coral: #ff8b74;
-  --gold: #f0be5c;
+  --background: #ffffff;
+  --surface: #f7f7f8;
+  --surface-raised: #ececee;
+  --surface-soft: #fafafa;
+  --rule: #d4d4d8;
+  --rule-soft: #e4e4e7;
+  --text: #18181b;
+  --text-soft: #3f3f46;
+  --muted: #71717a;
+  --accent: #2563eb;
+  --success: #16803c;
+  --danger: #dc2626;
+  --warning: #a16207;
   background: var(--background);
   color: var(--text);
 }
@@ -37,9 +36,7 @@ body,
 
 body {
   min-height: 100vh;
-  background:
-    radial-gradient(circle at 72% -10%, rgb(116 226 192 / 7%), transparent 34rem),
-    var(--background);
+  background: var(--background);
 }
 
 button,
@@ -56,7 +53,7 @@ a {
 }
 
 :focus-visible {
-  outline: 2px solid var(--mint);
+  outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
 
@@ -89,10 +86,9 @@ a {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  padding: 1.4rem 1rem 1rem;
+  padding: 1.25rem 0.8rem 1rem;
   border-right: 1px solid var(--rule-soft);
-  background: rgb(13 17 23 / 86%);
-  backdrop-filter: blur(18px);
+  background: var(--surface);
 }
 
 .brand {
@@ -104,7 +100,7 @@ a {
 }
 
 .brand-mark {
-  color: var(--mint);
+  color: var(--text);
   font-size: 1.15rem;
 }
 
@@ -116,7 +112,6 @@ a {
 
 .brand-surface {
   color: var(--muted);
-  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 0.66rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -147,7 +142,7 @@ a {
 
 .nav-item:hover {
   color: var(--text-soft);
-  background: rgb(255 255 255 / 3%);
+  background: var(--surface-raised);
 }
 
 .nav-item.active {
@@ -168,7 +163,7 @@ a {
 }
 
 .nav-item.active .nav-glyph {
-  color: var(--mint);
+  color: var(--text);
 }
 
 .sidebar-footer {
@@ -201,16 +196,16 @@ a {
 }
 
 .connection-status[data-state="connected"] {
-  color: var(--mint);
+  color: var(--success);
 }
 
 .connection-status[data-state="connecting"],
 .connection-status[data-state="reconnecting"] {
-  color: var(--gold);
+  color: var(--warning);
 }
 
 .connection-status[data-state="offline"] {
-  color: var(--coral);
+  color: var(--danger);
 }
 
 .connection-status[data-state="connecting"] .connection-dot,
@@ -226,7 +221,7 @@ a {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 4.8rem;
+  min-height: 4.25rem;
   padding: 0 2.25rem;
   border-bottom: 1px solid var(--rule-soft);
 }
@@ -246,7 +241,6 @@ a {
   max-width: min(44vw, 42rem);
   overflow: hidden;
   color: var(--muted);
-  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 0.68rem;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -254,7 +248,6 @@ a {
 
 .eyebrow {
   color: var(--muted);
-  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 0.65rem;
   font-weight: 650;
   letter-spacing: 0.1em;
@@ -262,9 +255,9 @@ a {
 }
 
 .page-stage {
-  width: min(100%, 78rem);
+  width: min(100%, 72rem);
   margin: 0 auto;
-  padding: clamp(2rem, 5vw, 4.75rem);
+  padding: clamp(2rem, 4vw, 3.5rem);
 }
 
 .page {
@@ -281,10 +274,10 @@ a {
 
 .page-heading h1 {
   margin: 0.45rem 0 0.7rem;
-  font-size: clamp(2.1rem, 4vw, 3.6rem);
-  font-weight: 690;
-  letter-spacing: -0.055em;
-  line-height: 0.98;
+  font-size: clamp(1.85rem, 3vw, 2.5rem);
+  font-weight: 650;
+  letter-spacing: -0.035em;
+  line-height: 1.08;
 }
 
 .page-heading p {
@@ -306,7 +299,6 @@ a {
 
 .runtime-summary strong {
   color: var(--text);
-  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 0.82rem;
 }
 
@@ -340,9 +332,9 @@ a {
 }
 
 .session-state[data-status="active"] {
-  border-color: var(--mint);
-  background: var(--mint);
-  box-shadow: 0 0 0 3px rgb(116 226 192 / 9%);
+  border-color: var(--success);
+  background: var(--success);
+  box-shadow: 0 0 0 3px rgb(22 128 60 / 10%);
 }
 
 .session-primary > div {
@@ -363,7 +355,6 @@ a {
   overflow: hidden;
   margin: 0;
   color: var(--muted);
-  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 0.67rem;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -374,7 +365,6 @@ a {
   align-items: center;
   gap: 1.1rem;
   color: var(--muted);
-  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 0.66rem;
 }
 
@@ -404,7 +394,7 @@ a {
 
 .quiet-mark {
   margin-bottom: 1.2rem;
-  color: var(--mint);
+  color: var(--accent);
 }
 
 .quiet-state h2,
@@ -435,7 +425,7 @@ a {
 
 .foundation-rule {
   align-self: stretch;
-  background: linear-gradient(transparent, var(--mint), transparent);
+  background: var(--rule);
 }
 
 .foundation-panel h2 {
@@ -447,8 +437,8 @@ a {
   align-items: center;
   justify-content: space-between;
   padding: 2rem;
-  border-color: rgb(255 139 116 / 30%);
-  background: rgb(255 139 116 / 3%);
+  border-color: rgb(220 38 38 / 25%);
+  background: rgb(220 38 38 / 4%);
   gap: 2rem;
 }
 
@@ -483,7 +473,7 @@ a {
   background: linear-gradient(
     90deg,
     transparent 0%,
-    rgb(255 255 255 / 3%) 45%,
+    rgb(24 24 27 / 5%) 45%,
     transparent 70%
   );
   background-size: 220% 100%;
@@ -529,8 +519,8 @@ a {
     min-height: 4rem;
     padding: 0 1rem;
     border-bottom: 1px solid var(--rule-soft);
-    background: rgb(13 17 23 / 92%);
-    backdrop-filter: blur(16px);
+    background: rgb(255 255 255 / 94%);
+    backdrop-filter: blur(12px);
   }
 
   .mobile-header .brand {

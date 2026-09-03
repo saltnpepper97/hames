@@ -95,6 +95,7 @@ from hames.search_runtime import SearchMcpManager, SearchRuntimeStatus
 from hames.skill_runtime import SkillManager
 from hames.skills import SkillJob, SkillSummary, SkillVersion
 from hames.tasks import SessionTaskList, TaskStatus
+from hames.web_ui import WebUi, WebUiError, install_web_routes, web_error_response
 
 
 class ApiModel(BaseModel):
@@ -520,6 +521,7 @@ class GatewayState:
     plugins: PluginManager
     search: SearchMcpManager
     mcp: McpManager
+    web: WebUi
     token: str
 
     @classmethod
@@ -634,6 +636,7 @@ class GatewayState:
             plugins,
             search,
             mcp,
+            WebUi(config.gateway),
             paths.read_gateway_token(),
         )
 
@@ -658,11 +661,22 @@ def create_app(state: GatewayState) -> FastAPI:
 
     app = FastAPI(title="Hames Gateway", version=__version__, lifespan=lifespan)
 
-    async def authenticate(authorization: Annotated[str | None, Header()] = None) -> None:
+    async def authenticate(
+        request: Request,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> None:
+        if authorization == f"Bearer {state.token}":
+            return
+        state.web.authorize(request)
+
+    async def authenticate_bearer(
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> None:
         if authorization != f"Bearer {state.token}":
             raise ApiError(401, "unauthorized", "a valid local gateway token is required")
 
     auth = [Depends(authenticate)]
+    bearer_auth = [Depends(authenticate_bearer)]
 
     @app.exception_handler(ApiError)
     async def api_error_handler(_: Request, exc: ApiError) -> JSONResponse:
@@ -698,6 +712,10 @@ def create_app(state: GatewayState) -> FastAPI:
                 }
             },
         )
+
+    @app.exception_handler(WebUiError)
+    async def web_ui_error_handler(_: Request, exc: WebUiError) -> Response:
+        return web_error_response(exc)
 
     @app.exception_handler(EventIntegrityError)
     async def integrity_error_handler(_: Request, exc: EventIntegrityError) -> JSONResponse:
@@ -2553,6 +2571,7 @@ def create_app(state: GatewayState) -> FastAPI:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    install_web_routes(app, state.web, bearer_dependencies=bearer_auth)
     return app
 
 

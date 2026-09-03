@@ -47,10 +47,7 @@ enum Command {
     Repl,
     /// Open the local browser interface.
     Web {
-        /// Loopback port for the web interface; use 0 to select a free port.
-        #[arg(long, default_value_t = 7500)]
-        port: u16,
-        /// Serve the interface without opening a browser.
+        /// Print the authenticated launch URL without opening a browser.
         #[arg(long)]
         no_open: bool,
     },
@@ -427,7 +424,7 @@ async fn main() -> Result<()> {
         }
         Some(Command::Tui) => tui::run().await,
         Some(Command::Repl) => repl::run().await,
-        Some(Command::Web { port, no_open }) => web::run(port, no_open).await,
+        Some(Command::Web { no_open }) => web::run(no_open).await,
         Some(Command::Doctor) => local::run_backend(["doctor", "--json"]),
         Some(Command::Gateway { action }) => {
             let paths = LocalPaths::resolve()?;
@@ -1199,24 +1196,12 @@ mod cli_tests {
     #[test]
     fn web_command_uses_safe_defaults() {
         let cli = Cli::try_parse_from(["hames", "web"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::Web {
-                port: 7500,
-                no_open: false
-            })
-        ));
+        assert!(matches!(cli.command, Some(Command::Web { no_open: false })));
     }
 
     #[test]
-    fn web_command_accepts_ephemeral_port_without_browser() {
-        let cli = Cli::try_parse_from(["hames", "web", "--port", "0", "--no-open"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::Web {
-                port: 0,
-                no_open: true
-            })
-        ));
+    fn web_command_can_print_the_launch_url_without_a_browser() {
+        let cli = Cli::try_parse_from(["hames", "web", "--no-open"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Web { no_open: true })));
     }
 }

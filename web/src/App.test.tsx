@@ -86,7 +86,7 @@ describe("Hames web shell", () => {
     expect(screen.getByText("1")).toBeInTheDocument();
     expect(screen.getByText("2")).toBeInTheDocument();
     expect(screen.getAllByText("Connected").length).toBeGreaterThan(0);
-    expect(document.querySelectorAll('[data-icon-pack="phosphor"]')).toHaveLength(8);
+    expect(document.querySelectorAll('[data-icon^="nav."]')).toHaveLength(8);
   });
 
   it("provides every planned top-level area through handcrafted navigation", async () => {

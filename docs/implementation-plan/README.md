@@ -46,7 +46,8 @@ observability.
 - pytest, pytest-asyncio, Ruff, Pyright, rustfmt, Clippy, and Cargo tests.
 - Linux as the initial host target.
 - A heavily customized Ratatui client for the terminal and a handcrafted SolidJS
-  workbench embedded and served by the Rust client; no desktop stack is selected.
+  workbench packaged and served by the persistent gateway; no desktop stack is
+  selected.
 
 Do not substitute a large orchestration framework for the runtime. Hames owns its
 loop and its invariants.

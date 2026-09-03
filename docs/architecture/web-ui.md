@@ -1,41 +1,57 @@
 # Web UI architecture
 
-Hames Web is a local presentation layer over the existing gateway. It does not
-own an agent loop, persistence model, provider integration, or policy engine.
-`hames web` uses the same gateway startup and protocol checks as the TUI and
-classic REPL, then runs a separate loopback-only HTTP server for the browser.
+Hames Web is a local presentation layer owned by the persistent gateway. It does
+not own an agent loop, persistence model, provider integration, or policy
+engine. `hames web` uses the same gateway startup and protocol checks as the TUI
+and classic REPL, requests a one-time launch URL, opens it, and exits.
 
 ## Runtime boundary
 
-The browser never receives the durable gateway bearer token. The Rust web server
-reads that token locally and acts as a narrow same-origin proxy for `/v1/*`.
-Responses remain streamed, so gateway Server-Sent Events are not buffered, and
-`Last-Event-ID` is forwarded for durable reconnection. The web process stopping
-does not stop the gateway or active work.
+The browser never receives the durable gateway bearer token. The gateway accepts
+either that token from trusted local clients or a process-local browser session
+cookie. The browser and API share one origin, so gateway Server-Sent Events keep
+their native streaming and `Last-Event-ID` behavior without another proxy or
+listener. Closing the terminal that invoked `hames web` has no effect on the
+site, gateway, or active work.
 
 The launch flow is intentionally short-lived:
 
-1. Rust binds `127.0.0.1:7500` by default, outside Hames search's dynamic port
-   range. `--port 0` requests a free port.
-2. It creates a random, single-use launch URL and opens it, or prints it with
-   `--no-open`.
+1. The gateway serves the API and web application from its configured loopback
+   origin, `127.0.0.1:7411` by default.
+2. Rust authenticates to the gateway, requests a random single-use launch URL
+   for the current directory, and opens it or prints it with `--no-open`.
 3. A valid launch exchanges the URL token for an HttpOnly, SameSite cookie and
    redirects to `/chat`.
 4. The authenticated bootstrap endpoint returns only the launch working
    directory, protocol versions, and a process-local CSRF token.
 
-Every request must carry the exact loopback Host selected at launch. Mutating
-proxy requests must also carry the exact Origin and CSRF header. The server does
-not enable CORS, forward browser authorization or cookie headers, or return
-provider credentials. A restrictive Content Security Policy and defensive
-headers cover static, API, proxy, and error responses.
+Every browser-authenticated request must carry the gateway's exact loopback Host.
+Mutations must also carry the exact Origin and CSRF header. The server does not
+enable CORS or return provider credentials. A restrictive Content Security
+Policy and defensive headers cover the application, bootstrap, and web errors.
 
 ## Frontend shape
 
 The client is a SolidJS single-page application under `web/`. Its components and
-CSS are built for Hames rather than sourced from a UI framework. The route shell
-reserves stable top-level areas for Chat, Runs, Agents, Memory, Skills, Scars,
-Plugins, and Settings.
+CSS are built for Hames rather than sourced from a UI framework. The shell owns
+only authentication, gateway connectivity, layout regions, routing,
+accessibility primitives, and typed contribution registries. Product surfaces
+are first-party web plugins using the same contracts available to later optional
+plugins.
+
+The first contribution contract is the icon-pack plugin. Application components
+request semantic names such as `nav.chat` or `state.empty`; the selected pack
+maps those names to assets. Phosphor Regular is the initial pack, but product
+components do not import Phosphor names directly. Route, navigation, panel,
+command, and settings contribution contracts will follow as those surfaces move
+out of the initial hard-coded shell.
+
+Web plugins remain presentation modules. They call authorized gateway APIs and
+subscribe to gateway events; they do not gain direct filesystem access,
+provider secrets, an independent agent runtime, or implicit backend plugin
+permissions. Initially they are compile-time modules in the locally packaged
+bundle. Loading independently installed JavaScript requires a later signed
+package and permission design rather than arbitrary runtime script injection.
 
 The foundation reads only gateway health and session projections. It filters
 sessions by exact canonical launch directory and renders explicit connecting,
@@ -53,8 +69,8 @@ pnpm --dir web test
 pnpm --dir web build
 ```
 
-Vite writes the production bundle to `crates/hames-repl/assets/web/`. Those
-generated files are committed and embedded at Rust compile time, so release
+Vite writes the production bundle to `src/hames/web_dist/`. Those generated
+files are committed and included in the Python gateway package, so release
 installation and `hames web` require no Node process, package installation, CDN,
 or network-hosted frontend asset. Rebuild and commit the bundle whenever web
 source changes.
@@ -62,7 +78,8 @@ source changes.
 ## Current capability boundary
 
 This slice is a secure application shell, live runtime summary, and workspace
-session list. Chat input, session mutations, transcript/event reconstruction,
+session list, plus the semantic icon-pack contract. General route and panel
+registries, chat input, session mutations, transcript/event reconstruction,
 approvals, and all management editors remain future gateway-backed slices. See
 [M10 Web Control](../implementation-plan/M10-WEB-CONTROL.md) for their acceptance
 criteria.

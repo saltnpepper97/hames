@@ -2,6 +2,7 @@ import { createContext, useContext } from "solid-js";
 import type { JSX, ParentProps } from "solid-js";
 
 export const semanticIconNames = [
+  "brand.mark",
   "nav.chat",
   "nav.runs",
   "nav.agents",

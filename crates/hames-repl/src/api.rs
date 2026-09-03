@@ -32,6 +32,16 @@ pub fn new_submission_id() -> String {
     Uuid::new_v4().to_string()
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct WebLaunch {
+    pub url: String,
+}
+
+#[derive(Serialize)]
+struct WebLaunchRequest<'a> {
+    working_directory: &'a str,
+}
+
 pub(crate) fn event_reconnect_delay(attempt: u32) -> Duration {
     EVENT_RECONNECT_DELAYS[usize::try_from(attempt.saturating_sub(1))
         .unwrap_or(usize::MAX)
@@ -963,6 +973,16 @@ impl GatewayClient {
 
     pub async fn health(&self) -> Result<Health> {
         decode(self.get("/v1/health").send().await?).await
+    }
+
+    pub async fn web_launch(&self, working_directory: &str) -> Result<WebLaunch> {
+        decode(
+            self.post("/v1/web/launch")
+                .json(&WebLaunchRequest { working_directory })
+                .send()
+                .await?,
+        )
+        .await
     }
 
     pub async fn token_accepted(&self) -> Result<bool> {

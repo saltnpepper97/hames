@@ -104,17 +104,17 @@ Useful commands:
 
 Run <code>hames repl</code> for the classic line-oriented client. Piped or
 redirected input selects it automatically. Run <code>hames web</code> for the
-local browser interface; it starts or verifies the same gateway, serves on
-<code>127.0.0.1:7500</code>, and opens the authenticated launch URL. Use
-<code>hames web --no-open</code> to print the URL instead, or
-<code>hames web --port 0</code> to select a free loopback port.
+local browser interface; it starts or verifies the persistent gateway, requests
+a one-time authenticated launch URL, opens it, and exits. Use
+<code>hames web --no-open</code> to print the URL instead. The site remains
+available for as long as the gateway is running.
 
 ## How it works
 
 Hames separates presentation from authority:
 
-1. The **Rust client** renders the TUI or classic REPL, or securely serves the
-   embedded SolidJS workbench on loopback.
+1. The **Rust client** renders the TUI or classic REPL and opens authenticated
+   browser sessions for the SolidJS workbench.
 2. The **Python gateway** owns sessions, providers, context compilation, tools,
    policy decisions, memory, and background work.
 3. The **event ledger** records durable, integrity-checked provenance and
@@ -256,8 +256,8 @@ cargo test --workspace
 ~~~
 
 The web source lives under <code>web/</code> and uses Node 22+ with pnpm. Its
-production output is committed under <code>crates/hames-repl/assets/web/</code>
-and embedded in the Rust binary, so end-user installations do not require Node:
+production output is committed under <code>src/hames/web_dist/</code> and
+packaged with the gateway, so end-user installations do not require Node:
 
 ~~~bash
 pnpm --dir web install --frozen-lockfile

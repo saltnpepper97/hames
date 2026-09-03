@@ -6,7 +6,7 @@ export default defineConfig({
   build: {
     target: "es2022",
     sourcemap: false,
-    outDir: "../crates/hames-repl/assets/web",
+    outDir: "../src/hames/web_dist",
     emptyOutDir: true,
   },
   test: {

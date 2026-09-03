@@ -1,4 +1,5 @@
 import agents from "@phosphor-icons/core/regular/robot.svg";
+import brand from "@phosphor-icons/core/regular/horse.svg";
 import chat from "@phosphor-icons/core/regular/chat-circle-dots.svg";
 import empty from "@phosphor-icons/core/regular/chats-circle.svg";
 import memory from "@phosphor-icons/core/regular/brain.svg";
@@ -13,6 +14,7 @@ export const phosphorIconPack = {
   id: "phosphor",
   label: "Phosphor Regular",
   icons: {
+    "brand.mark": brand,
     "nav.chat": chat,
     "nav.runs": runs,
     "nav.agents": agents,

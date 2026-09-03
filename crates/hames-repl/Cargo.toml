@@ -11,7 +11,6 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
-axum.workspace = true
 base64.workspace = true
 chrono.workspace = true
 clap.workspace = true
@@ -19,18 +18,13 @@ crossterm.workspace = true
 futures-util.workspace = true
 ratatui.workspace = true
 reqwest.workspace = true
-rust-embed.workspace = true
 rustyline.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tachyonfx.workspace = true
 tokio.workspace = true
 toml.workspace = true
-mime_guess.workspace = true
 unicode-width.workspace = true
 unicode-segmentation.workspace = true
 uuid.workspace = true
 webbrowser.workspace = true
-
-[dev-dependencies]
-tower.workspace = true
