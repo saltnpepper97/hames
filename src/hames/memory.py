@@ -692,6 +692,7 @@ class MemoryStore:
         layer: MemoryLayer | None = None,
         query: str = "",
         limit: int = 50,
+        offset: int = 0,
     ) -> list[MemoryRecord]:
         with self.database.connect() as connection:
             rows = connection.execute(
@@ -706,11 +707,11 @@ class MemoryStore:
             and (layer is None or record.layer == layer)
         ]
         if query.strip():
-            ids = self._fts_ids(query, limit=max(limit * 4, 50))
+            ids = self._fts_ids(query, limit=max((offset + limit) * 4, 50))
             position = {memory_id: index for index, memory_id in enumerate(ids)}
             values = [record for record in values if record.id in position]
             values.sort(key=lambda record: (position[record.id], record.id))
-        return values[:limit]
+        return values[offset : offset + limit]
 
     def reconcile_recent(
         self,

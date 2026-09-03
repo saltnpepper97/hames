@@ -4291,6 +4291,13 @@ async def test_gateway_exposes_memory_review_and_promotion(tmp_path: Path) -> No
             )
             assert proposals.status_code == 200
             assert [item["id"] for item in proposals.json()] == [proposed.id]
+            proposals_after_first = await client.get(
+                f"/v1/sessions/{session_id}/memories",
+                headers=headers,
+                params={"status": "proposed", "offset": 1},
+            )
+            assert proposals_after_first.status_code == 200
+            assert proposals_after_first.json() == []
 
             accepted = await client.post(
                 f"/v1/sessions/{session_id}/memories/{proposed.id}/transition",

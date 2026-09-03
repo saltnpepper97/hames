@@ -1419,6 +1419,7 @@ def create_app(state: GatewayState) -> FastAPI:
         status: str = "active",
         layer: MemoryLayer | None = None,
         limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
     ) -> list[MemoryRecord]:
         try:
             session = await asyncio.to_thread(state.ledger.get_session, session_id)
@@ -1436,6 +1437,7 @@ def create_app(state: GatewayState) -> FastAPI:
                 layer=layer,
                 query=query,
                 limit=limit,
+                offset=offset,
             )
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc

@@ -230,6 +230,7 @@ def test_workspace_visibility_and_supersession(hames_paths: HamesPaths, tmp_path
         causation_id=original_event.id,
     ).record
     assert store.list_visible(first)[0].id == original.id
+    assert store.list_visible(first, offset=1) == []
     assert store.list_visible(second) == []
     with pytest.raises(KeyError):
         store.get_visible(second, original.id)
