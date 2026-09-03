@@ -1,5 +1,6 @@
 import { For, Show } from "solid-js";
 import type { Session } from "../api/types";
+import { Icon } from "../shell/icons";
 
 interface SessionListProps {
   sessions: Session[];
@@ -26,9 +27,7 @@ export function SessionList(props: SessionListProps) {
       when={props.sessions.length > 0}
       fallback={
         <div class="quiet-state">
-          <span class="quiet-mark" aria-hidden="true">
-            ◇
-          </span>
+          <Icon name="state.empty" class="quiet-mark" size={24} />
           <h2>No resumable sessions here</h2>
           <p>
             Sessions created in this workspace will appear here. Chat controls arrive in

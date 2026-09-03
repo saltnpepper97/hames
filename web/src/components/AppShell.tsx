@@ -4,6 +4,8 @@ import type { ParentProps } from "solid-js";
 import type { ConnectionState } from "./ConnectionStatus";
 import { Brand } from "./Brand";
 import { ConnectionStatus } from "./ConnectionStatus";
+import { Icon } from "../shell/icons";
+import type { SemanticIconName } from "../shell/icons";
 
 interface AppShellProps extends ParentProps {
   connection: ConnectionState;
@@ -11,15 +13,15 @@ interface AppShellProps extends ParentProps {
 }
 
 const navigation = [
-  { path: "/chat", label: "Chat", glyph: "◇" },
-  { path: "/runs", label: "Runs", glyph: "↳" },
-  { path: "/agents", label: "Agents", glyph: "A" },
-  { path: "/memory", label: "Memory", glyph: "M" },
-  { path: "/skills", label: "Skills", glyph: "S" },
-  { path: "/scars", label: "Scars", glyph: "△" },
-  { path: "/plugins", label: "Plugins", glyph: "P" },
-  { path: "/settings", label: "Settings", glyph: "·" },
-] as const;
+  { path: "/chat", label: "Chat", icon: "nav.chat" },
+  { path: "/runs", label: "Runs", icon: "nav.runs" },
+  { path: "/agents", label: "Agents", icon: "nav.agents" },
+  { path: "/memory", label: "Memory", icon: "nav.memory" },
+  { path: "/skills", label: "Skills", icon: "nav.skills" },
+  { path: "/scars", label: "Scars", icon: "nav.scars" },
+  { path: "/plugins", label: "Plugins", icon: "nav.plugins" },
+  { path: "/settings", label: "Settings", icon: "nav.settings" },
+] satisfies ReadonlyArray<{ path: string; label: string; icon: SemanticIconName }>;
 
 function workspaceName(path: string): string {
   if (!path) return "Waiting for gateway";
@@ -87,9 +89,7 @@ export function AppShell(props: AppShellProps) {
                 activeClass="active"
                 end={item.path === "/chat"}
               >
-                <span class="nav-glyph" aria-hidden="true">
-                  {item.glyph}
-                </span>
+                <Icon name={item.icon} class="nav-glyph" size={17} />
                 <span>{item.label}</span>
               </A>
             )}

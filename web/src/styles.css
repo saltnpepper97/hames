@@ -155,10 +155,16 @@ a {
   background: var(--surface-raised);
 }
 
+.hames-icon {
+  display: inline-block;
+  flex: none;
+  background: currentColor;
+  mask: var(--hames-icon-source) center / contain no-repeat;
+  -webkit-mask: var(--hames-icon-source) center / contain no-repeat;
+}
+
 .nav-glyph {
   color: var(--muted);
-  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
-  font-size: 0.78rem;
 }
 
 .nav-item.active .nav-glyph {
@@ -399,7 +405,6 @@ a {
 .quiet-mark {
   margin-bottom: 1.2rem;
   color: var(--mint);
-  font-size: 1.15rem;
 }
 
 .quiet-state h2,

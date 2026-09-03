@@ -15,6 +15,8 @@ import { AppShell } from "./components/AppShell";
 import type { ConnectionState } from "./components/ConnectionStatus";
 import { ChatPage } from "./pages/ChatPage";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
+import { phosphorIconPack } from "./plugins/icons/phosphor";
+import { IconProvider } from "./shell/icons";
 
 const refreshIntervalMs = 10_000;
 
@@ -122,76 +124,75 @@ const placeholder = (
 
 export function App() {
   return (
-    <Router root={HamesWorkspace}>
-      <Route
-        path="/chat"
-        component={ChatRoute}
-      />
-      <Route
-        path="/runs"
-        component={placeholder(
-          "Provenance",
-          "Runs",
-          "Trace model calls, context, tools, policy, and child-agent work.",
-          "Run timelines and exact inspection links will arrive with the chat vertical slice.",
-        )}
-      />
-      <Route
-        path="/agents"
-        component={placeholder(
-          "Identity",
-          "Agents",
-          "Manage portable agent roles and their effective authority.",
-          "Agent editing will continue to write validated AGENT.md capsules through the gateway.",
-        )}
-      />
-      <Route
-        path="/memory"
-        component={placeholder(
-          "Continuity",
-          "Memory",
-          "Inspect semantic, relationship, operational, and episodic memory.",
-          "Memory records will remain provenance-linked and scoped by the existing runtime.",
-        )}
-      />
-      <Route
-        path="/skills"
-        component={placeholder(
-          "Procedures",
-          "Skills",
-          "Review active procedures, evidence, validation, and version history.",
-          "Promotion and rollback will call gateway controls rather than writing files in-browser.",
-        )}
-      />
-      <Route
-        path="/scars"
-        component={placeholder(
-          "Evolution",
-          "Scars",
-          "Understand corrections, repair candidates, guards, and regressions.",
-          "Evidence and repair lineage will be reconstructed from durable gateway events.",
-        )}
-      />
-      <Route
-        path="/plugins"
-        component={placeholder(
-          "Extensions",
-          "Plugins",
-          "Inspect capabilities, permissions, isolation, and runtime health.",
-          "Unsafe execution and permission changes will remain explicit and visually prominent.",
-        )}
-      />
-      <Route
-        path="/settings"
-        component={placeholder(
-          "Local configuration",
-          "Settings",
-          "Control safe runtime defaults without exposing stored secrets.",
-          "Provider credentials will never be returned to or retained by the browser.",
-        )}
-      />
-      <Route path="/" component={() => <Navigate href="/chat" />} />
-      <Route path="*404" component={() => <Navigate href="/chat" />} />
-    </Router>
+    <IconProvider pack={phosphorIconPack}>
+      <Router root={HamesWorkspace}>
+        <Route path="/chat" component={ChatRoute} />
+        <Route
+          path="/runs"
+          component={placeholder(
+            "Provenance",
+            "Runs",
+            "Trace model calls, context, tools, policy, and child-agent work.",
+            "Run timelines and exact inspection links will arrive with the chat vertical slice.",
+          )}
+        />
+        <Route
+          path="/agents"
+          component={placeholder(
+            "Identity",
+            "Agents",
+            "Manage portable agent roles and their effective authority.",
+            "Agent editing will continue to write validated AGENT.md capsules through the gateway.",
+          )}
+        />
+        <Route
+          path="/memory"
+          component={placeholder(
+            "Continuity",
+            "Memory",
+            "Inspect semantic, relationship, operational, and episodic memory.",
+            "Memory records will remain provenance-linked and scoped by the existing runtime.",
+          )}
+        />
+        <Route
+          path="/skills"
+          component={placeholder(
+            "Procedures",
+            "Skills",
+            "Review active procedures, evidence, validation, and version history.",
+            "Promotion and rollback will call gateway controls rather than writing files in-browser.",
+          )}
+        />
+        <Route
+          path="/scars"
+          component={placeholder(
+            "Evolution",
+            "Scars",
+            "Understand corrections, repair candidates, guards, and regressions.",
+            "Evidence and repair lineage will be reconstructed from durable gateway events.",
+          )}
+        />
+        <Route
+          path="/plugins"
+          component={placeholder(
+            "Extensions",
+            "Plugins",
+            "Inspect capabilities, permissions, isolation, and runtime health.",
+            "Unsafe execution and permission changes will remain explicit and visually prominent.",
+          )}
+        />
+        <Route
+          path="/settings"
+          component={placeholder(
+            "Local configuration",
+            "Settings",
+            "Control safe runtime defaults without exposing stored secrets.",
+            "Provider credentials will never be returned to or retained by the browser.",
+          )}
+        />
+        <Route path="/" component={() => <Navigate href="/chat" />} />
+        <Route path="*404" component={() => <Navigate href="/chat" />} />
+      </Router>
+    </IconProvider>
   );
 }
