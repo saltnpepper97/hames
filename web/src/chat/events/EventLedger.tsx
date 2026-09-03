@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { HamesEvent } from "../../api/types";
 import { Button } from "../../components/Button";
+import { ResizableTable } from "../../components/ResizableTable";
 import {
   eventCategory,
   eventSummary,
@@ -107,7 +108,14 @@ export function EventLedger(props: EventLedgerProps) {
   onCleanup(() => observer?.disconnect());
 
   return (
-    <div class="event-ledger" role="table" aria-label="Durable session events">
+    <ResizableTable
+      class="event-ledger"
+      ariaLabel="Durable session events"
+      defaultFirstColumn={132}
+      minFirstColumn={96}
+      minSecondColumn={180}
+      storageKey="hames.events.event-column-width"
+    >
       <div class="event-ledger-header" role="row">
         <span role="columnheader">Event</span>
         <span role="columnheader">Content</span>
@@ -153,6 +161,6 @@ export function EventLedger(props: EventLedgerProps) {
           />
         </Show>
       </div>
-    </div>
+    </ResizableTable>
   );
 }

@@ -120,7 +120,9 @@ Chat and Events are two views over that one resident session stream. Events
 maps semantic milestones from the durable history into a compact
 sequence-or-time trajectory with Input, Model, and Tools lanes. Its searchable
 two-column ledger still exposes every durable record, but windows the rows in
-the scroll viewport so large sessions do not mount thousands of controls.
+the scroll viewport so large sessions do not mount thousands of controls. The
+shared `ResizableTable` shell owns an accessible, persisted Event/Content
+divider that supports pointer dragging, arrow-key adjustment, and reset.
 Selecting a timeline span or ledger row reveals the exact stored event without
 generating summaries or timing data that the gateway did not provide. Chat and
 Events remain resident after Events is first opened, avoiding repeated teardown

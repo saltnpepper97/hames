@@ -59,9 +59,10 @@ claiming unfinished controls:
   current chat immediately;
 - Events uses the resident durable SSE history to draw a compact semantic
   three-lane trajectory timeline, a windowed searchable ledger that remains
-  fast for long sessions, and an exact on-demand payload inspector; both views
-  remain resident after first use, while the composer preserves its draft but
-  stays hidden on Events;
+  fast for long sessions, a reusable keyboard-accessible Event/Content column
+  divider, and an exact on-demand payload inspector; both views remain resident
+  after first use, while the composer preserves its draft but stays hidden on
+  Events;
 - the model picker discovers configured providers and probes them concurrently;
   reasoning-capable model changes require an explicit supported-effort choice,
   one combined toolbar trigger displays both values and drills from a Model or
