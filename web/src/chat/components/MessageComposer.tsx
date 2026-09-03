@@ -1,6 +1,7 @@
 import { Show, createEffect, createSignal } from "solid-js";
 import { HamesApiError, cancelRun, sendMessage } from "../../api/client";
 import type { Session } from "../../api/types";
+import { Button } from "../../components/Button";
 import { Icon } from "../../shell/icons";
 import { ComposerSeat } from "./ComposerSeat";
 
@@ -110,7 +111,8 @@ export function MessageComposer(props: MessageComposerProps) {
           />
           <div class="composer-toolbar-spacer" />
           <Show when={props.activeRunId}>
-            <button
+            <Button
+              variant="bare"
               class="composer-round stop"
               type="button"
               aria-label="Stop"
@@ -119,7 +121,7 @@ export function MessageComposer(props: MessageComposerProps) {
               onClick={() => void cancel()}
             >
               <Icon name="action.stop" size={14} />
-            </button>
+            </Button>
           </Show>
           <ComposerSeat
             seat="right"
@@ -128,7 +130,8 @@ export function MessageComposer(props: MessageComposerProps) {
             onSessionUpdated={props.onSessionUpdated}
             onError={reportControlError}
           />
-          <button
+          <Button
+            variant="bare"
             class="composer-round send"
             type="button"
             aria-label={props.activeRunId ? "Queue message" : "Send message"}
@@ -137,7 +140,7 @@ export function MessageComposer(props: MessageComposerProps) {
             onClick={() => void submit()}
           >
             <Icon name="action.send" size={18} />
-          </button>
+          </Button>
         </div>
       </div>
     </div>

@@ -1,7 +1,8 @@
-import { useParams } from "@solidjs/router";
-import { createMemo } from "solid-js";
+import { useLocation, useNavigate, useParams } from "@solidjs/router";
+import { Show, createEffect, createMemo, createSignal } from "solid-js";
 import { ChatPage } from "../../pages/ChatPage";
 import { AgentsPage } from "../../pages/AgentsPage";
+import { AgentDetailPage } from "../../pages/AgentDetailPage";
 import { PlaceholderPage } from "../../pages/PlaceholderPage";
 import type { WebPlugin } from "../../shell/plugins";
 import { useWorkspace } from "../../shell/workspace";
@@ -10,20 +11,65 @@ import { coreComposerControls } from "./composerControls";
 
 function ChatSurface() {
   const params = useParams<{ sessionId?: string }>();
+  const location = useLocation();
+  const navigate = useNavigate();
   const workspace = useWorkspace();
+  const [startingSession, setStartingSession] = createSignal(false);
+  const [startError, setStartError] = createSignal("");
+  let attempted = false;
   const selectedSession = createMemo(() =>
     params.sessionId ? workspace.session(params.sessionId) : undefined,
   );
+
+  const startFresh = async () => {
+    if (startingSession()) return;
+    setStartingSession(true);
+    setStartError("");
+    try {
+      const session = await workspace.createChat();
+      if (location.pathname === "/chat") {
+        navigate(`/chat/${encodeURIComponent(session.id)}`, { replace: true });
+      }
+    } catch (error) {
+      setStartError(error instanceof Error ? error.message : "Unable to start a new chat");
+    } finally {
+      setStartingSession(false);
+    }
+  };
+
+  createEffect(() => {
+    if (params.sessionId || workspace.connection() !== "connected" || attempted) return;
+    attempted = true;
+    void startFresh();
+  });
 
   return (
     <ChatPage
       connection={workspace.connection()}
       error={workspace.error()}
       selectedSession={selectedSession()}
+      startingSession={startingSession()}
+      startError={startError()}
+      onStartFresh={() => void startFresh()}
       onRetry={() => void workspace.refresh()}
       onSessionChanged={() => void workspace.refresh()}
       onSessionUpdated={workspace.updateSession}
     />
+  );
+}
+
+function AgentSurface() {
+  const params = useParams<{ agentId?: string }>();
+  const workspace = useWorkspace();
+  return (
+    <Show when={params.agentId} keyed fallback={<AgentsPage />}>
+      {(agentId) => (
+        <AgentDetailPage
+          agentId={agentId}
+          workingDirectory={workspace.snapshot()?.bootstrap.working_directory ?? ""}
+        />
+      )}
+    </Show>
   );
 }
 
@@ -58,10 +104,10 @@ export const coreWebPlugin = {
     {
       id: "agents",
       path: "/agents",
-      route: "/agents",
+      route: ["/agents", "/agents/:agentId"],
       label: "Agents",
       icon: "nav.agents",
-      component: AgentsPage,
+      component: AgentSurface,
       sidebar: { kind: "section", description: "Roles and authority" },
     },
     {

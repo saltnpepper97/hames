@@ -1,9 +1,10 @@
 import { For, createSignal } from "solid-js";
-import type { AgentAvatarConfig, AgentAvatarEyes, AgentAvatarShape } from "../api/types";
+import type { AgentAvatarConfig, AgentAvatarEyes, AgentAvatarFace, AgentAvatarShape } from "../api/types";
 import { AgentAvatar } from "./AgentAvatar";
 import { ColorWheel } from "./ColorWheel";
 import { avatarPalette } from "./color";
 import { DialogFrame } from "../components/DialogFrame";
+import { Button } from "../components/Button";
 
 interface AgentAvatarEditorProps {
   agentName: string;
@@ -15,7 +16,7 @@ interface AgentAvatarEditorProps {
 }
 
 const shapes: { id: AgentAvatarShape; label: string }[] = [
-  { id: "round", label: "Round" },
+  { id: "circle", label: "Circle" },
   { id: "square", label: "Soft square" },
   { id: "triangle", label: "Triangle" },
   { id: "cloud", label: "Cloud" },
@@ -25,7 +26,13 @@ const shapes: { id: AgentAvatarShape; label: string }[] = [
 const eyes: { id: AgentAvatarEyes; label: string }[] = [
   { id: "dots", label: "Dots" },
   { id: "visor", label: "Visor" },
-  { id: "happy", label: "Happy" },
+  { id: "pill", label: "Pill" },
+];
+
+const faces: { id: AgentAvatarFace; label: string }[] = [
+  { id: "solid", label: "Solid" },
+  { id: "outline", label: "Outline" },
+  { id: "none", label: "Off" },
 ];
 
 export function AgentAvatarEditor(props: AgentAvatarEditorProps) {
@@ -39,10 +46,10 @@ export function AgentAvatarEditor(props: AgentAvatarEditorProps) {
       onClose={props.onClose}
       footer={<>
         <span class="avatar-save-error" role="alert">{props.error}</span>
-        <button class="button" type="button" onClick={props.onClose}>Cancel</button>
-        <button class="button primary" type="button" disabled={props.saving} onClick={() => props.onSave(draft())}>
-          {props.saving ? "Saving…" : "Save avatar"}
-        </button>
+        <Button variant="quiet" onClick={props.onClose}>Cancel</Button>
+        <Button variant="primary" loading={props.saving} onClick={() => props.onSave(draft())}>
+          Save avatar
+        </Button>
       </>}
     >
         <div class="avatar-editor-layout">
@@ -57,8 +64,8 @@ export function AgentAvatarEditor(props: AgentAvatarEditorProps) {
               <legend>Shape</legend>
               <div class="avatar-option-grid shapes">
                 <For each={shapes}>{(shape) => (
-                  <button
-                    type="button"
+                  <Button
+                    variant="choice"
                     class="avatar-option"
                     classList={{ selected: draft().shape === shape.id }}
                     aria-pressed={draft().shape === shape.id}
@@ -66,7 +73,7 @@ export function AgentAvatarEditor(props: AgentAvatarEditorProps) {
                   >
                     <AgentAvatar config={{ ...draft(), shape: shape.id }} name={shape.label} size={44} animated={false} />
                     <span>{shape.label}</span>
-                  </button>
+                  </Button>
                 )}</For>
               </div>
             </fieldset>
@@ -75,8 +82,8 @@ export function AgentAvatarEditor(props: AgentAvatarEditorProps) {
               <legend>Eyes</legend>
               <div class="avatar-option-grid eyes">
                 <For each={eyes}>{(eye) => (
-                  <button
-                    type="button"
+                  <Button
+                    variant="choice"
                     class="avatar-option"
                     classList={{ selected: draft().eyes === eye.id }}
                     aria-pressed={draft().eyes === eye.id}
@@ -84,7 +91,25 @@ export function AgentAvatarEditor(props: AgentAvatarEditorProps) {
                   >
                     <AgentAvatar config={{ ...draft(), eyes: eye.id }} name={eye.label} size={44} animated={false} />
                     <span>{eye.label}</span>
-                  </button>
+                  </Button>
+                )}</For>
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>Face plate</legend>
+              <div class="avatar-option-grid eyes">
+                <For each={faces}>{(face) => (
+                  <Button
+                    variant="choice"
+                    class="avatar-option"
+                    classList={{ selected: draft().face === face.id }}
+                    aria-pressed={draft().face === face.id}
+                    onClick={() => setDraft((current) => ({ ...current, face: face.id }))}
+                  >
+                    <AgentAvatar config={{ ...draft(), face: face.id }} name={face.label} size={44} animated={false} />
+                    <span>{face.label}</span>
+                  </Button>
                 )}</For>
               </div>
             </fieldset>
@@ -95,8 +120,8 @@ export function AgentAvatarEditor(props: AgentAvatarEditorProps) {
                 <ColorWheel value={draft().color} onInput={(color) => setDraft((current) => ({ ...current, color }))} />
                 <div class="avatar-palette" aria-label="Suggested colors">
                   <For each={avatarPalette}>{(color) => (
-                    <button
-                      type="button"
+                    <Button
+                      variant="bare"
                       aria-label={`Use ${color}`}
                       aria-pressed={draft().color === color}
                       classList={{ selected: draft().color === color }}

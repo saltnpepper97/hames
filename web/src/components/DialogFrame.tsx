@@ -1,6 +1,7 @@
 import { createUniqueId, onCleanup, onMount } from "solid-js";
 import type { JSX, ParentProps } from "solid-js";
 import { Portal } from "solid-js/web";
+import { Button } from "./Button";
 
 interface DialogFrameProps extends ParentProps {
   eyebrow: string;
@@ -64,7 +65,7 @@ export function DialogFrame(props: DialogFrameProps) {
               <span class="eyebrow">{props.eyebrow}</span>
               <h2 id={titleId}>{props.title}</h2>
             </div>
-            <button ref={closeButton} class="dialog-close" type="button" aria-label="Close dialog" onClick={props.onClose}>×</button>
+            <Button ref={closeButton} variant="icon" class="dialog-close" aria-label="Close dialog" onClick={props.onClose}>×</Button>
           </header>
           {props.children}
           <footer class="dialog-footer">{props.footer}</footer>

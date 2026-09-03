@@ -2,6 +2,7 @@ import { For, Show, createSignal } from "solid-js";
 import type { JSX } from "solid-js";
 import { HamesApiError, answerQuestion, resolveApproval } from "../../api/client";
 import type { ConversationNode } from "../../chat/projection";
+import { Button } from "../../components/Button";
 import type { ConversationNodeContribution } from "../../shell/plugins";
 
 function ToolNode(props: { node: ConversationNode }): JSX.Element {
@@ -99,17 +100,17 @@ function ApprovalNode(props: { node: ConversationNode }): JSX.Element {
       </details>
       <Show when={node.status === "pending"}>
         <div class="decision-actions">
-          <button class="button quiet" type="button" disabled={busy()} onClick={() => void decide("denied")}>
+          <Button variant="quiet" disabled={busy()} onClick={() => void decide("denied")}>
             Deny
-          </button>
+          </Button>
           <Show when={node.allowSession}>
-            <button class="button" type="button" disabled={busy()} onClick={() => void decide("approved_session")}>
+            <Button disabled={busy()} onClick={() => void decide("approved_session")}>
               Allow for session
-            </button>
+            </Button>
           </Show>
-          <button class="button primary" type="button" disabled={busy()} onClick={() => void decide("approved")}>
+          <Button variant="primary" disabled={busy()} onClick={() => void decide("approved")}>
             Allow once
-          </button>
+          </Button>
         </div>
       </Show>
       <Show when={error()}>
@@ -175,10 +176,10 @@ function QuestionNode(props: { node: ConversationNode }): JSX.Element {
         <div class="question-options">
           <For each={node.options}>
             {(option) => (
-              <button type="button" disabled={busy()} onClick={() => void choose(option.label)}>
+              <Button variant="choice" disabled={busy()} onClick={() => void choose(option.label)}>
                 <strong>{option.label}</strong>
                 <Show when={option.description}><span>{option.description}</span></Show>
-              </button>
+              </Button>
             )}
           </For>
         </div>
@@ -199,14 +200,13 @@ function QuestionNode(props: { node: ConversationNode }): JSX.Element {
             aria-label="Custom answer"
             onInput={(event) => setCustomAnswer(event.currentTarget.value)}
           />
-          <button
-            class="button primary"
-            type="button"
+          <Button
+            variant="primary"
             disabled={!customAnswer().trim() || busy()}
             onClick={() => void submitCustom()}
           >
             Send answer
-          </button>
+          </Button>
         </div>
       </Show>
       <Show when={error()}>

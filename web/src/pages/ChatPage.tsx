@@ -3,11 +3,15 @@ import type { ConnectionState } from "../components/ConnectionStatus";
 import type { Session } from "../api/types";
 import { SessionChat } from "../chat/SessionChat";
 import { Icon } from "../shell/icons";
+import { Button } from "../components/Button";
 
 interface ChatPageProps {
   connection: ConnectionState;
   error: string;
   selectedSession?: Session;
+  startingSession?: boolean;
+  startError?: string;
+  onStartFresh?: () => void;
   onRetry: () => void;
   onSessionChanged: () => void;
   onSessionUpdated: (session: Session) => void;
@@ -38,9 +42,9 @@ export function ChatPage(props: ChatPageProps) {
             <p>{props.error || "The local gateway did not respond."}</p>
           </div>
           <Show when={props.connection !== "expired"}>
-            <button class="button" type="button" onClick={props.onRetry}>
+            <Button onClick={props.onRetry}>
               Retry connection
-            </button>
+            </Button>
           </Show>
         </div>
       </Show>
@@ -59,8 +63,17 @@ export function ChatPage(props: ChatPageProps) {
           <Match when={!props.selectedSession}>
             <div class="conversation-empty">
               <Icon name="state.empty" size={24} />
-              <h1 id="chat-title">Select a chat</h1>
-              <p>Workspace chats are listed in the sidebar.</p>
+              <Show
+                when={props.startError}
+                fallback={<>
+                  <h1 id="chat-title">Starting a new chat</h1>
+                  <p>Preparing a fresh workspace session…</p>
+                </>}
+              >
+                <h1 id="chat-title">New chat could not start</h1>
+                <p>{props.startError}</p>
+                <Button loading={props.startingSession} onClick={props.onStartFresh}>Try again</Button>
+              </Show>
             </div>
           </Match>
         </Switch>

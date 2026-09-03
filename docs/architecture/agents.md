@@ -62,10 +62,17 @@ deleted.
 
 Web clients can also give an agent a small visual identity. The avatar remains
 portable capsule metadata rather than browser-local state: five body shapes
-(`round`, `square`, `triangle`, `cloud`, and `hex`), three eye styles (`dots`,
-`visor`, and `happy`), and a six-digit hex color. Clients derive a stable
+(`circle`, `square`, `triangle`, `cloud`, and `hex`), three eye styles (`dots`,
+`visor`, and `pill`), an optional solid or outline face plate, and a six-digit
+hex color. Clients derive a stable
 fallback for older capsules and write the chosen avatar through the same atomic
 agent update path.
+
+The Web Agents overview links each real capsule to a dedicated breakdown page.
+That page edits the display name, instruction body, tool allow/deny sets, skill
+allow/deny sets, pinned skills, and avatar through structured gateway updates.
+The stable id is visible but immutable, and every save still atomically rewrites
+the existing `AGENT.md` rather than introducing browser-owned agent state.
 
 ## Tools vs Skills vs plugins
 
@@ -119,7 +126,8 @@ delegation:
     - critic
 avatar:
   shape: triangle
-  eyes: happy
+  eyes: pill
+  face: solid
   color: '#0d9488'
 ```
 

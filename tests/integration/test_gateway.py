@@ -1154,7 +1154,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 35
+            assert health_body["protocol_version"] == 36
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -2964,7 +2964,7 @@ async def test_gateway_persists_agent_avatar_in_list_and_detail(tmp_path: Path) 
     state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
     headers = {"Authorization": f"Bearer {state.token}"}
     transport = httpx.ASGITransport(app=create_app(state))
-    avatar = {"shape": "triangle", "eyes": "visor", "color": "#0EA5E9"}
+    avatar = {"shape": "triangle", "eyes": "visor", "face": "outline", "color": "#0EA5E9"}
     try:
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             updated = await client.patch(
@@ -2979,6 +2979,27 @@ async def test_gateway_persists_agent_avatar_in_list_and_detail(tmp_path: Path) 
         assert listed.json()[0]["avatar"] == expected
         assert detailed.json()["avatar"] == expected
         assert "avatar:" in detailed.json()["source"]
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_lists_agent_editor_capabilities(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(
+                "/v1/agents/default/capabilities",
+                headers=headers,
+                params={"working_directory": str(tmp_path)},
+            )
+
+        assert response.status_code == 200
+        assert "read_file" in response.json()["tools"]
+        assert all("slug" in skill for skill in response.json()["skills"])
     finally:
         await state.runs.close()
 

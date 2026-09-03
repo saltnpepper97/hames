@@ -1,7 +1,9 @@
 import type {
   AgentAvatarConfig,
+  AgentCapabilities,
   AgentDetail,
   AgentPublic,
+  AgentUpdate,
   ApiErrorBody,
   DashboardSnapshot,
   GatewayHealth,
@@ -125,6 +127,27 @@ export function listProviders(): Promise<ProviderProfile[]> {
 
 export function listAgents(): Promise<AgentPublic[]> {
   return request<AgentPublic[]>("/v1/agents");
+}
+
+export function getAgent(agentId: string): Promise<AgentDetail> {
+  return request<AgentDetail>(`/v1/agents/${encodeURIComponent(agentId)}`);
+}
+
+export function getAgentCapabilities(
+  agentId: string,
+  workingDirectory: string,
+): Promise<AgentCapabilities> {
+  const parameters = new URLSearchParams({ working_directory: workingDirectory });
+  return request<AgentCapabilities>(
+    `/v1/agents/${encodeURIComponent(agentId)}/capabilities?${parameters.toString()}`,
+  );
+}
+
+export function updateAgent(agentId: string, update: AgentUpdate): Promise<AgentDetail> {
+  return request<AgentDetail>(`/v1/agents/${encodeURIComponent(agentId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(update),
+  });
 }
 
 export function updateAgentAvatar(

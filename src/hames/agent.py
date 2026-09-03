@@ -108,8 +108,9 @@ class AgentAvatar(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    shape: Literal["round", "square", "triangle", "cloud", "hex"] = "round"
-    eyes: Literal["dots", "visor", "happy"] = "dots"
+    shape: Literal["circle", "square", "triangle", "cloud", "hex"] = "circle"
+    eyes: Literal["dots", "visor", "pill"] = "dots"
+    face: Literal["solid", "outline", "none"] = "solid"
     color: str = "#64748b"
 
     @field_validator("shape", mode="before")
@@ -117,11 +118,16 @@ class AgentAvatar(BaseModel):
     def migrate_early_shapes(cls, value: object) -> object:
         # These values briefly shipped during the Web avatar prototype. Keep
         # their capsules loadable while presenting only the refined shape set.
-        if value == "arch":
-            return "triangle"
+        if value in {"round", "arch"}:
+            return "circle" if value == "round" else "triangle"
         if value == "capsule":
             return "cloud"
         return value
+
+    @field_validator("eyes", mode="before")
+    @classmethod
+    def migrate_early_eyes(cls, value: object) -> object:
+        return "pill" if value == "happy" else value
 
     @field_validator("color")
     @classmethod

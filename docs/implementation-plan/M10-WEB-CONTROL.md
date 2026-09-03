@@ -23,7 +23,8 @@ claiming unfinished controls:
   Tabler for the remaining controls, while the built-in areas form `hames.core`;
 - the responsive shell uses a global icon rail, a contextual sidebar, and the
   selected surface; Chat lists only real resumable sessions scoped to the exact
-  launch directory and routes a selection into the main area;
+  launch directory and routes a selection into the main area; the repository
+  identity appears only in Chat rather than being repeated by every sidebar;
 - loading, offline, expired-session, retry, reconnect, and empty states are
   explicit; an expired process-local browser session is not reported as an
   offline gateway;
@@ -57,14 +58,22 @@ claiming unfinished controls:
 - the Chat sidebar can create a real gateway session and route into its
   composer; it joins history after the first durable message rather than
   leaving an empty sidebar row;
+- entering the bare Chat route starts fresh work automatically instead of
+  rendering a passive session-selection state;
 - pending approval and question events render in the transcript and resolve
   through CSRF-protected gateway mutations, including session-scoped approval,
   option notes, and custom answers;
+- shared Button, form-field, selection-row, settings-section, dialog, and avatar
+  components keep interaction and accessibility behavior consistent across
+  core surfaces;
+- the Agents overview uses real capsule cards and links to a dedicated detail
+  page that atomically edits display name, `AGENT.md` instructions, tool access,
+  skill access, pinned skills, and avatar metadata;
 
 The next vertical slice adds richer plans, tasks, and child-agent activity.
 Those controls and the management capabilities listed below remain deferred.
-The gateway protocol and persistence schema were not changed for the web
-implementation.
+The gateway protocol is 36 for the refined avatar schema and the agent editor's
+workspace-aware capability catalog. The persistence layout remains unchanged.
 
 ## Goal
 
@@ -134,12 +143,15 @@ A user can click from final answer to model calls and sources that produced it.
 Implement:
 
 - list agents; **Implemented**
-- persist a component-rendered avatar (five shapes, three eye styles, and custom
-  color) as validated `AGENT.md` metadata; **Implemented**
+- persist a component-rendered avatar (five shapes, three eye styles, optional
+  face plate, and custom color) as validated `AGENT.md` metadata; **Implemented**
 - create agent;
-- edit `AGENT.md` through text editor;
-- schema/frontmatter validation before save;
-- show effective tools/policy/model/memory scopes;
+- edit `AGENT.md` instructions through a dedicated settings editor;
+  **Implemented**
+- schema/frontmatter validation before save; **Implemented for structured agent
+  edits**
+- show and edit effective tool and skill access; **Implemented**
+- show effective policy/model/memory scopes;
 - show project vs global origin;
 - show agent usage statistics;
 - retire/delete agent while preserving history.

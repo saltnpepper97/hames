@@ -1,6 +1,7 @@
 import { For, Show, createSignal } from "solid-js";
 import type { SemanticIconName } from "../../shell/icons";
 import { Icon } from "../../shell/icons";
+import { Button } from "../../components/Button";
 
 export interface ComposerMenuOption {
   value: string;
@@ -64,7 +65,8 @@ export function ComposerMenu(props: ComposerMenuProps) {
         if (!root.contains(event.relatedTarget as Node | null)) setOpen(false);
       }}
     >
-      <button
+      <Button
+        variant="bare"
         class="composer-chip"
         type="button"
         aria-label={props.ariaLabel}
@@ -76,7 +78,7 @@ export function ComposerMenu(props: ComposerMenuProps) {
         <Icon name={props.icon} size={16} />
         <span>{selectedLabel()}</span>
         <Icon name="action.expand" size={13} />
-      </button>
+      </Button>
       <Show when={open()}>
         <div class="composer-menu-popover" role="menu" aria-label={props.ariaLabel}>
           <Show when={!props.loading} fallback={<div class="composer-menu-state">Loading…</div>}>
@@ -85,8 +87,8 @@ export function ComposerMenu(props: ComposerMenuProps) {
               fallback={<div class="composer-menu-state">{props.emptyMessage ?? "No options"}</div>}
             >
               {(option) => (
-                <button
-                  type="button"
+                <Button
+                  variant="bare"
                   role="menuitemradio"
                   aria-checked={option.value === props.value}
                   disabled={busy()}
@@ -96,7 +98,7 @@ export function ComposerMenu(props: ComposerMenuProps) {
                     {(icon) => <Icon name={icon()} size={16} />}
                   </Show>
                   <span>{option.label}</span>
-                </button>
+                </Button>
               )}
             </For>
           </Show>

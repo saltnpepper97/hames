@@ -15,6 +15,7 @@ import { Icon } from "../shell/icons";
 import type { WebPluginRegistry } from "../shell/plugins";
 import { useWorkspace } from "../shell/workspace";
 import { Brand } from "./Brand";
+import { Button } from "./Button";
 import { ConnectionStatus } from "./ConnectionStatus";
 
 interface AppShellProps extends ParentProps {
@@ -94,7 +95,8 @@ export function AppShell(props: AppShellProps) {
         Skip to content
       </a>
       <header class="mobile-header">
-        <button
+        <Button
+          variant="bare"
           class="nav-toggle"
           type="button"
           aria-label="Toggle navigation"
@@ -104,12 +106,13 @@ export function AppShell(props: AppShellProps) {
         >
           <span />
           <span />
-        </button>
+        </Button>
         <Brand />
         <ConnectionStatus state={workspace.connection()} compact />
       </header>
 
-      <button
+      <Button
+        variant="bare"
         class="nav-scrim"
         classList={{ visible: navigationOpen() }}
         type="button"
@@ -141,13 +144,11 @@ export function AppShell(props: AppShellProps) {
         <aside class="context-sidebar" aria-label={`${activeSurface().label} sidebar`}>
           <div class="context-header">
             <div>
-              <span class="eyebrow">
-                {workspaceName(workspace.snapshot()?.bootstrap.working_directory ?? "")}
-              </span>
               <h2>{activeSurface().label}</h2>
             </div>
             <Show when={activeSurface().sidebar.kind === "conversations"}>
-              <button
+              <Button
+                variant="bare"
                 class="context-action"
                 type="button"
                 aria-label="New chat"
@@ -156,7 +157,7 @@ export function AppShell(props: AppShellProps) {
                 onClick={() => void createChat()}
               >
                 <Icon name="action.newChat" size={18} />
-              </button>
+              </Button>
             </Show>
           </div>
 
@@ -202,19 +203,21 @@ export function AppShell(props: AppShellProps) {
       </div>
 
       <main id="main-content" class="workspace">
-        <div class="workspace-bar">
-          <div>
-            <span class="eyebrow">Workspace</span>
-            <strong>{workspaceName(workspace.snapshot()?.bootstrap.working_directory ?? "")}</strong>
+        <Show when={activeSurface().id === "chat"}>
+          <div class="workspace-bar">
+            <div>
+              <span class="eyebrow">Workspace</span>
+              <strong>{workspaceName(workspace.snapshot()?.bootstrap.working_directory ?? "")}</strong>
+            </div>
+            <Show when={workspace.snapshot()?.bootstrap.working_directory}>
+              {(path) => (
+                <span class="workspace-path" title={path()}>
+                  {path()}
+                </span>
+              )}
+            </Show>
           </div>
-          <Show when={workspace.snapshot()?.bootstrap.working_directory}>
-            {(path) => (
-              <span class="workspace-path" title={path()}>
-                {path()}
-              </span>
-            )}
-          </Show>
-        </div>
+        </Show>
         <div class="page-stage" classList={{ "chat-stage": activeSurface().id === "chat" }}>
           {props.children}
         </div>

@@ -2,6 +2,7 @@ import { HamesApiError, updateSessionMode } from "../../api/client";
 import type { SessionMode } from "../../api/types";
 import { ComposerMenu } from "../../chat/components/ComposerMenu";
 import { ModelPicker } from "../../chat/components/ModelPicker";
+import { Button } from "../../components/Button";
 import { Icon } from "../../shell/icons";
 import type { SemanticIconName } from "../../shell/icons";
 import type { ComposerControlContribution, ComposerControlProps } from "../../shell/plugins";
@@ -13,7 +14,8 @@ function mutationError(error: unknown): string {
 
 function AttachmentControl() {
   return (
-    <button
+    <Button
+      variant="bare"
       class="composer-round attachment"
       type="button"
       aria-label="Add attachment"
@@ -21,7 +23,7 @@ function AttachmentControl() {
       disabled
     >
       <Icon name="action.attach" size={18} />
-    </button>
+    </Button>
   );
 }
 

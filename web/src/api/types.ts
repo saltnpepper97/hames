@@ -32,12 +32,14 @@ export interface Session {
   interaction_mode: SessionMode;
 }
 
-export type AgentAvatarShape = "round" | "square" | "triangle" | "cloud" | "hex";
-export type AgentAvatarEyes = "dots" | "visor" | "happy";
+export type AgentAvatarShape = "circle" | "square" | "triangle" | "cloud" | "hex";
+export type AgentAvatarEyes = "dots" | "visor" | "pill";
+export type AgentAvatarFace = "solid" | "outline" | "none";
 
 export interface AgentAvatarConfig {
   shape: AgentAvatarShape;
   eyes: AgentAvatarEyes;
+  face: AgentAvatarFace;
   color: string;
 }
 
@@ -61,6 +63,31 @@ export interface AgentDetail extends AgentPublic {
   delegation_allowed: boolean;
   delegation_targets: string[];
   deprecated_fields: string[];
+}
+
+export interface SkillSummary {
+  slug: string;
+  name: string;
+  description: string;
+  scope: "global" | "workspace" | "agent";
+}
+
+export interface AgentCapabilities {
+  tools: string[];
+  skills: SkillSummary[];
+}
+
+export interface AgentAccessUpdate {
+  allow: string[];
+  deny: string[];
+  pin?: string[];
+}
+
+export interface AgentUpdate {
+  name: string;
+  instructions: string;
+  tools: AgentAccessUpdate;
+  skills: AgentAccessUpdate;
 }
 
 export type SessionMode = "manual" | "auto" | "plan";

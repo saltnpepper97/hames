@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import type { AgentDetail, AgentPublic } from "./api/types";
 
 class MockEventSource {
   static instances: MockEventSource[] = [];
@@ -31,7 +32,7 @@ class MockEventSource {
 
 const bootstrap = {
   protocol_version: 1,
-  gateway_protocol_version: 35,
+  gateway_protocol_version: 36,
   working_directory: "/work/hames",
   csrf_token: "csrf",
 };
@@ -39,7 +40,7 @@ const bootstrap = {
 const health = {
   status: "ok",
   version: "0.0.0",
-  protocol_version: 35,
+  protocol_version: 36,
   database_ready: true,
   provider_profiles: ["codex"],
   default_provider: "codex",
@@ -96,7 +97,7 @@ const createdSession = {
   title: null,
 };
 
-const agents = [
+const agents: AgentPublic[] = [
   {
     id: "default",
     name: "Hames",
@@ -111,9 +112,23 @@ const agents = [
     authority: "read_only",
     path: "/home/.hames/agents/reviewer/AGENT.md",
     content_hash: "agent-hash-two",
-    avatar: { shape: "cloud", eyes: "visor", color: "#0d9488" },
+    avatar: { shape: "cloud", eyes: "visor", face: "outline", color: "#0d9488" },
   },
 ];
+
+const defaultAgentDetail: AgentDetail = {
+  ...agents[0]!,
+  source: "---\nid: default\nname: Hames\n---\nDefault agent.",
+  instructions: "Default agent.",
+  tools_allow: [],
+  tools_deny: [],
+  skills_allow: [],
+  skills_deny: [],
+  skills_pin: [],
+  delegation_allowed: false,
+  delegation_targets: [],
+  deprecated_fields: [],
+};
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -124,6 +139,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function successfulFetch() {
   let currentSession = { ...sessions[0] };
+  let currentAgent = { ...defaultAgentDetail };
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     if (path === "/_hames/v1/bootstrap") return jsonResponse(bootstrap);
@@ -132,16 +148,32 @@ function successfulFetch() {
       return jsonResponse([currentSession, ...sessions.slice(1)]);
     }
     if (path === "/v1/agents" && !init?.method) return jsonResponse(agents);
-    if (path === "/v1/agents/default" && init?.method === "PATCH") {
-      const avatar = JSON.parse(String(init.body)).avatar;
+    if (path === "/v1/agents/default" && !init?.method) return jsonResponse(currentAgent);
+    if (path === "/v1/agents/default/capabilities?working_directory=%2Fwork%2Fhames") {
       return jsonResponse({
-        ...agents[0],
-        avatar,
-        source: "---\nid: default\n---\nDefault agent.",
-        instructions: "Default agent.",
-        tools_allow: [], tools_deny: [], skills_allow: [], skills_deny: [], skills_pin: [],
-        delegation_allowed: false, delegation_targets: [], deprecated_fields: [],
+        tools: ["read_file", "shell", "write_file"],
+        skills: [{
+          slug: "testing",
+          name: "Testing",
+          description: "Run the project checks",
+          scope: "global",
+        }],
       });
+    }
+    if (path === "/v1/agents/default" && init?.method === "PATCH") {
+      const update = JSON.parse(String(init.body));
+      currentAgent = {
+        ...currentAgent,
+        name: update.name ?? currentAgent.name,
+        instructions: update.instructions ?? currentAgent.instructions,
+        avatar: update.avatar ?? currentAgent.avatar,
+        tools_allow: update.tools?.allow ?? currentAgent.tools_allow,
+        tools_deny: update.tools?.deny ?? currentAgent.tools_deny,
+        skills_allow: update.skills?.allow ?? currentAgent.skills_allow,
+        skills_deny: update.skills?.deny ?? currentAgent.skills_deny,
+        skills_pin: update.skills?.pin ?? currentAgent.skills_pin,
+      };
+      return jsonResponse(currentAgent);
     }
     if (path === "/v1/providers") {
       return jsonResponse([
@@ -267,7 +299,7 @@ function durableEvent(
 
 describe("Hames web shell", () => {
   beforeEach(() => {
-    window.history.replaceState({}, "", "/chat");
+    window.history.replaceState({}, "", "/chat/session-current");
     MockEventSource.instances = [];
     vi.stubGlobal("EventSource", MockEventSource);
   });
@@ -280,8 +312,11 @@ describe("Hames web shell", () => {
     vi.stubGlobal("fetch", successfulFetch());
     render(() => <App />);
 
-    expect(await screen.findByText("Build the web foundation")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Select a chat", level: 1 })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: /Build the web foundation/ })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Build the web foundation", level: 1 })).toBeInTheDocument();
+    const chatSidebar = screen.getByRole("complementary", { name: "Chat sidebar" });
+    expect(chatSidebar.querySelector(".context-header .eyebrow")).not.toBeInTheDocument();
+    expect(screen.getByText("Workspace")).toBeInTheDocument();
     expect(screen.queryByText("Another project")).not.toBeInTheDocument();
     expect(screen.queryByText("Closed workspace chat")).not.toBeInTheDocument();
     expect(screen.getAllByText("Connected").length).toBeGreaterThan(0);
@@ -450,12 +485,10 @@ describe("Hames web shell", () => {
   });
 
   it("creates a durable chat and opens its composer", async () => {
+    window.history.replaceState({}, "", "/chat");
     const fetchMock = successfulFetch();
     vi.stubGlobal("fetch", fetchMock);
     render(() => <App />);
-    await screen.findByText("Build the web foundation");
-
-    fireEvent.click(screen.getByRole("button", { name: "New chat" }));
 
     expect(await screen.findByRole("heading", { name: "New chat" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/chat/session-new");
@@ -519,7 +552,7 @@ describe("Hames web shell", () => {
   it("provides every core plugin surface through the icon rail", async () => {
     vi.stubGlobal("fetch", successfulFetch());
     render(() => <App />);
-    await screen.findByText("Build the web foundation");
+    await screen.findByRole("heading", { name: "Build the web foundation", level: 1 });
 
     for (const label of ["Chat", "Agents", "Memory", "Skills", "Scars", "Plugins", "Settings"]) {
       expect(screen.getByRole("link", { name: label })).toBeInTheDocument();
@@ -527,7 +560,7 @@ describe("Hames web shell", () => {
     expect(screen.queryByRole("link", { name: "Runs" })).not.toBeInTheDocument();
   });
 
-  it("lists real agents and persists avatar customization", async () => {
+  it("opens a real agent breakdown and persists edits", async () => {
     window.history.replaceState({}, "", "/agents");
     const fetchMock = successfulFetch();
     vi.stubGlobal("fetch", fetchMock);
@@ -536,12 +569,40 @@ describe("Hames web shell", () => {
     expect(await screen.findByRole("heading", { name: "Hames", level: 2 })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Reviewer", level: 2 })).toBeInTheDocument();
     expect(screen.getByText("Read only")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Agents", level: 2 })).toBeInTheDocument();
+    expect(screen.queryByText("Workspace")).not.toBeInTheDocument();
 
     expect(screen.queryByRole("button", { name: "Customize avatar" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Edit Hames" }));
-    expect(screen.getByRole("dialog", { name: "Customize Hames" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "AGENT.md instructions" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /Agent slug/ })).toBeDisabled();
+    fireEvent.input(screen.getByRole("textbox", { name: "Display name" }), {
+      target: { value: "Navigator" },
+    });
+    fireEvent.input(screen.getByRole("textbox", { name: "Instructions" }), {
+      target: { value: "Navigate this codebase carefully." },
+    });
+    fireEvent.click(screen.getByRole("checkbox", { name: "shell" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Pin" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/agents/default",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({
+          name: "Navigator",
+          instructions: "Navigate this codebase carefully.",
+          tools: { allow: ["read_file", "write_file"], deny: ["shell"] },
+          skills: { allow: [], deny: [], pin: ["testing"] },
+        }),
+      }),
+    ));
+    await screen.findByRole("heading", { name: "Navigator", level: 1 });
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit appearance" }));
+    expect(screen.getByRole("dialog", { name: "Customize Navigator" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Hex/ }));
-    fireEvent.click(screen.getByRole("button", { name: /Happy/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Pill/ }));
     fireEvent.click(screen.getByRole("button", { name: "Use #db2777" }));
     fireEvent.click(screen.getByRole("button", { name: "Save avatar" }));
 
@@ -549,7 +610,7 @@ describe("Hames web shell", () => {
       "/v1/agents/default",
       expect.objectContaining({
         method: "PATCH",
-        body: JSON.stringify({ avatar: { shape: "hex", eyes: "happy", color: "#db2777" } }),
+        body: JSON.stringify({ avatar: { shape: "hex", eyes: "pill", face: "solid", color: "#db2777" } }),
       }),
     ));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());

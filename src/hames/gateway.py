@@ -398,6 +398,11 @@ class AgentDetail(AgentPublic):
     deprecated_fields: list[str]
 
 
+class AgentCapabilities(ApiModel):
+    tools: list[str]
+    skills: list[SkillSummary]
+
+
 class ProviderProfile(ApiModel):
     id: str
     adapter: str
@@ -955,6 +960,49 @@ def create_app(state: GatewayState) -> FastAPI:
     async def list_tools() -> list[str]:
         """Return every tool currently available to an agent capsule."""
         return sorted(state.runs.tools.names() | state.plugins.names() | state.mcp.names())
+
+    @app.get(
+        "/v1/agents/{agent_id}/capabilities",
+        dependencies=auth,
+        response_model=AgentCapabilities,
+    )
+    async def get_agent_capabilities(
+        agent_id: str,
+        working_directory: Annotated[str, Query(min_length=1)],
+    ) -> AgentCapabilities:
+        try:
+            await asyncio.to_thread(state.agents.load, agent_id)
+        except (FileNotFoundError, ValueError) as exc:
+            raise ApiError(404, "agent_not_found", str(exc)) from exc
+        workspace = await asyncio.to_thread(
+            lambda: str(Path(working_directory).expanduser().resolve(strict=False))
+        )
+        editor_session = Session(
+            id="agent-editor",
+            created_at="1970-01-01T00:00:00+00:00",
+            closed_at=None,
+            status="open",
+            title=None,
+            working_directory=workspace,
+            agent_id=agent_id,
+            provider="",
+            model="",
+            reasoning_effort="",
+            context_window_tokens=0,
+            context_window_source="agent_editor",
+            parent_session_id=None,
+            fork_event_id=None,
+            lineage_kind="root",
+            delegation_depth=0,
+            interaction_mode="auto",
+        )
+        skills = await asyncio.to_thread(
+            state.runs.skills.visible, editor_session, query="", limit=200
+        )
+        return AgentCapabilities(
+            tools=sorted(state.runs.tools.names() | state.plugins.names() | state.mcp.names()),
+            skills=skills,
+        )
 
     @app.get("/v1/agents/{agent_id}", dependencies=auth, response_model=AgentDetail)
     async def get_agent(agent_id: str) -> AgentDetail:

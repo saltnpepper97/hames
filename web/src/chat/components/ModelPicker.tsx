@@ -6,6 +6,7 @@ import {
   updateSessionSelection,
 } from "../../api/client";
 import type { ProviderModel, ProviderProfile, Session } from "../../api/types";
+import { Button } from "../../components/Button";
 import { Icon } from "../../shell/icons";
 import { modelReasoningEfforts, reasoningEffortLabel } from "../modelCapabilities";
 
@@ -197,7 +198,8 @@ export function ModelPicker(props: ModelPickerProps) {
         if (!root.contains(event.relatedTarget as Node | null)) setOpen(false);
       }}
     >
-      <button
+      <Button
+        variant="bare"
         class="model-trigger"
         type="button"
         aria-label={`Model and thinking: ${props.session.model}, ${reasoningEffortLabel(props.session.reasoning_effort)}`}
@@ -210,30 +212,30 @@ export function ModelPicker(props: ModelPickerProps) {
         <span class="model-trigger-label">{props.session.model}</span>
         <span class="model-trigger-effort">{reasoningEffortLabel(props.session.reasoning_effort)}</span>
         <Icon name="action.expand" size={13} />
-      </button>
+      </Button>
 
       <Show when={open()}>
         <div class="model-picker-popover" role="menu" aria-label="Model and thinking">
           <Show when={pane() === "root"}>
-            <button class="model-picker-cell" type="button" role="menuitem" onClick={() => setPane("models")}>
+            <Button variant="bare" class="model-picker-cell" role="menuitem" onClick={() => setPane("models")}>
               <span>Model</span>
               <span>{props.session.model}</span>
               <Icon name="action.next" size={14} />
-            </button>
+            </Button>
             <Show when={loadingCatalog() || effortChoices().length > 0}>
-              <button class="model-picker-cell" type="button" role="menuitem" onClick={openCurrentEffort}>
+              <Button variant="bare" class="model-picker-cell" role="menuitem" onClick={openCurrentEffort}>
                 <span>Thinking</span>
                 <span>{reasoningEffortLabel(props.session.reasoning_effort)}</span>
                 <Icon name="action.next" size={14} />
-              </button>
+              </Button>
             </Show>
           </Show>
 
           <Show when={pane() !== "root"}>
-            <button class="model-picker-back" type="button" onClick={back}>
+            <Button variant="bare" class="model-picker-back" onClick={back}>
               <Icon name="action.back" size={16} />
               <span>{pane() === "models" ? "Model and thinking" : "Back"}</span>
-            </button>
+            </Button>
           </Show>
 
           <Show when={pane() === "models"}>
@@ -248,8 +250,8 @@ export function ModelPicker(props: ModelPickerProps) {
                           const selected = () =>
                             group.profile.id === props.session.provider && model.id === props.session.model;
                           return (
-                            <button
-                              type="button"
+                            <Button
+                              variant="bare"
                               role="menuitemradio"
                               aria-checked={selected()}
                               disabled={saving()}
@@ -262,7 +264,7 @@ export function ModelPicker(props: ModelPickerProps) {
                               <span class="model-selected-mark">
                                 <Show when={selected()}><Icon name="action.selected" size={14} /></Show>
                               </span>
-                            </button>
+                            </Button>
                           );
                         }}
                       </For>
@@ -289,8 +291,8 @@ export function ModelPicker(props: ModelPickerProps) {
                       effortIdentity().model === props.session.model &&
                       effort === props.session.reasoning_effort;
                     return (
-                      <button
-                        type="button"
+                      <Button
+                        variant="bare"
                         role="menuitemradio"
                         aria-checked={selected()}
                         disabled={saving()}
@@ -300,7 +302,7 @@ export function ModelPicker(props: ModelPickerProps) {
                         <span class="model-selected-mark">
                           <Show when={selected()}><Icon name="action.selected" size={14} /></Show>
                         </span>
-                      </button>
+                      </Button>
                     );
                   }}
                 </For>

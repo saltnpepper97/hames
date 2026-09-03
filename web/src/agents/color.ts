@@ -64,7 +64,12 @@ export function fallbackAvatar(agentId: string): AgentAvatarConfig {
     hash = Math.imul(hash, 16777619);
   }
   const index = Math.abs(hash) % fallbackColors.length;
-  return { shape: "round", eyes: "dots", color: fallbackColors[index] ?? "#64748b" };
+  return {
+    shape: "circle",
+    eyes: "dots",
+    face: "solid",
+    color: fallbackColors[index] ?? "#64748b",
+  };
 }
 
 export const avatarPalette = fallbackColors;

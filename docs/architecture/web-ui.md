@@ -39,6 +39,12 @@ accessibility primitives, and typed contribution registries. Product surfaces
 are first-party web plugins using the same contracts available to later optional
 plugins.
 
+Shared controls are application components rather than incidental page markup.
+Buttons, form fields, selectable capability rows, settings sections, dialogs,
+the chat frame, and agent avatars each own their interaction and accessibility
+contract. Pages compose those primitives and do not render native buttons
+directly.
+
 The icon-pack contract lets application components request semantic names such
 as `nav.chat` or `state.empty`; the selected pack maps those names to assets.
 The default pack deliberately mixes Phosphor for the Hames horse, agent, and
@@ -73,8 +79,11 @@ sidebar, and the active surface. Chat contributes real, open workspace sessions
 to the contextual sidebar, matching the TUI's resumable-history boundary;
 empty sessions, closed historical sessions, and sessions from other workspaces
 remain out of the list. Selecting one routes its gateway metadata into the main
-surface. Other areas contribute no controls until their gateway-backed slices
-exist. The two navigation layers become one combined drawer on small screens.
+surface. The contextual sidebar names the active surface without repeating the
+repository name. Workspace identity remains in the Chat surface bar, where it
+is relevant to session scope, and is omitted from management surfaces. Other
+areas contribute no controls until their gateway-backed slices exist. The two
+navigation layers become one combined drawer on small screens.
 
 Web plugins remain presentation modules. They call authorized gateway APIs and
 subscribe to gateway events; they do not gain direct filesystem access,
@@ -98,12 +107,21 @@ and live output is layered over the durable projection without rescanning the
 entire event history for every token.
 
 The Agents surface reads the live capsule registry and contains no sample
-agents. Its reusable SVG `AgentAvatar` component draws five simple robot shapes
-and three eye styles, with restrained idle movement and a reduced-motion
-fallback. The avatar editor is a focused component with previews, a suggested
-palette, and a keyboard-operable hue and saturation/value picker. Saving writes
-validated avatar metadata to the agent's `AGENT.md` through the gateway; the
-browser does not retain a second source of truth.
+agents. Separate cards lead to a dedicated agent detail surface whose reusable
+settings sections edit the display name, `AGENT.md` instructions, tool access,
+skill access, and pinned skills. The slug is shown but remains immutable. A
+workspace-aware capability endpoint supplies real tools and visible skills;
+saving uses the registry's atomic structured update and preserves `AGENT.md` as
+the source of truth.
+
+Its reusable SVG `AgentAvatar` component draws five robot shapes (circle, soft
+square, triangle, scalloped cloud, and hex), three eye styles (dots, visor, and
+vertical pills), and an optional solid or outlined face plate. The face assembly
+looks around as a unit, the body and antenna add subtle independent motion, and
+reduced-motion clients receive a static fallback. The avatar editor is a focused
+portaled dialog with previews, a suggested palette, and a keyboard-operable hue
+and saturation/value picker. Saving writes validated avatar metadata to the
+agent's `AGENT.md` through the same gateway update path.
 
 ## Build and packaging
 
@@ -133,9 +151,12 @@ created empty session opens directly in the composer but enters sidebar history
 only after its first message. Pending approvals and agent questions render as
 composable transcript cards and resolve through the existing gateway controls.
 Provider, model, interaction mode, and reasoning effort are real session
-settings. The first Agents slice lists real capsules and persists avatar
-customization; deeper identity and capability editing remain planned. The
-attachment control remains visibly disabled until its gateway contract exists.
+settings. Entering bare `/chat` creates and opens a fresh durable session rather
+than presenting a selection prompt; it remains absent from the history list
+until its first message. The Agents slice lists real capsules and supports
+atomic display-name, instructions, tool, skill, pinned-skill, and avatar edits.
+Agent creation, retirement, usage, and deeper policy summaries remain planned.
+The attachment control remains visibly disabled until its gateway contract exists.
 Commands, settings contributions, and the remaining management editors are
 future gateway-backed slices. See
 [M10 Web Control](../implementation-plan/M10-WEB-CONTROL.md) for their acceptance

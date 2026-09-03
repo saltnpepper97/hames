@@ -1,18 +1,17 @@
+import { useNavigate } from "@solidjs/router";
 import { For, Show, createSignal, onMount } from "solid-js";
-import { listAgents, updateAgentAvatar } from "../api/client";
-import type { AgentAvatarConfig, AgentPublic } from "../api/types";
+import { listAgents } from "../api/client";
+import type { AgentPublic } from "../api/types";
 import { AgentAvatar } from "../agents/AgentAvatar";
-import { AgentAvatarEditor } from "../agents/AgentAvatarEditor";
 import { fallbackAvatar } from "../agents/color";
 import { Icon } from "../shell/icons";
+import { Button } from "../components/Button";
 
 export function AgentsPage() {
   const [agents, setAgents] = createSignal<AgentPublic[]>([]);
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal("");
-  const [editing, setEditing] = createSignal<AgentPublic>();
-  const [saving, setSaving] = createSignal(false);
-  const [saveError, setSaveError] = createSignal("");
+  const navigate = useNavigate();
 
   const load = async () => {
     setLoading(true);
@@ -23,22 +22,6 @@ export function AgentsPage() {
       setError(caught instanceof Error ? caught.message : "Unable to load agents");
     } finally {
       setLoading(false);
-    }
-  };
-
-  const saveAvatar = async (avatar: AgentAvatarConfig) => {
-    const agent = editing();
-    if (!agent || saving()) return;
-    setSaving(true);
-    setSaveError("");
-    try {
-      const updated = await updateAgentAvatar(agent.id, avatar);
-      setAgents((current) => current.map((item) => item.id === updated.id ? updated : item));
-      setEditing(undefined);
-    } catch (caught) {
-      setSaveError(caught instanceof Error ? caught.message : "Unable to save avatar");
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -66,7 +49,7 @@ export function AgentsPage() {
       <Show when={error()}>
         <div class="error-state">
           <div><span class="eyebrow">Gateway error</span><h2>Agents could not be loaded.</h2><p>{error()}</p></div>
-          <button class="button" type="button" onClick={() => void load()}>Try again</button>
+          <Button onClick={() => void load()}>Try again</Button>
         </div>
       </Show>
 
@@ -77,18 +60,18 @@ export function AgentsPage() {
               const avatar = () => agent.avatar ?? fallbackAvatar(agent.id);
               return (
                 <article class="agent-card">
-                  <button
+                  <Button
+                    variant="icon"
                     class="agent-edit"
-                    type="button"
                     aria-label={`Edit ${agent.name}`}
                     title={`Edit ${agent.name}`}
-                    onClick={() => setEditing(agent)}
+                    onClick={() => navigate(`/agents/${encodeURIComponent(agent.id)}`)}
                   >
                     <Icon name="action.edit" size={16} />
-                  </button>
-                  <button class="agent-avatar-button" type="button" aria-label={`Customize ${agent.name} avatar`} onClick={() => setEditing(agent)}>
+                  </Button>
+                  <Button variant="bare" class="agent-avatar-button" aria-label={`Open ${agent.name}`} onClick={() => navigate(`/agents/${encodeURIComponent(agent.id)}`)}>
                     <AgentAvatar config={avatar()} name={agent.name} size={86} />
-                  </button>
+                  </Button>
                   <div class="agent-card-copy">
                     <h2>{agent.name}</h2>
                     <span class="agent-id">{agent.id}</span>
@@ -101,16 +84,6 @@ export function AgentsPage() {
         </div>
       </Show>
 
-      <Show when={editing()} keyed>{(agent) => (
-        <AgentAvatarEditor
-          agentName={agent.name}
-          initial={agent.avatar ?? fallbackAvatar(agent.id)}
-          saving={saving()}
-          error={saveError()}
-          onSave={(avatar) => void saveAvatar(avatar)}
-          onClose={() => { if (!saving()) { setEditing(undefined); setSaveError(""); } }}
-        />
-      )}</Show>
     </section>
   );
 }
