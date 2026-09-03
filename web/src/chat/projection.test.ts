@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { HamesEvent } from "../api/types";
-import { projectConversation } from "./projection";
+import { projectConversation, withLiveOutput } from "./projection";
 
 function event(
   sequence: number,
@@ -45,8 +45,8 @@ describe("conversation projection", () => {
   });
 
   it("settles runs and appends current transient output", () => {
-    const projection = projectConversation(
-      [event(1, "run.started", {}), event(2, "run.completed", {})],
+    const projection = withLiveOutput(
+      projectConversation([event(1, "run.started", {}), event(2, "run.completed", {})]),
       { runId: "run-two", reasoning: "Checking", text: "Answering" },
     );
 

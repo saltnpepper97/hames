@@ -40,7 +40,6 @@ export function WorkspaceProvider(props: ParentProps) {
   let interval: ReturnType<typeof setInterval> | undefined;
 
   const refresh = async () => {
-    if (snapshot()) setConnection("reconnecting");
     try {
       const next = await loadDashboard();
       setSnapshot(next);

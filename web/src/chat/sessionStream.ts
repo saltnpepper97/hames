@@ -41,12 +41,85 @@ export function createSessionStream(sessionId: Accessor<string>) {
   const [events, setEvents] = createSignal<HamesEvent[]>([]);
   const [state, setState] = createSignal<StreamState>("connecting");
   const [liveOutput, setLiveOutput] = createSignal<LiveOutput>();
+  const stableSessionId = createMemo(sessionId);
 
   createEffect(() => {
-    const id = sessionId();
+    const id = stableSessionId();
     setEvents([]);
     setLiveOutput();
     setState("connecting");
+
+    type PendingAction =
+      | { kind: "durable"; event: HamesEvent }
+      | { kind: "reasoning" | "text"; runId: string; text: string };
+
+    const pending: PendingAction[] = [];
+    const seenEventIds = new Set<string>();
+    let frame: number | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const flush = () => {
+      frame = undefined;
+      timer = undefined;
+      if (pending.length === 0) return;
+
+      const actions = pending.splice(0);
+      let nextEvents = events();
+      let nextLive = liveOutput();
+      let eventsChanged = false;
+      let liveChanged = false;
+
+      for (const action of actions) {
+        if (action.kind === "durable") {
+          const incoming = action.event;
+          if (!seenEventIds.has(incoming.id)) {
+            seenEventIds.add(incoming.id);
+            nextEvents = [...nextEvents, incoming];
+            eventsChanged = true;
+          }
+          if (incoming.type === "assistant.reasoning" && nextLive?.runId === incoming.run_id) {
+            nextLive = { ...nextLive, reasoning: "" };
+            liveChanged = true;
+          }
+          if (incoming.type === "assistant.message" && nextLive?.runId === incoming.run_id) {
+            nextLive = { ...nextLive, text: "" };
+            liveChanged = true;
+          }
+          if (
+            ["run.completed", "run.failed", "run.cancelled"].includes(incoming.type) &&
+            nextLive?.runId === incoming.run_id
+          ) {
+            nextLive = undefined;
+            liveChanged = true;
+          }
+          continue;
+        }
+
+        const current = nextLive?.runId === action.runId
+          ? nextLive
+          : { runId: action.runId, reasoning: "", text: "" };
+        nextLive = {
+          ...current,
+          [action.kind]: current[action.kind] + action.text,
+        };
+        liveChanged = true;
+      }
+
+      if (eventsChanged) {
+        nextEvents.sort((left, right) => left.sequence - right.sequence);
+        setEvents(nextEvents);
+      }
+      if (liveChanged) setLiveOutput(nextLive);
+    };
+
+    const scheduleFlush = () => {
+      if (frame !== undefined || timer !== undefined) return;
+      if (typeof window.requestAnimationFrame === "function") {
+        frame = window.requestAnimationFrame(flush);
+      } else {
+        timer = setTimeout(flush, 0);
+      }
+    };
 
     const source = new EventSource(sessionEventStreamUrl(id));
     const receive = (message: MessageEvent<string>) => {
@@ -58,42 +131,26 @@ export function createSessionStream(sessionId: Accessor<string>) {
       }
 
       if (envelope.durable) {
-        const incoming = envelope.event;
-        setEvents((current) => {
-          if (current.some((event) => event.id === incoming.id)) return current;
-          return [...current, incoming].sort((left, right) => left.sequence - right.sequence);
-        });
-        if (incoming.type === "assistant.reasoning") {
-          setLiveOutput((current) =>
-            current?.runId === incoming.run_id ? { ...current, reasoning: "" } : current,
-          );
-        }
-        if (incoming.type === "assistant.message") {
-          setLiveOutput((current) =>
-            current?.runId === incoming.run_id ? { ...current, text: "" } : current,
-          );
-        }
-        if (["run.completed", "run.failed", "run.cancelled"].includes(incoming.type)) {
-          setLiveOutput((current) => (current?.runId === incoming.run_id ? undefined : current));
-        }
+        pending.push({ kind: "durable", event: envelope.event });
+        scheduleFlush();
         return;
       }
 
       if (envelope.type === "response.reasoning_delta") {
-        setLiveOutput((current) => ({
+        pending.push({
+          kind: "reasoning",
           runId: envelope.run_id,
-          reasoning: (current?.runId === envelope.run_id ? current.reasoning : "") +
-            payloadText(envelope.payload),
-          text: current?.runId === envelope.run_id ? current.text : "",
-        }));
+          text: payloadText(envelope.payload),
+        });
+        scheduleFlush();
       }
       if (envelope.type === "response.text_delta") {
-        setLiveOutput((current) => ({
+        pending.push({
+          kind: "text",
           runId: envelope.run_id,
-          reasoning: current?.runId === envelope.run_id ? current.reasoning : "",
-          text: (current?.runId === envelope.run_id ? current.text : "") +
-            payloadText(envelope.payload),
-        }));
+          text: payloadText(envelope.payload),
+        });
+        scheduleFlush();
       }
     };
 
@@ -101,7 +158,11 @@ export function createSessionStream(sessionId: Accessor<string>) {
     source.onopen = () => setState("live");
     source.onerror = () => setState("reconnecting");
 
-    onCleanup(() => source.close());
+    onCleanup(() => {
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      if (timer !== undefined) clearTimeout(timer);
+      source.close();
+    });
   });
 
   return {

@@ -242,6 +242,12 @@ describe("Hames web shell", () => {
       "/v1/sessions/session-current/messages",
       expect.objectContaining({ method: "POST" }),
     );
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([input]) => String(input) === "/v1/sessions?has_messages=true"),
+      ).toHaveLength(2),
+    );
+    expect(MockEventSource.instances).toHaveLength(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
     await waitFor(() =>

@@ -3,7 +3,7 @@ import { Dynamic } from "solid-js/web";
 import { HamesApiError, cancelRun, sendMessage } from "../api/client";
 import type { Session } from "../api/types";
 import { useWebPlugins } from "../shell/pluginContext";
-import { projectConversation } from "./projection";
+import { projectConversation, withLiveOutput } from "./projection";
 import { createSessionStream } from "./sessionStream";
 
 interface SessionChatProps {
@@ -19,7 +19,8 @@ function errorMessage(error: unknown): string {
 export function SessionChat(props: SessionChatProps) {
   const plugins = useWebPlugins();
   const stream = createSessionStream(() => props.session.id);
-  const projection = createMemo(() => projectConversation(stream.events(), stream.liveOutput()));
+  const durableProjection = createMemo(() => projectConversation(stream.events()));
+  const projection = createMemo(() => withLiveOutput(durableProjection(), stream.liveOutput()));
   const [draft, setDraft] = createSignal("");
   const [sending, setSending] = createSignal(false);
   const [cancelling, setCancelling] = createSignal(false);

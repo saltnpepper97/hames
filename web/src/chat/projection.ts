@@ -65,7 +65,6 @@ function toolIdentity(event: HamesEvent): string {
 
 export function projectConversation(
   events: readonly HamesEvent[],
-  live?: LiveOutput,
 ): ConversationProjection {
   const nodes: ConversationNode[] = [];
   const tools = new Map<string, Extract<ConversationNode, { kind: "tool" }>>();
@@ -73,7 +72,7 @@ export function projectConversation(
   const questions = new Map<string, Extract<ConversationNode, { kind: "question" }>>();
   const activeRuns = new Set<string>();
 
-  for (const event of [...events].sort((left, right) => left.sequence - right.sequence)) {
+  for (const event of events) {
     if (event.type === "run.started" && event.run_id) activeRuns.add(event.run_id);
     if (
       ["run.completed", "run.failed", "run.cancelled"].includes(event.type) &&
@@ -206,7 +205,17 @@ export function projectConversation(
     }
   }
 
-  if (live?.reasoning) {
+  return { nodes, activeRunId: [...activeRuns].at(-1) };
+}
+
+export function withLiveOutput(
+  projection: ConversationProjection,
+  live?: LiveOutput,
+): ConversationProjection {
+  if (!live?.reasoning && !live?.text) return projection;
+
+  const nodes = [...projection.nodes];
+  if (live.reasoning) {
     nodes.push({
       id: `live-reasoning-${live.runId}`,
       kind: "reasoning",
@@ -214,7 +223,7 @@ export function projectConversation(
       live: true,
     });
   }
-  if (live?.text) {
+  if (live.text) {
     nodes.push({
       id: `live-assistant-${live.runId}`,
       kind: "assistant",
@@ -223,5 +232,5 @@ export function projectConversation(
     });
   }
 
-  return { nodes, activeRunId: [...activeRuns].at(-1) };
+  return { ...projection, nodes };
 }
