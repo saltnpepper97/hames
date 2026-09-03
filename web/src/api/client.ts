@@ -92,6 +92,10 @@ export function createSession(workingDirectory: string): Promise<Session> {
   });
 }
 
+export function getSession(sessionId: string): Promise<Session> {
+  return request<Session>(`/v1/sessions/${encodeURIComponent(sessionId)}`);
+}
+
 export function sendMessage(sessionId: string, content: string): Promise<MessageAccepted> {
   return request<MessageAccepted>(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`, {
     method: "POST",

@@ -8,7 +8,7 @@ import {
   useContext,
 } from "solid-js";
 import type { Accessor, ParentProps } from "solid-js";
-import { HamesApiError, createSession, loadDashboard } from "../api/client";
+import { HamesApiError, createSession, getSession, loadDashboard } from "../api/client";
 import type { DashboardSnapshot, Session } from "../api/types";
 import type { ConnectionState } from "../components/ConnectionStatus";
 
@@ -20,6 +20,7 @@ interface WorkspaceContextValue {
   snapshot: Accessor<DashboardSnapshot | undefined>;
   sessions: Accessor<DashboardSnapshot["sessions"]>;
   session: (id: string) => Session | undefined;
+  resolveSession: (id: string) => Promise<Session | undefined>;
   createChat: () => Promise<Session>;
   updateSession: (session: Session) => void;
   refresh: () => Promise<void>;
@@ -95,6 +96,29 @@ export function WorkspaceProvider(props: ParentProps) {
     return created;
   };
 
+  const resolveSession = async (id: string): Promise<Session | undefined> => {
+    const current = session(id);
+    if (current) return current;
+    try {
+      const resolved = await getSession(id);
+      const workingDirectory = snapshot()?.bootstrap.working_directory;
+      if (
+        resolved.status !== "open" ||
+        !workingDirectory ||
+        resolved.working_directory !== workingDirectory
+      ) return undefined;
+      setDraftSessions((sessions) =>
+        sessions.some((candidate) => candidate.id === resolved.id)
+          ? sessions
+          : [resolved, ...sessions]
+      );
+      return resolved;
+    } catch (caught) {
+      if (caught instanceof HamesApiError && caught.status === 404) return undefined;
+      throw caught;
+    }
+  };
+
   const updateSession = (updated: Session) => {
     setSnapshot((current) => current
       ? {
@@ -121,6 +145,7 @@ export function WorkspaceProvider(props: ParentProps) {
         snapshot,
         sessions: workspaceSessions,
         session,
+        resolveSession,
         createChat,
         updateSession,
         refresh,

@@ -135,7 +135,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
           disabled={props.connection !== "connected" || props.creatingChat}
           onClick={props.onCreateChat}
         >
-          <Icon name="action.newChat" size={18} />
+          <Icon name={props.collapsed ? "action.newChat" : "action.add"} size={18} />
           <span>New chat</span>
         </Button>
       </div>

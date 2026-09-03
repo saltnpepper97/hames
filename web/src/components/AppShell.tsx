@@ -83,23 +83,14 @@ export function AppShell(props: AppShellProps) {
     }
   };
 
-  let compactViewport: MediaQueryList | undefined;
   let mobileViewport: MediaQueryList | undefined;
-  const collapseForViewport = (event: MediaQueryListEvent | MediaQueryList) => {
-    if (event.matches) setSidebarCollapsed(true);
-  };
   const expandForMobile = (event: MediaQueryListEvent | MediaQueryList) => {
     if (event.matches) setSidebarCollapsed(false);
   };
 
   onMount(() => {
     document.addEventListener("keydown", closeOnEscape);
-    compactViewport = window.matchMedia?.("(min-width: 821px) and (max-width: 1024px)");
     mobileViewport = window.matchMedia?.("(max-width: 820px)");
-    if (compactViewport) {
-      collapseForViewport(compactViewport);
-      compactViewport.addEventListener("change", collapseForViewport);
-    }
     if (mobileViewport) {
       expandForMobile(mobileViewport);
       mobileViewport.addEventListener("change", expandForMobile);
@@ -107,7 +98,6 @@ export function AppShell(props: AppShellProps) {
   });
   onCleanup(() => {
     document.removeEventListener("keydown", closeOnEscape);
-    compactViewport?.removeEventListener("change", collapseForViewport);
     mobileViewport?.removeEventListener("change", expandForMobile);
   });
 

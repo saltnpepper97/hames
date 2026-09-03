@@ -616,6 +616,9 @@ function successfulFetch() {
         id: createdSessionCount === 1 ? "session-new" : `session-new-${createdSessionCount}`,
       }, 201);
     }
+    if (path === "/v1/sessions/session-new" && !init?.method) {
+      return jsonResponse(createdSession);
+    }
     if (path === "/v1/sessions/session-current/messages" && init?.method === "POST") {
       return jsonResponse(
         {
@@ -722,10 +725,13 @@ describe("Hames web shell", () => {
     expect(document.querySelector('[data-icon="brand.mark"] .brand-image-icon')).toBeInTheDocument();
     expect(document.querySelector(".activity-rail")).not.toBeInTheDocument();
     expect(document.querySelector(".context-sidebar")).not.toBeInTheDocument();
+    const newChatButton = screen.getByRole("button", { name: "New chat" });
+    expect(newChatButton.querySelector(".tabler-icon-plus")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
     expect(document.querySelector(".app-frame")).toHaveClass("sidebar-collapsed");
     expect(screen.getByRole("button", { name: "Expand sidebar" })).toBeInTheDocument();
+    expect(newChatButton.querySelector(".tabler-icon-message-circle-plus")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
     expect(document.querySelector(".app-frame")).not.toHaveClass("sidebar-collapsed");
 
@@ -1041,6 +1047,39 @@ describe("Hames web shell", () => {
       expect(window.location.pathname).toBe("/chat/session-new-2");
     });
     expect(await screen.findByRole("textbox", { name: "Message Hames" })).not.toBeDisabled();
+  });
+
+  it("restores an empty chat directly after a browser refresh", async () => {
+    window.history.replaceState({}, "", "/chat/session-new");
+    const fetchMock = successfulFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    render(() => <App />);
+
+    expect(await screen.findByRole("heading", { name: "What should we work on?" }))
+      .toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Message Hames" })).not.toBeDisabled()
+    );
+    expect(document.querySelector(".session-chat")).toHaveClass("fresh");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/sessions/session-new",
+      expect.objectContaining({ credentials: "same-origin" }),
+    );
+    expect(fetchMock.mock.calls.filter(([url, init]) =>
+      url === "/v1/sessions" && init?.method === "POST"
+    )).toHaveLength(0);
+  });
+
+  it("replaces an invalid chat route with a real fresh chat", async () => {
+    window.history.replaceState({}, "", "/chat/missing-session");
+    const fetchMock = successfulFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    render(() => <App />);
+
+    await waitFor(() => expect(window.location.pathname).toBe("/chat/session-new"));
+    expect(await screen.findByRole("heading", { name: "What should we work on?" }))
+      .toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Message Hames" })).not.toBeDisabled();
   });
 
   it("resolves approval and question events through gateway mutations", async () => {

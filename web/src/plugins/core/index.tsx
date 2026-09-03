@@ -1,4 +1,4 @@
-import { useLocation, useNavigate, useParams } from "@solidjs/router";
+import { useNavigate, useParams } from "@solidjs/router";
 import { Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
 import { AgentSidebar } from "../../agents/AgentSidebar";
 import { useAgentDirectory } from "../../agents/AgentDirectory";
@@ -28,12 +28,11 @@ import { coreComposerControls } from "./composerControls";
 
 function ChatSurface() {
   const params = useParams<{ sessionId?: string }>();
-  const location = useLocation();
   const navigate = useNavigate();
   const workspace = useWorkspace();
   const [startingSession, setStartingSession] = createSignal(false);
   const [startError, setStartError] = createSignal("");
-  let attempted = false;
+  let attemptedRoute = "";
   const selectedSession = createMemo(() =>
     params.sessionId ? workspace.session(params.sessionId) : undefined,
   );
@@ -44,9 +43,7 @@ function ChatSurface() {
     setStartError("");
     try {
       const session = await workspace.createChat();
-      if (location.pathname === "/chat") {
-        navigate(`/chat/${encodeURIComponent(session.id)}`, { replace: true });
-      }
+      navigate(`/chat/${encodeURIComponent(session.id)}`, { replace: true });
     } catch (error) {
       setStartError(error instanceof Error ? error.message : "Unable to start a new chat");
     } finally {
@@ -55,13 +52,38 @@ function ChatSurface() {
   };
 
   createEffect(() => {
-    if (params.sessionId) {
-      attempted = false;
+    const sessionId = params.sessionId;
+    const connection = workspace.connection();
+    const selected = selectedSession();
+    if (connection !== "connected") return;
+
+    if (!sessionId) {
+      if (attemptedRoute === "/chat") return;
+      attemptedRoute = "/chat";
+      void startFresh();
       return;
     }
-    if (workspace.connection() !== "connected" || attempted) return;
-    attempted = true;
-    void startFresh();
+
+    if (selected) {
+      attemptedRoute = `session:${sessionId}`;
+      setStartError("");
+      return;
+    }
+
+    const routeKey = `resolve:${sessionId}`;
+    if (attemptedRoute === routeKey) return;
+    attemptedRoute = routeKey;
+    setStartError("");
+    void workspace.resolveSession(sessionId)
+      .then((resolved) => {
+        if (params.sessionId !== sessionId || resolved) return;
+        attemptedRoute = "";
+        navigate("/chat", { replace: true });
+      })
+      .catch((error: unknown) => {
+        if (params.sessionId !== sessionId) return;
+        setStartError(error instanceof Error ? error.message : "Unable to reopen this chat");
+      });
   });
 
   return (

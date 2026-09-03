@@ -62,7 +62,10 @@ claiming unfinished controls:
 - entering the bare Chat route starts fresh work automatically instead of
   rendering a passive session-selection state; its real composer is centered
   beneath the selected agent identity until the first conversation node arrives,
-  then the same component moves to its bottom dock;
+  then the same component moves to its bottom dock; refreshing that empty chat
+  resolves its route directly even while it remains omitted from history, and
+  invalid routes fall through to a real replacement chat rather than a pending
+  phantom state;
 - pending approval and question events render in the transcript and resolve
   through CSRF-protected gateway mutations, including session-scoped approval,
   option notes, and custom answers;

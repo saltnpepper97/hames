@@ -77,6 +77,7 @@ export const hamesIconPack = {
     "nav.plugins": tablerIcon(IconPlug),
     "nav.settings": tablerIcon(IconSettings),
     "action.newChat": tablerIcon(IconMessageCirclePlus),
+    "action.add": tablerIcon(IconPlus),
     "action.edit": tablerIcon(IconPencil),
     "action.attach": tablerIcon(IconPlus),
     "action.send": tablerIcon(IconArrowUp),
