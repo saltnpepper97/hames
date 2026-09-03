@@ -369,6 +369,19 @@ describe("Hames web shell", () => {
       type: "response.text_delta",
       payload: { text: "Hi there" },
     });
+    source.emit("tool.requested", durableEvent("tool.requested", 3, {
+      tool_call_id: "tool-one",
+      name: "shell",
+      status: "started",
+      arguments: { command: "cargo test" },
+    }));
+    source.emit("tool.completed", durableEvent("tool.completed", 4, {
+      tool_call_id: "tool-one",
+      name: "shell",
+      status: "completed",
+      summary: "Tests passed",
+      content: "28 tests passed",
+    }));
 
     expect(await screen.findByText("Hello")).toBeInTheDocument();
     expect(screen.getByText("Hi there")).toBeInTheDocument();
@@ -378,6 +391,14 @@ describe("Hames web shell", () => {
       "aria-label",
       "Hames avatar",
     );
+    const toolNode = screen.getByText("shell").closest(".tool-node");
+    expect(toolNode).toHaveAttribute("data-state", "success");
+    expect(toolNode).toHaveTextContent("Tests passed");
+    fireEvent.click(toolNode!.querySelector("summary")!);
+    expect(toolNode).toHaveTextContent("Input");
+    expect(toolNode).toHaveTextContent("cargo test");
+    expect(toolNode).toHaveTextContent("Output");
+    expect(toolNode).toHaveTextContent("28 tests passed");
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
 
     fireEvent.input(screen.getByRole("textbox", { name: "Message Hames" }), {

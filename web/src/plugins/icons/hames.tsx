@@ -72,6 +72,8 @@ export const hamesIconPack = {
     "action.next": tablerIcon(IconChevronRight),
     "action.selected": tablerIcon(IconCheck),
     "message.user": tablerIcon(IconUser),
+    "conversation.tool": tablerIcon(IconTool),
+    "conversation.reasoning": phosphorIcon(brain),
     "mode.auto": tablerIcon(IconSparkles),
     "mode.plan": tablerIcon(IconListCheck),
     "mode.manual": tablerIcon(IconHandStop),

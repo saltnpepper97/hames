@@ -6,41 +6,97 @@ import { fallbackAvatar } from "../../agents/color";
 import { HamesApiError, answerQuestion, resolveApproval } from "../../api/client";
 import type { ConversationNode } from "../../chat/projection";
 import { Button } from "../../components/Button";
+import {
+  ConversationDisclosure,
+  type ConversationDisclosureState,
+} from "../../components/ConversationDisclosure";
 import { Markdown } from "../../components/Markdown";
 import { Icon } from "../../shell/icons";
 import type { ConversationNodeContribution } from "../../shell/plugins";
 
+function toolState(status: string): ConversationDisclosureState {
+  if (["requested", "started", "running", "pending"].includes(status)) return "running";
+  if (["failed", "error"].includes(status)) return "error";
+  if (["rejected", "cancelled", "stopped"].includes(status)) return "warning";
+  if (["completed", "complete", "ok", "success"].includes(status)) return "success";
+  return "idle";
+}
+
+function toolSummary(node: Extract<ConversationNode, { kind: "tool" }>): string {
+  if (node.summary) return node.summary;
+  switch (toolState(node.status)) {
+    case "running": return "Working…";
+    case "error": return "The call failed";
+    case "warning": return "The call stopped";
+    case "success": return "Completed";
+    default: return "Details";
+  }
+}
+
+function toolStatusLabel(status: string, state: ConversationDisclosureState): string | undefined {
+  if (state === "running") return "Running";
+  if (state === "error") return "Failed";
+  if (state === "warning") return status;
+  return undefined;
+}
+
+function ToolDetailSection(props: { label: string; content: string }): JSX.Element {
+  return (
+    <section class="tool-detail-section">
+      <span>{props.label}</span>
+      <pre>{props.content}</pre>
+    </section>
+  );
+}
+
 function ToolNode(props: { node: ConversationNode }): JSX.Element {
   if (props.node.kind !== "tool") return <></>;
   const node = props.node;
-  const detail = () => {
-    if (node.content) return node.content;
-    if (node.arguments) return JSON.stringify(node.arguments, null, 2);
-    return "No details were recorded.";
-  };
+  const state = () => toolState(node.status);
+  const argumentsText = () => node.arguments ? JSON.stringify(node.arguments, null, 2) : "";
 
   return (
-    <details class="tool-node">
-      <summary>
-        <span>{node.name}</span>
-        <span class={`tool-state ${node.status}`}>{node.status}</span>
-        <Show when={node.summary}>
-          <span class="tool-summary">{node.summary}</span>
-        </Show>
-      </summary>
-      <pre>{detail()}</pre>
-    </details>
+    <ConversationDisclosure
+      class="tool-node"
+      icon="conversation.tool"
+      title={node.name}
+      summary={toolSummary(node)}
+      state={state()}
+      statusLabel={toolStatusLabel(node.status, state())}
+    >
+      <Show when={argumentsText()}>
+        {(content) => <ToolDetailSection label="Input" content={content()} />}
+      </Show>
+      <Show when={node.content}>
+        {(content) => <ToolDetailSection label="Output" content={content()} />}
+      </Show>
+      <Show when={!argumentsText() && !node.content}>
+        <p class="tool-detail-empty">No additional details were recorded.</p>
+      </Show>
+    </ConversationDisclosure>
   );
+}
+
+function reasoningSummary(content: string, live: boolean): string {
+  const lines = content.trim().split("\n").map((line) => line.trim()).filter(Boolean);
+  return (live ? lines.at(-1) : lines[0]) ?? (live ? "Thinking…" : "Reasoning");
 }
 
 function ReasoningNode(props: { node: ConversationNode }): JSX.Element {
   if (props.node.kind !== "reasoning") return <></>;
   const node = props.node;
   return (
-    <details class="reasoning-node" open={node.live || undefined}>
-      <summary>{node.live ? "Thinking" : "Reasoning"}</summary>
+    <ConversationDisclosure
+      class="reasoning-node"
+      icon="conversation.reasoning"
+      title={node.live ? "Thinking" : "Reasoning"}
+      summary={reasoningSummary(node.content, Boolean(node.live))}
+      state={node.live ? "running" : "idle"}
+      statusLabel={node.live ? "Running" : undefined}
+      open={Boolean(node.live)}
+    >
       <Markdown content={node.content} class="message-copy" live={node.live} />
-    </details>
+    </ConversationDisclosure>
   );
 }
 
