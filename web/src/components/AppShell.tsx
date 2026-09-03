@@ -1,4 +1,4 @@
-import { A, useLocation } from "@solidjs/router";
+import { A, useLocation, useNavigate } from "@solidjs/router";
 import {
   For,
   Match,
@@ -42,8 +42,11 @@ function formatTime(value: string): string {
 
 export function AppShell(props: AppShellProps) {
   const location = useLocation();
+  const navigate = useNavigate();
   const workspace = useWorkspace();
   const [navigationOpen, setNavigationOpen] = createSignal(false);
+  const [creatingChat, setCreatingChat] = createSignal(false);
+  const [createChatError, setCreateChatError] = createSignal("");
   const activeSurface = createMemo(() => {
     const fallback = props.registry.surfaces[0];
     if (!fallback) throw new Error("Hames Web has no registered surfaces");
@@ -62,6 +65,20 @@ export function AppShell(props: AppShellProps) {
 
   const closeOnEscape = (event: KeyboardEvent) => {
     if (event.key === "Escape") setNavigationOpen(false);
+  };
+
+  const createChat = async () => {
+    if (creatingChat()) return;
+    setCreatingChat(true);
+    setCreateChatError("");
+    try {
+      const session = await workspace.createChat();
+      navigate(`/chat/${encodeURIComponent(session.id)}`);
+    } catch (error) {
+      setCreateChatError(error instanceof Error ? error.message : "Unable to create a chat");
+    } finally {
+      setCreatingChat(false);
+    }
   };
 
   onMount(() => document.addEventListener("keydown", closeOnEscape));
@@ -119,11 +136,29 @@ export function AppShell(props: AppShellProps) {
 
         <aside class="context-sidebar" aria-label={`${activeSurface().label} sidebar`}>
           <div class="context-header">
-            <span class="eyebrow">
-              {workspaceName(workspace.snapshot()?.bootstrap.working_directory ?? "")}
-            </span>
-            <h2>{activeSurface().label}</h2>
+            <div>
+              <span class="eyebrow">
+                {workspaceName(workspace.snapshot()?.bootstrap.working_directory ?? "")}
+              </span>
+              <h2>{activeSurface().label}</h2>
+            </div>
+            <Show when={activeSurface().sidebar.kind === "conversations"}>
+              <button
+                class="context-action"
+                type="button"
+                aria-label="New chat"
+                title="New chat"
+                disabled={workspace.connection() !== "connected" || creatingChat()}
+                onClick={() => void createChat()}
+              >
+                <Icon name="action.newChat" size={18} />
+              </button>
+            </Show>
           </div>
+
+          <Show when={createChatError()}>
+            <p class="context-action-error" role="alert">{createChatError()}</p>
+          </Show>
 
           <Switch>
             <Match when={activeSurface().sidebar.kind === "conversations"}>

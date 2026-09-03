@@ -7,6 +7,7 @@ import {
   IconMessageCircle,
   IconMessages,
   IconPlug,
+  IconPlus,
   IconSettings,
   IconTool,
 } from "@tabler/icons-solidjs";
@@ -50,6 +51,7 @@ export const hamesIconPack = {
     "nav.scars": tablerIcon(IconBandage),
     "nav.plugins": tablerIcon(IconPlug),
     "nav.settings": tablerIcon(IconSettings),
+    "action.newChat": tablerIcon(IconPlus),
     "state.empty": tablerIcon(IconMessages),
   },
 } satisfies IconPackPlugin;

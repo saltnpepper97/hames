@@ -94,8 +94,10 @@ source changes.
 This slice is a secure dual-sidebar application shell, workspace chat list,
 semantic icon-pack contract, composable surface and conversation-renderer
 registry, durable transcript reconstruction, live assistant output, message
-submission, and run cancellation. New-session controls, approvals, questions,
-commands, settings contributions, and all management editors remain future
-gateway-backed slices. See
+submission, run cancellation, and gateway-backed session creation. A newly
+created empty session opens directly in the composer but enters sidebar history
+only after its first message. Approvals, questions, commands, settings
+contributions, and all management editors remain future gateway-backed slices.
+See
 [M10 Web Control](../implementation-plan/M10-WEB-CONTROL.md) for their acceptance
 criteria.

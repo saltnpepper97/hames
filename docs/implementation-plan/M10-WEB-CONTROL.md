@@ -38,11 +38,14 @@ claiming unfinished controls:
 - selecting a real session reconstructs user, reasoning, assistant, and tool
   activity from durable gateway events, follows live assistant deltas, submits
   messages, and cancels the active run without a frontend-only transcript;
+- the Chat sidebar can create a real gateway session and route into its
+  composer; it joins history after the first durable message rather than
+  leaving an empty sidebar row;
 
-The next vertical slice adds new-session controls, approvals, questions, and
-richer agent activity. Those mutations and the management capabilities listed
-below remain deferred. The gateway protocol and persistence schema were not
-changed for the web implementation.
+The next vertical slice adds approvals, questions, and richer agent activity.
+Those mutations and the management capabilities listed below remain deferred.
+The gateway protocol and persistence schema were not changed for the web
+implementation.
 
 ## Goal
 

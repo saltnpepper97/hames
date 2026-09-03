@@ -11,6 +11,7 @@ export const semanticIconNames = [
   "nav.scars",
   "nav.plugins",
   "nav.settings",
+  "action.newChat",
   "state.empty",
 ] as const;
 

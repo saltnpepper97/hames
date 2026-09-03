@@ -9,6 +9,7 @@ interface ChatPageProps {
   error: string;
   selectedSession?: Session;
   onRetry: () => void;
+  onSessionChanged: () => void;
 }
 
 export function ChatPage(props: ChatPageProps) {
@@ -46,7 +47,9 @@ export function ChatPage(props: ChatPageProps) {
       <Show when={props.connection === "connected" || props.connection === "reconnecting"}>
         <Switch>
           <Match when={props.selectedSession}>
-            {(session) => <SessionChat session={session()} />}
+            {(session) => (
+              <SessionChat session={session()} onSessionChanged={props.onSessionChanged} />
+            )}
           </Match>
           <Match when={!props.selectedSession}>
             <div class="conversation-empty">

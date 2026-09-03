@@ -89,6 +89,13 @@ const sessions = [
   },
 ];
 
+const createdSession = {
+  ...sessions[0],
+  id: "session-new",
+  created_at: "2026-09-02T19:00:00Z",
+  title: null,
+};
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -102,6 +109,9 @@ function successfulFetch() {
     if (path === "/_hames/v1/bootstrap") return jsonResponse(bootstrap);
     if (path === "/v1/health") return jsonResponse(health);
     if (path === "/v1/sessions?has_messages=true") return jsonResponse(sessions);
+    if (path === "/v1/sessions" && init?.method === "POST") {
+      return jsonResponse(createdSession, 201);
+    }
     if (path === "/v1/sessions/session-current/messages" && init?.method === "POST") {
       return jsonResponse(
         {
@@ -233,6 +243,26 @@ describe("Hames web shell", () => {
         "/v1/runs/run-one/cancel",
         expect.objectContaining({ method: "POST" }),
       ),
+    );
+  });
+
+  it("creates a durable chat and opens its composer", async () => {
+    const fetchMock = successfulFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    render(() => <App />);
+    await screen.findByText("Build the web foundation");
+
+    fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+
+    expect(await screen.findByRole("heading", { name: "New chat" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/chat/session-new");
+    expect(screen.getByRole("textbox", { name: "Message Hames" })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/sessions",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ working_directory: "/work/hames" }),
+      }),
     );
   });
 

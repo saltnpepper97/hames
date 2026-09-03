@@ -194,9 +194,13 @@ a {
 }
 
 .context-header {
+  display: flex;
   min-height: 5.25rem;
+  align-items: center;
+  justify-content: space-between;
   padding: 1.35rem 1.15rem 1rem;
   border-bottom: 1px solid var(--rule-soft);
+  gap: 1rem;
 }
 
 .context-header h2 {
@@ -204,6 +208,39 @@ a {
   font-size: 1rem;
   font-weight: 680;
   letter-spacing: -0.015em;
+}
+
+.context-action {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  flex: none;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.context-action:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.context-action:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.context-action-error {
+  margin: 0;
+  padding: 0.65rem 1.15rem;
+  border-bottom: 1px solid rgb(220 38 38 / 18%);
+  color: var(--danger);
+  font-size: 0.68rem;
+  line-height: 1.4;
 }
 
 .eyebrow {

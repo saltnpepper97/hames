@@ -8,6 +8,7 @@ import { createSessionStream } from "./sessionStream";
 
 interface SessionChatProps {
   session: Session;
+  onSessionChanged: () => void;
 }
 
 function errorMessage(error: unknown): string {
@@ -47,6 +48,7 @@ export function SessionChat(props: SessionChatProps) {
       setDraft("");
       setSubmissionNote(accepted.disposition === "queued" ? "Message queued" : "Message sent");
       stickToBottom = true;
+      props.onSessionChanged();
     } catch (error) {
       setComposerError(errorMessage(error));
     } finally {
@@ -78,7 +80,7 @@ export function SessionChat(props: SessionChatProps) {
     <div class="session-chat">
       <header class="chat-header">
         <div>
-          <h1 id="chat-title">{props.session.title?.trim() || "Untitled chat"}</h1>
+          <h1 id="chat-title">{props.session.title?.trim() || "New chat"}</h1>
           <p>
             {props.session.agent_id} <span aria-hidden="true">·</span> {props.session.model}
           </p>

@@ -10,7 +10,7 @@ function ChatSurface() {
   const params = useParams<{ sessionId?: string }>();
   const workspace = useWorkspace();
   const selectedSession = createMemo(() =>
-    workspace.sessions().find((session) => session.id === params.sessionId),
+    params.sessionId ? workspace.session(params.sessionId) : undefined,
   );
 
   return (
@@ -19,6 +19,7 @@ function ChatSurface() {
       error={workspace.error()}
       selectedSession={selectedSession()}
       onRetry={() => void workspace.refresh()}
+      onSessionChanged={() => void workspace.refresh()}
     />
   );
 }
