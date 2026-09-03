@@ -8,6 +8,7 @@ import { ComposerSeat } from "./ComposerSeat";
 interface MessageComposerProps {
   session: Session;
   activeRunId?: string;
+  hidden?: boolean;
   onSessionChanged: () => void;
   onSessionUpdated: (session: Session) => void;
 }
@@ -79,7 +80,12 @@ export function MessageComposer(props: MessageComposerProps) {
   };
 
   return (
-    <div class="composer-dock" data-chat-region="composer">
+    <div
+      class="composer-dock"
+      classList={{ hidden: props.hidden }}
+      data-chat-region="composer"
+      aria-hidden={props.hidden || undefined}
+    >
       <div class="composer-shell">
         <textarea
           ref={textarea}

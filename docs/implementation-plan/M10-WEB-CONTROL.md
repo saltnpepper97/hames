@@ -57,9 +57,10 @@ claiming unfinished controls:
   contains a focused creation modal for a permanent slug, authority, and
   optional `AGENT.md` instructions; newly created capsules are assigned to the
   current chat immediately;
-- Events uses the resident durable SSE history to draw a category timeline,
-  event/run/error totals, a searchable event ledger, and an exact payload
-  inspector; the composer stays mounted across both tabs so its draft survives;
+- Events uses the resident durable SSE history to draw a compact three-lane
+  trajectory timeline, a searchable two-column ledger, and an exact on-demand
+  payload inspector; the composer stays mounted to preserve its draft but is
+  hidden while the Events tab is active;
 - the model picker discovers configured providers and probes them concurrently;
   reasoning-capable model changes require an explicit supported-effort choice,
   one combined toolbar trigger displays both values and drills from a Model or

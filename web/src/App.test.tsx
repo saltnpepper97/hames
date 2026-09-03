@@ -1018,16 +1018,18 @@ describe("Hames web shell", () => {
     fireEvent.input(composer, { target: { value: "Keep this draft" } });
     fireEvent.click(screen.getByRole("tab", { name: "Events" }));
 
-    expect(await screen.findByRole("heading", { name: "Event map" })).toBeInTheDocument();
-    const overview = screen.getByRole("region", { name: "Event map" });
-    await waitFor(() => expect(overview).toHaveTextContent("Events3"));
+    const timeline = await screen.findByRole("region", { name: "Event timeline" });
+    expect(timeline).toHaveTextContent("InputAgentTools");
+    await waitFor(() => {
+      expect(document.querySelector(".events-toolbar-summary")).toHaveTextContent("Events3");
+    });
+    expect(screen.queryByRole("textbox", { name: "Message Hames" })).not.toBeInTheDocument();
     const toolMarker = screen.getByRole("button", { name: "Event 3: Tool · Completed" });
     fireEvent.click(toolMarker);
     expect(screen.getByRole("complementary", { name: "Selected event details" }))
       .toHaveTextContent("Tests passed");
-    expect(screen.getByRole("textbox", { name: "Message Hames" })).toHaveValue("Keep this draft");
 
-    fireEvent.input(screen.getByRole("textbox", { name: "Filter events" }), {
+    fireEvent.input(screen.getByRole("searchbox", { name: "Filter events" }), {
       target: { value: "shell" },
     });
     expect(screen.getByRole("table", { name: "Durable session events" })).toHaveTextContent("Tests passed");

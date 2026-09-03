@@ -64,6 +64,7 @@ export function SessionChat(props: SessionChatProps) {
       <MessageComposer
         session={props.session}
         activeRunId={projection().activeRunId}
+        hidden={view() === "events"}
         onSessionChanged={props.onSessionChanged}
         onSessionUpdated={props.onSessionUpdated}
       />

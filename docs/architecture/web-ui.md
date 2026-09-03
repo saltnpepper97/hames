@@ -117,12 +117,12 @@ a gateway-backed vertical slice state what is planned and expose no pretend
 controls.
 
 Chat and Events are two views over that one resident session stream. Events
-maps every durable record into a real sequence-or-time overview grouped by
-messages, reasoning, tools, decisions, and runtime, followed by a searchable
-ledger and payload inspector. Selecting a graph marker or ledger row reveals
+maps every durable record into a compact sequence-or-time trajectory with
+Input, Agent, and Tools lanes, followed by a searchable two-column ledger and
+an on-demand payload inspector. Selecting a timeline span or ledger row reveals
 the stored event without generating summaries or timing data that the gateway
-did not provide. The same composer remains mounted above both views, preserving
-its draft and controls while the user inspects execution activity.
+did not provide. The same composer remains mounted so its draft and controls
+survive a view change, but it is hidden entirely while Events is selected.
 
 The selected session agent is changed through the gateway rather than stored in
 browser state. The chat-bar picker reads the shared live agent directory, shows
