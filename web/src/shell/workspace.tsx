@@ -72,7 +72,11 @@ export function WorkspaceProvider(props: ParentProps) {
     const current = snapshot();
     if (!current) return [];
     return current.sessions
-      .filter((session) => session.working_directory === current.bootstrap.working_directory)
+      .filter(
+        (session) =>
+          session.status === "open" &&
+          session.working_directory === current.bootstrap.working_directory,
+      )
       .sort((left, right) => right.created_at.localeCompare(left.created_at));
   });
 

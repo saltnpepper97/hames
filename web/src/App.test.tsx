@@ -27,7 +27,7 @@ const sessions = [
   {
     id: "session-current",
     created_at: "2026-09-02T18:00:00Z",
-    status: "active",
+    status: "open",
     title: "Build the web foundation",
     working_directory: "/work/hames",
     agent_id: "default",
@@ -39,9 +39,21 @@ const sessions = [
   {
     id: "session-other",
     created_at: "2026-09-01T18:00:00Z",
-    status: "active",
+    status: "open",
     title: "Another project",
     working_directory: "/work/elsewhere",
+    agent_id: "default",
+    provider: "codex",
+    model: "gpt-5.6-sol",
+    reasoning_effort: "high",
+    interaction_mode: "auto",
+  },
+  {
+    id: "session-closed",
+    created_at: "2026-08-31T18:00:00Z",
+    status: "closed",
+    title: "Closed workspace chat",
+    working_directory: "/work/hames",
     agent_id: "default",
     provider: "codex",
     model: "gpt-5.6-sol",
@@ -83,6 +95,7 @@ describe("Hames web shell", () => {
     expect(screen.getByRole("heading", { name: "Chat", level: 1 })).toBeInTheDocument();
     expect(await screen.findByText("Build the web foundation")).toBeInTheDocument();
     expect(screen.queryByText("Another project")).not.toBeInTheDocument();
+    expect(screen.queryByText("Closed workspace chat")).not.toBeInTheDocument();
     expect(screen.getByText("1")).toBeInTheDocument();
     expect(screen.getByText("2")).toBeInTheDocument();
     expect(screen.getAllByText("Connected").length).toBeGreaterThan(0);
