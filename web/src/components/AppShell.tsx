@@ -115,9 +115,6 @@ export function AppShell(props: AppShellProps) {
               )}
             </For>
           </nav>
-          <div class="rail-status">
-            <ConnectionStatus state={workspace.connection()} compact />
-          </div>
         </aside>
 
         <aside class="context-sidebar" aria-label={`${activeSurface().label} sidebar`}>
