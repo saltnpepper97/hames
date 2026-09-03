@@ -21,7 +21,7 @@ use crate::api::GatewayClient;
 use crate::local::{LocalPaths, write_private_export};
 
 #[derive(Debug, Parser)]
-#[command(name = "hames", version, about = "The Hames Rust REPL")]
+#[command(name = "hames", version, about = "The Hames local agent harness")]
 struct Cli {
     /// Force the classic line-oriented REPL.
     #[arg(long, global = true)]
