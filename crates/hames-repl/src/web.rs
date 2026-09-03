@@ -339,8 +339,8 @@ mod tests {
 
     fn state() -> WebState {
         WebState {
-            authority: "127.0.0.1:7412".into(),
-            origin: "http://127.0.0.1:7412".into(),
+            authority: "127.0.0.1:7500".into(),
+            origin: "http://127.0.0.1:7500".into(),
             gateway_url: "http://127.0.0.1:9".into(),
             gateway_token: "gateway-secret".into(),
             working_directory: "/work/hames".into(),
@@ -354,7 +354,7 @@ mod tests {
     fn request(path: &str) -> HttpRequest<Body> {
         HttpRequest::builder()
             .uri(path)
-            .header(HOST, "127.0.0.1:7412")
+            .header(HOST, "127.0.0.1:7500")
             .body(Body::empty())
             .unwrap()
     }
@@ -486,7 +486,7 @@ mod tests {
             HttpRequest::builder()
                 .method(Method::POST)
                 .uri("/v1/sessions")
-                .header(HOST, "127.0.0.1:7412")
+                .header(HOST, "127.0.0.1:7500")
                 .header(COOKIE, "hames_web_session=browser-secret")
                 .body(Body::empty())
                 .unwrap()
@@ -499,7 +499,7 @@ mod tests {
         let mut authorized = mutation();
         authorized
             .headers_mut()
-            .insert(ORIGIN, HeaderValue::from_static("http://127.0.0.1:7412"));
+            .insert(ORIGIN, HeaderValue::from_static("http://127.0.0.1:7500"));
         authorized.headers_mut().insert(
             HeaderName::from_static(CSRF_HEADER),
             HeaderValue::from_static("csrf-secret"),

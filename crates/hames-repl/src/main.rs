@@ -48,7 +48,7 @@ enum Command {
     /// Open the local browser interface.
     Web {
         /// Loopback port for the web interface; use 0 to select a free port.
-        #[arg(long, default_value_t = 7412)]
+        #[arg(long, default_value_t = 7500)]
         port: u16,
         /// Serve the interface without opening a browser.
         #[arg(long)]
@@ -1202,7 +1202,7 @@ mod cli_tests {
         assert!(matches!(
             cli.command,
             Some(Command::Web {
-                port: 7412,
+                port: 7500,
                 no_open: false
             })
         ));

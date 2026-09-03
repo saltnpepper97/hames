@@ -105,7 +105,7 @@ Useful commands:
 Run <code>hames repl</code> for the classic line-oriented client. Piped or
 redirected input selects it automatically. Run <code>hames web</code> for the
 local browser interface; it starts or verifies the same gateway, serves on
-<code>127.0.0.1:7412</code>, and opens the authenticated launch URL. Use
+<code>127.0.0.1:7500</code>, and opens the authenticated launch URL. Use
 <code>hames web --no-open</code> to print the URL instead, or
 <code>hames web --port 0</code> to select a free loopback port.
 

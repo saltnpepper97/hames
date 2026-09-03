@@ -15,7 +15,8 @@ does not stop the gateway or active work.
 
 The launch flow is intentionally short-lived:
 
-1. Rust binds `127.0.0.1:7412` by default. `--port 0` requests a free port.
+1. Rust binds `127.0.0.1:7500` by default, outside Hames search's dynamic port
+   range. `--port 0` requests a free port.
 2. It creates a random, single-use launch URL and opens it, or prints it with
    `--no-open`.
 3. A valid launch exchanges the URL token for an HttpOnly, SameSite cookie and
