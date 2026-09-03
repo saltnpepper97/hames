@@ -1972,15 +1972,14 @@ a {
 .composer-shell {
   width: min(100%, 50rem);
   margin: 0 auto;
-  border: 1px solid var(--rule);
+  border: 0;
   border-radius: 1.05rem;
   background: var(--surface-soft);
-  box-shadow: 0 5px 20px rgb(0 0 0 / 7%);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 9%);
 }
 
 .composer-shell:focus-within {
-  border-color: var(--muted);
-  box-shadow: 0 0 0 3px var(--focus-shadow);
+  box-shadow: 0 3px 10px rgb(0 0 0 / 11%);
 }
 
 .composer-shell textarea {
