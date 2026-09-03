@@ -15,7 +15,8 @@ import type {
   SkillSummary,
 } from "../api/types";
 import { Button } from "../components/Button";
-import { TextAreaField, TextField } from "../components/FormField";
+import { TextField } from "../components/FormField";
+import { MarkdownEditor } from "../components/MarkdownEditor";
 import { SelectionRow } from "../components/SelectionRow";
 import { SettingsSection } from "../components/SettingsSection";
 
@@ -231,11 +232,10 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
             </SettingsSection>
 
             <SettingsSection title="AGENT.md instructions" description="Markdown instructions added to this agent's context on every turn.">
-              <TextAreaField
+              <MarkdownEditor
                 label="Instructions"
                 value={instructions()}
                 rows={14}
-                code
                 error={instructionsError()}
                 onInput={(event) => { setInstructions(event.currentTarget.value); setSaved(false); }}
               />

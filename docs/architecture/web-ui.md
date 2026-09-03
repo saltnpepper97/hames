@@ -40,10 +40,10 @@ are first-party web plugins using the same contracts available to later optional
 plugins.
 
 Shared controls are application components rather than incidental page markup.
-Buttons, form fields, selectable capability rows, settings sections, dialogs,
-the chat frame, and agent avatars each own their interaction and accessibility
-contract. Pages compose those primitives and do not render native buttons
-directly.
+Buttons, form fields, Markdown renderers and editors, selectable capability
+rows, settings sections, dialogs, the chat frame, and agent avatars each own
+their interaction and accessibility contract. Pages compose those primitives
+and do not render native buttons directly.
 
 The icon-pack contract lets application components request semantic names such
 as `nav.chat` or `state.empty`; the selected pack maps those names to assets.
@@ -107,6 +107,13 @@ reconnecting, offline, expired-session, retry, and empty states. Routes without
 a gateway-backed vertical slice state what is planned and expose no pretend
 controls.
 
+User, assistant, and reasoning text is parsed as GitHub-flavored Markdown with
+Marked and sanitized through a restrictive DOMPurify HTML allow-list before it
+enters the document. Executable/embed elements, style attributes, and remote
+images are not permitted. A shared Markdown presentation component owns prose,
+heading, list, blockquote, code, link, and table styling, while literal tool
+payloads remain escaped preformatted text.
+
 The session stream is keyed by the stable session identifier, so a periodic
 dashboard metadata refresh cannot clear and replay an unchanged conversation.
 Durable replay and transient deltas are folded at most once per animation frame,
@@ -123,7 +130,9 @@ component keeps sidebar identity current after a save. A workspace-aware
 capability endpoint supplies real tools and visible skills; saving uses the
 registry's atomic structured update and preserves `AGENT.md` as the source of
 truth. Editor grids collapse before their contents overflow, and the workspace
-never uses page-level horizontal scrolling.
+never uses page-level horizontal scrolling. The instructions field is a shared
+Markdown editor with source and sanitized preview modes rather than a page-local
+textarea.
 
 Its reusable SVG `AgentAvatar` component draws five robot shapes (circle, soft
 square, triangle, scalloped cloud, and hex), three eye styles (dots, visor, and

@@ -63,6 +63,9 @@ claiming unfinished controls:
 - pending approval and question events render in the transcript and resolve
   through CSRF-protected gateway mutations, including session-scoped approval,
   option notes, and custom answers;
+- transcript prose renders sanitized GitHub-flavored Markdown without allowing
+  remote images or executable/embed markup, and the reusable AGENT.md editor
+  provides source and rendered-preview modes;
 - shared Button, form-field, selection-row, settings-section, dialog, and avatar
   components keep interaction and accessibility behavior consistent across
   core surfaces;

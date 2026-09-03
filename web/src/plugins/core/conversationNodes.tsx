@@ -3,6 +3,7 @@ import type { JSX } from "solid-js";
 import { HamesApiError, answerQuestion, resolveApproval } from "../../api/client";
 import type { ConversationNode } from "../../chat/projection";
 import { Button } from "../../components/Button";
+import { Markdown } from "../../components/Markdown";
 import type { ConversationNodeContribution } from "../../shell/plugins";
 
 function ToolNode(props: { node: ConversationNode }): JSX.Element {
@@ -34,7 +35,7 @@ function ReasoningNode(props: { node: ConversationNode }): JSX.Element {
   return (
     <details class="reasoning-node" open={node.live || undefined}>
       <summary>{node.live ? "Thinking" : "Reasoning"}</summary>
-      <div class="message-copy">{node.content}</div>
+      <Markdown content={node.content} class="message-copy" live={node.live} />
     </details>
   );
 }
@@ -50,10 +51,7 @@ function MessageNode(props: { node: ConversationNode }): JSX.Element {
   return (
     <article class={`message-node ${node.kind}`}>
       <div class="message-role">{node.kind === "user" ? "You" : "Hames"}</div>
-      <div class="message-copy">{node.content}</div>
-      <Show when={node.live}>
-        <span class="live-cursor" aria-label="Streaming response" />
-      </Show>
+      <Markdown content={node.content} class="message-copy" live={node.live} />
     </article>
   );
 }
