@@ -1,6 +1,7 @@
-import { HamesApiError, updateSessionMode, updateSessionReasoning } from "../../api/client";
+import { HamesApiError, updateSessionMode } from "../../api/client";
 import type { SessionMode } from "../../api/types";
 import { ComposerMenu } from "../../chat/components/ComposerMenu";
+import { ModelPicker } from "../../chat/components/ModelPicker";
 import { Icon } from "../../shell/icons";
 import type { SemanticIconName } from "../../shell/icons";
 import type { ComposerControlContribution, ComposerControlProps } from "../../shell/plugins";
@@ -55,39 +56,8 @@ function ModeControl(props: ComposerControlProps) {
   );
 }
 
-function ThinkingControl(props: ComposerControlProps) {
-  const select = async (effort: string) => {
-    try {
-      props.onSessionUpdated(await updateSessionReasoning(props.session, effort));
-    } catch (error) {
-      props.onError(mutationError(error));
-      throw error;
-    }
-  };
-
-  const values = ["off", "low", "medium", "high", "xhigh"];
-  const options = values.includes(props.session.reasoning_effort)
-    ? values
-    : [props.session.reasoning_effort, ...values];
-
-  return (
-    <ComposerMenu
-      ariaLabel="Thinking level"
-      value={props.session.reasoning_effort}
-      icon="thinking.level"
-      align="right"
-      disabled={props.disabled}
-      options={options.map((value) => ({
-        value,
-        label: value === "xhigh" ? "Extra high" : `${value[0]?.toUpperCase()}${value.slice(1)}`,
-      }))}
-      onSelect={select}
-    />
-  );
-}
-
 export const coreComposerControls = [
   { id: "hames.attachments", seat: "left", order: 0, component: AttachmentControl },
   { id: "hames.mode", seat: "left", order: 10, component: ModeControl },
-  { id: "hames.thinking", seat: "right", order: 0, component: ThinkingControl },
+  { id: "hames.model", seat: "right", order: 0, component: ModelPicker },
 ] satisfies readonly ComposerControlContribution[];

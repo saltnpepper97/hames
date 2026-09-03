@@ -55,20 +55,6 @@ export const coreWebPlugin = {
       sidebar: { kind: "conversations" },
     },
     {
-      id: "runs",
-      path: "/runs",
-      route: "/runs",
-      label: "Runs",
-      icon: "nav.runs",
-      component: placeholder(
-        "Provenance",
-        "Runs",
-        "Trace model calls, context, tools, policy, and child-agent work.",
-        "Run timelines and exact inspection links will arrive with the chat vertical slice.",
-      ),
-      sidebar: { kind: "section", description: "Timelines and provenance" },
-    },
-    {
       id: "agents",
       path: "/agents",
       route: "/agents",

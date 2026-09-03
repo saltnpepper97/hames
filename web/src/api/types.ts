@@ -34,6 +34,40 @@ export interface Session {
 
 export type SessionMode = "manual" | "auto" | "plan";
 
+export interface ProviderProfile {
+  id: string;
+  adapter: string;
+  endpoint: string;
+  configured_model: string;
+  default_reasoning_effort: string;
+  supported_reasoning_efforts: string[];
+}
+
+export interface ProviderModel {
+  id: string;
+  status: string;
+  context_length: number | null;
+  parameter_size: string | null;
+  quantization: string | null;
+  reasoning_supported: boolean | null;
+  reasoning_efforts: string[];
+}
+
+export interface ProviderProbeError {
+  code: string;
+  message: string;
+  retryable: boolean;
+  details: Record<string, unknown>;
+}
+
+export interface ProviderProbe {
+  id: string;
+  adapter: string;
+  reachable: boolean;
+  models: ProviderModel[];
+  error: ProviderProbeError | null;
+}
+
 export interface HamesEvent {
   id: string;
   sequence: number;

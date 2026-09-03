@@ -11,10 +11,14 @@ export interface ComposerMenuOption {
 interface ComposerMenuProps {
   ariaLabel: string;
   value: string;
+  displayValue?: string;
   icon: SemanticIconName;
   options: readonly ComposerMenuOption[];
   disabled?: boolean;
   align?: "left" | "right";
+  loading?: boolean;
+  emptyMessage?: string;
+  onOpen?: () => Promise<void> | void;
   onSelect: (value: string) => Promise<void> | void;
 }
 
@@ -23,7 +27,17 @@ export function ComposerMenu(props: ComposerMenuProps) {
   const [busy, setBusy] = createSignal(false);
   let root!: HTMLDivElement;
   const selectedLabel = () =>
-    props.options.find((option) => option.value === props.value)?.label ?? props.value;
+    props.displayValue ??
+    props.options.find((option) => option.value === props.value)?.label ??
+    props.value;
+
+  const toggle = () => {
+    const next = !open();
+    setOpen(next);
+    if (next && props.onOpen) {
+      void Promise.resolve(props.onOpen()).catch(() => undefined);
+    }
+  };
 
   const select = async (value: string) => {
     if (busy() || value === props.value) {
@@ -57,7 +71,7 @@ export function ComposerMenu(props: ComposerMenuProps) {
         aria-haspopup="menu"
         aria-expanded={open()}
         disabled={props.disabled || busy()}
-        onClick={() => setOpen((current) => !current)}
+        onClick={toggle}
       >
         <Icon name={props.icon} size={16} />
         <span>{selectedLabel()}</span>
@@ -65,22 +79,27 @@ export function ComposerMenu(props: ComposerMenuProps) {
       </button>
       <Show when={open()}>
         <div class="composer-menu-popover" role="menu" aria-label={props.ariaLabel}>
-          <For each={props.options}>
-            {(option) => (
-              <button
-                type="button"
-                role="menuitemradio"
-                aria-checked={option.value === props.value}
-                disabled={busy()}
-                onClick={() => void select(option.value)}
-              >
-                <Show when={option.icon}>
-                  {(icon) => <Icon name={icon()} size={16} />}
-                </Show>
-                <span>{option.label}</span>
-              </button>
-            )}
-          </For>
+          <Show when={!props.loading} fallback={<div class="composer-menu-state">Loading…</div>}>
+            <For
+              each={props.options}
+              fallback={<div class="composer-menu-state">{props.emptyMessage ?? "No options"}</div>}
+            >
+              {(option) => (
+                <button
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={option.value === props.value}
+                  disabled={busy()}
+                  onClick={() => void select(option.value)}
+                >
+                  <Show when={option.icon}>
+                    {(icon) => <Icon name={icon()} size={16} />}
+                  </Show>
+                  <span>{option.label}</span>
+                </button>
+              )}
+            </For>
+          </Show>
         </div>
       </Show>
     </div>

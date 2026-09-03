@@ -3,8 +3,11 @@ import horse from "@phosphor-icons/core/regular/horse.svg";
 import robot from "@phosphor-icons/core/regular/robot.svg";
 import {
   IconArrowUp,
+  IconArrowLeft,
   IconBandage,
   IconChevronDown,
+  IconChevronRight,
+  IconCheck,
   IconGitBranch,
   IconHandStop,
   IconListCheck,
@@ -62,6 +65,9 @@ export const hamesIconPack = {
     "action.send": tablerIcon(IconArrowUp),
     "action.stop": tablerIcon(IconSquare),
     "action.expand": tablerIcon(IconChevronDown),
+    "action.back": tablerIcon(IconArrowLeft),
+    "action.next": tablerIcon(IconChevronRight),
+    "action.selected": tablerIcon(IconCheck),
     "mode.auto": tablerIcon(IconSparkles),
     "mode.plan": tablerIcon(IconListCheck),
     "mode.manual": tablerIcon(IconHandStop),

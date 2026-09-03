@@ -13,7 +13,9 @@ claiming unfinished controls:
   origin; `hames web` starts or verifies it, opens a one-time authenticated URL,
   and exits without owning the site's lifetime;
 - a handcrafted SolidJS/Vite application provides responsive routes for Chat,
-  Runs, Agents, Memory, Skills, Scars, Plugins, and Settings;
+  Agents, Memory, Skills, Scars, Plugins, and Settings; Runs remains planned but
+  is intentionally absent from navigation until it has useful gateway-backed
+  content;
 - the composable web-plugin boundary provides semantic icon packs and surface
   contributions for routes, the global icon rail, contextual sidebars, and
   conversation-node renderers, plus ordered left/right composer-control seats;
@@ -43,7 +45,12 @@ claiming unfinished controls:
   complete durable history;
 - the chat frame, header, transcript viewport, composer, menus, and contribution
   seats are separate application components; the core plugin supplies the
-  attachment affordance and live mode/reasoning controls through those seats;
+  attachment affordance and live mode/model/reasoning controls through those
+  seats;
+- the model picker discovers configured providers and probes them concurrently;
+  reasoning-capable model changes require an explicit supported-effort choice,
+  one combined toolbar trigger displays both values and drills from a Model or
+  Thinking root row into provider-grouped models or advertised effort levels;
 - the composer uses a capped auto-growing textarea, Enter submission,
   Shift+Enter line breaks, and inner scrolling after eight lines; its circular
   send control continues to queue while a run is active;

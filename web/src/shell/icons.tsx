@@ -1,5 +1,6 @@
 import { createContext, useContext } from "solid-js";
 import type { Component, ParentProps } from "solid-js";
+import { Dynamic } from "solid-js/web";
 
 export const semanticIconNames = [
   "brand.mark",
@@ -16,6 +17,9 @@ export const semanticIconNames = [
   "action.send",
   "action.stop",
   "action.expand",
+  "action.back",
+  "action.next",
+  "action.selected",
   "mode.auto",
   "mode.plan",
   "mode.manual",
@@ -64,8 +68,6 @@ export function Icon(props: IconProps) {
   const pack = useContext(IconPackContext);
   if (!pack) throw new Error("Icon rendered without an icon pack plugin");
   const size = () => `${props.size ?? 18}px`;
-  const Glyph = pack.icons[props.name];
-
   return (
     <span
       class={`hames-icon ${props.class ?? ""}`}
@@ -76,7 +78,7 @@ export function Icon(props: IconProps) {
       data-icon={props.name}
       data-icon-pack={pack.id}
     >
-      <Glyph size="100%" aria-hidden={true} />
+      <Dynamic component={pack.icons[props.name]} size="100%" aria-hidden={true} />
     </span>
   );
 }

@@ -52,11 +52,21 @@ The resident chat frame is assembled from focused header, viewport, composer,
 menu, and contribution-seat components. Web plugins can add ordered controls to
 the composer's typed left and right seats without reaching into its markup or
 owning draft submission. The core plugin currently contributes the disabled
-attachment affordance and the gateway-backed interaction-mode and reasoning
-selectors. The composer retains send, queue, and cancel because those actions
-belong to its input state machine. This follows the useful contribution-seat
-shape of the DeepSeek Harness reference while keeping Hames's SolidJS and
-HTTP/SSE runtime boundary.
+attachment affordance, gateway-backed interaction mode, and a unified model and
+thinking selector. The composer retains send, queue, and cancel because those
+actions belong to its input state machine. This follows the useful
+contribution-seat shape of the DeepSeek Harness reference while keeping Hames's
+SolidJS and HTTP/SSE runtime boundary.
+
+One composer button displays the current model and thinking level. Its root menu
+contains Model and Thinking rows which drill into provider-grouped models or the
+current model's supported effort levels, following the useful DeepSeek Harness
+interaction instead of presenting separate toolbar buttons. Provider probes run
+concurrently and remain available during active runs. Selecting a
+reasoning-capable model advances to the effort pane and commits provider, model,
+and effort together only after explicit confirmation. Models without advertised
+reasoning support commit with reasoning off; reasoning models without graduated
+levels offer the explicit on/off choice used by the TUI.
 
 On wide screens, the shell uses a narrow global activity rail, a contextual
 sidebar, and the active surface. Chat contributes real, open workspace sessions
@@ -114,8 +124,9 @@ cancellation, and gateway-backed session creation. A newly
 created empty session opens directly in the composer but enters sidebar history
 only after its first message. Pending approvals and agent questions render as
 composable transcript cards and resolve through the existing gateway controls.
-Interaction mode and reasoning effort are real session settings, while the
-attachment control remains visibly disabled until its gateway contract exists.
+Provider, model, interaction mode, and reasoning effort are real session
+settings, while the attachment control remains visibly disabled until its
+gateway contract exists.
 Commands, settings contributions, and all management editors remain future
 gateway-backed slices. See
 [M10 Web Control](../implementation-plan/M10-WEB-CONTROL.md) for their acceptance

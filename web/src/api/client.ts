@@ -3,6 +3,8 @@ import type {
   DashboardSnapshot,
   GatewayHealth,
   MessageAccepted,
+  ProviderProbe,
+  ProviderProfile,
   Session,
   SessionMode,
   WebBootstrap,
@@ -98,14 +100,29 @@ export function updateSessionMode(sessionId: string, mode: SessionMode): Promise
   });
 }
 
-export function updateSessionReasoning(session: Session, reasoningEffort: string): Promise<Session> {
-  return request<Session>(`/v1/sessions/${encodeURIComponent(session.id)}`, {
+export function updateSessionSelection(
+  sessionId: string,
+  provider: string,
+  model: string,
+  reasoningEffort: string,
+): Promise<Session> {
+  return request<Session>(`/v1/sessions/${encodeURIComponent(sessionId)}`, {
     method: "PATCH",
     body: JSON.stringify({
-      provider: session.provider,
-      model: session.model,
+      provider,
+      model,
       reasoning_effort: reasoningEffort,
     }),
+  });
+}
+
+export function listProviders(): Promise<ProviderProfile[]> {
+  return request<ProviderProfile[]>("/v1/providers");
+}
+
+export function probeProvider(providerId: string): Promise<ProviderProbe> {
+  return request<ProviderProbe>(`/v1/providers/${encodeURIComponent(providerId)}/probe`, {
+    method: "POST",
   });
 }
 

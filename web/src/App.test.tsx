@@ -104,11 +104,68 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 function successfulFetch() {
+  let currentSession = { ...sessions[0] };
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     if (path === "/_hames/v1/bootstrap") return jsonResponse(bootstrap);
     if (path === "/v1/health") return jsonResponse(health);
-    if (path === "/v1/sessions?has_messages=true") return jsonResponse(sessions);
+    if (path === "/v1/sessions?has_messages=true") {
+      return jsonResponse([currentSession, ...sessions.slice(1)]);
+    }
+    if (path === "/v1/providers") {
+      return jsonResponse([
+        {
+          id: "codex",
+          adapter: "codex",
+          endpoint: "local",
+          configured_model: "gpt-5.6-sol",
+          default_reasoning_effort: "high",
+          supported_reasoning_efforts: ["low", "medium", "high", "xhigh"],
+        },
+        {
+          id: "ollama",
+          adapter: "ollama",
+          endpoint: "http://127.0.0.1:11434",
+          configured_model: "qwen3:8b",
+          default_reasoning_effort: "medium",
+          supported_reasoning_efforts: ["low", "medium", "high"],
+        },
+      ]);
+    }
+    if (path === "/v1/providers/codex/probe" && init?.method === "POST") {
+      return jsonResponse({
+        id: "codex",
+        adapter: "codex",
+        reachable: true,
+        models: [{
+          id: "gpt-5.6-sol",
+          status: "available",
+          context_length: 272000,
+          parameter_size: null,
+          quantization: null,
+          reasoning_supported: true,
+          reasoning_efforts: ["low", "medium", "high", "xhigh"],
+        }],
+        error: null,
+      });
+    }
+    if (path === "/v1/providers/ollama/probe" && init?.method === "POST") {
+      return jsonResponse({
+        id: "ollama",
+        adapter: "ollama",
+        reachable: true,
+        models: [{
+          id: "qwen3:8b",
+          status: "available",
+          context_length: 32768,
+          parameter_size: "8B",
+          quantization: "Q4_K_M",
+          reasoning_supported: true,
+          reasoning_efforts: ["low", "medium", "high"],
+        }],
+        error: null,
+      });
+    }
     if (path === "/v1/sessions" && init?.method === "POST") {
       return jsonResponse(createdSession, 201);
     }
@@ -125,10 +182,17 @@ function successfulFetch() {
       );
     }
     if (path === "/v1/sessions/session-current/mode" && init?.method === "PUT") {
-      return jsonResponse({ ...sessions[0], interaction_mode: "plan" });
+      currentSession = { ...currentSession, interaction_mode: "plan" };
+      return jsonResponse(currentSession);
     }
     if (path === "/v1/sessions/session-current" && init?.method === "PATCH") {
-      return jsonResponse({ ...sessions[0], interaction_mode: "plan", reasoning_effort: "medium" });
+      const selection = JSON.parse(String(init.body)) as {
+        provider: string;
+        model: string;
+        reasoning_effort: string;
+      };
+      currentSession = { ...currentSession, ...selection };
+      return jsonResponse(currentSession);
     }
     if (path === "/v1/runs/run-one/cancel" && init?.method === "POST") {
       return jsonResponse({ cancelled: true });
@@ -190,7 +254,7 @@ describe("Hames web shell", () => {
     expect(screen.queryByText("Another project")).not.toBeInTheDocument();
     expect(screen.queryByText("Closed workspace chat")).not.toBeInTheDocument();
     expect(screen.getAllByText("Connected").length).toBeGreaterThan(0);
-    expect(document.querySelectorAll('[data-icon^="nav."]')).toHaveLength(8);
+    expect(document.querySelectorAll('[data-icon^="nav."]')).toHaveLength(7);
     expect(document.querySelector('[data-icon="nav.scars"]')).toHaveAttribute(
       "data-icon-pack",
       "hames-default",
@@ -271,6 +335,9 @@ describe("Hames web shell", () => {
     fireEvent.click(await screen.findByRole("link", { name: /Build the web foundation/ }));
     await screen.findByRole("heading", { name: "Build the web foundation", level: 1 });
 
+    expect(document.querySelector('[data-icon="mode.auto"] svg')).toHaveClass(
+      "tabler-icon-sparkles",
+    );
     fireEvent.click(screen.getByRole("button", { name: "Interaction mode" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Plan" }));
     await waitFor(() =>
@@ -280,8 +347,16 @@ describe("Hames web shell", () => {
       ),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Thinking level" }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "Medium" }));
+    await waitFor(() =>
+      expect(document.querySelector('[data-icon="mode.plan"] svg')).toHaveClass(
+        "tabler-icon-list-check",
+      ),
+    );
+
+    const selectionTrigger = screen.getByRole("button", { name: /Model and thinking/ });
+    fireEvent.click(selectionTrigger);
+    fireEvent.click(screen.getByRole("menuitem", { name: /Thinking/ }));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "Medium" }));
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         "/v1/sessions/session-current",
@@ -298,9 +373,49 @@ describe("Hames web shell", () => {
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Interaction mode" })).toHaveTextContent("Plan");
-      expect(screen.getByRole("button", { name: "Thinking level" })).toHaveTextContent("Medium");
+      expect(screen.getByRole("button", { name: /Model and thinking/ })).toHaveTextContent("Medium");
     });
+    expect(screen.queryByRole("button", { name: "Thinking level" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add attachment" })).toBeDisabled();
+  });
+
+  it("selects provider, model, and explicit thinking in one model picker flow", async () => {
+    const fetchMock = successfulFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    render(() => <App />);
+    fireEvent.click(await screen.findByRole("link", { name: /Build the web foundation/ }));
+    await screen.findByRole("heading", { name: "Build the web foundation", level: 1 });
+
+    const modelTrigger = screen.getByRole("button", { name: /Model and thinking/ });
+    expect(modelTrigger).toHaveTextContent("gpt-5.6-solHigh");
+    fireEvent.click(modelTrigger);
+    fireEvent.click(screen.getByRole("menuitem", { name: /Model/ }));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /qwen3:8b/ }));
+
+    expect(screen.getByText("Choose thinking to finish")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH"),
+    ).toHaveLength(0);
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Low" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/v1/sessions/session-current",
+        expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({
+            provider: "ollama",
+            model: "qwen3:8b",
+            reasoning_effort: "low",
+          }),
+        }),
+      ),
+    );
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Model and thinking/ })).toHaveTextContent(
+        "qwen3:8bLow",
+      );
+    });
   });
 
   it("creates a durable chat and opens its composer", async () => {
@@ -375,22 +490,10 @@ describe("Hames web shell", () => {
     render(() => <App />);
     await screen.findByText("Build the web foundation");
 
-    for (const label of [
-      "Chat",
-      "Runs",
-      "Agents",
-      "Memory",
-      "Skills",
-      "Scars",
-      "Plugins",
-      "Settings",
-    ]) {
+    for (const label of ["Chat", "Agents", "Memory", "Skills", "Scars", "Plugins", "Settings"]) {
       expect(screen.getByRole("link", { name: label })).toBeInTheDocument();
     }
-
-    fireEvent.click(screen.getByRole("link", { name: "Runs" }));
-    expect(await screen.findByRole("heading", { name: "Runs", level: 1 })).toBeInTheDocument();
-    expect(screen.getByText("This surface is intentionally quiet for now.")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Runs" })).not.toBeInTheDocument();
   });
 
   it("surfaces a retryable offline state", async () => {
