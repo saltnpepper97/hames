@@ -14,7 +14,6 @@ import { PluginRemoveDialog } from "../plugins/PluginRemoveDialog";
 
 interface PluginPageProps {
   plugin: PluginView;
-  onAdd: () => void;
   onRemoved: (pluginId: string) => void;
 }
 
@@ -66,7 +65,6 @@ export function PluginPage(props: PluginPageProps) {
             <span class="plugin-state-badge" data-state={runtimeState(props.plugin).toLowerCase().replace(" ", "-")}>
               {runtimeState(props.plugin)}
             </span>
-            <Button size="small" onClick={props.onAdd}>Add plugin</Button>
           </div>
         }
       />

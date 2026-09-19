@@ -1,10 +1,16 @@
-import { For, Show } from "solid-js";
+import { useNavigate } from "@solidjs/router";
+import { For, Show, createSignal } from "solid-js";
+import { deleteMemory } from "../api/client";
 import type { MemoryRecord, MemoryValue } from "../api/types";
 import { DetailHeading } from "../components/DetailHeading";
+import { Button } from "../components/Button";
+import { DeleteConfirmationDialog } from "../components/DeleteConfirmationDialog";
 import { DetailStatStrip } from "../components/DetailStatStrip";
+import { LoadingState } from "../components/LoadingState";
 import { Markdown } from "../components/Markdown";
 import { Separator } from "../components/Separator";
 import { useMemoryDirectory } from "../memory/MemoryDirectory";
+import { Icon } from "../shell/icons";
 
 interface MemoryPageProps {
   memoryId: string;
@@ -39,7 +45,7 @@ function MemoryValueView(props: { value: MemoryValue }) {
     : <pre class="memory-json-value">{valueText(props.value)}</pre>;
 }
 
-function MemoryDetail(props: { record: MemoryRecord }) {
+function MemoryDetail(props: { record: MemoryRecord; onDelete: () => void }) {
   const record = () => props.record;
   return (
     <section class="page memory-page" aria-labelledby="memory-title">
@@ -50,6 +56,17 @@ function MemoryDetail(props: { record: MemoryRecord }) {
         title={label(record().predicate)}
         summary={record().summary}
         context={<code>{record().subject}</code>}
+        badges={
+          <Button
+            variant="icon"
+            class="detail-delete-action"
+            aria-label={`Delete ${record().summary}`}
+            title="Delete memory"
+            onClick={props.onDelete}
+          >
+            <Icon name="action.delete" size={17} />
+          </Button>
+        }
       />
 
       <DetailStatStrip
@@ -104,25 +121,51 @@ function MemoryDetail(props: { record: MemoryRecord }) {
 
 export function MemoryPage(props: MemoryPageProps) {
   const directory = useMemoryDirectory();
+  const navigate = useNavigate();
+  const [confirmingDelete, setConfirmingDelete] = createSignal(false);
   const record = () => directory.records().find((candidate) => candidate.id === props.memoryId);
+  const remove = async () => {
+    const sessionId = directory.sessionId();
+    if (!sessionId) throw new Error("No active session can delete this memory.");
+    await deleteMemory(sessionId, props.memoryId);
+    directory.remove(props.memoryId);
+    setConfirmingDelete(false);
+    navigate("/memory", { replace: true });
+  };
   return (
-    <Show
-      when={record()}
-      keyed
-      fallback={
-        <section class="page memory-route-state">
-          <Show when={directory.loading()}>
-            <div class="memory-detail-loading"><span /><span /><span /></div>
-          </Show>
-          <Show when={directory.loaded() && !directory.loading()}>
-            <div class="error-state">
-              <div><span class="eyebrow">Memory</span><h2>This memory is not available.</h2><p>It may no longer be active or visible in this workspace.</p></div>
-            </div>
-          </Show>
-        </section>
-      }
-    >
-      {(selected) => <MemoryDetail record={selected} />}
-    </Show>
+    <>
+      <Show
+        when={record()}
+        keyed
+        fallback={
+          <section class="page memory-route-state">
+            <Show when={directory.loading()}>
+              <LoadingState variant="detail" label="Loading memory" />
+            </Show>
+            <Show when={directory.loaded() && !directory.loading()}>
+              <div class="error-state">
+                <div><span class="eyebrow">Memory</span><h2>This memory is not available.</h2><p>It may no longer be active or visible in this workspace.</p></div>
+              </div>
+            </Show>
+          </section>
+        }
+      >
+        {(selected) => <MemoryDetail record={selected} onDelete={() => setConfirmingDelete(true)} />}
+      </Show>
+      <Show when={confirmingDelete() && record()} keyed>
+        {(selected) => (
+          <DeleteConfirmationDialog
+            eyebrow="Delete memory"
+            title={`Delete ${selected.summary}?`}
+            confirmLabel="Delete memory"
+            onClose={() => setConfirmingDelete(false)}
+            onConfirm={remove}
+          >
+            <p>This permanently removes the memory from Hames retrieval.</p>
+            <p>The audit event recording this deletion remains in the local ledger.</p>
+          </DeleteConfirmationDialog>
+        )}
+      </Show>
+    </>
   );
 }

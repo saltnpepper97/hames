@@ -1,5 +1,6 @@
 import { Show } from "solid-js";
 import type { Session } from "../../api/types";
+import { Spinner } from "../../components/Spinner";
 import type { StreamState } from "../sessionStream";
 import { AgentPicker } from "./AgentPicker";
 import { ChatViewTabs } from "./ChatViewTabs";
@@ -10,6 +11,7 @@ interface ChatSessionBarProps {
   view: ChatView;
   streamState: StreamState;
   working: boolean;
+  workerLabel?: string;
   onViewChanged: (view: ChatView) => void;
   onSessionUpdated: (session: Session) => void;
 }
@@ -18,17 +20,20 @@ export function ChatSessionBar(props: ChatSessionBarProps) {
   const status = () => {
     if (props.streamState === "connecting") return "Loading";
     if (props.streamState === "reconnecting") return "Reconnecting";
-    return props.working ? "Working" : "";
+    return props.working ? props.workerLabel || "Working" : "";
   };
 
   return (
     <header class="chat-session-bar">
       <div class="chat-session-identity">
-        <h1 id="chat-title" title={props.session.title?.trim() || "New chat"}>
-          {props.session.title?.trim() || "New chat"}
-        </h1>
+        <div class="chat-session-copy">
+          <h1 id="chat-title" title={props.session.title?.trim() || "New chat"}>
+            {props.session.title?.trim() || "New chat"}
+          </h1>
+        </div>
         <Show when={status()}>
           <span class="chat-session-status" data-state={props.streamState} role="status">
+            <Show when={props.streamState !== "live"}><Spinner size="sm" /></Show>
             {status()}
           </span>
         </Show>

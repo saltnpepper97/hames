@@ -1,7 +1,12 @@
-import { createContext, createSignal, useContext } from "solid-js";
+import { createContext, createSignal, onCleanup, useContext } from "solid-js";
 import type { Accessor, ParentProps } from "solid-js";
-import { listAvailableSkills, recentSession } from "../api/client";
-import type { SkillCatalogEntry } from "../api/types";
+import {
+  authorSkill as requestSkillAuthoring,
+  listAvailableSkills,
+  listSkillJobs,
+  recentSession,
+} from "../api/client";
+import type { SkillCatalogEntry, SkillJob } from "../api/types";
 import { useWorkspace } from "../shell/workspace";
 
 interface SkillDirectoryContextValue {
@@ -10,8 +15,11 @@ interface SkillDirectoryContextValue {
   loading: Accessor<boolean>;
   loaded: Accessor<boolean>;
   error: Accessor<string>;
+  authoringJob: Accessor<SkillJob | undefined>;
   ensureLoaded: () => Promise<void>;
   refresh: () => Promise<void>;
+  authorSkill: (goal: string, scope: "workspace" | "agent") => Promise<SkillJob>;
+  remove: (slug: string) => void;
 }
 
 const SkillDirectoryContext = createContext<SkillDirectoryContextValue>();
@@ -29,11 +37,13 @@ export function SkillDirectoryProvider(props: ParentProps) {
   const [loading, setLoading] = createSignal(false);
   const [loadedPath, setLoadedPath] = createSignal("");
   const [error, setError] = createSignal("");
+  const [authoringJob, setAuthoringJob] = createSignal<SkillJob>();
   let pending: Promise<void> | undefined;
+  let jobPollTimer: ReturnType<typeof setTimeout> | undefined;
 
   const refresh = (): Promise<void> => {
     if (pending) return pending;
-    const workingDirectory = workspace.snapshot()?.bootstrap.working_directory ?? "";
+    const workingDirectory = workspace.workingDirectory();
     if (!workingDirectory) return Promise.resolve();
 
     setLoading(true);
@@ -62,9 +72,43 @@ export function SkillDirectoryProvider(props: ParentProps) {
   };
 
   const ensureLoaded = () => {
-    const workingDirectory = workspace.snapshot()?.bootstrap.working_directory ?? "";
+    const workingDirectory = workspace.workingDirectory();
     return workingDirectory && loadedPath() === workingDirectory ? Promise.resolve() : refresh();
   };
+
+  const trackAuthoringJob = (authoringSessionId: string, jobId: string) => {
+    clearTimeout(jobPollTimer);
+    jobPollTimer = setTimeout(() => {
+      void listSkillJobs(authoringSessionId)
+        .then(async (jobs) => {
+          const job = jobs.find((candidate) => candidate.id === jobId);
+          if (!job) return;
+          setAuthoringJob(job);
+          if (["pending", "running", "budget_wait"].includes(job.status)) {
+            trackAuthoringJob(authoringSessionId, jobId);
+          } else if (job.status === "completed") {
+            await refresh();
+          }
+        })
+        .catch(() => undefined);
+    }, 1_500);
+  };
+
+  const authorSkill = async (goal: string, scope: "workspace" | "agent") => {
+    await ensureLoaded();
+    let authoringSessionId = sessionId();
+    if (!authoringSessionId) {
+      const session = await workspace.createChat();
+      authoringSessionId = session.id;
+      setSessionId(session.id);
+    }
+    const job = await requestSkillAuthoring(authoringSessionId, goal, scope);
+    setAuthoringJob(job);
+    trackAuthoringJob(authoringSessionId, job.id);
+    return job;
+  };
+
+  onCleanup(() => clearTimeout(jobPollTimer));
 
   return (
     <SkillDirectoryContext.Provider value={{
@@ -73,8 +117,11 @@ export function SkillDirectoryProvider(props: ParentProps) {
       loading,
       loaded: () => Boolean(loadedPath()),
       error,
+      authoringJob,
       ensureLoaded,
       refresh,
+      authorSkill,
+      remove: (slug) => setSkills((current) => current.filter((skill) => skill.slug !== slug)),
     }}>
       {props.children}
     </SkillDirectoryContext.Provider>

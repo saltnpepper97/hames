@@ -10,6 +10,9 @@ describe("Button", () => {
     const button = screen.getByRole("button", { name: "Save" });
     expect(button).toHaveAttribute("type", "button");
     expect(button).toHaveClass("ui-button-primary");
+    expect(button).toHaveAttribute("data-component", "button");
+    expect(button).toHaveAttribute("data-variant", "primary");
+    expect(button).toHaveAttribute("data-size", "md");
     fireEvent.click(button);
     expect(onClick).toHaveBeenCalledOnce();
   });
@@ -21,8 +24,29 @@ describe("Button", () => {
     const button = screen.getByRole("button", { name: "Saving" });
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute("aria-busy", "true");
-    expect(button.querySelector(".ui-button-spinner")).toBeInTheDocument();
+    expect(button).toHaveAttribute("data-loading");
+    expect(button.querySelector('[data-component="spinner"]')).toHaveClass("ui-button-spinner");
     fireEvent.click(button);
     expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it("supports the Still-style variants, slots, sizes, and full-width state", () => {
+    render(() => (
+      <Button
+        variant="destructive"
+        size="sm"
+        fullWidth
+        start={<span data-testid="start-slot">!</span>}
+        end={<span data-testid="end-slot">→</span>}
+      >
+        Delete
+      </Button>
+    ));
+
+    const button = screen.getByRole("button", { name: "!Delete→" });
+    expect(button).toHaveClass("ui-button-destructive", "ui-button-sm");
+    expect(button).toHaveAttribute("data-full-width");
+    expect(screen.getByTestId("start-slot").parentElement).toHaveAttribute("data-slot", "start");
+    expect(screen.getByTestId("end-slot").parentElement).toHaveAttribute("data-slot", "end");
   });
 });

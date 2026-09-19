@@ -47,7 +47,19 @@ function compactJson(value: unknown): string {
 
 export function eventSummary(event: HamesEvent): string {
   const payload = event.payload;
-  const direct = ["content", "summary", "text", "question", "reason", "message"]
+  if (event.type === "context.compiled") {
+    const sources = Array.isArray(payload.selected_sources) ? payload.selected_sources : [];
+    const injectedTokens = sources.reduce((sum, source) => {
+      if (!source || typeof source !== "object" || Array.isArray(source)) return sum;
+      const value = (source as Record<string, unknown>).selected_tokens;
+      return sum + (typeof value === "number" ? value : 0);
+    }, 0);
+    const requestTokens = typeof payload.estimated_input_tokens === "number"
+      ? payload.estimated_input_tokens
+      : 0;
+    return `${sources.length} injected ${sources.length === 1 ? "source" : "sources"} · ${injectedTokens.toLocaleString()} tokens · ${requestTokens.toLocaleString()} request`;
+  }
+  const direct = ["summary", "content", "text", "question", "reason", "message"]
     .map((key) => stringValue(payload, key).trim())
     .find(Boolean);
   if (direct) return direct;

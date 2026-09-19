@@ -5,6 +5,7 @@ import { fallbackAvatar } from "../../agents/color";
 import { updateSessionAgent } from "../../api/client";
 import type { AgentDetail, Session } from "../../api/types";
 import { Button } from "../../components/Button";
+import { LoadingState } from "../../components/LoadingState";
 import { DropdownSurface } from "../../components/DropdownSurface";
 import { Icon } from "../../shell/icons";
 import { AgentCreateDialog } from "./AgentCreateDialog";
@@ -105,7 +106,7 @@ export function AgentPicker(props: AgentPickerProps) {
           ariaLabel="Choose agent"
         >
           <div class="agent-picker-heading">Agent for this chat</div>
-          <Show when={!directory.loading()} fallback={<div class="agent-picker-state">Loading agents…</div>}>
+          <Show when={!directory.loading()} fallback={<LoadingState variant="inline" label="Loading agents" class="agent-picker-state" />}>
             <For each={directory.agents()} fallback={<div class="agent-picker-state">No agents found.</div>}>
               {(agent) => (
                 <Button

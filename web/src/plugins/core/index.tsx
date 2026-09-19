@@ -1,8 +1,9 @@
+import { AutomationPage, AutomationSidebar, AutomationSidebarAction } from "../../automations/Automations";
 import { useNavigate, useParams } from "@solidjs/router";
 import { Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
-import { AgentSidebar } from "../../agents/AgentSidebar";
+import { AgentSidebar, AgentSidebarAction } from "../../agents/AgentSidebar";
 import { useAgentDirectory } from "../../agents/AgentDirectory";
-import { MemorySidebar } from "../../memory/MemorySidebar";
+import { MemorySidebar, MemorySidebarAction } from "../../memory/MemorySidebar";
 import { useMemoryDirectory } from "../../memory/MemoryDirectory";
 import { ChatPage } from "../../pages/ChatPage";
 import { AgentDetailPage } from "../../pages/AgentDetailPage";
@@ -12,19 +13,19 @@ import { SettingsPage } from "../../pages/SettingsPage";
 import { ScarPage } from "../../pages/ScarPage";
 import { PluginPage } from "../../pages/PluginPage";
 import { Button } from "../../components/Button";
-import type { PluginView } from "../../api/types";
+import { LoadingState } from "../../components/LoadingState";
+import { SettingsSidebar } from "../../settings/SettingsSidebar";
 import { Icon } from "../../shell/icons";
 import type { WebPlugin } from "../../shell/plugins";
 import { useWorkspace } from "../../shell/workspace";
-import { SkillSidebar } from "../../skills/SkillSidebar";
+import { SkillSidebar, SkillSidebarAction } from "../../skills/SkillSidebar";
 import { useSkillDirectory } from "../../skills/SkillDirectory";
-import { ScarSidebar } from "../../scars/ScarSidebar";
+import { ScarSidebar, ScarSidebarAction } from "../../scars/ScarSidebar";
 import { useScarDirectory } from "../../scars/ScarDirectory";
 import { usePluginDirectory } from "../PluginDirectory";
-import { PluginInstallDialog } from "../PluginInstallDialog";
-import { PluginSidebar } from "../PluginSidebar";
+import { PluginSidebar, PluginSidebarAction } from "../PluginSidebar";
 import { coreConversationNodes } from "./conversationNodes";
-import { coreComposerControls } from "./composerControls";
+import { coreComposerActions, coreComposerControls } from "./composerControls";
 
 function ChatSurface() {
   const params = useParams<{ sessionId?: string }>();
@@ -37,15 +38,25 @@ function ChatSurface() {
     params.sessionId ? workspace.session(params.sessionId) : undefined,
   );
 
-  const startFresh = async () => {
+  const recoverChat = async () => {
     if (startingSession()) return;
     setStartingSession(true);
     setStartError("");
+    const workingDirectory = workspace.workingDirectory();
+    const sourceRoute = params.sessionId;
     try {
-      const session = await workspace.createChat();
-      navigate(`/chat/${encodeURIComponent(session.id)}`, { replace: true });
+      const candidates = workspace.allSessions().filter(session =>
+        session.working_directory === workingDirectory && session.status === "open"
+      );
+      const existing = candidates.find(session => session.title?.trim()) ?? candidates[0];
+      const session = existing ?? await workspace.createChat();
+      if (workspace.workingDirectory() === workingDirectory && params.sessionId === sourceRoute) {
+        navigate(`/chat/${encodeURIComponent(session.id)}`, { replace: true });
+      }
     } catch (error) {
-      setStartError(error instanceof Error ? error.message : "Unable to start a new chat");
+      if (workspace.workingDirectory() === workingDirectory && params.sessionId === sourceRoute) {
+        setStartError(error instanceof Error ? error.message : "Unable to start a new chat");
+      }
     } finally {
       setStartingSession(false);
     }
@@ -58,9 +69,12 @@ function ChatSurface() {
     if (connection !== "connected") return;
 
     if (!sessionId) {
-      if (attemptedRoute === "/chat") return;
-      attemptedRoute = "/chat";
-      void startFresh();
+      if (!workspace.selectedWorkspace()) return;
+      if (startingSession()) return;
+      const routeKey = `/chat:${workspace.workingDirectory()}`;
+      if (attemptedRoute === routeKey) return;
+      attemptedRoute = routeKey;
+      void recoverChat();
       return;
     }
 
@@ -93,10 +107,15 @@ function ChatSurface() {
       selectedSession={selectedSession()}
       startingSession={startingSession()}
       startError={startError()}
-      onStartFresh={() => void startFresh()}
+      workspaceRequired={!workspace.selectedWorkspace()}
+      onStartFresh={() => void recoverChat()}
       onRetry={() => void workspace.refresh()}
       onSessionChanged={() => void workspace.refresh()}
       onSessionUpdated={workspace.updateSession}
+      onSessionOpened={(session) => {
+        navigate(`/chat/${encodeURIComponent(session.id)}`);
+        void workspace.refresh();
+      }}
     />
   );
 }
@@ -111,7 +130,7 @@ function AgentSurface() {
   createEffect(() => {
     if (params.agentId) return;
     const first = directory.agents()[0];
-    if (first) navigate(`/agents/${encodeURIComponent(first.id)}`, { replace: true });
+    if (first) navigate(`/agents/${encodeURIComponent(first.slug || first.id)}`, { replace: true });
   });
 
   return (
@@ -121,7 +140,7 @@ function AgentSurface() {
       fallback={
         <section class="page agent-route-state" aria-live="polite">
           <Show when={directory.loading() || !directory.loaded()}>
-            <div class="agent-detail-loading"><span /><span /><span /></div>
+            <LoadingState variant="detail" label="Loading agents" />
           </Show>
           <Show when={directory.error()}>
             <div class="error-state">
@@ -141,7 +160,10 @@ function AgentSurface() {
       {(agentId) => (
         <AgentDetailPage
           agentId={agentId}
-          workingDirectory={workspace.snapshot()?.bootstrap.working_directory ?? ""}
+          ready={workspace.connection() === "connected"}
+          onRenamed={slug => navigate(`/agents/${encodeURIComponent(slug)}`, { replace: true })}
+          workingDirectory={workspace.workingDirectory()}
+          onDeleted={() => navigate("/agents", { replace: true })}
         />
       )}
     </Show>
@@ -155,7 +177,7 @@ function MemorySurface() {
   const workspace = useWorkspace();
 
   createEffect(() => {
-    workspace.snapshot()?.bootstrap.working_directory;
+    workspace.workingDirectory();
     void directory.ensureLoaded();
   });
   createEffect(() => {
@@ -171,7 +193,7 @@ function MemorySurface() {
       fallback={
         <section class="page memory-route-state" aria-live="polite">
           <Show when={directory.loading() || !directory.loaded()}>
-            <div class="memory-detail-loading"><span /><span /><span /></div>
+            <LoadingState variant="detail" label="Loading memory" />
           </Show>
           <Show when={directory.error()}>
             <div class="error-state">
@@ -201,7 +223,7 @@ function SkillSurface() {
   const workspace = useWorkspace();
 
   createEffect(() => {
-    workspace.snapshot()?.bootstrap.working_directory;
+    workspace.workingDirectory();
     void directory.ensureLoaded();
   });
   createEffect(() => {
@@ -217,7 +239,7 @@ function SkillSurface() {
       fallback={
         <section class="page skill-route-state" aria-live="polite">
           <Show when={directory.loading() || !directory.loaded()}>
-            <div class="skill-detail-loading"><span /><span /><span /></div>
+            <LoadingState variant="detail" label="Loading Skills" />
           </Show>
           <Show when={directory.error()}>
             <div class="error-state">
@@ -247,7 +269,7 @@ function ScarSurface() {
   const workspace = useWorkspace();
 
   createEffect(() => {
-    workspace.snapshot()?.bootstrap.working_directory;
+    workspace.workingDirectory();
     void directory.ensureLoaded();
   });
   createEffect(() => {
@@ -263,7 +285,7 @@ function ScarSurface() {
       fallback={
         <section class="page scar-route-state" aria-live="polite">
           <Show when={directory.loading() || !directory.loaded()}>
-            <div class="scar-detail-loading"><span /><span /><span /></div>
+            <LoadingState variant="detail" label="Loading Scars" />
           </Show>
           <Show when={directory.error()}>
             <div class="error-state">
@@ -290,7 +312,6 @@ function PluginSurfaceContent() {
   const params = useParams<{ pluginId?: string }>();
   const navigate = useNavigate();
   const directory = usePluginDirectory();
-  const [addingPlugin, setAddingPlugin] = createSignal(false);
   const selected = createMemo(() =>
     params.pluginId ? directory.plugins().find((plugin) => plugin.id === params.pluginId) : undefined,
   );
@@ -302,12 +323,6 @@ function PluginSurfaceContent() {
     if (first) navigate(`/plugins/${encodeURIComponent(first.id)}`, { replace: true });
   });
 
-  const installed = (plugin: PluginView) => {
-    directory.upsert(plugin);
-    setAddingPlugin(false);
-    navigate(`/plugins/${encodeURIComponent(plugin.id)}`);
-  };
-
   const removed = (pluginId: string) => {
     directory.remove(pluginId);
     navigate("/plugins", { replace: true });
@@ -318,7 +333,7 @@ function PluginSurfaceContent() {
       <Show when={selected()} keyed fallback={
         <section class="page plugin-route-state" aria-live="polite">
           <Show when={directory.loading() || !directory.loaded()}>
-            <div class="plugin-detail-loading" aria-label="Loading plugins"><span /><span /><span /></div>
+            <LoadingState variant="detail" label="Loading plugins" />
           </Show>
           <Show when={directory.error()}>
             <div class="error-state">
@@ -332,7 +347,9 @@ function PluginSurfaceContent() {
               <span class="eyebrow">Plugins</span>
               <h1>Add capabilities to Hames.</h1>
               <p>Install a local plugin package, review its manifest and permissions, then enable it when you are ready.</p>
-              <Button variant="primary" onClick={() => setAddingPlugin(true)}>Add plugin</Button>
+              <div class="plugin-empty-hint">
+                <span>No plugins yet—use <span class="plugin-add-symbol" role="img" aria-label="Add Plugin"><Icon name="action.add" size={14} /></span> in the sidebar.</span>
+              </div>
             </div>
           </Show>
           <Show when={directory.loaded() && !directory.error() && directory.plugins().length > 0 && params.pluginId}>
@@ -342,11 +359,8 @@ function PluginSurfaceContent() {
           </Show>
         </section>
       }>{(plugin) => (
-        <PluginPage plugin={plugin} onAdd={() => setAddingPlugin(true)} onRemoved={removed} />
+        <PluginPage plugin={plugin} onRemoved={removed} />
       )}</Show>
-      <Show when={addingPlugin()}>
-        <PluginInstallDialog onClose={() => setAddingPlugin(false)} onInstalled={installed} />
-      </Show>
     </>
   );
 }
@@ -355,10 +369,16 @@ function PluginSurface() {
   return <PluginSurfaceContent />;
 }
 
+function SettingsSurface() {
+  const params = useParams<{ category?: string }>();
+  return <SettingsPage category={params.category} />;
+}
+
 export const coreWebPlugin = {
   id: "hames.core",
   conversationNodes: coreConversationNodes,
   composerControls: coreComposerControls,
+  composerActions: coreComposerActions,
   surfaces: [
     {
       id: "chat",
@@ -376,7 +396,17 @@ export const coreWebPlugin = {
       label: "Agents",
       icon: "nav.agents",
       component: AgentSurface,
-      sidebar: { kind: "component", component: AgentSidebar },
+      sidebar: {
+        kind: "component",
+        component: AgentSidebar,
+        action: AgentSidebarAction,
+        searchable: true,
+      },
+    },
+    {
+      id: "automations", path: "/automations", route: ["/automations", "/automations/:automationId"],
+      label: "Automations", icon: "nav.automations", component: AutomationPage,
+      sidebar: { kind: "component", component: AutomationSidebar, action: AutomationSidebarAction, searchable: true },
     },
     {
       id: "memory",
@@ -385,7 +415,12 @@ export const coreWebPlugin = {
       label: "Memory",
       icon: "nav.memory",
       component: MemorySurface,
-      sidebar: { kind: "component", component: MemorySidebar },
+      sidebar: {
+        kind: "component",
+        component: MemorySidebar,
+        action: MemorySidebarAction,
+        searchable: true,
+      },
     },
     {
       id: "skills",
@@ -394,7 +429,12 @@ export const coreWebPlugin = {
       label: "Skills",
       icon: "nav.skills",
       component: SkillSurface,
-      sidebar: { kind: "component", component: SkillSidebar },
+      sidebar: {
+        kind: "component",
+        component: SkillSidebar,
+        action: SkillSidebarAction,
+        searchable: true,
+      },
     },
     {
       id: "scars",
@@ -403,7 +443,12 @@ export const coreWebPlugin = {
       label: "Scars",
       icon: "nav.scars",
       component: ScarSurface,
-      sidebar: { kind: "component", component: ScarSidebar },
+      sidebar: {
+        kind: "component",
+        component: ScarSidebar,
+        action: ScarSidebarAction,
+        searchable: true,
+      },
     },
     {
       id: "plugins",
@@ -412,16 +457,21 @@ export const coreWebPlugin = {
       label: "Plugins",
       icon: "nav.plugins",
       component: PluginSurface,
-      sidebar: { kind: "component", component: PluginSidebar },
+      sidebar: {
+        kind: "component",
+        component: PluginSidebar,
+        action: PluginSidebarAction,
+        searchable: true,
+      },
     },
     {
       id: "settings",
       path: "/settings",
-      route: "/settings",
+      route: ["/settings", "/settings/:category"],
       label: "Settings",
       icon: "nav.settings",
-      component: SettingsPage,
-      sidebar: { kind: "section", description: "Local configuration" },
+      component: SettingsSurface,
+      sidebar: { kind: "component", component: SettingsSidebar },
     },
   ],
 } satisfies WebPlugin;

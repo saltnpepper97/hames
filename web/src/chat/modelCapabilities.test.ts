@@ -9,6 +9,8 @@ function model(overrides: Partial<ProviderModel> = {}): ProviderModel {
     context_length: null,
     parameter_size: null,
     quantization: null,
+    input_modalities: ["text"],
+    output_modalities: ["text"],
     reasoning_supported: true,
     reasoning_efforts: [],
     ...overrides,
@@ -25,6 +27,12 @@ describe("model reasoning capabilities", () => {
     expect(modelReasoningEfforts(model({
       reasoning_efforts: ["default", "low", "high"],
     }))).toEqual(["low", "high", "off"]);
+  });
+
+  it("does not offer off for GLM models with mandatory reasoning", () => {
+    expect(modelReasoningEfforts(model({
+      id: "glm-5.3", reasoning_efforts: ["low", "high", "max"],
+    }))).toEqual(["low", "high", "max"]);
   });
 
   it("does not invent thinking controls for unsupported models", () => {

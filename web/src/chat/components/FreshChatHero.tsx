@@ -1,8 +1,6 @@
-import { Show, createMemo, onMount } from "solid-js";
-import { AgentAvatar } from "../../agents/AgentAvatar";
+import { Show, createEffect, createMemo } from "solid-js";
 import { useAgentDirectory } from "../../agents/AgentDirectory";
-import { fallbackAvatar } from "../../agents/color";
-import { Icon } from "../../shell/icons";
+import { Spinner } from "../../components/Spinner";
 
 interface FreshChatHeroProps {
   agentId?: string;
@@ -11,30 +9,27 @@ interface FreshChatHeroProps {
 
 export function FreshChatHero(props: FreshChatHeroProps) {
   const directory = useAgentDirectory();
-  const agent = createMemo(() => directory.agents().find((candidate) => candidate.id === props.agentId));
+  const agentName = createMemo(() => {
+    const agentId = props.agentId;
+    if (!agentId) return "";
+    return directory.agents().find((candidate) => candidate.id === agentId)?.name ?? "";
+  });
 
-  onMount(() => {
-    if (props.agentId) void directory.ensureLoaded();
+  createEffect(() => {
+    void directory.ensureLoaded();
   });
 
   return (
     <div class="fresh-chat-hero" aria-busy={props.pending || undefined}>
-      <Show
-        when={agent()}
-        fallback={<span class="fresh-chat-mark"><Icon name="brand.mark" size={42} /></span>}
-      >
-        {(selected) => (
-          <AgentAvatar
-            config={selected().avatar ?? fallbackAvatar(selected().id)}
-            name={selected().name}
-            size={48}
-          />
-        )}
+      <Show when={props.pending}>
+        <span class="fresh-chat-mark">
+          <Spinner size="xl" label="Starting chat" />
+        </span>
       </Show>
-      <h2>What should we work on?</h2>
+      <h2>{props.pending ? "Starting a new chat" : "What should we work on?"}</h2>
       <p>
-        <Show when={agent()} fallback="Hames is ready when you are.">
-          {(selected) => `${selected().name} is ready when you are.`}
+        <Show when={!props.pending} fallback="Preparing the workspace…">
+          {agentName() ? `${agentName()} is ready when you are.` : "Hames is ready when you are."}
         </Show>
       </p>
     </div>

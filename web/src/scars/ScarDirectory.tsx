@@ -30,6 +30,8 @@ interface ScarDirectoryContextValue {
   error: Accessor<string>;
   ensureLoaded: () => Promise<void>;
   refresh: () => Promise<void>;
+  add: (scar: Scar) => void;
+  remove: (id: string) => void;
 }
 
 const ScarDirectoryContext = createContext<ScarDirectoryContextValue>();
@@ -51,7 +53,7 @@ export function ScarDirectoryProvider(props: ParentProps) {
 
   const refresh = (): Promise<void> => {
     if (pending) return pending;
-    const workingDirectory = workspace.snapshot()?.bootstrap.working_directory ?? "";
+    const workingDirectory = workspace.workingDirectory();
     if (!workingDirectory) return Promise.resolve();
 
     setLoading(true);
@@ -80,9 +82,16 @@ export function ScarDirectoryProvider(props: ParentProps) {
   };
 
   const ensureLoaded = () => {
-    const workingDirectory = workspace.snapshot()?.bootstrap.working_directory ?? "";
+    const workingDirectory = workspace.workingDirectory();
     return workingDirectory && loadedPath() === workingDirectory ? Promise.resolve() : refresh();
   };
+
+  const remove = (id: string) => setScars((current) =>
+    current.filter((scar) => scar.id !== id)
+  );
+  const add = (scar: Scar) => setScars((current) =>
+    [...current.filter((candidate) => candidate.id !== scar.id), scar].sort(compareScars)
+  );
 
   return (
     <ScarDirectoryContext.Provider value={{
@@ -93,6 +102,8 @@ export function ScarDirectoryProvider(props: ParentProps) {
       error,
       ensureLoaded,
       refresh,
+      add,
+      remove,
     }}>
       {props.children}
     </ScarDirectoryContext.Provider>

@@ -1,3 +1,4 @@
+import { AgentDefaultModel } from "../agents/AgentDefaultModel";
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import { AgentAvatar } from "../agents/AgentAvatar";
 import { AgentAvatarEditor } from "../agents/AgentAvatarEditor";
@@ -6,6 +7,7 @@ import { fallbackAvatar } from "../agents/color";
 import {
   getAgent,
   getAgentCapabilities,
+  retireAgent,
   updateAgent,
   updateAgentAvatar,
 } from "../api/client";
@@ -15,14 +17,20 @@ import type {
   SkillSummary,
 } from "../api/types";
 import { Button } from "../components/Button";
+import { DeleteConfirmationDialog } from "../components/DeleteConfirmationDialog";
+import { LoadingState } from "../components/LoadingState";
 import { TextField } from "../components/FormField";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { SelectionRow } from "../components/SelectionRow";
 import { SettingsSection } from "../components/SettingsSection";
+import { Icon } from "../shell/icons";
 
 interface AgentDetailPageProps {
   agentId: string;
+  ready?: boolean;
+  onRenamed?: (slug: string) => void;
   workingDirectory: string;
+  onDeleted?: (agentId: string) => void;
 }
 
 function effectiveSelection(all: string[], allow: string[], deny: string[]): Set<string> {
@@ -55,6 +63,7 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
     },
   );
   const [agent, setAgent] = createSignal<AgentDetail>();
+  const [defaultModel, setDefaultModel] = createSignal<AgentDetail["default_model"]>(null);
   const [name, setName] = createSignal("");
   const [instructions, setInstructions] = createSignal("");
   const [toolIds, setToolIds] = createSignal<string[]>([]);
@@ -70,6 +79,7 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
   const [saveError, setSaveError] = createSignal("");
   const [saved, setSaved] = createSignal(false);
   const [editingAvatar, setEditingAvatar] = createSignal(false);
+  const [confirmingDelete, setConfirmingDelete] = createSignal(false);
   let requestGeneration = 0;
 
   const load = async (agentId: string, workingDirectory: string) => {
@@ -96,6 +106,7 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
       );
       const bySlug = new Map(nextCapabilities.skills.map((skill) => [skill.slug, skill]));
       setAgent(nextAgent);
+      setDefaultModel(nextAgent.default_model ?? null);
       directory.update(nextAgent);
       setName(nextAgent.name);
       setInstructions(nextAgent.instructions);
@@ -162,6 +173,8 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
     setSaved(false);
     try {
       const updated = await updateAgent(props.agentId, {
+        ...(JSON.stringify(defaultModel() ?? null) !== JSON.stringify(agent()?.default_model ?? null)
+          ? { default_model: defaultModel() ?? null } : {}),
         name: name().trim(),
         instructions: instructions().trim(),
         tools: accessUpdate(toolIds(), selectedTools()),
@@ -172,6 +185,7 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
       setName(updated.name);
       setInstructions(updated.instructions);
       setSaved(true);
+      if (updated.slug && updated.slug !== props.agentId) props.onRenamed?.(updated.slug);
     } catch (caught) {
       setSaveError(caught instanceof Error ? caught.message : "Unable to save this agent");
     } finally {
@@ -196,10 +210,17 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
     }
   };
 
+  const remove = async () => {
+    await retireAgent(props.agentId);
+    directory.remove(props.agentId);
+    setConfirmingDelete(false);
+    props.onDeleted?.(props.agentId);
+  };
+
   return (
     <section class="page agent-detail-page" aria-labelledby="agent-detail-title">
       <Show when={loading()}>
-        <div class="agent-detail-loading"><span /><span /><span /></div>
+        <LoadingState variant="detail" label="Loading agent" />
       </Show>
       <Show when={error()}>
         <div class="error-state">
@@ -221,13 +242,25 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
               <div>
                 <span class="eyebrow">Agent</span>
                 <h1 id="agent-detail-title">{current.name}</h1>
-                <p>{current.id} · {current.authority === "read_only" ? "Read only" : "Standard authority"}</p>
+                <p>{current.slug || current.id} · {current.authority === "read_only" ? "Read only" : "Standard authority"}</p>
               </div>
             </div>
             <div class="agent-save-bar">
               <span class="agent-save-state" classList={{ error: Boolean(saveError()) }} role="status">
                 {saveError() || (saved() ? "Changes saved" : "Changes write directly to AGENT.md")}
               </span>
+              <Show when={current.id !== "default"}>
+                <Button
+                  variant="icon"
+                  class="detail-delete-action"
+                  aria-label={`Delete ${current.name}`}
+                  title="Delete agent"
+                  disabled={saving()}
+                  onClick={() => setConfirmingDelete(true)}
+                >
+                  <Icon name="action.delete" size={17} />
+                </Button>
+              </Show>
               <Button variant="primary" loading={saving()} disabled={Boolean(nameError() || instructionsError())} onClick={() => void save()}>
                 Save changes
               </Button>
@@ -235,13 +268,16 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
           </header>
 
           <div class="agent-settings-stack">
-            <SettingsSection title="Identity" description="The display name can change. The agent slug is permanent once created.">
+            <SettingsSection title="Identity" description="The slug follows the display name when you save. Existing chats and history stay linked.">
               <div class="agent-field-grid">
                 <TextField label="Display name" value={name()} maxlength={80} error={nameError()} onInput={(event) => { setName(event.currentTarget.value); setSaved(false); }} />
-                <TextField label="Agent slug" value={current.id} disabled helper="Permanent ID used by sessions and history" />
+                <TextField label="Agent slug" value={current.slug || current.id} disabled helper="Updated automatically when you rename this agent" />
               </div>
             </SettingsSection>
 
+            <SettingsSection title="Default model" description="Used for new chats and delegated work. You can change the model in any chat without changing this default. Existing chats keep their model. With no default, delegated work inherits the parent chat’s model.">
+              <AgentDefaultModel ready={props.ready} value={defaultModel()} onChange={value => { setDefaultModel(value); setSaved(false); }} />
+            </SettingsSection>
             <SettingsSection title="AGENT.md instructions" description="Markdown instructions added to this agent's context on every turn.">
               <MarkdownEditor
                 label="Instructions"
@@ -293,6 +329,18 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
               onSave={(next) => void saveAvatar(next)}
               onClose={() => { if (!saving()) { setEditingAvatar(false); setSaveError(""); } }}
             />
+          </Show>
+          <Show when={confirmingDelete()}>
+            <DeleteConfirmationDialog
+              eyebrow="Delete agent"
+              title={`Delete ${current.name}?`}
+              confirmLabel="Delete agent"
+              onClose={() => setConfirmingDelete(false)}
+              onConfirm={remove}
+            >
+              <p>This retires the agent capsule so it can no longer be selected for new work.</p>
+              <p>Existing session history remains attributed to this agent.</p>
+            </DeleteConfirmationDialog>
           </Show>
         </>;
       }}</Show>

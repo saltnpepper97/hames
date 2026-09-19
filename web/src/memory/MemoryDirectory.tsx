@@ -9,11 +9,14 @@ const pageSize = 200;
 
 interface MemoryDirectoryContextValue {
   records: Accessor<MemoryRecord[]>;
+  sessionId: Accessor<string>;
   loading: Accessor<boolean>;
   loaded: Accessor<boolean>;
   error: Accessor<string>;
   ensureLoaded: () => Promise<void>;
   refresh: () => Promise<void>;
+  add: (record: MemoryRecord) => void;
+  remove: (id: string) => void;
 }
 
 const MemoryDirectoryContext = createContext<MemoryDirectoryContextValue>();
@@ -44,6 +47,7 @@ async function loadLayer(sessionId: string, layer: MemoryLayer): Promise<MemoryR
 export function MemoryDirectoryProvider(props: ParentProps) {
   const workspace = useWorkspace();
   const [records, setRecords] = createSignal<MemoryRecord[]>([]);
+  const [sessionId, setSessionId] = createSignal("");
   const [loading, setLoading] = createSignal(false);
   const [loadedPath, setLoadedPath] = createSignal("");
   const [error, setError] = createSignal("");
@@ -51,7 +55,7 @@ export function MemoryDirectoryProvider(props: ParentProps) {
 
   const refresh = (): Promise<void> => {
     if (pending) return pending;
-    const workingDirectory = workspace.snapshot()?.bootstrap.working_directory ?? "";
+    const workingDirectory = workspace.workingDirectory();
     if (!workingDirectory) return Promise.resolve();
 
     setLoading(true);
@@ -60,11 +64,13 @@ export function MemoryDirectoryProvider(props: ParentProps) {
       const session = workspace.sessions()[0] ?? await recentSession(workingDirectory);
       if (!session) {
         setRecords([]);
+        setSessionId("");
         setLoadedPath(workingDirectory);
         return;
       }
       const grouped = await Promise.all(layers.map((layer) => loadLayer(session.id, layer)));
       setRecords(grouped.flat());
+      setSessionId(session.id);
       setLoadedPath(workingDirectory);
     })()
       .catch((caught: unknown) => {
@@ -78,19 +84,30 @@ export function MemoryDirectoryProvider(props: ParentProps) {
   };
 
   const ensureLoaded = () => {
-    const workingDirectory = workspace.snapshot()?.bootstrap.working_directory ?? "";
+    const workingDirectory = workspace.workingDirectory();
     return workingDirectory && loadedPath() === workingDirectory ? Promise.resolve() : refresh();
   };
+
+  const add = (record: MemoryRecord) => setRecords((current) => [
+    record,
+    ...current.filter((candidate) => candidate.id !== record.id),
+  ]);
+  const remove = (id: string) => setRecords((current) =>
+    current.filter((record) => record.id !== id)
+  );
 
   return (
     <MemoryDirectoryContext.Provider
       value={{
         records,
+        sessionId,
         loading,
         loaded: () => Boolean(loadedPath()),
         error,
         ensureLoaded,
         refresh,
+        add,
+        remove,
       }}
     >
       {props.children}

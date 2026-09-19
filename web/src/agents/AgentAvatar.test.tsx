@@ -20,6 +20,7 @@ describe("AgentAvatar", () => {
       "M40 10V5m0 0 5-4m-5 4-5-4",
     );
     expect(container.querySelector(".agent-avatar-eyes")).toHaveClass("on-shell");
+    expect(container.querySelector(".agent-avatar-face")).not.toBeInTheDocument();
   });
 
   it("keeps the visor as dark glass with two light eye marks", () => {
@@ -33,19 +34,20 @@ describe("AgentAvatar", () => {
 
     expect(container.querySelector(".agent-visor")).toBeInTheDocument();
     expect(container.querySelectorAll(".agent-visor-eye")).toHaveLength(2);
+    expect(container.querySelector(".agent-avatar-eyes")).not.toHaveClass("on-shell");
+    expect(container.querySelector(".agent-avatar-face")).not.toBeInTheDocument();
   });
 
-  it("keeps the visor self-contrasting when the face plate is off", () => {
+  it("never draws a face plate even when stored metadata still has one", () => {
     const { container } = render(() => (
       <AgentAvatar
-        name="Visor"
+        name="Legacy"
         animated={false}
-        config={{ shape: "circle", eyes: "visor", face: "none", color: "#ffffff" }}
+        config={{ shape: "circle", eyes: "dots", face: "solid", color: "#ffffff" }}
       />
     ));
 
-    expect(container.querySelector(".agent-avatar-eyes")).not.toHaveClass("on-shell");
-    expect(container.querySelector(".agent-visor")).toBeInTheDocument();
-    expect(container.querySelectorAll(".agent-visor-eye")).toHaveLength(2);
+    expect(container.querySelector(".agent-avatar-face")).not.toBeInTheDocument();
+    expect(container.querySelector(".agent-avatar-eyes")).toHaveClass("on-shell");
   });
 });

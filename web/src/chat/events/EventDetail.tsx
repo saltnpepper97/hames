@@ -1,6 +1,7 @@
 import type { HamesEvent } from "../../api/types";
-import { Button } from "../../components/Button";
-import { eventCategory, eventCategoryLabel, eventTime, eventTypeLabel } from "./eventFormat";
+import { CloseButton } from "../../components/CloseButton";
+import { MarkdownInline } from "../../components/Markdown";
+import { eventCategory, eventCategoryLabel, eventSummary, eventTime, eventTypeLabel } from "./eventFormat";
 
 interface EventDetailProps {
   event: HamesEvent;
@@ -17,13 +18,15 @@ export function EventDetail(props: EventDetailProps) {
       <header>
         <div>
           <span class="event-category" data-category={eventCategory(props.event.type)}>
+            <i aria-hidden="true" />
             {eventCategoryLabel(eventCategory(props.event.type))}
           </span>
           <h3>{eventTypeLabel(props.event.type)}</h3>
           <time datetime={props.event.created_at}>{eventTime(props.event.created_at)}</time>
         </div>
-        <Button variant="icon" size="small" aria-label="Close event details" onClick={props.onClose}>×</Button>
+        <CloseButton aria-label="Close event details" onClick={props.onClose} />
       </header>
+      <MarkdownInline class="event-detail-summary" content={eventSummary(props.event)} />
       <dl class="event-detail-metadata">
         <div><dt>Sequence</dt><dd>#{props.event.sequence}</dd></div>
         <div><dt>Run</dt><dd title={display(props.event.run_id)}>{display(props.event.run_id)}</dd></div>

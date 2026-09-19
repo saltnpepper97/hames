@@ -1,7 +1,11 @@
+import { useNavigate } from "@solidjs/router";
 import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
-import { inspectScar } from "../api/client";
+import { deleteScar, inspectScar } from "../api/client";
 import type { Scar, ScarInspection } from "../api/types";
+import { Badge } from "../components/Badge";
 import { Button } from "../components/Button";
+import { DeleteConfirmationDialog } from "../components/DeleteConfirmationDialog";
+import { LoadingState } from "../components/LoadingState";
 import { DetailHeading } from "../components/DetailHeading";
 import { DetailStatStrip } from "../components/DetailStatStrip";
 import { Separator } from "../components/Separator";
@@ -13,6 +17,7 @@ import { ScarRepairCard } from "../scars/ScarRepairCard";
 import { ScarStatusBadge } from "../scars/ScarStatusBadge";
 import { ScarTriggers } from "../scars/ScarTriggers";
 import { scarDate, scarLabel, shortScarId } from "../scars/format";
+import { Icon } from "../shell/icons";
 
 interface ScarPageProps {
   scarId: string;
@@ -30,7 +35,7 @@ function protectionCopy(scar: ScarInspection): string {
   }
 }
 
-function ScarDetail(props: { scar: Scar; inspection: ScarInspection }) {
+function ScarDetail(props: { scar: Scar; inspection: ScarInspection; onDelete: () => void }) {
   const repair = () => props.inspection.repair_layer
     ? scarLabel(props.inspection.repair_layer)
     : "No repair attached";
@@ -46,7 +51,16 @@ function ScarDetail(props: { scar: Scar; inspection: ScarInspection }) {
         badges={<div class="scar-heading-badges" aria-label="Scar classification">
           <ScarStatusBadge status={props.inspection.status} />
           <ScarStatusBadge severity={props.inspection.severity} />
-          <span class="scar-scope-badge">{scarLabel(props.inspection.scope)}</span>
+          <Badge variant="outline" size="sm">{scarLabel(props.inspection.scope)}</Badge>
+          <Button
+            variant="icon"
+            class="detail-delete-action"
+            aria-label={`Delete ${props.inspection.title}`}
+            title="Delete Scar"
+            onClick={props.onDelete}
+          >
+            <Icon name="action.delete" size={17} />
+          </Button>
         </div>}
       />
 
@@ -115,9 +129,11 @@ function ScarDetail(props: { scar: Scar; inspection: ScarInspection }) {
 
 export function ScarPage(props: ScarPageProps) {
   const directory = useScarDirectory();
+  const navigate = useNavigate();
   const [inspection, setInspection] = createSignal<ScarInspection>();
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal("");
+  const [confirmingDelete, setConfirmingDelete] = createSignal(false);
   let requestId = 0;
 
   const scar = () => directory.scars().find((candidate) => candidate.id === props.scarId);
@@ -147,14 +163,24 @@ export function ScarPage(props: ScarPageProps) {
   });
   onCleanup(() => { requestId += 1; });
 
+  const remove = async () => {
+    const sessionId = directory.sessionId();
+    if (!sessionId) throw new Error("No active session can delete this Scar.");
+    await deleteScar(sessionId, props.scarId);
+    directory.remove(props.scarId);
+    setConfirmingDelete(false);
+    navigate("/scars", { replace: true });
+  };
+
   return (
+    <>
     <Show
       when={scar()}
       keyed
       fallback={
         <section class="page scar-route-state">
           <Show when={directory.loading() || !directory.loaded()}>
-            <div class="scar-detail-loading"><span /><span /><span /></div>
+            <LoadingState variant="detail" label="Loading Scar" />
           </Show>
           <Show when={directory.loaded() && !directory.loading()}>
             <div class="error-state">
@@ -167,7 +193,7 @@ export function ScarPage(props: ScarPageProps) {
       {(selected) => (
         <Show when={inspection()} keyed fallback={
           <section class="page scar-route-state">
-            <Show when={loading()}><div class="scar-detail-loading"><span /><span /><span /></div></Show>
+            <Show when={loading()}><LoadingState variant="detail" label="Inspecting Scar" /></Show>
             <Show when={error()}>
               <div class="error-state">
                 <div><span class="eyebrow">Scar inspection</span><h2>The lineage could not be loaded.</h2><p>{error()}</p></div>
@@ -179,9 +205,24 @@ export function ScarPage(props: ScarPageProps) {
             </Show>
           </section>
         }>
-          {(details) => <ScarDetail scar={selected} inspection={details} />}
+          {(details) => <ScarDetail scar={selected} inspection={details} onDelete={() => setConfirmingDelete(true)} />}
         </Show>
       )}
     </Show>
+    <Show when={confirmingDelete() && inspection()} keyed>
+      {(details) => (
+        <DeleteConfirmationDialog
+          eyebrow="Delete Scar"
+          title={`Delete ${details.title}?`}
+          confirmLabel="Delete Scar"
+          onClose={() => setConfirmingDelete(false)}
+          onConfirm={remove}
+        >
+          <p>This permanently removes the Scar and its repair records from active storage.</p>
+          <p>The audit event recording this deletion remains in the local ledger.</p>
+        </DeleteConfirmationDialog>
+      )}
+    </Show>
+    </>
   );
 }

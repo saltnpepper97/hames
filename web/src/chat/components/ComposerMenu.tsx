@@ -2,6 +2,7 @@ import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
 import type { SemanticIconName } from "../../shell/icons";
 import { Icon } from "../../shell/icons";
 import { Button } from "../../components/Button";
+import { LoadingState } from "../../components/LoadingState";
 import { DropdownSurface } from "../../components/DropdownSurface";
 
 export interface ComposerMenuOption {
@@ -101,7 +102,7 @@ export function ComposerMenu(props: ComposerMenuProps) {
         role="menu"
         ariaLabel={props.ariaLabel}
       >
-        <Show when={!props.loading} fallback={<div class="composer-menu-state">Loading…</div>}>
+        <Show when={!props.loading} fallback={<LoadingState variant="inline" label="Loading options" class="composer-menu-state" />}>
           <For
             each={props.options}
             fallback={<div class="composer-menu-state">{props.emptyMessage ?? "No options"}</div>}
@@ -118,6 +119,9 @@ export function ComposerMenu(props: ComposerMenuProps) {
                   {(icon) => <Icon name={icon()} size={16} />}
                 </Show>
                 <span>{option.label}</span>
+                <span class="composer-selected-mark" aria-hidden="true">
+                  <Show when={option.value === props.value}><Icon name="action.selected" size={14} /></Show>
+                </span>
               </Button>
             )}
           </For>

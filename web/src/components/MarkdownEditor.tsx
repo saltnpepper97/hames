@@ -2,6 +2,7 @@ import { Show, createSignal, createUniqueId } from "solid-js";
 import type { JSX } from "solid-js";
 import { Button } from "./Button";
 import { Markdown } from "./Markdown";
+import { TextArea } from "./TextArea";
 
 interface MarkdownEditorProps {
   label: string;
@@ -9,6 +10,7 @@ interface MarkdownEditorProps {
   rows?: number;
   helper?: string;
   error?: string;
+  resizable?: boolean;
   onInput: JSX.EventHandlerUnion<HTMLTextAreaElement, InputEvent>;
 }
 
@@ -60,11 +62,13 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
           </div>
         }
       >
-        <textarea
+        <TextArea
           id={id}
           class="markdown-editor-input"
           value={props.value}
           rows={props.rows ?? 14}
+          resize={props.resizable === false ? "none" : "vertical"}
+          resizeLabel={`Resize ${props.label}`}
           aria-label={props.label}
           aria-invalid={props.error ? true : undefined}
           aria-describedby={props.helper || props.error ? descriptionId : undefined}

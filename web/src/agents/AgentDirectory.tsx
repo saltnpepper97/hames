@@ -11,6 +11,7 @@ interface AgentDirectoryContextValue {
   ensureLoaded: () => Promise<void>;
   refresh: () => Promise<void>;
   update: (agent: AgentPublic) => void;
+  remove: (id: string) => void;
 }
 
 const AgentDirectoryContext = createContext<AgentDirectoryContextValue>();
@@ -57,9 +58,13 @@ export function AgentDirectoryProvider(props: ParentProps) {
     });
   };
 
+  const remove = (id: string) => setAgents((current) =>
+    current.filter((agent) => agent.id !== id)
+  );
+
   return (
     <AgentDirectoryContext.Provider
-      value={{ agents, loading, loaded, error, ensureLoaded, refresh, update }}
+      value={{ agents, loading, loaded, error, ensureLoaded, refresh, update, remove }}
     >
       {props.children}
     </AgentDirectoryContext.Provider>

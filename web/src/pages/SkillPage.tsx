@@ -1,10 +1,15 @@
+import { canDeleteSkill } from "../skills/eligibility";
+import { useNavigate } from "@solidjs/router";
 import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
-import { getAvailableSkill } from "../api/client";
+import { deleteSkill, getAvailableSkill } from "../api/client";
 import type { SkillSource, SkillVersion } from "../api/types";
 import { Button } from "../components/Button";
+import { DeleteConfirmationDialog } from "../components/DeleteConfirmationDialog";
+import { LoadingState } from "../components/LoadingState";
 import { Markdown } from "../components/Markdown";
 import { Separator } from "../components/Separator";
 import { useSkillDirectory } from "../skills/SkillDirectory";
+import { Icon } from "../shell/icons";
 
 interface SkillPageProps {
   skillSlug: string;
@@ -33,9 +38,11 @@ function ChipList(props: { values: string[]; empty: string }) {
 
 export function SkillPage(props: SkillPageProps) {
   const directory = useSkillDirectory();
+  const navigate = useNavigate();
   const [detail, setDetail] = createSignal<SkillVersion>();
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal("");
+  const [confirmingDelete, setConfirmingDelete] = createSignal(false);
   const summary = () => directory.skills().find((skill) => skill.slug === props.skillSlug);
   let requestId = 0;
 
@@ -59,10 +66,20 @@ export function SkillPage(props: SkillPageProps) {
   createEffect(load);
   onCleanup(() => { requestId += 1; });
 
+  const remove = async () => {
+    const sessionId = directory.sessionId();
+    if (!sessionId) throw new Error("No active session can delete this Skill.");
+    await deleteSkill(sessionId, props.skillSlug);
+    directory.remove(props.skillSlug);
+    setConfirmingDelete(false);
+    navigate("/skills", { replace: true });
+  };
+
   return (
+    <>
     <section class="page skill-page" aria-labelledby="skill-title">
       <Show when={loading()}>
-        <div class="skill-detail-loading" aria-label="Loading Skill"><span /><span /><span /></div>
+        <LoadingState variant="detail" label="Loading Skill" />
       </Show>
       <Show when={error()}>
         <div class="error-state">
@@ -73,9 +90,22 @@ export function SkillPage(props: SkillPageProps) {
       <Show when={detail()} keyed>{(skill) => (
         <>
           <header class="skill-heading">
-            <span class="eyebrow">{sourceLabel(summary()?.source ?? "managed")}</span>
-            <h1 id="skill-title">{skill.name}</h1>
-            <p>{skill.description}</p>
+            <div class="skill-heading-copy">
+              <span class="eyebrow">{sourceLabel(summary()?.source ?? "managed")}</span>
+              <h1 id="skill-title">{skill.name}</h1>
+              <p>{skill.description}</p>
+            </div>
+            <Show when={canDeleteSkill(summary())}>
+              <Button
+                variant="icon"
+                class="detail-delete-action"
+                aria-label={`Delete ${skill.name}`}
+                title="Delete Skill"
+                onClick={() => setConfirmingDelete(true)}
+              >
+                <Icon name="action.delete" size={17} />
+              </Button>
+            </Show>
           </header>
 
           <div class="skill-stat-strip" aria-label="Skill status">
@@ -128,5 +158,20 @@ export function SkillPage(props: SkillPageProps) {
         </div>
       </Show>
     </section>
+    <Show when={confirmingDelete() && detail()} keyed>
+      {(skill) => (
+        <DeleteConfirmationDialog
+          eyebrow="Delete Skill"
+          title={`Delete ${skill.name}?`}
+          confirmLabel="Delete Skill"
+          onClose={() => setConfirmingDelete(false)}
+          onConfirm={remove}
+        >
+          <p>This removes the Hames-created Skill from the active catalog.</p>
+          <p>Its immutable versions and audit evidence remain stored locally.</p>
+        </DeleteConfirmationDialog>
+      )}
+    </Show>
+    </>
   );
 }

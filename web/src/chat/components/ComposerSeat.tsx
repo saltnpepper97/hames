@@ -10,6 +10,7 @@ interface ComposerSeatProps {
   disabled: boolean;
   onSessionUpdated: (session: Session) => void;
   onError: (message: string) => void;
+  onOpenActions: () => void;
 }
 
 export function ComposerSeat(props: ComposerSeatProps) {
@@ -26,6 +27,7 @@ export function ComposerSeat(props: ComposerSeatProps) {
             disabled={props.disabled}
             onSessionUpdated={props.onSessionUpdated}
             onError={props.onError}
+            onOpenActions={props.onOpenActions}
           />
         )}
       </For>

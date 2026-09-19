@@ -1,3 +1,6 @@
+import { Show } from "solid-js";
+import { Spinner } from "./Spinner";
+
 export type ConnectionState =
   | "connecting"
   | "connected"
@@ -27,7 +30,12 @@ export function ConnectionStatus(props: ConnectionStatusProps) {
       role="status"
       title={props.compact ? labels[props.state] : undefined}
     >
-      <span class="connection-dot" aria-hidden="true" />
+      <Show
+        when={props.state === "connecting" || props.state === "reconnecting"}
+        fallback={<span class="connection-dot" aria-hidden="true" />}
+      >
+        <Spinner size="sm" />
+      </Show>
       <span class="connection-label">{labels[props.state]}</span>
     </span>
   );

@@ -8,8 +8,10 @@ session.settings.changed
 session.agent.changed
 session.mode.changed
 session.title.changed
+session.pinned.changed
 user.message
 queue.enqueued
+queue.updated
 queue.removed
 queue.promoted
 queue.prioritized
@@ -80,6 +82,7 @@ delegation.requested
 delegation.task_card
 delegation.completed
 delegation.failed
+delegation.stopping
 memory.proposed
 memory.accepted
 memory.rejected
@@ -123,6 +126,7 @@ skill.outcome.recorded
 skill.control.requested
 skill.staled
 skill.archived
+skill.deleted
 skill.restored
 skill.pinned
 skill.unpinned
@@ -162,6 +166,7 @@ plugin.proposal.created
 `.trim().split(/\s+/);
 
 export const transientEventTypes = [
+  "response.snapshot",
   "response.reasoning_delta",
   "response.text_delta",
   "response.tool_call_delta",

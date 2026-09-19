@@ -7,8 +7,11 @@ import {
   onMount,
 } from "solid-js";
 import type { ParentProps } from "solid-js";
+import { closeSession, updateSessionPinned } from "../api/client";
+import type { Session, Workspace } from "../api/types";
 import type { WebPluginRegistry } from "../shell/plugins";
 import { useWorkspace } from "../shell/workspace";
+import { Icon } from "../shell/icons";
 import { Brand } from "./Brand";
 import { Button } from "./Button";
 import { ConnectionStatus } from "./ConnectionStatus";
@@ -19,20 +22,19 @@ interface AppShellProps extends ParentProps {
 }
 
 const mobileSidebarQuery = "(max-width: 820px)";
-const compactSidebarQuery = "(min-width: 821px) and (max-width: 1100px)";
-
-function initiallyCollapsed(): boolean {
-  return typeof window !== "undefined" && Boolean(window.matchMedia?.(compactSidebarQuery).matches);
-}
 
 export function AppShell(props: AppShellProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const workspace = useWorkspace();
   const [navigationOpen, setNavigationOpen] = createSignal(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = createSignal(initiallyCollapsed());
+  const [sidebarCollapsed, setSidebarCollapsed] = createSignal(false);
+  const [sidebarPeeking, setSidebarPeeking] = createSignal(false);
   const [creatingChat, setCreatingChat] = createSignal(false);
   const [createChatError, setCreateChatError] = createSignal("");
+  const [lastChatPath, setLastChatPath] = createSignal(
+    location.pathname.startsWith("/chat/") ? location.pathname : "/chat",
+  );
   const activeSurface = createMemo(() => {
     const fallback = props.registry.surfaces[0];
     if (!fallback) throw new Error("Hames Web has no registered surfaces");
@@ -51,14 +53,22 @@ export function AppShell(props: AppShellProps) {
     const sidebar = activeSurface().sidebar;
     return sidebar.kind === "component" ? sidebar.component : undefined;
   });
+  const sidebarActionComponent = createMemo(() => {
+    const sidebar = activeSurface().sidebar;
+    return sidebar.kind === "component" ? sidebar.action : undefined;
+  });
 
   createEffect(() => {
-    location.pathname;
+    const path = location.pathname;
+    if (path.startsWith("/chat/")) setLastChatPath(path);
     setNavigationOpen(false);
   });
 
   const closeOnEscape = (event: KeyboardEvent) => {
-    if (event.key === "Escape") setNavigationOpen(false);
+    if (event.key === "Escape") {
+      setNavigationOpen(false);
+      setSidebarPeeking(false);
+    }
   };
 
   const toggleSidebar = () => {
@@ -68,16 +78,32 @@ export function AppShell(props: AppShellProps) {
     }
     setSidebarCollapsed((collapsed) => {
       const next = !collapsed;
-      if (!compactViewport?.matches) preferredSidebarCollapsed = next;
+      preferredSidebarCollapsed = next;
       return next;
     });
+    setSidebarPeeking(false);
   };
 
-  const createChat = async () => {
+  const previewSidebar = () => {
+    if (sidebarCollapsed() && !mobileViewport?.matches) setSidebarPeeking(true);
+  };
+
+  const stopPreviewingSidebar = () => {
+    if (sidebarCollapsed()) setSidebarPeeking(false);
+  };
+
+  const createChat = async (workspaceId?: string) => {
     if (creatingChat()) return;
+    if (!workspaceId && !workspace.selectedWorkspace()) {
+      navigate("/chat");
+      return;
+    }
     setCreatingChat(true);
     setCreateChatError("");
     try {
+      if (workspaceId && workspaceId !== workspace.selectedWorkspace()?.id) {
+        await workspace.selectWorkspace(workspaceId);
+      }
       const session = await workspace.createChat();
       navigate(`/chat/${encodeURIComponent(session.id)}`);
     } catch (error) {
@@ -87,16 +113,47 @@ export function AppShell(props: AppShellProps) {
     }
   };
 
+  const toggleChatPinned = async (session: Session) => {
+    const updated = await updateSessionPinned(session.id, !session.pinned);
+    workspace.updateSession(updated);
+  };
+
+  const deleteChat = async (session: Session) => {
+    await closeSession(session.id);
+    workspace.removeSession(session.id);
+    if (location.pathname === `/chat/${encodeURIComponent(session.id)}`) {
+      navigate("/chat", { replace: true });
+    }
+  };
+
+  const openChat = async (workspaceId: string, sessionId: string) => {
+    if (workspaceId !== workspace.selectedWorkspace()?.id) {
+      await workspace.selectWorkspace(workspaceId);
+    }
+    navigate(`/chat/${encodeURIComponent(sessionId)}`);
+  };
+
+  const addWorkspace = async (added: Workspace) => {
+    await createChat(added.id);
+  };
+
+  const removeWorkspace = async (id: string) => {
+    const removingSelected = workspace.selectedWorkspace()?.id === id;
+    await workspace.removeWorkspace(id);
+    if (removingSelected) navigate("/chat", { replace: true });
+  };
+
   let preferredSidebarCollapsed = false;
   let mobileViewport: MediaQueryList | undefined;
-  let compactViewport: MediaQueryList | undefined;
+  let sidebarPeekCloseTimer: ReturnType<typeof setTimeout> | undefined;
+  const cancelPreviewClose = () => {
+    if (!sidebarPeekCloseTimer) return;
+    clearTimeout(sidebarPeekCloseTimer);
+    sidebarPeekCloseTimer = undefined;
+  };
   const syncResponsiveSidebar = () => {
     if (mobileViewport?.matches) {
       setSidebarCollapsed(false);
-      return;
-    }
-    if (compactViewport?.matches) {
-      setSidebarCollapsed(true);
       return;
     }
     setSidebarCollapsed(preferredSidebarCollapsed);
@@ -105,19 +162,23 @@ export function AppShell(props: AppShellProps) {
   onMount(() => {
     document.addEventListener("keydown", closeOnEscape);
     mobileViewport = window.matchMedia?.(mobileSidebarQuery);
-    compactViewport = window.matchMedia?.(compactSidebarQuery);
     syncResponsiveSidebar();
     mobileViewport?.addEventListener("change", syncResponsiveSidebar);
-    compactViewport?.addEventListener("change", syncResponsiveSidebar);
   });
   onCleanup(() => {
+    cancelPreviewClose();
     document.removeEventListener("keydown", closeOnEscape);
     mobileViewport?.removeEventListener("change", syncResponsiveSidebar);
-    compactViewport?.removeEventListener("change", syncResponsiveSidebar);
   });
 
   return (
-    <div class="app-frame" classList={{ "sidebar-collapsed": sidebarCollapsed() }}>
+    <div
+      class="app-frame"
+      classList={{
+        "sidebar-collapsed": sidebarCollapsed(),
+        "sidebar-peeking": sidebarPeeking(),
+      }}
+    >
       <a class="skip-link" href="#main-content">
         Skip to content
       </a>
@@ -131,11 +192,10 @@ export function AppShell(props: AppShellProps) {
           aria-controls="navigation-stack"
           onClick={() => setNavigationOpen((open) => !open)}
         >
-          <span />
-          <span />
+          <Icon name="action.menu" size={23} />
         </Button>
         <Brand />
-        <ConnectionStatus state={workspace.connection()} compact />
+        <ConnectionStatus state={workspace.connection()} />
       </header>
 
       <Button
@@ -147,19 +207,60 @@ export function AppShell(props: AppShellProps) {
         onClick={() => setNavigationOpen(false)}
       />
 
-      <div id="navigation-stack" class="navigation-stack" classList={{ open: navigationOpen() }}>
+      <Button
+        variant="bare"
+        class="sidebar-reveal-button"
+        type="button"
+        aria-label="Expand sidebar"
+        title="Expand sidebar"
+        aria-hidden={sidebarPeeking() || undefined}
+        tabIndex={sidebarPeeking() ? -1 : undefined}
+        onPointerEnter={() => {
+          cancelPreviewClose();
+          previewSidebar();
+        }}
+        onPointerLeave={() => {
+          cancelPreviewClose();
+          sidebarPeekCloseTimer = setTimeout(stopPreviewingSidebar, 260);
+        }}
+        onClick={toggleSidebar}
+      >
+        <Icon name="action.expandSidebar" size={18} />
+      </Button>
+
+      <div
+        id="navigation-stack"
+        class="navigation-stack"
+        classList={{ open: navigationOpen() }}
+        aria-hidden={sidebarCollapsed() && !sidebarPeeking() || undefined}
+        onPointerEnter={() => {
+          cancelPreviewClose();
+          previewSidebar();
+        }}
+        onPointerLeave={stopPreviewingSidebar}
+      >
         <NavigationSidebar
           registry={props.registry}
           activeSurface={activeSurface()}
-          sessions={workspace.sessions()}
+          sessions={workspace.allSessions()}
+          workspaces={workspace.workspaces()}
+          selectedWorkspace={workspace.selectedWorkspace()}
           connection={workspace.connection()}
           collapsed={sidebarCollapsed()}
           creatingChat={creatingChat()}
           createChatError={createChatError()}
           sidebarComponent={sidebarComponent()}
+          sidebarActionComponent={sidebarActionComponent()}
           sectionDescription={sectionDescription()}
           onToggleCollapsed={toggleSidebar}
-          onCreateChat={() => void createChat()}
+          onOpenChatSurface={() => navigate(lastChatPath())}
+          onCreateChat={(workspaceId) => void createChat(workspaceId)}
+          onOpenChat={openChat}
+          onToggleChatPinned={toggleChatPinned}
+          onDeleteChat={deleteChat}
+          onWorkspaceAdded={addWorkspace}
+          onRenameWorkspace={workspace.renameWorkspace}
+          onRemoveWorkspace={removeWorkspace}
         />
       </div>
 

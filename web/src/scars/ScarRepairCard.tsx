@@ -1,9 +1,17 @@
 import { For, Show } from "solid-js";
 import type { ScarEvaluation, ScarRepair } from "../api/types";
+import { Badge } from "../components/Badge";
+import type { BadgeVariant } from "../components/Badge";
 import { scarDate, scarLabel, shortScarId } from "./format";
 
 function score(value: number): string {
   return value >= 0 && value <= 1 ? `${Math.round(value * 100)}%` : String(value);
+}
+
+function statusVariant(status: ScarRepair["status"]): BadgeVariant {
+  if (status === "promoted") return "success";
+  if (status === "rejected") return "destructive";
+  return "warning";
 }
 
 export function ScarRepairCard(props: { repair: ScarRepair; evaluations: ScarEvaluation[] }) {
@@ -16,8 +24,10 @@ export function ScarRepairCard(props: { repair: ScarRepair; evaluations: ScarEva
           <h3>{scarLabel(props.repair.repair_layer)}</h3>
         </div>
         <div class="scar-repair-badges">
-          <span data-status={props.repair.status}>{scarLabel(props.repair.status)}</span>
-          <span data-risk={props.repair.risk}>{scarLabel(props.repair.risk)} risk</span>
+          <Badge size="sm" variant={statusVariant(props.repair.status)}>{scarLabel(props.repair.status)}</Badge>
+          <Badge size="sm" variant={props.repair.risk === "high" ? "destructive" : "outline"}>
+            {scarLabel(props.repair.risk)} risk
+          </Badge>
         </div>
       </header>
       <p class="scar-repair-rationale">{props.repair.rationale}</p>

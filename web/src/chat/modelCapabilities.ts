@@ -9,7 +9,7 @@ export function modelReasoningEfforts(model: ProviderModel): string[] {
   }
 
   const efforts = model.reasoning_efforts.filter((effort) => effort !== "default");
-  if (!efforts.includes("off")) efforts.push("off");
+  if (!model.id.toLowerCase().startsWith("glm-5.3") && !efforts.includes("off")) efforts.push("off");
   return efforts;
 }
 

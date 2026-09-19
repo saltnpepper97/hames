@@ -5,6 +5,26 @@ export interface WebBootstrap {
   csrf_token: string;
 }
 
+export interface Workspace {
+  id: string;
+  path: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  available: boolean;
+}
+
+export interface DirectoryEntry {
+  name: string;
+  path: string;
+}
+
+export interface DirectoryListing {
+  path: string;
+  parent: string | null;
+  directories: DirectoryEntry[];
+}
+
 export interface GatewayHealth {
   status: string;
   version: string;
@@ -20,6 +40,9 @@ export interface GatewayHealth {
 }
 
 export interface Session {
+  parent_session_id?: string | null;
+  fork_event_id?: string | null;
+  lineage_kind?: string;
   id: string;
   created_at: string;
   status: string;
@@ -30,9 +53,111 @@ export interface Session {
   model: string;
   reasoning_effort: string;
   interaction_mode: SessionMode;
+  pinned: boolean;
 }
 
-export type AgentAvatarShape = "circle" | "square" | "triangle" | "cloud" | "hex";
+export interface ContextUsage {
+  provider: string;
+  model: string;
+  agent_id: string;
+  estimated_input_tokens: number;
+  context_window_tokens: number;
+  input_budget_tokens: number;
+  output_reserve_tokens: number;
+  context_window_source: string;
+}
+
+export interface ContextSource {
+  source_id: string;
+  source_type: string;
+  content_hash: string;
+  priority: number;
+  estimated_tokens: number;
+  selected_tokens: number;
+  visibility: string;
+  truncation: string;
+  reason: string;
+  event_ids: string[];
+  origin: string;
+  source_path: string;
+  memory_id: string;
+  memory_layer: string;
+  memory_visibility: string;
+  skill_id: string;
+  skill_version_id: string;
+  skill_slug: string;
+  skill_version: number;
+  skill_scope: string;
+}
+
+export interface ContextManifest extends ContextUsage {
+  compiler_version: number;
+  estimator_version: string;
+  reasoning_effort: string;
+  selected_sources: ContextSource[];
+  omitted_sources: ContextSource[];
+  source_order: string[];
+  contributing_event_ids: string[];
+  request_hash: string;
+  request_snapshot_blob_hash: string;
+  agent_capsule_hash: string;
+  agent_capsule_path: string;
+  agent_origin: string;
+}
+
+export interface ContextInspection {
+  event_id: string;
+  session_id: string;
+  run_id: string;
+  manifest: ContextManifest;
+  request_snapshot: Record<string, unknown>;
+}
+
+export interface DailyUsage {
+  date: string;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  reasoning_tokens: number;
+  provider_reported_cost: number;
+  model_requests: number;
+}
+
+export interface AccountUsageWindow {
+  used: number;
+  remaining: number;
+  reset_at: number | string | null;
+  window_minutes: number | null;
+}
+
+export interface AccountRateLimits {
+  plan_type?: string | null;
+  limit_id?: string | null;
+  observed_at?: number;
+  sliding_window_5h?: AccountUsageWindow;
+  weekly_window?: AccountUsageWindow;
+  primary?: AccountUsageWindow;
+  secondary?: AccountUsageWindow;
+}
+
+export interface SessionUsage {
+  estimated_input_tokens: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  reasoning_tokens: number;
+  provider_reported_cost: number;
+  model_requests: number;
+  latest_context: ContextUsage | null;
+  account_rate_limits: AccountRateLimits | null;
+  account_rate_limits_error: string;
+  grok_account_usage?: { label: string; window: AccountUsageWindow; observed_at: number } | null;
+  grok_account_usage_error?: string;
+  grok_account_configured?: boolean;
+  daily_activity?: DailyUsage[];
+}
+
+export type AgentAvatarShape = "circle" | "square" | "triangle" | "cloud" | "hex" | "drop";
 export type AgentAvatarEyes = "dots" | "visor" | "pill";
 export type AgentAvatarFace = "solid" | "none";
 export type AgentAuthority = "standard" | "read_only";
@@ -45,6 +170,7 @@ export interface AgentAvatarConfig {
 }
 
 export interface AgentPublic {
+  slug?: string;
   id: string;
   name: string;
   authority: AgentAuthority;
@@ -60,6 +186,7 @@ export interface AgentCreate {
 }
 
 export interface AgentDetail extends AgentPublic {
+  default_model?: { provider: string; model: string; reasoning_effort: string } | null;
   source: string;
   instructions: string;
   tools_allow: string[];
@@ -107,6 +234,23 @@ export interface SkillCatalogEntry extends SkillSummary {
   argument_hint: string;
   source: SkillSource;
   archived: boolean;
+}
+
+export interface SkillJob {
+  id: string;
+  kind: "author" | "patch" | "revalidate";
+  status: "pending" | "running" | "completed" | "failed" | "cancelled" | "budget_wait";
+  session_id: string;
+  run_id: string | null;
+  source_event_id: string;
+  target_skill_id: string | null;
+  goal: string;
+  scope: SkillScope;
+  attempts: number;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface SkillMetadata {
@@ -175,6 +319,16 @@ export interface PluginInspectView {
   files: string[];
 }
 
+export interface PluginUploadFile {
+  path: string;
+  data_base64: string;
+}
+
+export interface PluginUploadInspection {
+  upload_id: string;
+  plugin: PluginInspectView;
+}
+
 export interface AgentCapabilities {
   tools: string[];
   skills: SkillSummary[];
@@ -187,6 +341,7 @@ export interface AgentAccessUpdate {
 }
 
 export interface AgentUpdate {
+  default_model?: AgentDetail["default_model"];
   name: string;
   instructions: string;
   tools: AgentAccessUpdate;
@@ -232,9 +387,27 @@ export interface MemoryRecord {
   provenance_event_ids: string[];
 }
 
+export interface MemoryCreate {
+  layer: MemoryLayer;
+  visibility: MemoryVisibility;
+  subject: string;
+  predicate: string;
+  value: string;
+  summary: string;
+}
+
 export type ScarStatus = "candidate" | "open" | "repair_proposed" | "guarded" | "healed" | "regressed" | "dismissed";
 export type ScarSeverity = "low" | "medium" | "high";
 export type ScarScope = "global" | "workspace" | "agent";
+
+export interface ScarCreate {
+  title: string;
+  severity: ScarSeverity;
+  scope: ScarScope;
+  failure_signature: string;
+  description: string;
+  expected_behavior: string;
+}
 
 export interface ScarTrigger {
   workspace_paths: string[];
@@ -360,6 +533,8 @@ export interface ProviderModel {
   context_length: number | null;
   parameter_size: string | null;
   quantization: string | null;
+  input_modalities: string[];
+  output_modalities: string[];
   reasoning_supported: boolean | null;
   reasoning_efforts: string[];
 }
@@ -419,6 +594,44 @@ export interface MessageAccepted {
   queued: { queue_id: string; position: number } | null;
 }
 
+export interface MessageAttachmentUpload {
+  name: string;
+  media_type: string;
+  data_base64: string;
+}
+
+export interface MessageAttachment {
+  digest: string;
+  name: string;
+  media_type: string;
+  kind: "image" | "text";
+  size: number;
+}
+
+export interface CompactionAccepted {
+  run_id: string;
+  trigger: "manual";
+}
+
+export type GoalStatus = "running" | "yielded" | "paused" | "achieved" | "blocked" | "cancelled";
+
+export interface Goal {
+  id: string;
+  session_id: string;
+  objective: string;
+  status: GoalStatus;
+  step_count: number;
+  current_run_id: string | null;
+  latest_summary: string;
+  latest_evidence: string[];
+  latest_signature: string;
+  repeated_no_progress: number;
+  active_seconds: number;
+  active_since: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ApiErrorBody {
   error?: {
     code?: string;
@@ -431,4 +644,12 @@ export interface DashboardSnapshot {
   bootstrap: WebBootstrap;
   health: GatewayHealth;
   sessions: Session[];
+  workspaces: Workspace[];
+  selected_workspace?: Workspace;
+}
+
+export interface MessageQueueState {
+  session_id: string;
+  paused: boolean;
+  items: { id: string; content: string; position: number; attachments: unknown[] }[];
 }

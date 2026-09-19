@@ -1,4 +1,4 @@
-import { Match, Show, Switch } from "solid-js";
+import { Match, Switch } from "solid-js";
 import type { AgentAvatarConfig } from "../api/types";
 import { contrastingEyeColor } from "./color";
 
@@ -11,9 +11,7 @@ interface AgentAvatarProps {
 
 export function AgentAvatar(props: AgentAvatarProps) {
   const size = () => props.size ?? 72;
-  const faceY = () => props.config.shape === "triangle" ? 40 : 31;
-  const faceHeight = () => props.config.shape === "triangle" ? 20 : 24;
-  const eyeY = () => props.config.shape === "triangle" ? 50 : 43;
+  const eyeY = () => props.config.shape === "triangle" || props.config.shape === "drop" ? 50 : 43;
   const animationOffset = () => {
     const seed = [...props.name].reduce((total, character) => total + character.charCodeAt(0), 0);
     return `${-(seed % 47) / 10}s`;
@@ -36,11 +34,16 @@ export function AgentAvatar(props: AgentAvatarProps) {
         <g class="agent-avatar-body">
           <path
             class="agent-antenna"
-            d={props.config.shape === "cloud"
+            d={props.config.shape === "drop"
+              ? "M40 14V9m0 0 5-4m-5 4-5-4"
+              : props.config.shape === "cloud"
               ? "M40 10V5m0 0 5-4m-5 4-5-4"
               : "M40 17V10m0 0 5-4m-5 4-5-4"}
           />
           <Switch>
+            <Match when={props.config.shape === "drop"}>
+              <path class="agent-avatar-shell" d="M40 9C37 19 13 34 13 49a27 25 0 0 0 54 0C67 34 43 19 40 9Z" />
+            </Match>
             <Match when={props.config.shape === "square"}>
               <rect class="agent-avatar-shell" x="13" y="18" width="54" height="52" rx="8" />
             </Match>
@@ -59,42 +62,36 @@ export function AgentAvatar(props: AgentAvatarProps) {
               </g>
             </Match>
             <Match when={props.config.shape === "hex"}>
-              <path class="agent-avatar-shell" d="m40 10 27 15v30L40 70 13 55V25Z" />
+              <path class="agent-avatar-shell" d="M36 12Q40 9.8 44 12L63 22.6Q67 24.8 67 29.4V50.6Q67 55.2 63 57.4L44 68Q40 70.2 36 68L17 57.4Q13 55.2 13 50.6V29.4Q13 24.8 17 22.6Z" />
             </Match>
             <Match when={props.config.shape === "circle"}>
               <circle class="agent-avatar-shell" cx="40" cy="43" r="29" />
             </Match>
           </Switch>
-          <g class="agent-avatar-gaze">
-            <Show when={props.config.face !== "none"}>
-              <rect
-                class="agent-avatar-face"
-                x="22"
-                y={faceY()}
-                width="36"
-                height={faceHeight()}
-                rx="10"
-              />
-            </Show>
+          <g class="agent-avatar-gaze" classList={{ "agent-visor-gaze": props.config.eyes === "visor" }}>
+            <Switch>
+              <Match when={props.config.eyes === "visor"}>
+                <rect class="agent-visor" x="28" y={eyeY() - 4} width="24" height="7" rx="3.5" />
+              </Match>
+            </Switch>
             <g
               class="agent-avatar-eyes"
               classList={{
-                "on-shell": props.config.face === "none" && props.config.eyes !== "visor",
+                "on-shell": props.config.eyes !== "visor",
               }}
             >
               <Switch>
                 <Match when={props.config.eyes === "visor"}>
-                  <rect class="agent-visor" x="28" y={eyeY() - 4} width="24" height="7" rx="3.5" />
-                  <rect class="agent-visor-eye" x="32" y={eyeY() - 1.5} width="5" height="3" rx="1.5" />
-                  <rect class="agent-visor-eye" x="43" y={eyeY() - 1.5} width="5" height="3" rx="1.5" />
+                  <rect class="agent-visor-eye agent-eye-left" x="32" y={eyeY() - 1.5} width="5" height="3" rx="1.5" />
+                  <rect class="agent-visor-eye agent-eye-right" x="43" y={eyeY() - 1.5} width="5" height="3" rx="1.5" />
                 </Match>
                 <Match when={props.config.eyes === "pill"}>
-                  <rect x="29" y={eyeY() - 5} width="6" height="10" rx="3" />
-                  <rect x="45" y={eyeY() - 5} width="6" height="10" rx="3" />
+                  <rect class="agent-eye-left" x="29" y={eyeY() - 5} width="6" height="10" rx="3" />
+                  <rect class="agent-eye-right" x="45" y={eyeY() - 5} width="6" height="10" rx="3" />
                 </Match>
                 <Match when={props.config.eyes === "dots"}>
-                  <circle cx="32" cy={eyeY()} r="3" />
-                  <circle cx="48" cy={eyeY()} r="3" />
+                  <circle class="agent-eye-left" cx="32" cy={eyeY()} r="3" />
+                  <circle class="agent-eye-right" cx="48" cy={eyeY()} r="3" />
                 </Match>
               </Switch>
             </g>

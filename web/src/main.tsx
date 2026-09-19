@@ -1,4 +1,6 @@
 import { render } from "solid-js/web";
+import "@fontsource-variable/onest";
+import "@fontsource-variable/geist-mono";
 import { App } from "./App";
 import "./styles.css";
 

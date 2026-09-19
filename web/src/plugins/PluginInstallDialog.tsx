@@ -1,11 +1,18 @@
-import { For, Show, createSignal } from "solid-js";
-import { inspectPlugin, installPlugin } from "../api/client";
-import type { PluginInspectView, PluginView } from "../api/types";
+import { For, Show, createSignal, onCleanup } from "solid-js";
+import {
+  discardPluginUpload,
+  inspectPlugin,
+  inspectPluginUpload,
+  installPlugin,
+  installPluginUpload,
+} from "../api/client";
+import type { PluginInspectView, PluginUploadFile, PluginView } from "../api/types";
 import { Button } from "../components/Button";
 import { Checkbox } from "../components/Checkbox";
 import { DialogFrame } from "../components/DialogFrame";
 import { TextField } from "../components/FormField";
 import { Separator } from "../components/Separator";
+import { Icon } from "../shell/icons";
 import { PluginPermissionList } from "./PluginPermissionList";
 
 interface PluginInstallDialogProps {
@@ -19,14 +26,56 @@ const capabilityCopy: Readonly<Record<string, string>> = {
   event: "Observes runtime events",
 };
 
+function toBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error(`Unable to read ${file.name}`));
+    reader.onload = () => {
+      const result = String(reader.result ?? "");
+      resolve(result.slice(result.indexOf(",") + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function uploadPath(file: File, stripRoot: boolean): string {
+  const raw = file.webkitRelativePath || file.name;
+  const parts = raw.split("/").filter(Boolean);
+  return stripRoot && parts.length > 1 ? parts.slice(1).join("/") : parts.join("/");
+}
+
+async function packageFiles(files: FileList): Promise<PluginUploadFile[]> {
+  const selected = [...files];
+  const roots = new Set(selected.map((file) => file.webkitRelativePath.split("/")[0]).filter(Boolean));
+  const stripRoot = roots.size === 1 && !selected.some((file) => file.webkitRelativePath === "plugin.toml");
+  return Promise.all(selected.map(async (file) => ({
+    path: uploadPath(file, stripRoot),
+    data_base64: await toBase64(file),
+  })));
+}
+
 export function PluginInstallDialog(props: PluginInstallDialogProps) {
   const [path, setPath] = createSignal("");
+  const [source, setSource] = createSignal<"computer" | "gateway">("computer");
+  const [uploadId, setUploadId] = createSignal("");
   const [inspection, setInspection] = createSignal<PluginInspectView>();
   const [reviewed, setReviewed] = createSignal(false);
   const [busy, setBusy] = createSignal<"inspect" | "install" | "">("");
   const [error, setError] = createSignal("");
+  let folderInput!: HTMLInputElement;
+  let installed = false;
 
-  const inspect = async () => {
+  const discardUpload = () => {
+    const id = uploadId();
+    setUploadId("");
+    if (id) void discardPluginUpload(id).catch(() => undefined);
+  };
+
+  onCleanup(() => {
+    if (!installed) discardUpload();
+  });
+
+  const inspectPath = async () => {
     const selectedPath = path().trim();
     if (!selectedPath || busy()) return;
     setBusy("inspect");
@@ -41,12 +90,36 @@ export function PluginInstallDialog(props: PluginInstallDialogProps) {
     }
   };
 
+  const inspectFiles = async (files: FileList | null) => {
+    if (!files?.length || busy()) return;
+    discardUpload();
+    setBusy("inspect");
+    setError("");
+    try {
+      const result = await inspectPluginUpload(await packageFiles(files));
+      setUploadId(result.upload_id);
+      setInspection(result.plugin);
+      setReviewed(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to inspect plugin package");
+    } finally {
+      setBusy("");
+      if (folderInput) folderInput.value = "";
+    }
+  };
+
   const install = async () => {
-    if (!inspection() || busy() || (inspection()!.permissions.length > 0 && !reviewed())) return;
+    const plugin = inspection();
+    if (!plugin || busy() || (plugin.permissions.length > 0 && !reviewed())) return;
     setBusy("install");
     setError("");
     try {
-      props.onInstalled(await installPlugin(path().trim()));
+      const result = uploadId()
+        ? await installPluginUpload(uploadId())
+        : await installPlugin(path().trim());
+      installed = true;
+      setUploadId("");
+      props.onInstalled(result);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to install plugin");
     } finally {
@@ -54,15 +127,18 @@ export function PluginInstallDialog(props: PluginInstallDialogProps) {
     }
   };
 
+  const back = () => {
+    discardUpload();
+    setInspection(undefined);
+    setReviewed(false);
+    setError("");
+  };
   const close = () => { if (!busy()) props.onClose(); };
+
   const footer = () => inspection() ? (
     <>
       <Show when={error()}><span class="plugin-dialog-error" role="alert">{error()}</span></Show>
-      <Button variant="quiet" disabled={Boolean(busy())} onClick={() => {
-        setInspection(undefined);
-        setReviewed(false);
-        setError("");
-      }}>Back</Button>
+      <Button variant="quiet" disabled={Boolean(busy())} onClick={back}>Back</Button>
       <Button
         variant="primary"
         loading={busy() === "install"}
@@ -74,12 +150,14 @@ export function PluginInstallDialog(props: PluginInstallDialogProps) {
     <>
       <Show when={error()}><span class="plugin-dialog-error" role="alert">{error()}</span></Show>
       <Button variant="quiet" disabled={Boolean(busy())} onClick={close}>Cancel</Button>
-      <Button
-        variant="primary"
-        loading={busy() === "inspect"}
-        disabled={!path().trim()}
-        onClick={() => void inspect()}
-      >Inspect package</Button>
+      <Show when={source() === "gateway"}>
+        <Button
+          variant="primary"
+          loading={busy() === "inspect"}
+          disabled={!path().trim()}
+          onClick={() => void inspectPath()}
+        >Inspect package</Button>
+      </Show>
     </>
   );
 
@@ -94,29 +172,65 @@ export function PluginInstallDialog(props: PluginInstallDialogProps) {
       <div class="plugin-install-body">
         <Show when={inspection()} keyed fallback={
           <div class="plugin-path-step">
-            <div class="plugin-dialog-intro">
-              <span class="plugin-dialog-glyph" aria-hidden="true">+</span>
-              <div>
-                <h3>Install from this computer</h3>
-                <p>Choose a package directory containing a valid <code>plugin.toml</code>. Hames inspects it before anything is installed.</p>
-              </div>
-            </div>
-            <TextField
-              label="Package directory"
-              value={path()}
-              placeholder="/home/you/projects/my-plugin"
-              helper="Enter a path that the local Hames gateway can read."
-              spellcheck={false}
-              autocomplete="off"
-              autofocus
-              onInput={(event) => setPath(event.currentTarget.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  void inspect();
-                }
+            <input
+              ref={(element) => {
+                folderInput = element;
+                element.setAttribute("webkitdirectory", "");
               }}
+              class="plugin-file-input"
+              type="file"
+              multiple
+              hidden
+              tabIndex={-1}
+              aria-label="Choose plugin folder"
+              onChange={(event) => void inspectFiles(event.currentTarget.files)}
             />
+            <Show when={source() === "computer"} fallback={
+              <div class="plugin-gateway-path">
+                <div class="plugin-dialog-intro">
+                  <span class="plugin-dialog-glyph" aria-hidden="true"><Icon name="action.folder" size={17} /></span>
+                  <div>
+                    <h3>Use a gateway folder</h3>
+                    <p>For local development, inspect a directory already readable by the Hames gateway.</p>
+                  </div>
+                </div>
+                <TextField
+                  label="Package directory"
+                  value={path()}
+                  placeholder="/home/you/projects/my-plugin"
+                  helper="The folder must contain plugin.toml at its root."
+                  spellcheck={false}
+                  autocomplete="off"
+                  autofocus
+                  onInput={(event) => setPath(event.currentTarget.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void inspectPath();
+                    }
+                  }}
+                />
+                <Button variant="bare" class="plugin-source-switch" onClick={() => setSource("computer")}>
+                  Upload from this computer instead
+                </Button>
+              </div>
+            }>
+              <div class="plugin-folder-picker">
+                <span class="plugin-folder-picker-icon" aria-hidden="true"><Icon name="nav.plugins" size={23} /></span>
+                <div>
+                  <h3>Install from this computer</h3>
+                  <p>Select a plugin folder. Hames uploads and inspects it before showing any requested permissions.</p>
+                </div>
+                <Button
+                  variant="primary"
+                  loading={busy() === "inspect"}
+                  onClick={() => folderInput.click()}
+                >Choose plugin folder</Button>
+                <Button variant="bare" class="plugin-source-switch" onClick={() => setSource("gateway")}>
+                  Use a path on this gateway
+                </Button>
+              </div>
+            </Show>
           </div>
         }>{(plugin) => (
           <div class="plugin-review-step">

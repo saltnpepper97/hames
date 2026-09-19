@@ -5,7 +5,12 @@ import type { SemanticIconName } from "./icons";
 
 export type ContextSidebarContribution =
   | { readonly kind: "conversations" }
-  | { readonly kind: "component"; readonly component: Component }
+  | {
+      readonly kind: "component";
+      readonly component: Component;
+      readonly action?: Component;
+      readonly searchable?: boolean;
+    }
   | { readonly kind: "section"; readonly description: string };
 
 export interface WebSurfaceContribution {
@@ -23,6 +28,7 @@ export interface WebPlugin {
   readonly surfaces: readonly WebSurfaceContribution[];
   readonly conversationNodes?: readonly ConversationNodeContribution[];
   readonly composerControls?: readonly ComposerControlContribution[];
+  readonly composerActions?: readonly ComposerActionContribution[];
 }
 
 export interface ConversationNodeContribution {
@@ -37,6 +43,7 @@ export interface ComposerControlProps {
   disabled: boolean;
   onSessionUpdated: (session: Session) => void;
   onError: (message: string) => void;
+  onOpenActions: () => void;
 }
 
 export interface ComposerControlContribution {
@@ -46,11 +53,24 @@ export interface ComposerControlContribution {
   readonly component: Component<ComposerControlProps>;
 }
 
+export interface ComposerActionProps {
+  disabled: boolean;
+  onUpload: () => void;
+  onCommands: () => void;
+}
+
+export interface ComposerActionContribution {
+  readonly id: string;
+  readonly order: number;
+  readonly component: Component<ComposerActionProps>;
+}
+
 export interface WebPluginRegistry {
   readonly plugins: readonly WebPlugin[];
   readonly surfaces: readonly WebSurfaceContribution[];
   readonly conversationNodes: ReadonlyMap<ConversationNode["kind"], ConversationNodeContribution>;
   readonly composerControls: ReadonlyMap<ComposerControlSeat, readonly ComposerControlContribution[]>;
+  readonly composerActions: readonly ComposerActionContribution[];
 }
 
 export function composeWebPlugins(plugins: readonly WebPlugin[]): WebPluginRegistry {
@@ -60,6 +80,10 @@ export function composeWebPlugins(plugins: readonly WebPlugin[]): WebPluginRegis
   const conversationNodes = new Map<ConversationNode["kind"], ConversationNodeContribution>();
   const composerControlIds = new Set<string>();
   const composerControls = new Map<ComposerControlSeat, readonly ComposerControlContribution[]>();
+  const composerActionIds = new Set<string>();
+  const composerActions = plugins
+    .flatMap((plugin) => plugin.composerActions ?? [])
+    .sort((left, right) => left.order - right.order);
 
   for (const surface of surfaces) {
     if (surfaceIds.has(surface.id)) {
@@ -93,5 +117,12 @@ export function composeWebPlugins(plugins: readonly WebPlugin[]): WebPluginRegis
     composerControls.set(seat, contributions);
   }
 
-  return { plugins, surfaces, conversationNodes, composerControls };
+  for (const contribution of composerActions) {
+    if (composerActionIds.has(contribution.id)) {
+      throw new Error(`Duplicate composer action id: ${contribution.id}`);
+    }
+    composerActionIds.add(contribution.id);
+  }
+
+  return { plugins, surfaces, conversationNodes, composerControls, composerActions };
 }

@@ -1,5 +1,5 @@
 import { For, createSignal } from "solid-js";
-import type { AgentAvatarConfig, AgentAvatarEyes, AgentAvatarFace, AgentAvatarShape } from "../api/types";
+import type { AgentAvatarConfig, AgentAvatarEyes, AgentAvatarShape } from "../api/types";
 import { AgentAvatar } from "./AgentAvatar";
 import { ColorWheel } from "./ColorWheel";
 import { avatarPalette } from "./color";
@@ -21,17 +21,13 @@ const shapes: { id: AgentAvatarShape; label: string }[] = [
   { id: "triangle", label: "Triangle" },
   { id: "cloud", label: "Cloud" },
   { id: "hex", label: "Hex" },
+  { id: "drop", label: "Water drop" },
 ];
 
 const eyes: { id: AgentAvatarEyes; label: string }[] = [
   { id: "dots", label: "Dots" },
   { id: "visor", label: "Visor" },
   { id: "pill", label: "Pill" },
-];
-
-const faces: { id: AgentAvatarFace; label: string }[] = [
-  { id: "solid", label: "Solid" },
-  { id: "none", label: "Off" },
 ];
 
 export function AgentAvatarEditor(props: AgentAvatarEditorProps) {
@@ -90,24 +86,6 @@ export function AgentAvatarEditor(props: AgentAvatarEditorProps) {
                   >
                     <AgentAvatar config={{ ...draft(), eyes: eye.id }} name={eye.label} size={44} animated={false} />
                     <span>{eye.label}</span>
-                  </Button>
-                )}</For>
-              </div>
-            </fieldset>
-
-            <fieldset>
-              <legend>Face plate</legend>
-              <div class="avatar-option-grid faces">
-                <For each={faces}>{(face) => (
-                  <Button
-                    variant="choice"
-                    class="avatar-option"
-                    classList={{ selected: draft().face === face.id }}
-                    aria-pressed={draft().face === face.id}
-                    onClick={() => setDraft((current) => ({ ...current, face: face.id }))}
-                  >
-                    <AgentAvatar config={{ ...draft(), face: face.id }} name={face.label} size={44} animated={false} />
-                    <span>{face.label}</span>
                   </Button>
                 )}</For>
               </div>

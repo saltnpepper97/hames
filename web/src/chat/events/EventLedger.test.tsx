@@ -23,6 +23,39 @@ function event(sequence: number): HamesEvent {
 }
 
 describe("EventLedger", () => {
+  it("renders adjacent strong event summaries as Markdown", () => {
+    const adjacent = event(1);
+    adjacent.payload.summary = "**Analyzing...****Designing...**";
+    render(() => (
+      <EventLedger events={[adjacent]} allEvents={[adjacent]} onSelect={() => undefined} />
+    ));
+
+    expect(document.querySelectorAll(".event-summary strong")).toHaveLength(2);
+    expect(document.querySelector(".event-summary")).toHaveTextContent("Analyzing... Designing...");
+  });
+
+  it("keeps HTML tool output inside a bounded inline preview", () => {
+    const output = event(1);
+    output.payload = {
+      content: '<h1 class="event-timeline-span">Heading</h1><ul><li>Item</li></ul>'
+        + '<pre>long\noutput</pre><strong class="event-turn-label">Result</strong>',
+    };
+    render(() => <EventLedger events={[output]} allEvents={[output]} onSelect={() => undefined} />);
+
+    const summary = document.querySelector(".event-summary")!;
+    expect(summary.querySelector("h1, ul, li, pre, .event-timeline-span, .event-turn-label")).toBeNull();
+    expect(summary).toHaveTextContent("HeadingItemlong outputResult");
+    expect(summary.querySelector("strong")).toHaveTextContent("Result");
+  });
+
+  it("previews a tool summary instead of its full document output", () => {
+    const output = event(1);
+    output.payload = { summary: "Wrote index.html", content: "<h1>Entire generated page</h1>" };
+    render(() => <EventLedger events={[output]} allEvents={[output]} onSelect={() => undefined} />);
+    expect(document.querySelector(".event-summary")).toHaveTextContent("Wrote index.html");
+    expect(screen.queryByText("Entire generated page")).not.toBeInTheDocument();
+  });
+
   it("windows large durable histories instead of mounting every row", () => {
     const events = Array.from({ length: 1_000 }, (_, index) => event(index + 1));
     render(() => (

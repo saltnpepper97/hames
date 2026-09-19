@@ -17,6 +17,7 @@ describe("AgentDetailPage", () => {
   it("does not reset the editor when polling returns the same workspace", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
+      if (path === "/v1/providers") return response([]);
       if (path === "/v1/agents/default") {
         return response({
           id: "default",
@@ -60,6 +61,6 @@ describe("AgentDetailPage", () => {
     await waitFor(() => {
       expect(screen.getByRole("tab", { name: "Preview" })).toHaveAttribute("aria-selected", "true");
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });

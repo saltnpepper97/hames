@@ -13,6 +13,7 @@ interface ConversationDisclosureProps extends ParentProps {
   state?: ConversationDisclosureState;
   statusLabel?: string;
   open?: boolean;
+  onToggle?: JSX.EventHandler<HTMLDetailsElement, Event>;
 }
 
 export function ConversationDisclosure(props: ConversationDisclosureProps): JSX.Element {
@@ -21,6 +22,7 @@ export function ConversationDisclosure(props: ConversationDisclosureProps): JSX.
       class={`conversation-disclosure ${props.class ?? ""}`}
       data-state={props.state ?? "idle"}
       open={props.open || undefined}
+      onToggle={props.onToggle}
     >
       <summary>
         <span class="disclosure-leading">

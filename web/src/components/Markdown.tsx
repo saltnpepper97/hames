@@ -1,6 +1,6 @@
 import DOMPurify from "dompurify";
 import { marked } from "marked";
-import { createMemo } from "solid-js";
+import { createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 
 interface MarkdownProps {
   content: string;
@@ -60,8 +60,8 @@ function sanitizedMarkdown(content: string, inline: boolean): string {
     ? marked.parseInline(source, { async: false, gfm: true, breaks: false })
     : marked.parse(source, { async: false, gfm: true, breaks: false });
   return DOMPurify.sanitize(parsed, {
-    ALLOWED_TAGS: allowedTags,
-    ALLOWED_ATTR: ["class", "href", "start", "title"],
+    ALLOWED_TAGS: inline ? ["a", "code", "del", "em", "strong"] : allowedTags,
+    ALLOWED_ATTR: inline ? ["href", "title"] : ["class", "href", "start", "title"],
     SANITIZE_NAMED_PROPS: true,
     RETURN_TRUSTED_TYPE: false,
   });
@@ -76,13 +76,54 @@ export function renderMarkdownInline(content: string): string {
 }
 
 export function Markdown(props: MarkdownProps) {
-  const html = createMemo(() => renderMarkdown(props.content));
+  let root!: HTMLDivElement;
+  const html = createMemo(() => {
+    const rendered = renderMarkdown(props.content);
+    const template = document.createElement("template");
+    template.innerHTML = rendered;
+    for (const table of template.content.querySelectorAll("table")) {
+      const scroll = document.createElement("div");
+      scroll.className = "markdown-table-scroll";
+      scroll.setAttribute("role", "region");
+      scroll.setAttribute("aria-label", "Table");
+      scroll.tabIndex = 0;
+      table.replaceWith(scroll);
+      scroll.append(table);
+    }
+    if (!props.live) return template.innerHTML;
+    const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+    let last: Node | undefined;
+    while (walker.nextNode()) {
+      if (walker.currentNode.textContent?.trim()) last = walker.currentNode;
+    }
+    if (last) {
+      // Markdown blocks must keep the typing mark beside their final text,
+      // rather than after the container on a separate block line.
+      const caret = document.createElement("span");
+      caret.className = "streaming-caret";
+      caret.setAttribute("aria-hidden", "true");
+      last.parentNode?.insertBefore(caret, last.nextSibling);
+    }
+    return template.innerHTML;
+  });
+  const [displayedHtml, setDisplayedHtml] = createSignal("");
+  const updateDisplay = () => {
+    const next = html();
+    const selection = window.getSelection();
+    if (root && selection && !selection.isCollapsed &&
+      (root.contains(selection.anchorNode) || root.contains(selection.focusNode))) return;
+    setDisplayedHtml(next);
+  };
+  createEffect(updateDisplay);
+  onMount(() => document.addEventListener("selectionchange", updateDisplay));
+  onCleanup(() => document.removeEventListener("selectionchange", updateDisplay));
   return (
     <div
       class={`markdown ${props.class ?? ""}`}
       classList={{ streaming: props.live }}
       aria-busy={props.live || undefined}
-      innerHTML={html()}
+      ref={root}
+      innerHTML={displayedHtml()}
     />
   );
 }

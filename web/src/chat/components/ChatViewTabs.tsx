@@ -9,7 +9,7 @@ interface ChatViewTabsProps {
 
 export function ChatViewTabs(props: ChatViewTabsProps) {
   return (
-    <div class="chat-view-tabs" role="tablist" aria-label="Chat view">
+    <div class="chat-view-tabs" data-view={props.value} role="tablist" aria-label="Chat view">
       <Button
         variant="bare"
         role="tab"

@@ -1,3 +1,4 @@
+import { A } from "@solidjs/router";
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import {
   HamesApiError,
@@ -7,6 +8,7 @@ import {
 } from "../../api/client";
 import type { ProviderModel, ProviderProfile, Session } from "../../api/types";
 import { Button } from "../../components/Button";
+import { LoadingState } from "../../components/LoadingState";
 import { DropdownSurface } from "../../components/DropdownSurface";
 import { Icon } from "../../shell/icons";
 import { modelReasoningEfforts, reasoningEffortLabel } from "../modelCapabilities";
@@ -35,8 +37,19 @@ function providerLabel(profile: ProviderProfile): string {
   if (profile.adapter === "llama_cpp") return "llama.cpp";
   if (profile.adapter === "ollama") return "Ollama";
   if (profile.adapter === "openai") return "OpenAI API";
+  if (profile.adapter === "xai") return "Grok API";
+  if (profile.adapter === "deepseek") return "DeepSeek API";
+  if (profile.adapter === "zai") return "Z.ai API";
+  if (profile.adapter === "zai_coding") return "Z.ai Coding Plan";
+  if (profile.adapter === "grok") return "Grok Build";
   if (profile.adapter === "codex") return "Codex / ChatGPT";
   return profile.id;
+}
+
+function shouldProbe(profile: ProviderProfile, sessionProvider: string): boolean {
+  if (profile.id === sessionProvider) return true;
+  if (["openai", "xai", "grok", "codex", "deepseek", "zai", "zai_coding"].includes(profile.adapter)) return true;
+  return Boolean(profile.configured_model.trim());
 }
 
 function mutationError(error: unknown): string {
@@ -60,7 +73,6 @@ export function ModelPicker(props: ModelPickerProps) {
   const [loadingCatalog, setLoadingCatalog] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [pickerError, setPickerError] = createSignal("");
-  const [failures, setFailures] = createSignal<string[]>([]);
   let root!: HTMLDivElement;
   let catalogRequest = 0;
 
@@ -90,17 +102,16 @@ export function ModelPicker(props: ModelPickerProps) {
     const request = ++catalogRequest;
     setLoadingCatalog(true);
     setPickerError("");
-    setFailures([]);
     try {
       const profiles = await listProviders();
       const connectedProfiles = profiles.filter((profile) =>
-        profile.id === props.session.provider || Boolean(profile.configured_model.trim())
+        shouldProbe(profile, props.session.provider)
       );
       const results = await Promise.all(connectedProfiles.map(async (profile) => {
         try {
           const probe = await probeProvider(profile.id);
           if (!probe.reachable) {
-            throw new HamesApiError(probe.error?.message ?? `${profile.id} is unavailable`);
+            throw new HamesApiError(probe.error?.message ?? `${providerLabel(profile)} is not hooked up`);
           }
           return { profile, models: probe.models, error: "" };
         } catch (error) {
@@ -111,9 +122,6 @@ export function ModelPicker(props: ModelPickerProps) {
       setGroups(results
         .filter((result) => result.models.length > 0)
         .map(({ profile, models }) => ({ profile, models })));
-      setFailures(results
-        .filter((result) => result.error)
-        .map((result) => `${providerLabel(result.profile)}: ${result.error}`));
     } catch (error) {
       if (request === catalogRequest) fail(error);
     } finally {
@@ -205,7 +213,8 @@ export function ModelPicker(props: ModelPickerProps) {
         else back();
       }}
       onFocusOut={(event) => {
-        if (!root.contains(event.relatedTarget as Node | null)) setOpen(false);
+        // Switching panes removes the focused row; that is not an outside focus move.
+        if (event.relatedTarget && !root.contains(event.relatedTarget as Node)) setOpen(false);
       }}
     >
       <Button
@@ -234,6 +243,7 @@ export function ModelPicker(props: ModelPickerProps) {
         ariaLabel="Model and thinking"
       >
           <Show when={pane() === "root"}>
+            <A class="model-picker-cell" role="menuitem" href="/settings/connections" onClick={() => setOpen(false)}>Connect provider</A>
             <Button
               variant="bare"
               class="model-picker-cell"
@@ -264,7 +274,7 @@ export function ModelPicker(props: ModelPickerProps) {
           </Show>
 
           <Show when={pane() === "models"}>
-            <Show when={!loadingCatalog()} fallback={<div class="model-picker-state">Loading models…</div>}>
+            <Show when={!loadingCatalog()} fallback={<LoadingState variant="inline" label="Loading models" class="model-picker-state" />}>
               <div class="model-groups">
                 <For each={groups()} fallback={<div class="model-picker-state">No models reported.</div>}>
                   {(group) => (
@@ -305,7 +315,7 @@ export function ModelPicker(props: ModelPickerProps) {
               <strong>{effortIdentity().model}</strong>
               <span>Choose thinking to finish</span>
             </div>
-            <Show when={!loadingCatalog()} fallback={<div class="model-picker-state">Loading thinking…</div>}>
+            <Show when={!loadingCatalog()} fallback={<LoadingState variant="inline" label="Loading thinking" class="model-picker-state" />}>
               <div class="model-picker-options">
                 <For each={effortChoices()} fallback={
                   <div class="model-picker-state">This model does not offer thinking levels.</div>
@@ -335,9 +345,6 @@ export function ModelPicker(props: ModelPickerProps) {
             </Show>
           </Show>
 
-          <For each={failures()}>
-            {(failure) => <div class="model-picker-warning">{failure}</div>}
-          </For>
           <Show when={pickerError()}>
             <div class="model-picker-error" role="alert">{pickerError()}</div>
           </Show>

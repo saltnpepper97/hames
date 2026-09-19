@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { HamesEvent } from "../../api/types";
 import { Button } from "../../components/Button";
+import { MarkdownInline } from "../../components/Markdown";
 import { ResizableTable } from "../../components/ResizableTable";
 import {
   eventCategory,
@@ -44,10 +45,10 @@ function EventLedgerRow(props: {
         </Show>
         <span class="event-turn-rail" aria-hidden="true" />
         <span class="event-kind-dot" data-category={eventCategory(props.event.type)} aria-hidden="true" />
-        <strong>{eventTypeLabel(props.event.type)}</strong>
+        <strong title={eventTypeLabel(props.event.type)}>{eventTypeLabel(props.event.type)}</strong>
       </span>
       <span role="cell" class="event-summary">
-        <span>{eventSummary(props.event)}</span>
+        <MarkdownInline content={eventSummary(props.event).replace(/\s+/g, " ").slice(0, 600)} />
         <time datetime={props.event.created_at}>{eventTime(props.event.created_at)}</time>
       </span>
     </Button>
@@ -111,8 +112,8 @@ export function EventLedger(props: EventLedgerProps) {
     <ResizableTable
       class="event-ledger"
       ariaLabel="Durable session events"
-      defaultFirstColumn={132}
-      minFirstColumn={96}
+      defaultFirstColumn={220}
+      minFirstColumn={180}
       minSecondColumn={180}
       storageKey="hames.events.event-column-width"
     >

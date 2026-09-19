@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import type { Accessor } from "solid-js";
 import { sessionEventStreamUrl } from "../api/client";
 import { sessionEventTypes } from "../api/eventTypes";
@@ -23,8 +23,11 @@ export function createSessionStream(sessionId: Accessor<string>) {
     setLiveOutput();
     setState("connecting");
 
+    let disposed = false;
+
     type PendingAction =
       | { kind: "durable"; event: HamesEvent }
+      | { kind: "snapshot"; output: LiveOutput }
       | { kind: "reasoning" | "text"; runId: string; text: string };
 
     const pending: PendingAction[] = [];
@@ -33,6 +36,7 @@ export function createSessionStream(sessionId: Accessor<string>) {
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const flush = () => {
+      if (disposed) return;
       frame = undefined;
       timer = undefined;
       if (pending.length === 0) return;
@@ -44,13 +48,18 @@ export function createSessionStream(sessionId: Accessor<string>) {
       let liveChanged = false;
 
       for (const action of actions) {
+        if (action.kind === "snapshot") {
+          nextLive = action.output.runId ? action.output : undefined;
+          liveChanged = true;
+          continue;
+        }
         if (action.kind === "durable") {
           const incoming = action.event;
-          if (!seenEventIds.has(incoming.id)) {
-            seenEventIds.add(incoming.id);
-            nextEvents = [...nextEvents, incoming];
-            eventsChanged = true;
-          }
+          if (seenEventIds.has(incoming.id)) continue;
+          seenEventIds.add(incoming.id);
+          nextEvents = [...nextEvents, incoming];
+          eventsChanged = true;
+          if (incoming.sequence <= (nextLive?.afterSequence ?? 0)) continue;
           if (incoming.type === "assistant.reasoning" && nextLive?.runId === incoming.run_id) {
             nextLive = { ...nextLive, reasoning: "" };
             liveChanged = true;
@@ -79,11 +88,13 @@ export function createSessionStream(sessionId: Accessor<string>) {
         liveChanged = true;
       }
 
-      if (eventsChanged) {
-        nextEvents.sort((left, right) => left.sequence - right.sequence);
-        setEvents(nextEvents);
-      }
-      if (liveChanged) setLiveOutput(nextLive);
+      batch(() => {
+        if (eventsChanged) {
+          nextEvents.sort((left, right) => left.sequence - right.sequence);
+          setEvents(nextEvents);
+        }
+        if (liveChanged) setLiveOutput(nextLive);
+      });
     };
 
     const scheduleFlush = () => {
@@ -97,6 +108,7 @@ export function createSessionStream(sessionId: Accessor<string>) {
 
     const source = new EventSource(sessionEventStreamUrl(id));
     const receive = (message: MessageEvent<string>) => {
+      if (disposed) return;
       let envelope: EventEnvelope;
       try {
         envelope = JSON.parse(message.data) as EventEnvelope;
@@ -110,6 +122,15 @@ export function createSessionStream(sessionId: Accessor<string>) {
         return;
       }
 
+      if (envelope.type === "response.snapshot") {
+        pending.push({ kind: "snapshot", output: {
+          runId: envelope.run_id,
+          text: typeof envelope.payload.text === "string" ? envelope.payload.text : "",
+          reasoning: typeof envelope.payload.reasoning === "string" ? envelope.payload.reasoning : "",
+          afterSequence: typeof envelope.payload.after_sequence === "number" ? envelope.payload.after_sequence : 0,
+        } });
+        scheduleFlush();
+      }
       if (envelope.type === "response.reasoning_delta") {
         pending.push({
           kind: "reasoning",
@@ -129,10 +150,12 @@ export function createSessionStream(sessionId: Accessor<string>) {
     };
 
     for (const type of sessionEventTypes) source.addEventListener(type, receive as EventListener);
-    source.onopen = () => setState("live");
-    source.onerror = () => setState("reconnecting");
+    source.onopen = () => { if (!disposed) setState("live"); };
+    source.onerror = () => { if (!disposed) setState("reconnecting"); };
 
     onCleanup(() => {
+      disposed = true;
+      pending.length = 0;
       if (frame !== undefined) window.cancelAnimationFrame(frame);
       if (timer !== undefined) clearTimeout(timer);
       source.close();
