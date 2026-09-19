@@ -37,8 +37,8 @@ The id is derived from the display name at create time, then frozen.
 | `--from` with frontmatter `id` / `name` | honor `id` if present, else slug `name` | honor `name` if present, else the id |
 
 Slug: lowercase `[a-z][a-z0-9-]{0,62}`, spaces and punctuation become `-`. Empty
-slugs fall back to `hames-N`. Changing `name:` later does not rename the
-directory; ledger rows already point at the id.
+slugs fall back to `hames-N`. Changing the name through the registry updates the slug and moves the
+capsule directory; ledger rows continue to point at the stable id.
 
 A new capsule is immediately useful: every tool the surrounding policy already
 allows, Skills discoverable through the catalog (not all loaded), default
@@ -55,7 +55,7 @@ hames agent edit default --name Navigator
 hames agent edit default --from ./AGENT.md
 ```
 
-The directory id and frontmatter `id` are permanent. Replacing `AGENT.md` is
+The frontmatter `id` is permanent; the directory follows the current slug. Replacing `AGENT.md` is
 validated and written atomically, so an invalid replacement leaves the current
 capsule untouched. The `default` capsule may be customized but never retired or
 deleted.
@@ -264,9 +264,10 @@ its child runs.
 ### Names, slugs, and stable identity
 
 Renaming an agent allocates a unique name-based slug and updates its Web URL.
-The slug is stored separately in AGENT.md; the internal `id` and capsule
-directory remain stable so existing sessions, memory scope, and delegation
-permissions retain their identity. Agent lookups accept either the current slug
+The slug is stored separately in AGENT.md and the capsule directory moves to
+match it. The internal `id` remains stable so existing sessions, memory scope,
+and delegation permissions retain their identity. The built-in default agent
+keeps its reserved `default` directory. Agent lookups accept either the current slug
 or the stable ID. Collisions with another agent's slug or ID receive a numeric
 suffix. Existing capsules without a slug continue to resolve by their ID.
 

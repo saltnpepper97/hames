@@ -227,12 +227,13 @@ class AgentRegistry:
             for candidate in self.root.glob("*/AGENT.md"):
                 if candidate.parent.name.startswith("."):
                     continue
-                if load_agent(candidate).metadata.slug == agent_id:
+                metadata = load_agent(candidate).metadata
+                if agent_id in {metadata.slug, metadata.id}:
                     path = candidate
                     break
         capsule = load_agent(path)
-        if capsule.metadata.id != path.parent.name:
-            raise ValueError(f"{capsule.path}: frontmatter id does not match its directory")
+        if path.parent.name not in {capsule.metadata.id, capsule.metadata.slug}:
+            raise ValueError(f"{capsule.path}: frontmatter id or slug does not match its directory")
         return capsule
 
     def list(self) -> list[AgentSummary]:
@@ -326,7 +327,8 @@ class AgentRegistry:
         agent_id, display = allocate_agent_identity(
             name=name or source_name,
             agent_id=source_id,
-            taken=self.taken_ids() | {agent.slug for agent in self.list() if agent.slug},
+            taken=self.taken_ids()
+            | {value for agent in self.list() for value in (agent.id, agent.slug) if value},
         )
         path = self.path_for(agent_id)
         if path.exists():
@@ -359,10 +361,11 @@ class AgentRegistry:
         return self.load(agent_id)
 
     def retire(self, agent_id: str) -> Path:
-        agent_id = self.load(agent_id).metadata.id
+        capsule = self.load(agent_id)
+        agent_id = capsule.metadata.id
         if agent_id == "default":
             raise ValueError("the default agent cannot be retired")
-        source = self.path_for(agent_id).parent
+        source = capsule.path.parent
         if not source.is_dir():
             raise FileNotFoundError(source)
         self.retired_root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -447,7 +450,14 @@ class AgentRegistry:
             for agent in self.list():
                 if agent.id != agent_id and candidate.metadata.slug in {agent.id, agent.slug}:
                     raise ValueError("agent slug is already in use")
+        destination = self.root / (
+            "default" if agent_id == "default" else candidate.metadata.slug or agent_id
+        )
+        if destination != current.path.parent and destination.exists():
+            raise ValueError("agent folder is already in use")
         _atomic_replace(current.path, raw)
+        if destination != current.path.parent:
+            current.path.parent.rename(destination)
         return self.load(agent_id)
 
 

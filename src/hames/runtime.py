@@ -20,7 +20,6 @@ from hames.agent import (
     AgentCapsule,
     AgentRegistry,
     apply_agent_skill_policy,
-    load_agent,
     permitted_tools,
     skill_permitted,
 )
@@ -611,9 +610,7 @@ class RunManager:
             raise PermissionError("working directory is not trusted")
         user_skill = await asyncio.to_thread(self.skills.user_invocation, session, content)
         if user_skill is not None:
-            capsule = await asyncio.to_thread(
-                load_agent, self.paths.agents / session.agent_id / "AGENT.md"
-            )
+            capsule = await asyncio.to_thread(self.agents.load, session.agent_id)
             if not self._skill_permitted(session, capsule, user_skill[0].slug):
                 raise ValueError(f"Skill is unavailable to agent {session.agent_id}")
         await self._yield_dream(session_id)
@@ -2528,9 +2525,7 @@ class RunManager:
         turns: list[CompactionTurn],
         causation_id: str,
     ) -> str:
-        capsule = await asyncio.to_thread(
-            load_agent, self.paths.agents / session.agent_id / "AGENT.md"
-        )
+        capsule = await asyncio.to_thread(self.agents.load, session.agent_id)
         transcript = "\n\n".join(turn.content for turn in turns)
         prompt = (
             "Previous rolling summary:\n"
@@ -2716,9 +2711,7 @@ class RunManager:
         )
         if user_skill is not None:
             skill, arguments = user_skill
-            capsule = await asyncio.to_thread(
-                load_agent, self.paths.agents / session.agent_id / "AGENT.md"
-            )
+            capsule = await asyncio.to_thread(self.agents.load, session.agent_id)
             if not self._skill_permitted(session, capsule, skill.slug):
                 raise RunFailure(
                     "skill_unavailable", f"Skill is unavailable to agent {session.agent_id}"
@@ -3009,9 +3002,7 @@ class RunManager:
         structured_final_item_id: str | None = None
         tool_calls: dict[int, ToolCallAssembly] = {}
         session = await self.ensure_provider_context_window(session)
-        capsule = await asyncio.to_thread(
-            load_agent, self.paths.agents / session.agent_id / "AGENT.md"
-        )
+        capsule = await asyncio.to_thread(self.agents.load, session.agent_id)
         history = await asyncio.to_thread(self.ledger.replay, session.id)
         plugin_names: set[str] = (
             self.plugin_manager.names() if self.plugin_manager is not None else set()
@@ -3691,9 +3682,7 @@ class RunManager:
         )
         by_slug = {item.slug: item for item in scoped}
         by_slug.update({item.slug: item for item in ranked})
-        capsule = await asyncio.to_thread(
-            load_agent, self.paths.agents / session.agent_id / "AGENT.md"
-        )
+        capsule = await asyncio.to_thread(self.agents.load, session.agent_id)
         selected = apply_agent_skill_policy(
             capsule,
             [
@@ -4755,9 +4744,7 @@ class RunManager:
         if isinstance(arguments, SkillLoadArguments):
             try:
                 skill = await asyncio.to_thread(self.skills.get_visible, session, arguments.id)
-                capsule = await asyncio.to_thread(
-                    load_agent, self.paths.agents / session.agent_id / "AGENT.md"
-                )
+                capsule = await asyncio.to_thread(self.agents.load, session.agent_id)
                 if not self._skill_permitted(session, capsule, skill.slug):
                     raise KeyError(arguments.id)
                 already_loaded = self._loaded_skills.get(run_id, {}).get(skill.slug)
@@ -5030,9 +5017,19 @@ class RunManager:
 
     def _delegation_targets(self, session: Session, capsule: AgentCapsule) -> list[str]:
         targets = capsule.metadata.delegation.allowed_agents or [session.agent_id]
+
+        def resolve(target: str) -> str:
+            try:
+                return self.agents.load(target).metadata.id
+            except (FileNotFoundError, ValueError):
+                return target
+
+        targets = [resolve(target) for target in targets]
         inherited = self._delegation_scope(session).get("delegation_targets")
         return (
-            targets if inherited is None else [target for target in targets if target in inherited]
+            targets
+            if inherited is None
+            else [target for target in targets if target in {resolve(value) for value in inherited}]
         )
 
     def _skill_permitted(self, session: Session, capsule: AgentCapsule, slug: str) -> bool:
@@ -5062,6 +5059,10 @@ class RunManager:
         if session.delegation_depth >= self.config.runtime.max_delegation_depth:
             return ToolResult(status="rejected", summary="delegation depth limit was reached")
         target_agent = arguments.agent_id or session.agent_id
+        try:
+            target_agent = (await asyncio.to_thread(self.agents.load, target_agent)).metadata.id
+        except (FileNotFoundError, ValueError) as exc:
+            return ToolResult(status="rejected", summary=f"unknown child agent: {exc}")
         targets = self._delegation_targets(session, capsule)
         if target_agent not in targets:
             return ToolResult(status="rejected", summary="target agent is not permitted")

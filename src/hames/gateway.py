@@ -33,7 +33,6 @@ from hames.agent import (
     AgentSummary,
     AgentTools,
     apply_agent_skill_policy,
-    load_agent,
     skill_permitted,
 )
 from hames.agent_execution import resolve_agent_execution
@@ -2089,9 +2088,7 @@ def create_app(state: GatewayState) -> FastAPI:
             )
             by_slug = {item.slug: item for item in scoped}
             by_slug.update({item.slug: item for item in ranked})
-            capsule = await asyncio.to_thread(
-                load_agent, state.paths.agents / session.agent_id / "AGENT.md"
-            )
+            capsule = await asyncio.to_thread(state.agents.load, session.agent_id)
             return apply_agent_skill_policy(capsule, list(by_slug.values()), limit=limit)
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
@@ -2132,9 +2129,7 @@ def create_app(state: GatewayState) -> FastAPI:
     async def get_skill(session_id: str, slug: str) -> SkillVersion:
         try:
             session = await asyncio.to_thread(state.ledger.get_session, session_id)
-            capsule = await asyncio.to_thread(
-                load_agent, state.paths.agents / session.agent_id / "AGENT.md"
-            )
+            capsule = await asyncio.to_thread(state.agents.load, session.agent_id)
             if not skill_permitted(capsule, slug):
                 raise KeyError(slug)
             return await asyncio.to_thread(state.runs.skills.get_visible, session, slug)

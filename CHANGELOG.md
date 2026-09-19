@@ -47,6 +47,11 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Fixed
 
+- Resolve renamed agent slugs through the registry during execution and delegation,
+  preserving stable IDs instead of constructing nonexistent folders from display slugs.
+  Agent renames move their capsule folders to the new slug while existing session IDs
+  remain valid; the built-in default agent retains its reserved folder.
+
 - Added proper padding to the automation task input and removed its resize handle.
 
 - Long-running conversation context recovery, including active-turn input budget

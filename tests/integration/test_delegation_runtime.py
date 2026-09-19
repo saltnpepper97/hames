@@ -73,7 +73,12 @@ class DelegationProvider(FakeProvider):
 
 
 async def start_parent(
-    tmp_path: Path, provider: DelegationProvider, *, limits: str = "", restricted: bool = False
+    tmp_path: Path,
+    provider: DelegationProvider,
+    *,
+    limits: str = "",
+    restricted: bool = False,
+    renamed: bool = False,
 ) -> tuple[GatewayState, str, str]:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     paths.ensure_foundation()
@@ -90,6 +95,8 @@ async def start_parent(
             encoding="utf-8",
         )
         state.agents.create("Worker")
+        if renamed:
+            state.agents.update("worker", name="Builder")
         # Explicitly select a broader child; the parent's deny must still apply.
         original = provider.stream
 
@@ -101,7 +108,7 @@ async def start_parent(
                     and (event.tool_call.provider_call_id or "").startswith("child-")
                 ):
                     arguments = json.loads(event.tool_call.arguments_delta)
-                    arguments["agent_id"] = "worker"
+                    arguments["agent_id"] = "builder" if renamed else "worker"
                     event = event.model_copy(
                         update={
                             "tool_call": event.tool_call.model_copy(
@@ -531,6 +538,26 @@ async def test_inline_coordinator_does_not_timeout_while_worker_has_budget(tmp_p
         events = state.ledger.list_run_events(run_id)
         assert any(event.type == "run.completed" for event in events)
         assert not any(event.type == "run.failed" for event in events)
+    finally:
+        provider.release.set()
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_renamed_worker_slug_runs_with_stable_id(tmp_path: Path) -> None:
+    provider = DelegationProvider(children=1)
+    state, session_id, run_id = await start_parent(
+        tmp_path, provider, restricted=True, renamed=True
+    )
+    try:
+        await asyncio.wait_for(provider.children_entered.wait(), 3)
+        provider.release.set()
+        await asyncio.wait_for(asyncio.shield(state.runs._tasks[run_id]), 5)
+        events = state.ledger.list_events(session_id)
+        requested = next(e for e in events if e.type == "delegation.requested")
+        assert requested.payload["target_agent_id"] == "worker"
+        assert any(e.type == "delegation.completed" for e in events)
+        assert state.agents.load("worker").path.parent.name == "builder"
     finally:
         provider.release.set()
         await state.runs.close()

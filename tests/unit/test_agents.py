@@ -281,7 +281,8 @@ def test_rename_updates_slug_and_resolves_it_without_changing_identity(
     original = registry.create("Builder")
     renamed = registry.update(original.metadata.id, name="Careful Reviewer")
     assert renamed.metadata.id == original.metadata.id
-    assert renamed.path == original.path
+    assert renamed.path.parent.name == "careful-reviewer"
+    assert not original.path.exists()
     assert renamed.metadata.slug == "careful-reviewer"
     assert registry.load("careful-reviewer").metadata.id == original.metadata.id
     assert registry.load("builder").metadata.name == "Careful Reviewer"
