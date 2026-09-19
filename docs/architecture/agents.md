@@ -273,3 +273,12 @@ suffix. Existing capsules without a slug continue to resolve by their ID.
 
 The default-model editor discovers models automatically after Web authentication;
 Refresh forces a new discovery and does not change the saved default.
+
+### Plan handoff after interrupted execution
+
+A replacement worker receives the current approved plan verbatim, including its
+execution note, even when the earlier execution failed. This handoff does not by
+itself resume or complete the parent plan. Unapproved or superseded plans are not
+substituted. A task referring to an approved plan is rejected before creating a
+child if no authoritative plan is available. Delegated contexts exclude episodic
+reports of earlier tasks; memory never supplies a missing assignment.

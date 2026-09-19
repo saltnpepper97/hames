@@ -236,7 +236,7 @@ function MaintenanceNode(props: { node: ConversationNode }): JSX.Element {
   const state = (): ConversationDisclosureState => {
     if (node.phase === "running") return "running";
     if (node.phase === "completed") return "success";
-    if (node.phase === "failed") return "error";
+    if (node.phase === "failed") return node.category === "wrap-up" ? "warning" : "error";
     if (node.phase === "paused") return "warning";
     return "idle";
   };
@@ -244,7 +244,7 @@ function MaintenanceNode(props: { node: ConversationNode }): JSX.Element {
     if (node.phase === "running") return "Working";
     if (node.phase === "queued") return "Queued";
     if (node.phase === "paused") return "Paused";
-    if (node.phase === "failed") return "Failed";
+    if (node.phase === "failed") return node.category === "wrap-up" ? "Background warning" : "Failed";
     return undefined;
   };
 

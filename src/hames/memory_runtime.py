@@ -442,8 +442,7 @@ class MemoryManager:
             tools=[memory_submission_tool(self.config.memory.max_proposals_per_pass)],
             metadata={"purpose": "memory_extraction", "job_id": job.id},
         )
-        name_parts: list[str] = []
-        argument_parts: list[str] = []
+        calls: dict[int, tuple[list[str], list[str]]] = {}
         started = completed = False
         try:
             async for event in provider.stream(request):
@@ -458,8 +457,9 @@ class MemoryManager:
                         correlation_id=job.id,
                     )
                 elif event.kind is StreamEventKind.TOOL_CALL_DELTA:
-                    if event.tool_call is None or event.tool_call.index != 0:
+                    if event.tool_call is None:
                         raise ValueError("memory extractor emitted an invalid tool call")
+                    name_parts, argument_parts = calls.setdefault(event.tool_call.index, ([], []))
                     if event.tool_call.name:
                         name_parts.append(event.tool_call.name)
                     argument_parts.append(event.tool_call.arguments_delta)
@@ -484,10 +484,17 @@ class MemoryManager:
                     )
             if not started or not completed:
                 raise ValueError("memory extractor stream did not complete")
-            if "".join(name_parts) != "submit_memory_candidates":
+            if not calls:
                 raise ValueError("memory extractor did not submit candidates")
-            raw = "".join(argument_parts) or "{}"
-            return ExtractionSubmission.model_validate(JSON_OBJECT.validate_json(raw)).candidates
+            candidates: list[MemoryCandidate] = []
+            for name_parts, argument_parts in calls.values():
+                if "".join(name_parts) != "submit_memory_candidates":
+                    raise ValueError("memory extractor emitted an unexpected tool")
+                raw = "".join(argument_parts) or "{}"
+                candidates.extend(
+                    ExtractionSubmission.model_validate(JSON_OBJECT.validate_json(raw)).candidates
+                )
+            return candidates[: self.config.memory.max_proposals_per_pass]
         except (ProviderError, ValueError) as exc:
             await self._append(
                 session_id=session.id,

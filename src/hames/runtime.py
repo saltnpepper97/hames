@@ -5002,8 +5002,12 @@ class RunManager:
         current = self.plans.current(session.id).current
         if (
             current is not None
-            and current.status in {"approved", "executing"}
-            and current.execution_run_id == run_id
+            and current.status in {"approved", "executing", "failed"}
+            and (current.status == "failed" or current.execution_run_id == run_id)
+            and any(
+                event.type == "plan.approved" and event.payload.get("plan_id") == current.id
+                for event in self.ledger.list_events(session.id)
+            )
         ):
             return {
                 "plan_id": current.id,
@@ -5105,6 +5109,16 @@ class RunManager:
         allowed_tools: frozenset[str],
         target_agent: str,
     ) -> ToolResult:
+        approved_plan = await asyncio.to_thread(self._delegation_plan, session, run_id)
+        if approved_plan is None and re.search(
+            r"\bapproved\s+(?:(?:implementation|execution)\s+)?plan\b", arguments.task, re.I
+        ):
+            return ToolResult(
+                status="rejected",
+                summary="Approved plan is missing from this delegation; no child was started. "
+                "Select and approve the intended plan before retrying. Never reconstruct it "
+                "from workspace memories or earlier tasks.",
+            )
         target = await asyncio.to_thread(self.agents.load, target_agent)
         execution = None
         if target.metadata.execution is not None:
@@ -5170,7 +5184,6 @@ class RunManager:
             agent_id=target_agent,
             execution=execution,
         )
-        approved_plan = await asyncio.to_thread(self._delegation_plan, session, run_id)
         inherited = self._delegation_scope(session)
         skill_allowlists = list(inherited.get("skill_allowlists", []))
         if capsule.metadata.skills.allow:

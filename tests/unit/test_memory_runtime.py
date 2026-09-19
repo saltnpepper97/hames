@@ -22,7 +22,8 @@ class ExtractingProvider:
     adapter = "fake"
     base_url = ""
 
-    def __init__(self) -> None:
+    def __init__(self, call_index: int = 0) -> None:
+        self.call_index = call_index
         self.requests: list[ModelRequest] = []
 
     async def list_models(self) -> list[ProviderModel]:
@@ -60,7 +61,7 @@ class ExtractingProvider:
         yield StreamEvent(
             kind=StreamEventKind.TOOL_CALL_DELTA,
             tool_call=ToolCallDelta(
-                index=0,
+                index=self.call_index,
                 provider_call_id="memory-call",
                 name="submit_memory_candidates",
                 arguments_delta=arguments,
@@ -128,8 +129,9 @@ async def test_failed_run_does_not_queue_blank_wrap_up(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("call_index", [0, 7])
 async def test_background_extraction_activates_important_user_memory(
-    hames_paths: HamesPaths, tmp_path: Path
+    hames_paths: HamesPaths, tmp_path: Path, call_index: int
 ) -> None:
     ledger = Ledger.open(hames_paths.database)
     session = ledger.create_session(
@@ -199,7 +201,7 @@ async def test_background_extraction_activates_important_user_memory(
         payload={"model_turns": 1, "tool_calls": 0, "active_seconds": 0.1},
         causation_id=started.id,
     )
-    provider = ExtractingProvider()
+    provider = ExtractingProvider(call_index)
     manager = MemoryManager(
         ledger=ledger,
         config=HamesConfig(),

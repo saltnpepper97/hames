@@ -275,7 +275,7 @@ function wrapUpDetail(
 ): string {
   if (phase === "failed") {
     const message = text(payload, "error_message");
-    return message ? `${label} paused · ${message}` : `${label} paused`;
+    return message ? `${label} skipped · ${message}. The conversation outcome is unchanged.` : `${label} skipped; conversation outcome unchanged`;
   }
   if (phase === "queued") {
     return text(payload, "status") === "running"

@@ -363,7 +363,10 @@ def test_explicit_delegation_opt_out_survives_capsule_roundtrip(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_delegation_carries_exact_approved_plan_and_inherits_it(tmp_path: Path) -> None:
+@pytest.mark.parametrize("retry_failed", [False, True])
+async def test_delegation_carries_exact_approved_plan_and_inherits_it(
+    tmp_path: Path, retry_failed: bool
+) -> None:
     class GatedProvider(DelegationProvider):
         def __init__(self) -> None:
             super().__init__(children=1)
@@ -400,6 +403,14 @@ async def test_delegation_carries_exact_approved_plan_and_inherits_it(tmp_path: 
         state.runs.plans.transition(
             parent, proposed.current.id, "plan.execution.started", execution_run_id=run_id
         )
+        if retry_failed:
+            state.runs.plans.transition(
+                parent,
+                proposed.current.id,
+                "plan.execution.failed",
+                execution_run_id="old-run",
+                message="Earlier worker could not start",
+            )
         provider.parent_ready.set()
         await asyncio.wait_for(provider.children_entered.wait(), 5)
         child_request = provider.requests[-1]
@@ -450,7 +461,8 @@ async def test_delegation_carries_exact_approved_plan_and_inherits_it(tmp_path: 
         assert "Do not restart the compositor." in compiled.system
 
         # A later unrelated parent run must not inherit an old approval.
-        assert state.runs._delegation_plan(parent, "unrelated-run") is None
+        if not retry_failed:
+            assert state.runs._delegation_plan(parent, "unrelated-run") is None
         provider.release.set()
         await asyncio.wait_for(asyncio.shield(state.runs._tasks[run_id]), 5)
     finally:
@@ -560,4 +572,39 @@ async def test_renamed_worker_slug_runs_with_stable_id(tmp_path: Path) -> None:
         assert state.agents.load("worker").path.parent.name == "builder"
     finally:
         provider.release.set()
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_missing_approved_plan_rejects_child_before_execution(tmp_path: Path) -> None:
+    class MissingPlanProvider(DelegationProvider):
+        async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+            async for event in super().stream(request):
+                if event.tool_call and event.tool_call.name == "spawn_agent":
+                    event = event.model_copy(
+                        update={
+                            "tool_call": event.tool_call.model_copy(
+                                update={
+                                    "arguments_delta": json.dumps(
+                                        {"task": "Execute the approved plan"}
+                                    )
+                                }
+                            )
+                        }
+                    )
+                yield event
+
+    provider = MissingPlanProvider(children=1)
+    state, session_id, run_id = await start_parent(tmp_path, provider)
+    try:
+        await asyncio.wait_for(asyncio.shield(state.runs._tasks[run_id]), 5)
+        assert provider.entered == 0
+        events = state.ledger.list_events(session_id)
+        assert any(
+            e.type == "tool.rejected"
+            and "Approved plan is missing" in str(e.payload.get("summary", ""))
+            for e in events
+        )
+        assert not any(e.type == "delegation.requested" for e in events)
+    finally:
         await state.runs.close()

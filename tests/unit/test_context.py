@@ -420,6 +420,44 @@ def test_context_attributes_retrieved_memory(hames_paths: HamesPaths, tmp_path: 
     assert source.memory_layer == "relationship"
     assert source.provenance_event_ids == [user.id]
 
+    ledger.append(
+        session_id=session.id,
+        event_type="delegation.task_card",
+        payload={
+            "parent_session_id": "parent",
+            "parent_run_id": "parent-run",
+            "parent_event_id": user.id,
+            "target_agent_id": session.agent_id,
+            "task": "Inspect current landmark zoom behavior",
+            "delegation_depth": 1,
+        },
+    )
+    episode = selected[0].model_copy(
+        update={
+            "record": record.model_copy(
+                update={
+                    "id": "old-episode",
+                    "layer": "episodic",
+                    "summary": "OLD UNRELATED WORKSPACE PLAN",
+                    "value": "OLD UNRELATED WORKSPACE PLAN",
+                }
+            )
+        }
+    )
+    delegated = compile_context(
+        session,
+        ledger.replay(session.id),
+        capsule,
+        _tools(),
+        "safe reads",
+        ContextConfig(),
+        run_id="child-run",
+        memories=[*selected, episode],
+    )
+    assert "OLD UNRELATED WORKSPACE PLAN" not in delegated.system
+    assert "The user prefers concise documentation." in delegated.system
+    assert not any(item.memory_id == "old-episode" for item in delegated.manifest.selected_sources)
+
 
 def test_memory_retrieval_budget_accounts_for_canonical_provenance_shape(
     hames_paths: HamesPaths, tmp_path: Path

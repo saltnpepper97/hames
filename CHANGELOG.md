@@ -47,6 +47,13 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Fixed
 
+- Preserve the exact approved plan when respawning workers after a failed execution;
+  reject plan-based delegation before starting a child if the plan is missing.
+- Exclude unrelated episodic task reports from delegated worker context so historical
+  assignments cannot substitute for the current plan.
+- Accept memory extraction tool calls with nonzero indexes and multiple submissions.
+  Background maintenance warnings explicitly leave the conversation outcome unchanged.
+
 - Resolve renamed agent slugs through the registry during execution and delegation,
   preserving stable IDs instead of constructing nonexistent folders from display slugs.
   Agent renames move their capsule folders to the new slug while existing session IDs
