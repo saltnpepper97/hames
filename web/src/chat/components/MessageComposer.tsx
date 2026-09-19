@@ -639,7 +639,7 @@ export function MessageComposer(props: MessageComposerProps) {
           <TextArea
             elementRef={(element) => { textarea = element; }}
             value={draft()}
-            rows={1}
+            rows={2}
             resize="none"
             placeholder={reviewingPlan() ? "Describe changes to the plan…" : "Message Hames"}
             aria-label="Message Hames"

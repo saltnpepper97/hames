@@ -4826,7 +4826,7 @@ a {
 .composer-shell textarea {
   display: block;
   width: 100%;
-  min-height: 3.2rem;
+  min-height: calc(3.2rem + 1lh);
   resize: none;
   overflow-y: hidden;
   padding: 0.95rem 1rem 0.5rem;

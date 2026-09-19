@@ -29,6 +29,8 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Changed
 
+- Chat composer shows one additional line by default while retaining automatic growth.
+
 - Installation defaults to the latest stable version tag rather than rolling `main`.
   `HAMES_VERSION` pins a tag; `HAMES_REF` remains a tag-only compatibility alias.
   Building the current checkout requires `HAMES_INSTALL_LOCAL=1`.
