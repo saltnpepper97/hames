@@ -64,11 +64,15 @@ and enable warns.
 `proposals/` and cannot self-install. Permission expansion on upgrade needs a
 new approval.
 
-The local web UI follows the same lifecycle. Adding a plugin first asks the
-gateway to inspect a package path and displays its manifest, fingerprint,
+The local web UI follows the same lifecycle. It can upload a selected package
+folder into a bounded private staging area or inspect a package path already
+readable by the local gateway. The gateway displays its manifest, fingerprint,
 capabilities, and requested broker permissions. Installation requires an
 explicit permission review and still leaves the plugin disabled. Enable,
 disable, and removal actions call the gateway lifecycle endpoints; the browser
-does not copy packages or start workers itself.
+never starts or imports worker code itself.
+
+See the [plugin author guide](../plugins.md) for a minimal manifest, worker
+contract, broker permissions, and the development lifecycle.
 
 Do not replace the ledger, policy gate, agent loop, or context compiler.

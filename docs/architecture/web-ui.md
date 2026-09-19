@@ -30,6 +30,44 @@ Mutations must also carry the exact Origin and CSRF header. The server does not
 enable CORS or return provider credentials. A restrictive Content Security
 Policy and defensive headers cover the application, bootstrap, and web errors.
 
+## Workspace model
+
+A Hames workspace is a durable host-side registration over one canonical
+directory. It has a stable id and editable display title, but it does not own the
+directory, its files, or any session history. Removing a registration therefore
+never removes user data. Only a deliberate add-folder action creates or
+authorizes a registration. Starting the gateway, launching Web from a directory,
+and creating a session do not populate the workspace sidebar. A migration hides
+registrations created by the earlier automatic-discovery behavior; explicitly
+adding one of those paths authorizes the existing record again.
+
+Session membership is not duplicated in the workspace record. A session belongs
+to the workspace whose canonical path exactly equals the session's immutable
+`working_directory`. That same session path remains the execution, context,
+memory, skill, Scar, and trust scope. Registering a workspace does not trust it,
+and switching the Web UI never changes an existing session's directory.
+
+The launch directory authenticates the local browser handoff but does not become
+a workspace or select one. The active selection is stored per browser tab; when
+no authorized workspace exists, Chat opens in an explicit choose-workspace state
+and creates no session. Workspace-aware surfaces use the selection after the
+user adds a folder; global Agents, Plugins, and Settings do not acquire workspace
+ownership. The TUI and classic REPL retain their terminal-native contract: the
+canonical process directory remains their session working directory without
+adding it to the Web workspace registry.
+
+The Chat sidebar is the persistent workspace browser. It lists every registered
+workspace as an expandable folder with that workspace's open, non-empty chats
+nested beneath it. Its header owns chat search and the add-folder action; adding
+a folder asks the local gateway to open the host's native folder chooser and
+registers the selected directory. Hosts without a supported native chooser fall
+back to the in-app directory browser, which can also create one direct child
+folder. Directory APIs validate canonical existing parents and reject nested or
+ambiguous child names. The control above a fresh chat composer is deliberately
+only a workspace dropdown. When the registry is empty, its “Choose workspace”
+trigger opens that same native add-folder flow directly; workspace management
+remains in the sidebar.
+
 ## Frontend shape
 
 The client is a SolidJS single-page application under `web/`. Its components and
@@ -44,6 +82,10 @@ Buttons, checkboxes, switches, form fields, Markdown renderers and editors,
 selectable capability rows, settings sections, dialogs, the chat frame, and
 agent avatars each own their interaction and accessibility contract. Pages
 compose those primitives and do not render native buttons directly.
+The shared Spinner and Skeleton are SolidJS ports of the Still UI primitives:
+short or shape-unknown waits use the labelled rounded-square spinner, while
+directories and detail routes pair it with shape-preserving skeletons. Both
+retain reduced-motion and forced-color behavior.
 
 The icon-pack contract lets application components request semantic names such
 as `nav.chat` or `state.empty`; the selected pack maps those names to assets.
@@ -59,9 +101,9 @@ The resident chat frame is assembled from a focused session bar, view tabs,
 viewport, event explorer, composer, menus, and contribution-seat components.
 Web plugins can add ordered controls to the composer's typed left and right
 seats without reaching into its markup or
-owning draft submission. The core plugin currently contributes the disabled
-attachment affordance, gateway-backed interaction mode, and a unified model and
-thinking selector. Beneath the fixed header, the transcript scroll viewport
+owning draft submission. The core plugin currently contributes command
+discovery, gateway-backed interaction mode, and a unified model and thinking
+selector. Beneath the fixed header, the transcript scroll viewport
 fills the remaining chat pane through its bottom edge, so its scrollbar does not
 stop above the composer. The composer is anchored over that viewport and its
 measured height becomes transcript bottom clearance, keeping messages out from
@@ -69,6 +111,12 @@ underneath the input. The composer retains send, queue, and cancel because those
 actions belong to its input state machine. This follows the useful
 contribution-seat shape of the DeepSeek Harness reference while keeping Hames's
 SolidJS and HTTP/SSE runtime boundary.
+
+The composer's leading plus control opens one shared slash-command completion
+surface. Typing a leading slash opens and filters that same surface above the
+input; Up and Down move its active option, Enter inserts it into the draft, and
+Escape dismisses it without discarding text. The catalog includes the core
+client commands and any visible Skill whose invocation permits direct user use.
 
 One composer button displays the current model and thinking level. Its root menu
 contains Model and Thinking rows which drill into provider-grouped models or the
@@ -81,21 +129,44 @@ reasoning support commit with reasoning off; reasoning models without graduated
 levels offer the explicit on/off choice used by the TUI.
 
 On wide screens, the shell uses one 280-pixel adaptive sidebar beside the active
-surface. Its expanded state contains the brand, New chat action, compact surface
-navigation, and the active plugin's contextual directory in one visual column;
+surface. Its expanded state contains the brand, compact surface navigation, and
+the active plugin's contextual directory in one visual column;
 Settings remains pinned at the bottom. Collapsing it produces a 56-pixel icon
 rail from the same controls rather than leaving a second sidebar behind. The
-contextual directory is the only scrolling region, while the shell itself stays
-fixed. Wide screens start expanded and retain an explicit collapse preference;
-small screens use the expanded column as a closed-by-default drawer.
-Intermediate widths from 821 through 1100 pixels automatically start in the
-icon-rail state so the chat bar and working surface retain usable space; its
-collapse control can still expand the sidebar temporarily.
+rail stays collapsed until its explicit expand control is used. The contextual
+directory is the only scrolling region, while the shell itself stays fixed.
+Collapse motion is isolated to the sidebar shell so complex detail surfaces do
+not relayout on every animation frame.
+Chat keeps New chat beside its contextual heading instead of presenting
+the action on unrelated surfaces; Agents, Memory, Skills, Scars, and Plugins
+contribute matching create or add actions in their own headings. Wide screens start expanded and retain an
+explicit collapse preference;
+small screens use the expanded column as a closed-by-default drawer. The mobile
+bar uses the shared three-line menu icon and keeps the connection-state label
+visible beside its dot. In Chat, the session bar below it retains the title,
+working directory, view tabs, and agent avatar/name rather than reducing them to
+unlabelled icons. A fresh mobile chat anchors its welcome prompt immediately
+in the remaining conversation space while the composer stays anchored at the
+bottom. The chat-session bar remains a single compact row at wider mobile sizes
+and moves its centered view switch to a second row only on narrow phones.
+Intermediate desktop widths keep the full sidebar until the user explicitly
+collapses it; viewport compression never chooses the icon rail on the user's
+behalf.
 
-Chat contributes real, open workspace sessions to that contextual directory,
-matching the TUI's resumable-history boundary; empty sessions, closed historical
-sessions, and sessions from other workspaces remain out of the list. Selecting
-one routes its gateway metadata into the main surface. Agents contributes a
+Chat contributes every registered workspace and its real, open sessions to the
+contextual directory, matching each session to the exact canonical
+`working_directory`; empty sessions and closed historical sessions remain out
+of the list. Selecting a chat first activates its workspace and then routes its
+gateway metadata into the main surface. Search matches workspace titles, paths,
+and chat titles. When at least one chat in a workspace is pinned, that folder
+exposes a distinct Pinned group above its remaining chats; the group disappears
+when empty. Unpinned chats are grouped under compact date separators. Rows show
+the complete title at rest and reveal pin/delete actions on hover or keyboard
+focus, ellipsizing only while those actions occupy the row. Chats can be removed
+after confirmation.
+Removal closes the
+session and its active runtime resources but retains the append-only local audit
+history; archive and restore controls are not exposed. Agents contributes a
 component-rendered capsule directory to the same region; selecting an avatar
 opens its editor directly in the main surface, and the bare Agents route selects
 the first real capsule. The contextual directory names the active surface
@@ -111,8 +182,9 @@ permissions. Initially they are compile-time modules in the locally packaged
 bundle. Loading independently installed JavaScript requires a later signed
 package and permission design rather than arbitrary runtime script injection.
 
-The chat surface filters sessions by exact canonical launch directory, rebuilds
-the transcript from durable gateway events, and then follows transient assistant
+The shell asks the gateway for open, non-empty sessions across registered
+workspaces for its browser. The chat surface rebuilds the selected session's
+transcript from durable gateway events and then follows transient assistant
 output over the same SSE connection. Sending and cancellation call gateway
 mutations with browser-session CSRF protection. It renders explicit connecting,
 reconnecting, offline, expired-session, retry, and empty states. Routes without
@@ -131,6 +203,8 @@ generating summaries or timing data that the gateway did not provide. Chat and
 Events remain resident after Events is first opened, avoiding repeated teardown
 and reconstruction. The composer also remains mounted so its draft and controls
 survive a view change, but it is hidden entirely while Events is selected.
+The session bar shows the exact working directory beneath its title, retaining
+the full path as hover text when the compact header truncates it.
 
 The selected session agent is changed through the gateway rather than stored in
 browser state. The chat-bar picker reads the shared live agent directory, shows
@@ -177,16 +251,31 @@ registry's atomic structured update and preserves `AGENT.md` as the source of
 truth. Editor grids collapse before their contents overflow, and the workspace
 never uses page-level horizontal scrolling. The instructions field is a shared
 Markdown editor with source and sanitized preview modes rather than a page-local
-textarea.
+textarea. Non-default capsules can be retired after confirmation; the default
+capsule has no delete control and existing session attribution remains intact.
+
+The Memory sidebar owns explicit creation for relationship, semantic, and
+episodic records. Its form selects visibility, captures the structured subject,
+predicate, value, and summary, and writes an immediately active record through
+the current workspace session. Memory details can permanently remove a record
+after confirmation while retaining the ledger audit event.
 
 Its reusable SVG `AgentAvatar` component draws five robot shapes (circle, soft
-square, triangle, scalloped cloud, and hex), three eye styles (dots, visor, and
-vertical pills), and a solid or disabled face plate. The face assembly
-looks around as a unit, the body and antenna add subtle independent motion, and
-reduced-motion clients receive a static fallback. The avatar editor is a focused
-portaled dialog with previews, a suggested palette, and a keyboard-operable hue
-and saturation/value picker. Saving writes validated avatar metadata to the
-agent's `AGENT.md` through the same gateway update path.
+square, triangle, scalloped cloud, and hex) and three eye styles (dots, visor, and
+vertical pills). The eyes look around as a unit, the body and antenna add subtle
+independent motion, and reduced-motion clients receive a static fallback. The
+avatar editor is a focused portaled dialog with previews, a suggested palette,
+and a keyboard-operable hue and saturation/value picker. Saving writes validated
+avatar metadata to the agent's `AGENT.md` through the same gateway update path.
+
+The Skills surface can start a gateway-owned asynchronous authoring job from a
+focused creation dialog. The user describes the repeatable outcome and chooses
+workspace or current-agent scope; the sidebar reports the job state and refreshes
+the catalog after authoring completes rather than creating browser-local Skill
+state. A confirmed detail action can remove Hames-created Skills from the active
+catalog while retaining immutable versions and ledger evidence. Portable
+`.agents` packages and shipped built-ins remain read-only and never expose that
+action.
 
 The Settings surface owns browser-local appearance preferences. Its shared
 switch component selects the neutral light or dark palette, persists the choice
@@ -197,11 +286,16 @@ bundle paints without weakening the gateway's script policy.
 The Scars surface reads visible workspace Scars through an existing session and
 derives each detail view from the gateway's ledger-backed inspection endpoint.
 Its collapsible sidebar separates records needing attention, active guards, and
-history. The main surface leads with the diagnosis and expected behavior, then
+history. Its contextual Create Scar action records a manually described failure,
+recurrence cue, expected behavior, severity, and global/workspace/agent scope,
+then opens the new record in the Needs attention group. The main surface leads
+with the diagnosis and expected behavior, then
 progressively exposes trigger conditions, repair proposals and evaluations,
 lifecycle transitions, source evidence, and record provenance. Proposal and
 event payloads remain available in disclosures rather than overwhelming the
-human explanation.
+human explanation. A detail-level trash action can permanently remove a Scar
+and its repair records after confirmation while retaining the deletion audit
+event.
 
 The Plugins surface reads the installed registry directly from the gateway and
 separates enabled and disabled packages in its contextual directory. Details
@@ -210,7 +304,8 @@ worker state, registered tools, and any isolation warning. Adding a local
 package uses a contained inspect-first dialog: the gateway validates the
 package, the user reviews and acknowledges requested permissions, and install
 leaves it disabled. Enable, disable, and confirmed removal remain gateway-owned
-lifecycle operations.
+lifecycle operations. Installation starts only from the sidebar action; the
+empty main surface centers concise guidance back to that control.
 
 ## Build and packaging
 
@@ -236,24 +331,85 @@ semantic icon-pack contract, composable surface and conversation-renderer
 registry, componentized chat frame, Chat/Events views, event overview and
 virtualized ledger, chat-level agent selection and creation, composer-control seats, durable
 transcript reconstruction, live assistant output, message submission, run
-cancellation, and gateway-backed session creation. A newly
-created empty session opens directly in the centered fresh-work composer but
-enters sidebar history only after its first message; the old passive empty chat
-state is not reachable. Pending approvals and agent questions render as
+cancellation, and gateway-backed session creation. Chats can be durably pinned
+or explicitly closed from their directory rows. Every registered workspace offers
+one New chat row at the front of its Today section. Opening it creates a durable
+empty session in the centered fresh-work composer and consumes that row while the
+conversation remains active. Its first submitted message supplies an immediate
+provisional title, later `session.title.changed` events replace that title live,
+and pin/delete actions appear only once it is titled. The next New chat row appears
+only after the workspace's explicit `+` action. Leaving and returning to Chat
+reopens the last conversation without creating or restoring a draft row. A
+workspace without established conversations says that there are no sessions yet.
+Pending approvals and agent questions render as
 composable transcript cards and resolve through the existing gateway controls.
+Questions support one-of-many choices, constrained checkbox selections, and
+direct text answers; older option-only events continue to render as single-choice
+questions.
+Pending tool approvals use a focus-trapped permission dialog with explicit
+Allow once, Allow for session, and Deny actions. Escape, the close control, and
+backdrop dismissal all resolve as Deny; a permission request cannot disappear
+without recording a decision.
+The compact stats pill below an established chat's composer is conversation
+local. At rest it reports model requests, cache-hit percentage, separate input
+and output totals, and current context pressure. Its anchored popover breaks
+down total, prompt, output, cached input, cache-hit percentage, reasoning,
+compiled input, request count, latest context pressure, input budget, response
+reserve, and provider-reported cost when available. Settings > Usage deliberately
+does not repeat those per-chat details: it shows overall ChatGPT account windows
+and an 84-day token heatmap pooled from locally owned events across every chat
+and registered or unregistered workspace. Branch ancestry is not replayed into
+that aggregate, so forks do not double-count their inherited history.
 Provider, model, interaction mode, and reasoning effort are real session
 settings. Entering bare `/chat` creates and opens a fresh durable session rather
-than presenting a selection prompt; it remains absent from the history list
-until its first message. The Agents slice lists real capsules and supports
+than presenting a selection prompt. The Agents slice lists real capsules and supports
 atomic display-name, instructions, tool, skill, pinned-skill, and avatar edits.
-Agent retirement, usage, and deeper policy summaries remain planned.
+Deeper agent policy summaries remain planned.
 The Scars slice lists real visible records and presents their complete detection,
 repair, evaluation, guard, regression, evidence, and lifecycle breakdown.
 The Plugins slice lists real installed packages and supports manifest inspection,
 permission review, installation, runtime enable/disable, and confirmed removal.
-The attachment control remains visibly disabled until its gateway contract exists.
-The browser-local light/dark appearance setting is functional. Commands,
-gateway-backed settings contributions, and the remaining management editors
-are future slices. See
+The attachment drawer accepts model-compatible images and ordinary files,
+persists unsent drafts in the browser, and opens attached content in the shared
+lightbox. Settings presents its categories as sections of one continuous page;
+the contextual sidebar routes are durable quick-jumps to Appearance and Usage
+rather than mutually exclusive pages. Appearance hosts the browser-local
+light/dark toggle and Usage hosts the account and pooled-history view. Commands,
+further gateway-backed settings
+contributions, and the remaining management editors are future slices. See
 [M10 Web Control](../implementation-plan/M10-WEB-CONTROL.md) for their acceptance
 criteria.
+
+### Plan review
+
+Web shows a durable plan review panel directly above the message composer after
+`plan.proposed`. The plan stays in the conversation; the panel survives replay
+when the chat is reopened. **Request changes** focuses the composer and sends a
+`plan_note` through the shared message API, keeping the session in Plan mode.
+Approval stays disabled while a revision is pending or a draft remains unsent.
+**Execute plan** calls the existing plan execution endpoint with the current
+conversation context, then displays execution status as the session enters Auto.
+The Web mode menu directs a ready Plan-to-Auto transition to this explicit review
+instead of using the gateway's legacy mode-change approval behavior.
+
+
+### API connections
+
+Settings > Connections exposes **OpenAI (API)** and **Grok (API)** separately
+from **Codex** and **Grok Build**. The API connections use their own API keys;
+subscription authentication is not reused. Hames verifies a key through model
+discovery before saving it in a private local credential file. The same saved
+provider profiles are available to Web and TUI and survive gateway restarts.
+Environment-provided keys remain externally managed. No model list is claimed
+until that account has been queried.
+
+### Reconnecting during a response
+
+The event broker retains only the current in-progress response for each active
+session. A new SSE subscription receives an atomic `response.snapshot` before
+history replay, then subsequent deltas in order. The snapshot carries a durable
+sequence watermark so replay of earlier messages in the same run cannot erase
+the restored prefix. Events published during the history read retain their
+ordering with queued deltas. Completed reasoning/text are cleared independently;
+terminal runs release their buffers. Web applies durable and transient updates
+together to avoid briefly rendering both the final message and its live copy.

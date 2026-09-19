@@ -39,7 +39,8 @@ work responsive in the terminal.
 - **Auditable context and memory** — inspect compiled context, token use, immutable
   events, request snapshots, layered memories, corrections, and Markdown/JSONL exports.
 - **Extensible tools** — built-in filesystem and shell tools, private web search,
-  external MCP servers, portable agents, delegation, plugins, and evolving Skills.
+  external MCP servers, portable agents, delegation, [isolated plugins](docs/plugins.md),
+  and evolving Skills.
 
 ## Install
 
@@ -50,7 +51,7 @@ Hames currently targets Linux and requires:
 - Rust 1.85 or newer
 - Git
 
-Install the latest <code>main</code> build:
+Install the latest stable version tag:
 
 ~~~bash
 curl -fsSL https://raw.githubusercontent.com/saltnpepper97/hames/main/install.sh | bash
@@ -60,18 +61,22 @@ The installer uses locked dependencies, never invokes <code>sudo</code>, and
 installs <code>hames</code> to uv's user tool bin directory (normally
 <code>~/.local/bin</code>). It keeps the source and Python environment under
 <code>~/.local/share/hames/source</code> so the Rust client can launch its matching
-gateway. Running the command again performs a fast-forward update.
+gateway. Running the command again installs the latest stable version tag.
+The script is fetched from main, but the installed source comes exclusively from a tag.
+Set `HAMES_VERSION=0.1.0` to pin that version; branches and commit hashes are rejected.
 
 To review the installer first, or build from your own checkout:
 
 ~~~bash
 git clone https://github.com/saltnpepper97/hames.git
 cd hames
-./install.sh
+HAMES_INSTALL_LOCAL=1 ./install.sh
 ~~~
 
-Set <code>HAMES_REF</code>, <code>HAMES_BIN_DIR</code>, or
+Set <code>HAMES_VERSION</code>, <code>HAMES_BIN_DIR</code>, or
 <code>HAMES_INSTALL_ROOT</code> to customize a remote installation.
+`HAMES_REF` remains a compatibility alias for a tag name. Local source builds
+require `HAMES_INSTALL_LOCAL=1`; the default always installs tagged source.
 
 ## Quick start
 
@@ -83,7 +88,7 @@ hames doctor
 hames
 ~~~
 
-Setup can configure llama.cpp, Ollama, OpenAI, or Codex. Hames defaults to a local
+Setup can configure llama.cpp, Ollama, OpenAI, Grok API, Grok Build, or Codex. Hames defaults to a local
 llama.cpp endpoint at <code>http://127.0.0.1:8080</code>; the gateway starts on
 demand and stays available after the client exits.
 
@@ -191,6 +196,8 @@ source variable name, never its secret value. See
 
 ## Configuration
 
+For DeepSeek, Z.ai API, and Z.ai Coding Plan setup, see [cloud provider connections](docs/cloud-providers.md).
+
 State is private by default under <code>~/.hames</code>. A minimal
 <code>~/.hames/config.toml</code> looks like:
 
@@ -278,6 +285,7 @@ milestones:
 
 - [Implementation plan](docs/implementation-plan/README.md)
 - [Architecture notes](docs/architecture/)
+- [Create a Hames plugin](docs/plugins.md)
 - [Model evaluations](docs/model-evaluations/)
 - [GitHub repository](https://github.com/saltnpepper97/hames)
 
@@ -286,3 +294,7 @@ The original planning archive remains untouched at the repository root.
 ## License
 
 Hames is available under the [MIT License](LICENSE).
+
+Custom slash commands: see [configuration and maintenance](docs/commands.md).
+
+Scheduled tasks: see [Automations](docs/automations.md) for setup, recovery, and notifications.

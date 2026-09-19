@@ -29,3 +29,21 @@ event. Hames performs this for local and cloud providers.
 session is idle and its queue is empty. The transcript presents the lifecycle as
 one expandable continuity item, and session status reports the most recent
 completed compaction.
+
+Automatic recovery also runs when context compilation would otherwise exceed the
+input budget, and may repeat throughout a single run. Long active turns are
+checkpointed at completed response/tool-batch boundaries. The newest completed
+exchange normally stays verbatim; budget exhaustion can checkpoint it too. An
+incomplete tool batch is never split. The original user request is retained
+verbatim across checkpoints, alongside the rolling summary and remaining tool
+protocol. Advancing a cutoff also summarizes intervening older turns so no gap
+in history is silently skipped. Raw ledger events remain intact.
+
+Local provider sessions with a fallback context window refresh it from model
+metadata before compiling requests. Explicit profile limits are preserved. A
+single request or exchange too large for even the summarizer remains an explicit
+budget error; failed summarization never commits a cutoff or discards history.
+
+### Approved plans in delegated work
+
+When a plan execution delegates work, the harness captures the exact approved plan revision and user execution note in the child’s durable task card. The delegating model’s task text defines the assigned portion; it does not replace the authoritative plan. Nested delegations inherit the same captured revision. The coordinator supplies only a short assignment (the whole plan or a named portion); it must not spend output tokens copying, summarizing, or rewriting the plan into the tool call. Context compilation includes the full plan as mandatory task context after compaction, with its token cost included in the input budget. An unrelated later root run does not inherit an earlier execution’s approval. Existing child task cards are not rewritten retroactively.

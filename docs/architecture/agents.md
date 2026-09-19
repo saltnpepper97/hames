@@ -63,8 +63,8 @@ deleted.
 Web clients can also give an agent a small visual identity. The avatar remains
 portable capsule metadata rather than browser-local state: five body shapes
 (`circle`, `square`, `triangle`, `cloud`, and `hex`), three eye styles (`dots`,
-`visor`, and `pill`), a solid or disabled face plate, and a six-digit
-hex color. Clients derive a stable
+`visor`, and `pill`), and a six-digit hex color. Older capsules may still carry
+an unused `face` field; clients ignore it. Clients derive a stable
 fallback for older capsules and write the chosen avatar through the same atomic
 agent update path.
 
@@ -98,6 +98,10 @@ Core tool ids today:
 - Memory: `memory_search`, `memory_add`, `memory_edit`, `memory_forget`.
 - Evolution: `scar_list`, `scar_record`, `scar_control`.
 
+`ask_user` can request a single mutually exclusive choice, a constrained set of
+checked choices, or a direct text answer. The runtime pauses the same run until
+the active Web, TUI, or classic REPL client records the structured answer.
+
 These are typed controller operations, not generic access to `~/.hames`. Do not
 invent names such as `filesystem.write` until they exist as real tool ids. Rule
 activation and plugin installation are deliberately absent: those stay in the
@@ -107,7 +111,7 @@ authenticated human control plane.
 
 Markdown with YAML frontmatter. Unknown keys are rejected. Legacy `provider`
 and `model` are inert compatibility fields; execution settings belong to the
-session.
+session unless an agent `default_model` is used for a new chat, delegation, or plan execution.
 
 ```yaml
 id: reviewer
@@ -130,7 +134,6 @@ delegation:
 avatar:
   shape: triangle
   eyes: pill
-  face: solid
   color: '#0d9488'
 ```
 
@@ -161,3 +164,111 @@ current session and emits `session.agent.changed`. It does not rewrite history.
 `spawn_agent` creates a child session with its own capsule, loop limits, and a
 task card. The child cannot exceed parent policy or the child's own reductions.
 Depth is bounded.
+
+
+### Autonomous subagents
+
+Agents can delegate without a separate user request. `spawn_agent` defaults to
+the current agent when `agent_id` is omitted; an empty `delegation.allowed_agents`
+list means the current agent only. An explicit `delegation.allow: false` disables
+spawning, and tool allow/deny restrictions still apply. Read-only and Plan agents
+can delegate inspection without granting write authority.
+
+Independent `spawn_agent` calls in the same model response run concurrently.
+The parent receives each terminal result and remains responsible for integrating
+and checking the work. The harness encourages delegation for broad reviews,
+many files and separable tasks, while leaving the choice to the model. Assignments
+should include the objective, context, constraints, file ownership and expected
+result; child sessions receive a task card, not the entire parent conversation.
+
+Children inherit workspace, model and interaction mode, plus a durable snapshot
+of the parent's effective tools, skill restrictions and delegation targets. These
+permissions can only narrow. Children report approval/input blockers to the parent
+and cannot leave background terminals running. Parent cancellation cancels its
+children; waiting for them counts against the parent's active time budget. Defaults
+are one delegation level, four child runs per parent run and four concurrent child
+runs across the gateway. Child results are bounded by the normal tool-result limit.
+
+### Explicit dream maintenance
+
+`/dream` in Web, TUI or REPL requests the same memory, Skill and scar maintenance
+that normally waits for idle time. It bypasses that delay, requires a trusted idle
+session, and yields to foreground work. The authenticated shared endpoint is
+`POST /v1/sessions/{session_id}/dream`; clients receive a `dream_id` and follow the
+existing `dream.started`, `dream.completed`, `dream.paused` and `dream.failed` events.
+
+Semantic dream review includes older active facts visible to the session, grouped
+by their existing visibility scope. The memory provider can nominate high-confidence
+redundancy, supported supersession, explicitly expired facts or transient run clutter.
+Age alone never establishes irrelevance. Omitted and uncertain facts remain active;
+explicit captures require a supported replacement. Changes retain record provenance
+and audited retirement reasons, and apply only while the reviewed records are unchanged.
+
+## Model-separated plan execution
+
+A capsule may specify a default model:
+
+```yaml
+default_model:
+  provider: codex
+  model: gpt-5.6-luna
+  reasoning_effort: xhigh
+```
+
+`spawn_agent` uses the target capsule's selection when present, including the target
+model's context window. Otherwise children retain the existing inheritance behavior.
+Legacy top-level `provider`/`model` remain inert. A model cannot override the capsule's
+selection through tool arguments. Parent authority, workspace, interaction mode, and
+all existing delegation restrictions still apply. Read-only parents cannot create
+write-capable children merely by choosing another model.
+
+The authenticated plan execution endpoint accepts optional `agent_id` with `strategy:
+keep`. It validates the coordinator and declared worker models/efforts before changing
+session settings or approving the plan, then runs the selected coordinator in Auto mode.
+It rejects delegated sessions, active work, queued turns, missing plans, untrusted
+workspaces, and unavailable selections. Existing execution requests remain unchanged.
+An explicitly selected execution agent returns unfinished checklist work to the human
+as `workflow_needs_attention`, rather than automatically repeating an implementation pass.
+
+The optional capsules in `contrib/build-review/` implement the initial experiment.
+Install each Markdown capsule as `~/.hames/agents/<id>/AGENT.md` (do not overwrite existing capsules).
+Install `build-review.toml` under `~/.hames/commands/` to opt into the command.
+See [user-defined commands](../commands.md) for maintenance and workspace overrides.
+Adjust the provider IDs to your configured profiles before use. In Web, TUI, or classic
+REPL, plan with Astra in Plan mode, wait for the ready plan, then run `/build-review`
+with an optional execution note. This approves the current plan and selects the
+`build-review` coordinator. There is no implicit approval when the plan is absent.
+
+The example starts with DeepSeek high → Luna xhigh → Sol medium only for actionable findings →
+final Luna review → human. Clean reviews skip Sol. Architectural blockers stop for the
+human. The coordinator owns the parent checklist and must mark only verified work done.
+The order and conditional verdict interpretation are agent instructions, not a new
+workflow engine; the runtime enforces model routing, permission inheritance, child
+limits, cancellation and rejection of invalid selections. The builder and finisher commit verified, scoped changes unless the user forbids it;
+they never push without an explicit request. Existing workspace shell policy still applies.
+The reviewer has runtime read-only authority (no shell, including no Git shell commands).
+Selecting an agent with the ordinary picker still preserves session model settings;
+`default_model` applies to new chats, delegation, and explicitly selected plan execution. The legacy `execution` key remains readable. Agent settings can clear the default; delegated work then inherits the parent model. Explicit new-chat model selections override the default. Selecting an agent in an empty chat loads its default; changing the model in the chat afterward overrides it for that chat. Changing saved defaults never rewrites existing chats, and switching agents in an established conversation keeps its current model.
+
+
+### Cancelling a delegated worker
+
+Stopping a child chat publishes a stopping update to its parent immediately.
+Once the child has a durable terminal event, the parent receives the result
+without waiting for post-run memory or skill maintenance. Cancellation is
+reported explicitly and instructs the coordinator to wait for user direction,
+not automatically restart or re-delegate the cancelled work. Repeated Stop
+requests do not interrupt cancellation cleanup. Stopping a parent still cancels
+its child runs.
+
+### Names, slugs, and stable identity
+
+Renaming an agent allocates a unique name-based slug and updates its Web URL.
+The slug is stored separately in AGENT.md; the internal `id` and capsule
+directory remain stable so existing sessions, memory scope, and delegation
+permissions retain their identity. Agent lookups accept either the current slug
+or the stable ID. Collisions with another agent's slug or ID receive a numeric
+suffix. Existing capsules without a slug continue to resolve by their ID.
+
+The default-model editor discovers models automatically after Web authentication;
+Refresh forces a new discovery and does not change the saved default.

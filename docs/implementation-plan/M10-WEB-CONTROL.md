@@ -22,11 +22,18 @@ claiming unfinished controls:
   the default icon pack uses Phosphor for the brand, agents, and memory and
   Tabler for the remaining controls, while the built-in areas form `hames.core`;
 - the responsive shell uses one 280-pixel sidebar that collapses into a
-  56-pixel icon rail, with New chat and surface navigation above one scrolling
-  contextual directory and Settings pinned below it; intermediate widths
-  automatically choose the rail before the small-screen drawer breakpoint;
-  Chat lists only real resumable sessions scoped to the exact launch directory
-  and routes a selection into the main area;
+  56-pixel icon rail, with surface navigation above one scrolling contextual
+  directory and Settings pinned below it; the rail remains collapsed until the
+  explicit expand control is used, its motion does not animate the workspace
+  grid, and Chat, Agents, Memory, Skills, Scars, and Plugins own matching creation
+  actions beside their headings; the mobile header retains its labelled
+  connection state and the Chat session header keeps title, directory, tabs,
+  and agent identity visible;
+  intermediate desktop widths remain expanded until the user explicitly chooses
+  the rail, while small screens use the drawer breakpoint;
+  Chat lists real resumable sessions only beneath explicitly added workspace
+  folders and routes a selection into the main area; the Web launch directory
+  is not automatically enrolled or selected;
 - loading, offline, expired-session, retry, reconnect, and empty states are
   explicit; an expired process-local browser session is not reported as an
   offline gateway;
@@ -49,11 +56,12 @@ claiming unfinished controls:
 - the chat frame, compact session bar, Chat/Events tabs, transcript viewport,
   event overview, event ledger, composer, menus, and contribution seats are
   separate application components; the core plugin supplies the
-  attachment affordance and live mode/model/reasoning controls through those
+  command affordance and live mode/model/reasoning controls through those
   seats;
 - the compact chat bar removes the duplicate workspace strip and passive Live
-  label, retaining the session title, meaningful loading/working state, centered
-  Chat/Events tabs, and a real agent picker;
+  label, retaining the session title with its exact working directory beneath,
+  meaningful loading/working state, centered Chat/Events tabs, and a real agent
+  picker;
 - the agent picker changes the durable session agent through the gateway and
   contains a focused creation modal for a permanent slug, authority, and
   optional `AGENT.md` instructions; newly created capsules are assigned to the
@@ -71,42 +79,68 @@ claiming unfinished controls:
 - the composer uses a capped auto-growing textarea, Enter submission,
   Shift+Enter line breaks, and inner scrolling after eight lines; its circular
   send control continues to queue while a run is active;
-- the Chat sidebar can create a real gateway session and route into its
-  composer; it joins history after the first durable message rather than
-  leaving an empty sidebar row;
+- the composer plus control and a leading typed slash open the same filtered
+  command completion menu above the input, with arrow-key selection and visible
+  user-invocable Skills alongside the core command catalog;
+- the Chat sidebar is a searchable workspace browser: registered folders expand
+  to their own chats, each folder keeps one New chat action at the front of its
+  Today section, can start a real gateway session, and the
+  header add action uses the host's native directory chooser; a fresh chat's
+  above-composer control selects its folder, opening the same native chooser
+  directly when none are registered; an opened draft consumes the New chat row
+  for the uninterrupted active conversation, its first message supplies an
+  immediate provisional title, later title events update it live, and pin/delete
+  actions remain absent until it is titled. The row returns only after the
+  workspace's explicit `+` action; leaving and returning to Chat reopens the last
+  conversation without creating a draft. An otherwise empty folder says that no
+  sessions exist yet;
+- an empty registry opens a choose-workspace state without creating a session;
+  only the explicit add-folder flow authorizes a directory for the Web sidebar,
+  while gateway launches and terminal-created sessions remain unenrolled;
 - entering the bare Chat route starts fresh work automatically instead of
   rendering a passive session-selection state; its real composer is centered
   beneath the selected agent identity in one height-aware grid until the first
   conversation node arrives, then the same component moves to its bottom dock;
   short windows compact the identity treatment before prompt or input overlap;
-  refreshing that empty chat resolves its route directly even while it remains
-  omitted from history, and invalid routes fall through to a real replacement
+  refreshing that empty chat resolves its route directly while it occupies the
+  workspace's New chat row, and invalid routes fall through to a real replacement
   chat rather than a pending phantom state;
 - pending approval and question events render in the transcript and resolve
   through CSRF-protected gateway mutations, including session-scoped approval,
-  option notes, and custom answers;
+  option notes, custom answers, constrained multi-select choices, and direct
+  text responses;
 - transcript prose renders sanitized GitHub-flavored Markdown without allowing
   remote images or executable/embed markup, and the reusable AGENT.md editor
   provides source and rendered-preview modes;
 - shared Button, form-field, selection-row, settings-section, dialog, and avatar
   components keep interaction and accessibility behavior consistent across
   core surfaces;
+- the Still UI rounded-square Spinner is ported directly to SolidJS and is used
+  by pending buttons, chat connection states, menus, and route loaders; shared
+  skeletons preserve sidebar and detail-page shape during structured loads;
 - the Agents sidebar lists real capsules with their component-rendered avatars
   and routes directly into the responsive main-surface editor, which atomically
   edits display name, `AGENT.md` instructions, tool access, skill access, pinned
-  skills, and avatar metadata without an intermediate overview;
+  skills, and avatar metadata without an intermediate overview; non-default
+  capsules can be retired after confirmation while the default remains protected;
 - the Memory sidebar paginates real workspace-visible relationship, semantic,
   and episodic records through the gateway, separates those layers in one
   scrollable and collapsible directory, and routes into details for value,
-  scope, confidence, status, timestamps, and provenance;
+  scope, confidence, status, timestamps, and provenance; its creation dialog
+  writes structured records for every layer and details support confirmed delete;
 - the Skills sidebar lists the gateway's complete workspace-visible catalog,
   separates Hames-created, global `~/.agents`, and shipped built-in packages in
   collapsible groups, and renders each real procedure with its metadata, tools,
   requirements, scripts, package origin, and Markdown instructions;
+- the Skills sidebar can start gateway-owned asynchronous authoring for the
+  workspace or current agent, exposes the queued job state, and refreshes its
+  catalog after completion; Hames-created Skills support confirmed catalog
+  deletion while portable `.agents` and built-in Skills remain protected;
 - the Plugins surface lists the installed registry by enabled state, exposes
   manifest capabilities and package identity, reports actual worker state and
   runtime warnings, and uses gateway lifecycle controls for enable, disable, and
-  confirmed removal;
+  confirmed removal; installation is owned by the sidebar action and the empty
+  surface points users back to it;
 - adding a plugin is an inspect-first modal flow: a local package path is
   validated by the gateway, the exact manifest capabilities and broker
   permissions are reviewed, non-empty permissions require explicit
@@ -114,8 +148,12 @@ claiming unfinished controls:
 
 The next vertical slice adds richer plans, tasks, and child-agent activity.
 Those controls and the management capabilities listed below remain deferred.
-The gateway protocol is 37 for the refined avatar schema and the agent editor's
-workspace-aware capability catalog. The persistence layout remains unchanged.
+The gateway protocol is 38; structured multi-select and text questions extend
+the durable question contract while legacy option-only requests remain
+single-choice. Durable session pin state and the chat-directory pin/delete
+controls are backward-compatible additions. Session
+deletion uses the existing close semantics, so the append-only audit history
+remains intact; archive and restore remain deferred.
 
 ## Goal
 
@@ -185,9 +223,9 @@ A user can click from final answer to model calls and sources that produced it.
 Implement:
 
 - list agents; **Implemented**
-- persist a component-rendered avatar (five shapes, three eye styles, optional
-  face plate, and custom color) as validated `AGENT.md` metadata; **Implemented**
-- create agent;
+- persist a component-rendered avatar (five shapes, three eye styles, and custom
+  color) as validated `AGENT.md` metadata; **Implemented**
+- create agent; **Implemented through the sidebar dialog**
 - edit `AGENT.md` instructions through a dedicated settings editor;
   **Implemented**
 - schema/frontmatter validation before save; **Implemented for structured agent
@@ -196,7 +234,7 @@ Implement:
 - show effective policy/model/memory scopes;
 - show project vs global origin;
 - show agent usage statistics;
-- retire/delete agent while preserving history.
+- retire/delete agent while preserving history. **Implemented for non-default capsules**
 
 Saving agent writes actual `AGENT.md` atomically.
 
@@ -212,7 +250,7 @@ Semantic:
 - view; **Implemented**
 - provenance; **Implemented**
 - confidence/status; **Implemented**
-- correct/supersede/retract/delete;
+- correct/supersede/retract/delete; **Confirmed delete implemented**
 - approve/reject proposals.
 
 Relationships:
@@ -220,7 +258,7 @@ Relationships:
 - entity page; **Initial record detail implemented**
 - incoming/outgoing relationships;
 - bounded relationship view;
-- create/correct/retract/delete relationship.
+- create/correct/retract/delete relationship. **Structured create and confirmed delete implemented**
 
 Operational:
 
@@ -231,6 +269,8 @@ Operational:
 Episodic:
 
 - search episodes; **Grouped browsing implemented; search remains deferred**
+- create episode; **Implemented through the shared Memory dialog**
+- delete episode; **Implemented with confirmation**
 - open linked session timeline.
 
 Memory detail shows why a record was retrieved for selected model request when retrieval events exist.
@@ -258,7 +298,9 @@ Approval calls backend promotion logic, not browser-side file writes.
 Implement:
 
 - Scar list by state/severity/project; **Implemented for visible workspace Scars**
-- candidate confirmation/dismissal/deletion;
+- manual Scar creation with severity and global/workspace/agent scope;
+  **Implemented from the contextual sidebar**
+- candidate confirmation/dismissal/deletion; **Manual confirmed deletion implemented**
 - evidence timeline; **Implemented**
 - failure signature; **Implemented**
 - trigger explanation; **Implemented**
