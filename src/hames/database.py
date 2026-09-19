@@ -734,6 +734,86 @@ MIGRATIONS = (
         CREATE INDEX mcp_servers_enabled_idx ON mcp_servers(enabled, id);
         """,
     ),
+    Migration(
+        19,
+        "pinned sessions",
+        """
+        ALTER TABLE sessions
+            ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0
+            CHECK (pinned IN (0, 1));
+        """,
+    ),
+    Migration(
+        20,
+        "deleted managed skills",
+        """
+        ALTER TABLE skills
+            ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0
+            CHECK (deleted IN (0, 1));
+        """,
+    ),
+    Migration(
+        21,
+        "registered workspaces",
+        """
+        CREATE TABLE workspaces (
+            id TEXT PRIMARY KEY,
+            path TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX workspaces_updated_idx ON workspaces(updated_at DESC);
+        """,
+    ),
+    Migration(
+        22,
+        "explicit workspace authorization",
+        """
+        ALTER TABLE workspaces
+            ADD COLUMN authorized INTEGER NOT NULL DEFAULT 0
+            CHECK (authorized IN (0, 1));
+        CREATE INDEX workspaces_authorized_updated_idx
+            ON workspaces(authorized, updated_at DESC);
+        """,
+    ),
+    Migration(
+        23,
+        "queued message attachments",
+        """
+        ALTER TABLE session_queue
+            ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]';
+        """,
+    ),
+    Migration(
+        24,
+        "scheduled automations and durable runs",
+        """
+        CREATE TABLE automations (
+            id TEXT PRIMARY KEY,
+            definition TEXT NOT NULL,
+            next_run TEXT,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE automation_runs (
+            id TEXT PRIMARY KEY,
+            automation_id TEXT NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+            due_at TEXT NOT NULL,
+            definition TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL,
+            attempt INTEGER NOT NULL DEFAULT 0,
+            session_id TEXT,
+            run_id TEXT,
+            message TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            finished_at TEXT,
+            notified INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX automation_runs_due ON automation_runs(status, due_at);
+        CREATE UNIQUE INDEX automation_single_active ON automation_runs(automation_id)
+            WHERE status IN ('pending', 'running');
+        """,
+    ),
 )
 
 

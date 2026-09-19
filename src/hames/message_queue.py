@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from hames.ledger import Event, Ledger, new_id, utc_now
 
@@ -21,6 +21,7 @@ class QueuedMessage(QueueModel):
     content: str
     remember: bool
     paste_spans: list[dict[str, int]]
+    attachments: list[dict[str, Any]] = Field(default_factory=lambda: list[dict[str, Any]]())
     purpose: str = "turn"
     created_at: str
     position: int
@@ -126,7 +127,7 @@ class SubmissionReceiptStore:
 
 
 class MessageQueueStore:
-    MAX_PENDING = 2
+    MAX_PENDING = 3
 
     def __init__(self, ledger: Ledger) -> None:
         self.ledger = ledger
@@ -154,6 +155,7 @@ class MessageQueueStore:
         *,
         remember: bool,
         paste_spans: list[dict[str, int]],
+        attachments: list[dict[str, Any]] | None = None,
         priority: bool = False,
         purpose: str = "turn",
         queue_id: str | None = None,
@@ -175,7 +177,9 @@ class MessageQueueStore:
             )
             if count >= self.MAX_PENDING:
                 connection.rollback()
-                raise QueueFullError("session queue already contains two messages")
+                raise QueueFullError(
+                    "Queue is full (3 pending messages). Remove a message or wait for a slot."
+                )
             boundary = "MIN" if priority else "MAX"
             step = -1 if priority else 1
             ordinal = int(
@@ -188,7 +192,8 @@ class MessageQueueStore:
             position = 1 if priority else count + 1
             connection.execute(
                 "INSERT INTO session_queue(id, session_id, ordinal, content, remember, "
-                "paste_spans_json, created_at, purpose) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "paste_spans_json, created_at, purpose, attachments_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     queue_id,
                     session_id,
@@ -198,6 +203,7 @@ class MessageQueueStore:
                     json.dumps(paste_spans, separators=(",", ":"), sort_keys=True),
                     created_at,
                     purpose,
+                    json.dumps(attachments or [], separators=(",", ":"), sort_keys=True),
                 ),
             )
             event = self.ledger.append_in_transaction(
@@ -211,6 +217,7 @@ class MessageQueueStore:
                     "content": content,
                     "remember": remember,
                     "paste_spans": paste_spans,
+                    "attachments": attachments or [],
                     "purpose": purpose,
                     "submission_id": submission_id,
                 },
@@ -220,6 +227,44 @@ class MessageQueueStore:
         state = self.state(session_id)
         item = next(item for item in state.items if item.id == queue_id)
         return QueueMutation(state=state, event=event, item=item)
+
+    def edit(self, session_id: str, queue_id: str, *, content: str, expected_content: str) -> Event:
+        session = self.ledger.get_session(session_id)
+        with self.ledger.transaction_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM session_queue WHERE session_id = ? AND id = ?",
+                (session_id, queue_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(queue_id)
+            if row["content"] != expected_content:
+                raise ValueError(
+                    "This queued message changed elsewhere. Cancel and reopen its editor."
+                )
+            if not content.strip() and not json.loads(row["attachments_json"]):
+                raise ValueError("A queued message must contain text or an attachment.")
+            # Paste offsets refer to the old text; attachments and queue identity stay intact.
+            paste_spans = row["paste_spans_json"] if content == expected_content else "[]"
+            connection.execute(
+                "UPDATE session_queue SET content = ?, paste_spans_json = ? "
+                "WHERE session_id = ? AND id = ?",
+                (content, paste_spans, session_id, queue_id),
+            )
+            event = self.ledger.append_in_transaction(
+                connection,
+                session_id=session_id,
+                agent_id=session.agent_id,
+                event_type="queue.updated",
+                payload={
+                    "queue_id": queue_id,
+                    "content": content,
+                    "paste_spans": json.loads(paste_spans),
+                },
+                correlation_id=queue_id,
+            )
+            connection.commit()
+        return event
 
     def take(self, session_id: str, queue_id: str, *, reason: str) -> QueueMutation:
         return self._take(session_id, queue_id=queue_id, newest=False, reason=reason)
@@ -351,6 +396,7 @@ class MessageQueueStore:
             content=str(row["content"]),
             remember=bool(row["remember"]),
             paste_spans=list(json.loads(str(row["paste_spans_json"]))),
+            attachments=list(json.loads(str(row["attachments_json"]))),
             purpose=str(row["purpose"]),
             created_at=str(row["created_at"]),
             position=position,

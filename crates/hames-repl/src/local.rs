@@ -25,8 +25,25 @@ pub enum ProviderBackend {
     LlamaCpp,
     Ollama,
     OpenAi,
+    Xai,
+    Grok,
+    DeepSeek,
+    Zai,
+    ZaiCoding,
     Codex,
 }
+
+const PROVIDER_BACKENDS: [ProviderBackend; 9] = [
+    ProviderBackend::LlamaCpp,
+    ProviderBackend::Ollama,
+    ProviderBackend::OpenAi,
+    ProviderBackend::Xai,
+    ProviderBackend::Grok,
+    ProviderBackend::DeepSeek,
+    ProviderBackend::Zai,
+    ProviderBackend::ZaiCoding,
+    ProviderBackend::Codex,
+];
 
 impl ProviderBackend {
     fn profile_id(self) -> &'static str {
@@ -34,6 +51,11 @@ impl ProviderBackend {
             Self::LlamaCpp => "llama_cpp",
             Self::Ollama => "ollama",
             Self::OpenAi => "openai",
+            Self::Xai => "xai",
+            Self::Grok => "grok",
+            Self::DeepSeek => "deepseek",
+            Self::Zai => "zai",
+            Self::ZaiCoding => "zai_coding",
             Self::Codex => "codex",
         }
     }
@@ -43,6 +65,11 @@ impl ProviderBackend {
             Self::LlamaCpp => "llama.cpp",
             Self::Ollama => "Ollama",
             Self::OpenAi => "OpenAI API",
+            Self::Xai => "Grok API",
+            Self::Grok => "Grok Build",
+            Self::DeepSeek => "DeepSeek API",
+            Self::Zai => "Z.ai API",
+            Self::ZaiCoding => "Z.ai Coding Plan",
             Self::Codex => "Codex / ChatGPT subscription",
         }
     }
@@ -244,30 +271,82 @@ pub fn start_backend() -> Result<()> {
 
 pub async fn ensure_gateway(paths: &LocalPaths) -> Result<()> {
     let url = paths.gateway_url()?;
-    if gateway_accepts_local_token(paths, &url).await? {
-        return Ok(());
+    match gateway_readiness(paths, &url).await? {
+        GatewayReadiness::Ready => return Ok(()),
+        GatewayReadiness::ProtocolMismatch(gateway_protocol) => {
+            bail!(
+                "gateway protocol {gateway_protocol} is incompatible with client protocol \
+                 {PROTOCOL_VERSION}; install a matching Hames client or restart the gateway \
+                 from the same checkout"
+            );
+        }
+        GatewayReadiness::TokenRejected => {
+            bail!(
+                "gateway on {url} rejected {}; another Hames home may be using this port",
+                paths.token.display()
+            );
+        }
+        GatewayReadiness::MissingToken => {
+            bail!(
+                "gateway is running but {} is missing",
+                paths.token.display()
+            );
+        }
+        GatewayReadiness::Unavailable => {}
     }
     start_backend()?;
-    if gateway_accepts_local_token(paths, &url).await? {
-        return Ok(());
+    match gateway_readiness(paths, &url).await? {
+        GatewayReadiness::Ready => Ok(()),
+        GatewayReadiness::ProtocolMismatch(gateway_protocol) => bail!(
+            "gateway protocol {gateway_protocol} is incompatible with client protocol \
+             {PROTOCOL_VERSION}; install a matching Hames client or restart the gateway \
+             from the same checkout"
+        ),
+        GatewayReadiness::TokenRejected => bail!(
+            "gateway on {url} rejected {}; another Hames home may be using this port",
+            paths.token.display()
+        ),
+        GatewayReadiness::MissingToken => {
+            bail!(
+                "gateway is running but {} is missing",
+                paths.token.display()
+            )
+        }
+        GatewayReadiness::Unavailable => {
+            bail!("gateway on {url} did not become ready after it was started")
+        }
     }
-    bail!(
-        "gateway on {url} rejected {}; stop the Hames process occupying that port and retry",
-        paths.token.display()
-    )
 }
 
-async fn gateway_accepts_local_token(paths: &LocalPaths, url: &str) -> Result<bool> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GatewayReadiness {
+    Ready,
+    Unavailable,
+    ProtocolMismatch(u32),
+    MissingToken,
+    TokenRejected,
+}
+
+async fn gateway_readiness(paths: &LocalPaths, url: &str) -> Result<GatewayReadiness> {
     let Ok(health) = GatewayClient::health_unauthenticated(url).await else {
-        return Ok(false);
+        return Ok(GatewayReadiness::Unavailable);
     };
-    if health.status != "ok" || health.protocol_version != PROTOCOL_VERSION {
-        return Ok(false);
+    if health.status != "ok" {
+        return Ok(GatewayReadiness::Unavailable);
+    }
+    if health.protocol_version != PROTOCOL_VERSION {
+        return Ok(GatewayReadiness::ProtocolMismatch(health.protocol_version));
     }
     if !paths.token.exists() {
-        return Ok(false);
+        return Ok(GatewayReadiness::MissingToken);
     }
-    GatewayClient::from_paths(paths)?.token_accepted().await
+    Ok(
+        if GatewayClient::from_paths(paths)?.token_accepted().await? {
+            GatewayReadiness::Ready
+        } else {
+            GatewayReadiness::TokenRejected
+        },
+    )
 }
 
 pub fn run_gateway_action(action: &str) -> Result<()> {
@@ -337,9 +416,26 @@ pub fn run_setup(
     for provider in wizard.providers {
         configure_provider(paths, provider)?;
         match provider {
+            ProviderBackend::DeepSeek | ProviderBackend::Zai | ProviderBackend::ZaiCoding => {
+                connect_api_key(paths, provider, interactive)?;
+            }
             ProviderBackend::OpenAi if env::var_os("OPENAI_API_KEY").is_none() => {
                 println!("  ○ OpenAI API · configured · OPENAI_API_KEY still required");
             }
+            ProviderBackend::Xai if env::var_os("XAI_API_KEY").is_none() => {
+                println!("  ○ Grok API · configured · XAI_API_KEY still required");
+            }
+            ProviderBackend::Grok => match ensure_grok_login(interactive)? {
+                CodexLogin::Existing => {
+                    println!("  ✓ Grok Build · using existing grok login");
+                }
+                CodexLogin::Completed => {
+                    println!("  ✓ Grok Build · sign-in completed");
+                }
+                CodexLogin::Required => {
+                    println!("  ○ Grok Build · run `grok login`");
+                }
+            },
             ProviderBackend::Codex => match ensure_codex_login(interactive)? {
                 CodexLogin::Existing => {
                     println!("  ✓ Codex / ChatGPT subscription · using existing sign-in");
@@ -421,7 +517,7 @@ fn setup_wizard_loop(
     };
     let mut reset = fresh;
     let mut selected_row = 0_usize;
-    let mut selected = [false; 4];
+    let mut selected = [false; PROVIDER_BACKENDS.len()];
     for provider in existing {
         selected[provider_index(*provider)] = true;
     }
@@ -461,7 +557,8 @@ fn setup_wizard_loop(
                 }
                 KeyCode::Enter if selected_row == 1 => {
                     reset = true;
-                    selected = [true, false, false, false];
+                    selected.fill(false);
+                    selected[provider_index(ProviderBackend::LlamaCpp)] = true;
                     page = SetupWizardPage::Providers;
                     selected_row = 0;
                 }
@@ -469,28 +566,23 @@ fn setup_wizard_loop(
                 _ => {}
             },
             SetupWizardPage::Providers => {
-                let row_count = 4 + usize::from(show_web_search);
+                let row_count = PROVIDER_BACKENDS.len() + usize::from(show_web_search);
                 match key.code {
                     KeyCode::Up => {
                         selected_row = selected_row.checked_sub(1).unwrap_or(row_count - 1)
                     }
                     KeyCode::Down => selected_row = (selected_row + 1) % row_count,
-                    KeyCode::Char(' ') if selected_row < 4 => {
+                    KeyCode::Char(' ') if selected_row < PROVIDER_BACKENDS.len() => {
                         selected[selected_row] = !selected[selected_row]
                     }
                     KeyCode::Char(' ') => web_search = !web_search,
                     KeyCode::Esc => return Ok(None),
                     KeyCode::Enter => {
-                        let providers = [
-                            ProviderBackend::LlamaCpp,
-                            ProviderBackend::Ollama,
-                            ProviderBackend::OpenAi,
-                            ProviderBackend::Codex,
-                        ]
-                        .into_iter()
-                        .enumerate()
-                        .filter_map(|(index, provider)| selected[index].then_some(provider))
-                        .collect();
+                        let providers = PROVIDER_BACKENDS
+                            .into_iter()
+                            .enumerate()
+                            .filter_map(|(index, provider)| selected[index].then_some(provider))
+                            .collect();
                         return Ok(Some(SetupWizardResult {
                             reset,
                             providers,
@@ -513,12 +605,7 @@ fn configured_provider_backends(paths: &LocalPaths) -> Result<Vec<ProviderBacken
         return Ok(Vec::new());
     };
     let mut result = Vec::new();
-    for provider in [
-        ProviderBackend::LlamaCpp,
-        ProviderBackend::Ollama,
-        ProviderBackend::OpenAi,
-        ProviderBackend::Codex,
-    ] {
+    for provider in PROVIDER_BACKENDS {
         let legacy_llama =
             provider == ProviderBackend::LlamaCpp && providers.contains_key("llamacpp");
         if providers.contains_key(provider.profile_id()) || legacy_llama {
@@ -533,13 +620,18 @@ fn provider_index(provider: ProviderBackend) -> usize {
         ProviderBackend::LlamaCpp => 0,
         ProviderBackend::Ollama => 1,
         ProviderBackend::OpenAi => 2,
-        ProviderBackend::Codex => 3,
+        ProviderBackend::Xai => 3,
+        ProviderBackend::Grok => 4,
+        ProviderBackend::DeepSeek => 5,
+        ProviderBackend::Zai => 6,
+        ProviderBackend::ZaiCoding => 7,
+        ProviderBackend::Codex => 8,
     }
 }
 
 fn setup_area(area: Rect) -> Rect {
     let width = area.width.clamp(36, 76);
-    let height = area.height.clamp(12, 18);
+    let height = area.height.clamp(12, 20);
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -647,7 +739,7 @@ fn render_provider_setup(
     frame: &mut Frame<'_>,
     area: Rect,
     selected_row: usize,
-    selected: &[bool; 4],
+    selected: &[bool; PROVIDER_BACKENDS.len()],
     existing: &[ProviderBackend],
     show_web_search: bool,
     web_search: bool,
@@ -655,13 +747,7 @@ fn render_provider_setup(
     let block = setup_block();
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let providers = [
-        ProviderBackend::LlamaCpp,
-        ProviderBackend::Ollama,
-        ProviderBackend::OpenAi,
-        ProviderBackend::Codex,
-    ];
-    let mut items = providers
+    let mut items = PROVIDER_BACKENDS
         .into_iter()
         .enumerate()
         .map(|(index, provider)| {
@@ -670,7 +756,12 @@ fn render_provider_setup(
             } else {
                 match provider {
                     ProviderBackend::LlamaCpp | ProviderBackend::Ollama => "local backend",
-                    ProviderBackend::OpenAi => "API key",
+                    ProviderBackend::OpenAi
+                    | ProviderBackend::Xai
+                    | ProviderBackend::DeepSeek
+                    | ProviderBackend::Zai => "API key",
+                    ProviderBackend::ZaiCoding => "Coding Plan API key",
+                    ProviderBackend::Grok => "grok login",
                     ProviderBackend::Codex => "ChatGPT subscription",
                 }
             };
@@ -687,7 +778,7 @@ fn render_provider_setup(
             web_search,
             "Private web search",
             "local SearXNG",
-            selected_row == 4,
+            selected_row == PROVIDER_BACKENDS.len(),
         ));
     }
     let chunks = Layout::default()
@@ -777,6 +868,11 @@ fn configure_provider(paths: &LocalPaths, provider: ProviderBackend) -> Result<(
         ProviderBackend::LlamaCpp => ("llama_cpp", "http://127.0.0.1:8080"),
         ProviderBackend::Ollama => ("ollama", "http://127.0.0.1:11434"),
         ProviderBackend::OpenAi => ("openai", "https://api.openai.com/v1"),
+        ProviderBackend::Xai => ("xai", "https://api.x.ai/v1"),
+        ProviderBackend::Grok => ("grok", "https://cli-chat-proxy.grok.com/v1"),
+        ProviderBackend::DeepSeek => ("deepseek", "https://api.deepseek.com"),
+        ProviderBackend::Zai => ("zai", "https://api.z.ai/api/paas/v4"),
+        ProviderBackend::ZaiCoding => ("zai_coding", "https://api.z.ai/api/coding/paas/v4"),
         ProviderBackend::Codex => ("codex", "app-server://codex"),
     };
     profile.insert(
@@ -786,16 +882,88 @@ fn configure_provider(paths: &LocalPaths, provider: ProviderBackend) -> Result<(
     profile
         .entry("base_url")
         .or_insert_with(|| toml::Value::String(base_url.to_owned()));
-    if provider == ProviderBackend::OpenAi {
-        profile.insert(
-            "api_key_env".to_owned(),
-            toml::Value::String("OPENAI_API_KEY".to_owned()),
-        );
+    if provider == ProviderBackend::OpenAi
+        || provider == ProviderBackend::Xai
+        || provider == ProviderBackend::Grok
+    {
+        let efforts: &[&str] = match provider {
+            ProviderBackend::Xai | ProviderBackend::Grok => &["low", "medium", "high", "xhigh"],
+            _ => &["low", "medium", "high"],
+        };
+        if provider == ProviderBackend::OpenAi {
+            profile.insert(
+                "api_key_env".to_owned(),
+                toml::Value::String("OPENAI_API_KEY".to_owned()),
+            );
+        } else if provider == ProviderBackend::Xai {
+            profile.insert(
+                "api_key_env".to_owned(),
+                toml::Value::String("XAI_API_KEY".to_owned()),
+            );
+        }
+        if provider == ProviderBackend::Xai || provider == ProviderBackend::Grok {
+            profile
+                .entry("model")
+                .or_insert_with(|| toml::Value::String("grok-4.6".to_owned()));
+            profile
+                .entry("reasoning_effort")
+                .or_insert_with(|| toml::Value::String("high".to_owned()));
+            profile
+                .entry("timeout_seconds")
+                .or_insert(toml::Value::Float(600.0));
+        }
         profile
             .entry("supported_reasoning_efforts")
             .or_insert_with(|| {
                 toml::Value::Array(
-                    ["low", "medium", "high"]
+                    efforts
+                        .iter()
+                        .map(|value| toml::Value::String((*value).to_owned()))
+                        .collect(),
+                )
+            });
+    }
+    if matches!(
+        provider,
+        ProviderBackend::DeepSeek | ProviderBackend::Zai | ProviderBackend::ZaiCoding
+    ) {
+        let variable = if provider == ProviderBackend::DeepSeek {
+            "DEEPSEEK_API_KEY"
+        } else {
+            "ZAI_API_KEY"
+        };
+        let model = if provider == ProviderBackend::DeepSeek {
+            "deepseek-flash"
+        } else {
+            "glm-5.3"
+        };
+        profile
+            .entry("api_key_env")
+            .or_insert_with(|| toml::Value::String(variable.to_owned()));
+        profile.entry("api_key_file").or_insert_with(|| {
+            toml::Value::String(
+                paths
+                    .root
+                    .join("credentials")
+                    .join(format!("{}.key", provider.profile_id()))
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        });
+        profile
+            .entry("model")
+            .or_insert_with(|| toml::Value::String(model.to_owned()));
+        profile
+            .entry("reasoning_effort")
+            .or_insert_with(|| toml::Value::String("high".to_owned()));
+        profile
+            .entry("timeout_seconds")
+            .or_insert(toml::Value::Float(600.0));
+        profile
+            .entry("supported_reasoning_efforts")
+            .or_insert_with(|| {
+                toml::Value::Array(
+                    ["low", "high", "max"]
                         .into_iter()
                         .map(|value| toml::Value::String(value.to_owned()))
                         .collect(),
@@ -803,6 +971,125 @@ fn configure_provider(paths: &LocalPaths, provider: ProviderBackend) -> Result<(
             });
     }
     write_config(paths, &config)
+}
+
+fn connect_api_key(paths: &LocalPaths, provider: ProviderBackend, interactive: bool) -> Result<()> {
+    let config = paths.config_toml()?;
+    let profile = &config["providers"][provider.profile_id()];
+    let variable = profile["api_key_env"]
+        .as_str()
+        .context("missing API key variable")?;
+    let path = PathBuf::from(
+        profile["api_key_file"]
+            .as_str()
+            .context("missing credential path")?,
+    );
+    if env::var(variable).is_ok_and(|key| !key.trim().is_empty())
+        || fs::read_to_string(&path).is_ok_and(|key| !key.trim().is_empty())
+    {
+        println!("  ✓ {} · credential present", provider.display_name());
+        return Ok(());
+    }
+    if !interactive {
+        println!(
+            "  ○ {} · configured · connect later with interactive hames setup",
+            provider.display_name()
+        );
+        return Ok(());
+    }
+    let console = if provider == ProviderBackend::DeepSeek {
+        "https://platform.deepseek.com/api_keys"
+    } else {
+        "https://z.ai/manage-apikey/apikey-list"
+    };
+    println!("  {} · create a key at {console}", provider.display_name());
+    println!(
+        "  Saved locally in {} with owner-only permissions.",
+        path.display()
+    );
+    if provider == ProviderBackend::ZaiCoding {
+        println!("  Uses the Coding Plan endpoint; no fallback to pay-as-you-go billing.");
+    }
+    print!("  API key (hidden; Enter to connect later): ");
+    io::stdout().flush()?;
+    let key = read_hidden_key()?;
+    println!();
+    if key.trim().is_empty() {
+        println!("  ○ Configured · connect later by running hames setup again");
+        return Ok(());
+    }
+    write_api_key(&path, key.trim())?;
+    println!("  ✓ Credential saved · verify models with hames doctor");
+    Ok(())
+}
+
+fn read_hidden_key() -> Result<String> {
+    use crossterm::event::{
+        DisableBracketedPaste, EnableBracketedPaste, KeyEventKind, KeyModifiers,
+    };
+    struct RestoreTerminal;
+    impl Drop for RestoreTerminal {
+        fn drop(&mut self) {
+            let _ = execute!(io::stdout(), DisableBracketedPaste);
+            let _ = disable_raw_mode();
+        }
+    }
+    enable_raw_mode()?;
+    let _restore = RestoreTerminal;
+    execute!(io::stdout(), EnableBracketedPaste)?;
+    let mut value = String::new();
+    loop {
+        match event::read()? {
+            Event::Key(key) if key.kind != KeyEventKind::Release => match key.code {
+                KeyCode::Enter => return Ok(value),
+                KeyCode::Esc => return Ok(String::new()),
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    bail!("connection cancelled")
+                }
+                KeyCode::Backspace => {
+                    value.pop();
+                }
+                KeyCode::Char(character) if !character.is_control() => value.push(character),
+                _ => {}
+            },
+            Event::Paste(text) => value.extend(text.chars().filter(|c| !c.is_control())),
+            _ => {}
+        }
+    }
+}
+
+fn write_api_key(path: &Path, key: &str) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("credential path requires a parent directory")?;
+    let parent_existed = parent.exists();
+    fs::create_dir_all(parent)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if !parent_existed {
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    let temporary = parent.join(format!(".hames-key-{}", uuid::Uuid::new_v4()));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let result = (|| -> Result<()> {
+        let mut file = options.open(&temporary)?;
+        file.write_all(key.as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&temporary, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
 }
 
 fn write_config(paths: &LocalPaths, config: &toml::Value) -> Result<()> {
@@ -827,6 +1114,31 @@ enum CodexLogin {
     Existing,
     Completed,
     Required,
+}
+
+fn grok_signed_in() -> bool {
+    let Some(home) = env::var_os("HOME") else {
+        return false;
+    };
+    let path = PathBuf::from(home).join(".grok/auth.json");
+    fs::read_to_string(path).is_ok_and(|contents| contents.contains("\"key\""))
+}
+
+fn ensure_grok_login(interactive: bool) -> Result<CodexLogin> {
+    if grok_signed_in() {
+        return Ok(CodexLogin::Existing);
+    }
+    if !interactive {
+        return Ok(CodexLogin::Required);
+    }
+    let status = Command::new("grok")
+        .arg("login")
+        .status()
+        .context("failed to start `grok login`; install Grok Build first")?;
+    if !status.success() {
+        bail!("Grok Build sign-in did not complete");
+    }
+    Ok(CodexLogin::Completed)
 }
 
 fn ensure_codex_login(interactive: bool) -> Result<CodexLogin> {
@@ -985,6 +1297,58 @@ mod tests {
     }
 
     #[test]
+    fn new_cloud_profiles_and_private_credentials_round_trip() {
+        use std::os::unix::fs::PermissionsExt;
+        let paths = temporary_paths("cloud-connections");
+        fs::create_dir_all(&paths.root).unwrap();
+        for provider in [
+            ProviderBackend::DeepSeek,
+            ProviderBackend::Zai,
+            ProviderBackend::ZaiCoding,
+        ] {
+            configure_provider(&paths, provider).unwrap();
+        }
+        let config = paths.config_toml().unwrap();
+        assert_eq!(
+            config["providers"]["deepseek"]["api_key_env"].as_str(),
+            Some("DEEPSEEK_API_KEY")
+        );
+        assert_eq!(
+            config["providers"]["zai_coding"]["base_url"].as_str(),
+            Some("https://api.z.ai/api/coding/paas/v4")
+        );
+        let key_file = std::path::PathBuf::from(
+            config["providers"]["deepseek"]["api_key_file"]
+                .as_str()
+                .unwrap(),
+        );
+        super::write_api_key(&key_file, "fixture-secret").unwrap();
+        assert_eq!(fs::read_to_string(&key_file).unwrap(), "fixture-secret");
+        assert_eq!(
+            fs::metadata(&key_file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(key_file.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        super::write_api_key(&key_file, "rotated-secret").unwrap();
+        assert_eq!(fs::read_to_string(&key_file).unwrap(), "rotated-secret");
+        assert!(
+            !fs::read_to_string(&paths.config)
+                .unwrap()
+                .contains("secret")
+        );
+        configure_provider(&paths, ProviderBackend::DeepSeek).unwrap();
+        assert_eq!(fs::read_to_string(&key_file).unwrap(), "rotated-secret");
+        fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
     fn provider_setup_preserves_existing_config_and_adds_cloud_backends() {
         let paths = temporary_paths("provider-setup");
         fs::create_dir_all(&paths.root).unwrap();
@@ -995,6 +1359,7 @@ mod tests {
         .unwrap();
 
         configure_provider(&paths, ProviderBackend::OpenAi).unwrap();
+        configure_provider(&paths, ProviderBackend::Xai).unwrap();
         let config = paths.config_toml().unwrap();
         assert_eq!(
             config["providers"]["llama_cpp"]["base_url"].as_str(),
@@ -1004,6 +1369,21 @@ mod tests {
             config["providers"]["openai"]["api_key_env"].as_str(),
             Some("OPENAI_API_KEY")
         );
+        assert_eq!(
+            config["providers"]["xai"]["api_key_env"].as_str(),
+            Some("XAI_API_KEY")
+        );
+        assert_eq!(
+            config["providers"]["xai"]["model"].as_str(),
+            Some("grok-4.6")
+        );
+        configure_provider(&paths, ProviderBackend::Grok).unwrap();
+        let config = paths.config_toml().unwrap();
+        assert_eq!(
+            config["providers"]["grok"]["adapter"].as_str(),
+            Some("grok")
+        );
+        assert!(config["providers"]["grok"].get("api_key_env").is_none());
         fs::remove_dir_all(&paths.root).unwrap();
     }
 }

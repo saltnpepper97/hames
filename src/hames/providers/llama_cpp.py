@@ -406,6 +406,21 @@ def _response_input(messages: Sequence[object]) -> list[dict[str, object]]:
                     ],
                 }
             )
+        if value.role == "user" and value.attachments:
+            if result and result[-1].get("role") == value.role:
+                raw_content = result[-1].get("content")
+                assert isinstance(raw_content, list)
+                content = cast(list[dict[str, object]], raw_content)
+            else:
+                content = list[dict[str, object]]()
+                result.append({"type": "message", "role": value.role, "content": content})
+            content.extend(
+                {
+                    "type": "input_image",
+                    "image_url": f"data:{attachment.media_type};base64,{attachment.data_base64}",
+                }
+                for attachment in value.attachments
+            )
         for call in value.tool_calls:
             result.append(
                 {

@@ -115,6 +115,7 @@ def test_ask_user_schema_limits_and_normalizes_choices() -> None:
     )
     assert isinstance(arguments, AskUserArguments)
     assert arguments.question == "Which direction?"
+    assert arguments.answer_type == "single_choice"
     assert [option.label for option in arguments.options] == ["Keep it", "Replace it"]
     assert [option.description for option in arguments.options] == ["", ""]
     described = ToolRegistry().validate(
@@ -133,10 +134,38 @@ def test_ask_user_schema_limits_and_normalizes_choices() -> None:
     assert described.options[0].description == (
         "Verify the current behavior.\n\nThen change it incrementally."
     )
-    with pytest.raises(ValueError, match="at most 3 items"):
+    multiple = ToolRegistry().validate(
+        "ask_user",
+        {
+            "question": "Which checks should run?",
+            "answer_type": "multiple_choice",
+            "options": ["Unit", "Integration", "Browser"],
+            "min_selections": 2,
+        },
+    )
+    assert isinstance(multiple, AskUserArguments)
+    assert multiple.answer_type == "multiple_choice"
+    assert multiple.min_selections == 2
+    assert multiple.max_selections == 3
+    text = ToolRegistry().validate(
+        "ask_user",
+        {"question": "What should the title say?", "answer_type": "text", "placeholder": "Title"},
+    )
+    assert isinstance(text, AskUserArguments)
+    assert text.answer_type == "text"
+    assert text.placeholder == "Title"
+    legacy_text = ToolRegistry().validate("ask_user", {"question": "What should I write?"})
+    assert isinstance(legacy_text, AskUserArguments)
+    assert legacy_text.answer_type == "text"
+    with pytest.raises(ValueError, match="at most 8 items"):
         ToolRegistry().validate(
             "ask_user",
-            {"question": "Choose", "options": ["one", "two", "three", "four"]},
+            {"question": "Choose", "options": [str(index) for index in range(9)]},
+        )
+    with pytest.raises(ValueError, match="must not include options"):
+        ToolRegistry().validate(
+            "ask_user",
+            {"question": "Explain", "answer_type": "text", "options": ["No"]},
         )
     with pytest.raises(ValueError, match="unique"):
         ToolRegistry().validate("ask_user", {"question": "Choose", "options": ["Same", "same"]})

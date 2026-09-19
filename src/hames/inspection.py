@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -28,6 +29,16 @@ class ContextUsageProjection(InspectionModel):
     context_window_source: str
 
 
+class DailyUsageProjection(InspectionModel):
+    date: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_input_tokens: int = 0
+    reasoning_tokens: int = 0
+    provider_reported_cost: float = 0.0
+    model_requests: int = 0
+
+
 class UsageProjection(InspectionModel):
     estimated_input_tokens: int = 0
     input_tokens: int = 0
@@ -39,6 +50,10 @@ class UsageProjection(InspectionModel):
     latest_context: ContextUsageProjection | None = None
     account_rate_limits: dict[str, JsonValue] | None = None
     account_rate_limits_error: str = ""
+    grok_account_usage: dict[str, JsonValue] | None = None
+    grok_account_usage_error: str = ""
+    grok_account_configured: bool = False
+    daily_activity: list[DailyUsageProjection] = Field(default_factory=list[DailyUsageProjection])
 
 
 class AgentUsageProjection(InspectionModel):
@@ -154,6 +169,63 @@ def session_runs(ledger: Ledger, session_id: str) -> list[RunSummary]:
 
 def session_usage(ledger: Ledger, session_id: str) -> UsageProjection:
     return _usage(ledger.replay(session_id))
+
+
+def workspace_daily_usage(
+    ledger: Ledger,
+    working_directory: str,
+    *,
+    days: int = 84,
+) -> list[DailyUsageProjection]:
+    """Aggregate locally-owned model activity without double-counting branch ancestry."""
+
+    cutoff = (datetime.now(UTC).date() - timedelta(days=max(1, days) - 1)).isoformat()
+    buckets: dict[str, DailyUsageProjection] = {}
+    for session in ledger.list_sessions():
+        if session.working_directory != working_directory:
+            continue
+        for event in ledger.list_events(session.id):
+            day = event.created_at[:10]
+            if day < cutoff or event.type not in {"model.requested", "model.usage"}:
+                continue
+            bucket = buckets.setdefault(day, DailyUsageProjection(date=day))
+            if event.type == "model.requested":
+                bucket.model_requests += 1
+                continue
+            bucket.input_tokens += int(event.payload.get("input_tokens", 0))
+            bucket.output_tokens += int(event.payload.get("output_tokens", 0))
+            bucket.cached_input_tokens += int(event.payload.get("cached_input_tokens") or 0)
+            bucket.reasoning_tokens += int(event.payload.get("reasoning_tokens") or 0)
+            bucket.provider_reported_cost += float(event.payload.get("provider_reported_cost") or 0)
+    return [buckets[day] for day in sorted(buckets)]
+
+
+def pooled_usage(ledger: Ledger, *, days: int = 84) -> UsageProjection:
+    """Pool locally-owned usage across sessions without replaying branch ancestry."""
+
+    events = [
+        event for session in ledger.list_sessions() for event in ledger.list_events(session.id)
+    ]
+    result = _usage(events)
+    # A latest compiled context belongs to one conversation, not the global aggregate.
+    result.latest_context = None
+    cutoff = (datetime.now(UTC).date() - timedelta(days=max(1, days) - 1)).isoformat()
+    buckets: dict[str, DailyUsageProjection] = {}
+    for event in events:
+        day = event.created_at[:10]
+        if day < cutoff or event.type not in {"model.requested", "model.usage"}:
+            continue
+        bucket = buckets.setdefault(day, DailyUsageProjection(date=day))
+        if event.type == "model.requested":
+            bucket.model_requests += 1
+            continue
+        bucket.input_tokens += int(event.payload.get("input_tokens", 0))
+        bucket.output_tokens += int(event.payload.get("output_tokens", 0))
+        bucket.cached_input_tokens += int(event.payload.get("cached_input_tokens") or 0)
+        bucket.reasoning_tokens += int(event.payload.get("reasoning_tokens") or 0)
+        bucket.provider_reported_cost += float(event.payload.get("provider_reported_cost") or 0)
+    result.daily_activity = [buckets[day] for day in sorted(buckets)]
+    return result
 
 
 def agent_usage(ledger: Ledger, agent_id: str) -> AgentUsageProjection:

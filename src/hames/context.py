@@ -11,6 +11,8 @@ from typing import Literal, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from hames.agent import AgentCapsule
+from hames.attachments import hydrate_message_attachments
+from hames.blobs import BlobStore
 from hames.config import ContextConfig
 from hames.environment import RuntimeEnvironmentSnapshot, render_environment_context
 from hames.goals import project_goals
@@ -54,7 +56,7 @@ that work, but when the user starts materially unrelated work and no old task is
 unfinished, remove the old completed tasks before adding the new checklist.
 """
 
-COMPILER_VERSION = 5
+COMPILER_VERSION = 7
 ESTIMATOR_VERSION = "utf8-bytes-div-4-v1"
 
 
@@ -194,6 +196,8 @@ def compile_context(
     plugin_budget_tokens: int = 1024,
     environment: RuntimeEnvironmentSnapshot | None = None,
     environment_budget_tokens: int = 256,
+    blobs: BlobStore | None = None,
+    preserve_reasoning: bool = False,
 ) -> CompiledContext:
     input_budget = session.context_window_tokens - config.output_reserve_tokens
     if input_budget <= 0:
@@ -265,7 +269,10 @@ def compile_context(
         plan_part = (
             f"plan.{approved_plan.id}",
             "Approved implementation plan. Execute this exact plan. Create the session task "
-            "checklist if it is empty, then keep it current:\n"
+            "checklist if it is empty, then keep it current. When delegating, the harness "
+            "attaches this exact plan and the execution note automatically. Supply only a short "
+            "assignment of the whole plan or a specific portion; do not rewrite, summarize, "
+            "or copy the plan into spawn_agent.task:\n"
             f"{approved_plan.markdown}{execution_note}",
         )
     task_list = project_tasks(session.id, session_events)
@@ -298,11 +305,25 @@ def compile_context(
     )
     delegation_part: tuple[str, str] | None = None
     if task_card is not None:
-        delegation_part = (
-            f"delegation.task_card.{task_card.id}",
+        card = dict(task_card.payload)
+        inherited_plan = card.pop("approved_plan", None)
+        content = (
             "Delegated task card (treat supplied evidence as the only parent context):\n"
-            + _canonical_json(task_card.payload),
+            + _canonical_json(card)
         )
+        if isinstance(inherited_plan, dict):
+            inherited_plan = cast(dict[str, JsonValue], inherited_plan)
+            content += (
+                "\n\nExact approved implementation plan supplied by the harness. "
+                "The task above defines your assigned portion; retain the full plan's "
+                "requirements and constraints for that work. Do not replace this plan "
+                "with a shortened handoff summary. If delegating further, the harness "
+                "automatically passes this same exact plan: supply only a short assignment, "
+                "without copying or rewriting the plan.\n" + str(inherited_plan.get("markdown", ""))
+            )
+            if inherited_plan.get("execution_note"):
+                content += "\n\nUser execution note:\n" + str(inherited_plan["execution_note"])
+        delegation_part = (f"delegation.task_card.{task_card.id}", content)
     agent_part = ("agent.identity", f"Agent instructions:\n{capsule.instructions}")
     retrieved = memories or []
     memory_content = canonical_memory_context(retrieved) if retrieved else ""
@@ -494,8 +515,10 @@ def compile_context(
         if compaction_event is not None
         else 0
     )
-    conversation_events = [event for event in events if event.sequence > cutoff_sequence]
-    turns, audit_reasoning = _conversation_turns(conversation_events, run_id)
+    conversation_events = _events_after_compaction(events, cutoff_sequence)
+    turns, audit_reasoning = _conversation_turns(
+        conversation_events, run_id, blobs=blobs, preserve_reasoning=preserve_reasoning
+    )
     omitted.extend(audit_reasoning)
 
     if compaction_event is not None and compaction_summary:
@@ -679,15 +702,83 @@ def canonical_request_snapshot(
     ).encode()
 
 
+def _events_after_compaction(events: list[Event], cutoff: int) -> list[Event]:
+    retained = [event for event in events if event.sequence > cutoff]
+    # A checkpoint can fall inside a user turn. Keep its original request verbatim
+    # so the remaining response/tool suffix is still projected as a conversation.
+    anchors = [event for event in events if event.type in {"user.message", "goal.step.started"}]
+    previous = next((event for event in reversed(anchors) if event.sequence <= cutoff), None)
+    if previous is not None and not any(event.sequence > cutoff for event in anchors):
+        retained.insert(0, previous)
+    elif previous is not None:
+        next_anchor = next(event for event in anchors if event.sequence > cutoff)
+        if any(
+            cutoff < event.sequence < next_anchor.sequence
+            and event.type
+            in {
+                "assistant.message",
+                "model.tool_call",
+                "tool.completed",
+                "tool.failed",
+                "tool.rejected",
+            }
+            for event in events
+        ):
+            retained.insert(0, previous)
+    return retained
+
+
+def _active_turn_prefixes(
+    events: list[Event], cutoff: int, *, preserve_latest_exchange: bool
+) -> list[list[Event]]:
+    anchors = [
+        i for i, event in enumerate(events) if event.type in {"user.message", "goal.step.started"}
+    ]
+    if not anchors:
+        return []
+    anchor = events[anchors[-1]]
+    pending: set[str] = set()
+    chunks: list[list[Event]] = []
+    chunk = [anchor]
+    response_complete = False
+    for event in events[anchors[-1] + 1 :]:
+        if event.sequence <= cutoff:
+            continue
+        chunk.append(event)
+        if event.type == "model.tool_call":
+            pending.add(str(event.payload["tool_call_id"]))
+            response_complete = False
+        elif event.type == "model.response.completed":
+            response_complete = True
+        elif event.type in {"tool.completed", "tool.failed", "tool.rejected"}:
+            pending.discard(str(event.payload["tool_call_id"]))
+        if (
+            response_complete
+            and not pending
+            and event.type
+            in {"model.response.completed", "tool.completed", "tool.failed", "tool.rejected"}
+        ):
+            if any(item.type in {"assistant.message", "model.tool_call"} for item in chunk):
+                chunks.append(chunk)
+            chunk = [anchor]
+            response_complete = False
+    # Keep the newest complete exchange plus any in-flight protocol verbatim.
+    return chunks[:-1] if preserve_latest_exchange else chunks
+
+
 def conversation_compaction_candidates(
-    events: list[Event], *, preserve_recent_turns: int
+    events: list[Event],
+    *,
+    preserve_recent_turns: int,
+    include_active: bool = False,
+    preserve_latest_exchange: bool = True,
 ) -> tuple[str, list[CompactionTurn]]:
     previous = next(
         (event for event in reversed(events) if event.type == "context.compaction.completed"),
         None,
     )
     cutoff = int(previous.payload.get("cutoff_sequence", 0)) if previous is not None else 0
-    turns, _ = _conversation_turns([event for event in events if event.sequence > cutoff], "")
+    turns, _ = _conversation_turns(_events_after_compaction(events, cutoff), "")
     if preserve_recent_turns <= 0:
         eligible = turns
     elif len(turns) > preserve_recent_turns:
@@ -696,6 +787,20 @@ def conversation_compaction_candidates(
         eligible = turns[:-1]
     else:
         eligible = []
+    if include_active and preserve_recent_turns > 0:
+        prefixes = _active_turn_prefixes(
+            events, cutoff, preserve_latest_exchange=preserve_latest_exchange
+        )
+        if prefixes:
+            # A cutoff is a contiguous prefix: never skip preserved older turns.
+            eligible = turns[:-1]
+        for chunk in prefixes:
+            chunk_turns, _ = _conversation_turns(chunk, "")
+            for turn in chunk_turns:
+                # Include the terminal boundary, even for a response with no tools.
+                if chunk[-1].id not in turn.event_ids:
+                    turn.event_ids.append(chunk[-1].id)
+            eligible.extend(chunk_turns)
     by_id = {event.id: event for event in events}
     result: list[CompactionTurn] = []
     for turn in eligible:
@@ -721,7 +826,11 @@ def conversation_compaction_candidates(
 
 
 def _conversation_turns(
-    events: list[Event], run_id: str
+    events: list[Event],
+    run_id: str,
+    *,
+    blobs: BlobStore | None = None,
+    preserve_reasoning: bool = False,
 ) -> tuple[list[_Turn], list[SourceDecision]]:
     turns: list[_Turn] = []
     current: _Turn | None = None
@@ -732,14 +841,21 @@ def _conversation_turns(
     for event in events:
         if event.type in {"user.message", "goal.step.started"}:
             current = _Turn(source_id=f"conversation.turn.{event.id}")
+            attachments, attached_text = hydrate_message_attachments(
+                event.payload.get("attachments", []), blobs
+            )
+            content = (
+                str(event.payload["content"])
+                if event.type == "user.message"
+                else "Continue the active autonomous goal with the next bounded step."
+            )
+            if attached_text:
+                content = "\n\n".join([content, *attached_text]).strip()
             current.messages.append(
                 ProviderMessage(
                     role="user",
-                    content=(
-                        str(event.payload["content"])
-                        if event.type == "user.message"
-                        else "Continue the active autonomous goal with the next bounded step."
-                    ),
+                    content=content,
+                    attachments=attachments,
                 )
             )
             current.event_ids.append(event.id)
@@ -747,7 +863,7 @@ def _conversation_turns(
         elif event.type == "assistant.reasoning" and event.causation_id:
             content = str(event.payload.get("content", ""))
             reasoning_by_request[event.causation_id] = (content, event)
-            if event.run_id != run_id:
+            if event.run_id != run_id and not preserve_reasoning:
                 audit_reasoning.append(
                     SourceDecision(
                         source_id=f"reasoning.{event.id}",
@@ -762,7 +878,11 @@ def _conversation_turns(
                 )
         elif event.type == "assistant.message" and current is not None:
             reasoning = reasoning_by_request.get(event.causation_id or "")
-            reasoning_content = reasoning[0] if reasoning and reasoning[1].run_id == run_id else ""
+            reasoning_content = (
+                reasoning[0]
+                if reasoning and (preserve_reasoning or reasoning[1].run_id == run_id)
+                else ""
+            )
             message = ProviderMessage(
                 role="assistant",
                 content=str(event.payload.get("content", "")),

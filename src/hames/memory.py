@@ -99,6 +99,23 @@ def _empty_memory_anchors() -> list[MemoryAnchor]:
     return []
 
 
+class SemanticDecision(MemoryModel):
+    memory_id: str
+    replacement_id: str | None = None
+    reason: Literal["redundant", "superseded", "transient", "expired"]
+    explanation: str = Field(min_length=10, max_length=1000)
+    confidence: float = Field(ge=0.9, le=1)
+
+
+def memory_scope(record: MemoryRecord) -> tuple[object, ...]:
+    return (
+        record.visibility,
+        record.owner_agent_id,
+        record.workspace_path,
+        record.lineage_root_session_id,
+    )
+
+
 class MemoryRecord(MemoryModel):
     id: str
     layer: MemoryLayer
@@ -432,9 +449,7 @@ class MemoryStore:
         if outcome:
             summary_parts.append(f"Outcome: {_compact_inline(outcome, 220)}")
         elif action_events:
-            summary_parts.append(
-                "Changes: " + "; ".join(value for _, value in action_events)[:220]
-            )
+            summary_parts.append("Changes: " + "; ".join(value for _, value in action_events)[:220])
         if failures:
             summary_parts.append("Issues: " + "; ".join(failures)[:160])
         summary = " ".join(summary_parts)[:500]
@@ -817,6 +832,109 @@ class MemoryStore:
             values.sort(key=lambda record: (position[record.id], record.id))
         return values[offset : offset + limit]
 
+    def reconcile_semantic(
+        self,
+        session: Session,
+        records: list[MemoryRecord],
+        decisions: list[SemanticDecision],
+        *,
+        causation_id: str,
+    ) -> tuple[Event, ...]:
+        """Apply a bounded review to unchanged records; retain audit history and provenance."""
+        snapshot = {record.id: record for record in records}
+        retired = {decision.memory_id for decision in decisions}
+        if len(retired) != len(decisions):
+            raise ValueError("duplicate semantic review decision")
+        for decision in decisions:
+            previous = snapshot.get(decision.memory_id)
+            replacement = snapshot.get(decision.replacement_id or "")
+            if (
+                previous is None
+                or previous.layer != "semantic"
+                or not self.is_visible(session, previous)
+            ):
+                raise ValueError("semantic review target is outside the supplied scope")
+            if decision.reason in {"redundant", "superseded"}:
+                if (
+                    replacement is None
+                    or replacement.id in retired
+                    or replacement.layer != "semantic"
+                    or memory_scope(previous) != memory_scope(replacement)
+                ):
+                    raise ValueError("semantic replacement must survive within the same scope")
+                if (
+                    decision.reason == "superseded"
+                    and replacement.created_at <= previous.created_at
+                ):
+                    raise ValueError("supersession requires newer supporting memory")
+            elif decision.replacement_id is not None:
+                raise ValueError("retraction must not nominate a replacement")
+            elif previous.origin_kind == "explicit":
+                raise ValueError("explicitly captured facts require a supported replacement")
+            if decision.reason == "expired":
+                if not previous.valid_until or datetime.fromisoformat(
+                    previous.valid_until
+                ) > datetime.now(UTC):
+                    raise ValueError("expiry requires an elapsed validity boundary")
+        events: list[Event] = []
+        now = utc_now()
+        with self.ledger.transaction_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for decision in decisions:
+                previous = snapshot[decision.memory_id]
+                involved = [previous]
+                if decision.replacement_id:
+                    involved.append(snapshot[decision.replacement_id])
+                unchanged = True
+                for record in involved:
+                    row = connection.execute(
+                        "SELECT * FROM memory_records WHERE id = ?", (record.id,)
+                    ).fetchone()
+                    if (
+                        row is None
+                        or self._record_from_row(connection, row) != record
+                        or record.status != "active"
+                    ):
+                        unchanged = False
+                        break
+                if not unchanged:
+                    continue
+                reason = f"dream_semantic_{decision.reason}: {decision.explanation}"
+                if decision.replacement_id:
+                    event = self._supersede_on_connection(
+                        connection,
+                        session,
+                        previous.id,
+                        decision.replacement_id,
+                        None,
+                        causation_id,
+                        now,
+                        reason=reason,
+                    )
+                else:
+                    connection.execute(
+                        "UPDATE memory_records SET status = 'retracted', updated_at = ? "
+                        "WHERE id = ?",
+                        (now, previous.id),
+                    )
+                    event = self.ledger.append_in_transaction(
+                        connection,
+                        session_id=session.id,
+                        agent_id=session.agent_id,
+                        event_type="memory.retracted",
+                        payload={
+                            "memory_id": previous.id,
+                            "previous_status": "active",
+                            "status": "retracted",
+                            "reason": reason,
+                        },
+                        causation_id=causation_id,
+                        correlation_id=previous.id,
+                    )
+                events.append(event)
+            connection.commit()
+        return tuple(events)
+
     def reconcile_recent(
         self,
         session: Session,
@@ -830,7 +948,7 @@ class MemoryStore:
         groups: dict[tuple[object, ...], list[MemoryRecord]] = {}
         episodes = [record for record in records if record.layer == "episodic"]
         for record in records:
-            if record.layer == "episodic":
+            if record.layer in {"episodic", "semantic"}:
                 continue
             key = (
                 record.layer,

@@ -19,8 +19,8 @@ use super::app::{
     ActivityCategory, ActivityPhase, AgentChoice, AgentEditField, AgentEditor, AgentEditorPage,
     App, ApprovalModal, Composer, ComposerCell, ComposerRowMap, ComposerUnit, ComposerViewport,
     ConnectionState, DreamPhase, HitAction, HitRegion, MemoryBrowser, MenuAction, Modal,
-    QuestionInputKind, ScarBrowser, ScarEditField, ScarEditor, ScrollTarget, Sheet, SheetKind,
-    ThemeKind, TranscriptItem, TranscriptViewport, UsageModal, task_checkbox,
+    QuestionAnswerType, QuestionInputKind, ScarBrowser, ScarEditField, ScarEditor, ScrollTarget,
+    Sheet, SheetKind, ThemeKind, TranscriptItem, TranscriptViewport, UsageModal, task_checkbox,
 };
 
 const MINT: Color = Color::Rgb(116, 226, 192);
@@ -730,6 +730,98 @@ fn transcript_lines(app: &App, width: usize) -> Vec<RenderLine<'static>> {
                         "  Note    ",
                         Style::default().fg(MUTED_LIGHT),
                     );
+                }
+            }
+            TranscriptItem::PromptInjection {
+                provider,
+                model,
+                estimated_input_tokens,
+                selected_sources,
+                omitted_sources,
+                request_hash,
+                created_at,
+                collapsed,
+                ..
+            } => {
+                let injected_tokens = selected_sources.iter().map(|source| source.tokens).sum();
+                let source_count = selected_sources.len();
+                lines.push(RenderLine {
+                    line: message_heading(
+                        vec![
+                            Span::styled("◆ ", Style::default().fg(INPUT)),
+                            Span::styled("Prompt injection", Style::default().fg(INPUT).bold()),
+                            Span::styled(
+                                format!(
+                                    " · {source_count} {} · {} injected · {} request  {}",
+                                    if source_count == 1 {
+                                        "source"
+                                    } else {
+                                        "sources"
+                                    },
+                                    format_token_count(injected_tokens),
+                                    format_token_count(*estimated_input_tokens),
+                                    if *collapsed { "▸" } else { "▾" },
+                                ),
+                                Style::default().fg(MUTED),
+                            ),
+                        ],
+                        created_at.as_deref(),
+                        width,
+                        MUTED,
+                    ),
+                    thought: Some(TranscriptDisclosure::Activity(index)),
+                    sheen: None,
+                });
+                if !*collapsed {
+                    push_wrapped(
+                        &mut lines,
+                        &format!("{provider} / {model}"),
+                        width,
+                        "  ",
+                        Style::default().fg(MUTED),
+                    );
+                    for source in selected_sources {
+                        push_wrapped(
+                            &mut lines,
+                            &format!(
+                                "+ {:>6} tokens  {:<14} {}",
+                                source.tokens, source.source_type, source.source_id,
+                            ),
+                            width,
+                            "  ",
+                            Style::default().fg(MUTED_LIGHT),
+                        );
+                    }
+                    for source in omitted_sources {
+                        let detail = [source.reason.as_str(), source.truncation.as_str()]
+                            .into_iter()
+                            .filter(|value| !value.is_empty() && *value != "none")
+                            .collect::<Vec<_>>()
+                            .join(" · ");
+                        push_wrapped(
+                            &mut lines,
+                            &format!(
+                                "- {:>6} tokens  {:<14} {}{}{}",
+                                source.tokens,
+                                source.source_type,
+                                source.source_id,
+                                if detail.is_empty() { "" } else { " · " },
+                                detail,
+                            ),
+                            width,
+                            "  ",
+                            Style::default().fg(MUTED),
+                        );
+                    }
+                    if !request_hash.is_empty() {
+                        push_wrapped(
+                            &mut lines,
+                            &format!("Request {request_hash} · /context shows the exact prompt"),
+                            width,
+                            "  ",
+                            Style::default().fg(MUTED),
+                        );
+                    }
                 }
             }
             TranscriptItem::Plan {
@@ -1717,27 +1809,44 @@ fn scrollbar_position(top: usize, content_len: usize, viewport_len: usize) -> us
 
 fn render_status_bar(frame: &mut Frame<'_>, app: &mut App, area: Rect, fx_delta: Duration) {
     let left = if let Some(question) = &app.question {
-        let mut spans = vec![
-            Span::styled("  ↑↓", Style::default().fg(INPUT).bold()),
-            Span::styled(" choose · ", Style::default().fg(MUTED)),
-            Span::styled("Enter", Style::default().fg(INPUT).bold()),
-            Span::styled(
-                if question.input_kind.is_some() {
-                    " send · "
-                } else if question.selected == question.custom_index() {
-                    " write your own · "
-                } else {
-                    " answer · "
-                },
-                Style::default().fg(MUTED),
-            ),
-        ];
-        if question.input_kind.is_none() && question.selected < question.custom_index() {
-            spans.extend([
-                Span::styled("N", Style::default().fg(INPUT).bold()),
-                Span::styled(" add note · ", Style::default().fg(MUTED)),
-            ]);
-        }
+        let mut spans = match question.answer_type {
+            QuestionAnswerType::Text => vec![
+                Span::styled("  Enter", Style::default().fg(INPUT).bold()),
+                Span::styled(" send · ", Style::default().fg(MUTED)),
+            ],
+            QuestionAnswerType::MultipleChoice => vec![
+                Span::styled("  ↑↓", Style::default().fg(INPUT).bold()),
+                Span::styled(" move · ", Style::default().fg(MUTED)),
+                Span::styled("Space", Style::default().fg(INPUT).bold()),
+                Span::styled(" check · ", Style::default().fg(MUTED)),
+                Span::styled("Enter", Style::default().fg(INPUT).bold()),
+                Span::styled(" send · ", Style::default().fg(MUTED)),
+            ],
+            QuestionAnswerType::SingleChoice => {
+                let mut spans = vec![
+                    Span::styled("  ↑↓", Style::default().fg(INPUT).bold()),
+                    Span::styled(" choose · ", Style::default().fg(MUTED)),
+                    Span::styled("Enter", Style::default().fg(INPUT).bold()),
+                    Span::styled(
+                        if question.input_kind.is_some() {
+                            " send · "
+                        } else if question.selected == question.custom_index() {
+                            " write your own · "
+                        } else {
+                            " answer · "
+                        },
+                        Style::default().fg(MUTED),
+                    ),
+                ];
+                if question.input_kind.is_none() && question.selected < question.custom_index() {
+                    spans.extend([
+                        Span::styled("N", Style::default().fg(INPUT).bold()),
+                        Span::styled(" add note · ", Style::default().fg(MUTED)),
+                    ]);
+                }
+                spans
+            }
+        };
         spans.extend(if question.input_kind == Some(QuestionInputKind::Note) {
             [
                 Span::styled("Esc", Style::default().fg(INPUT).bold()),
@@ -1961,7 +2070,14 @@ fn sheet_shortcuts(app: &App) -> Line<'static> {
 }
 
 fn activity_bar(app: &App) -> Line<'static> {
-    let activity = current_activity(app);
+    let activity = if app.question.is_none() && app.active_run.is_some() {
+        app.delegated_activity
+            .last()
+            .map(|worker| format!("{} · Working", worker.label))
+            .unwrap_or_else(|| current_activity(app).to_owned())
+    } else {
+        current_activity(app).to_owned()
+    };
     let mut spans = vec![
         Span::raw("  "),
         Span::styled("──────", Style::default().fg(MUTED)),
@@ -1978,8 +2094,8 @@ fn activity_bar(app: &App) -> Line<'static> {
 
     if !app.composer.is_empty() {
         spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
-        if app.queued_messages.len() >= 2 {
-            spans.push(Span::styled("Queue full 2/2", Style::default().fg(MUTED)));
+        if app.queued_messages.len() >= 3 {
+            spans.push(Span::styled("Queue full 3/3", Style::default().fg(MUTED)));
         } else {
             spans.push(Span::styled("Enter", Style::default().fg(INPUT).bold()));
             spans.push(Span::styled(
@@ -2320,7 +2436,8 @@ fn render_question_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 (option.label.as_str(), option.description.as_str())
             });
         let selected = question.selected == index;
-        let supports_note = index < question.custom_index();
+        let supports_note = question.answer_type == QuestionAnswerType::SingleChoice
+            && index < question.custom_index();
         let note_label = "  N add note";
         let choice_prefix_width = 7;
         let label_width = inner_width
@@ -2342,11 +2459,33 @@ fn render_question_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 ),
                 Span::styled(
                     if part_index == 0 {
-                        if selected { "● " } else { "○ " }
+                        match question.answer_type {
+                            QuestionAnswerType::MultipleChoice => {
+                                if question.checked.get(index).copied().unwrap_or(false) {
+                                    "☑ "
+                                } else {
+                                    "☐ "
+                                }
+                            }
+                            QuestionAnswerType::SingleChoice => {
+                                if selected {
+                                    "● "
+                                } else {
+                                    "○ "
+                                }
+                            }
+                            QuestionAnswerType::Text => "  ",
+                        }
                     } else {
                         "  "
                     },
-                    Style::default().fg(if selected { CYAN } else { MUTED }),
+                    Style::default().fg(
+                        if question.checked.get(index).copied().unwrap_or(false) || selected {
+                            CYAN
+                        } else {
+                            MUTED
+                        },
+                    ),
                 ),
                 Span::styled(
                     part.clone(),
@@ -2388,7 +2527,13 @@ fn render_question_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 || "Add a note…".to_owned(),
                 |option| format!("Add a note to {}…", option.label),
             ),
-            QuestionInputKind::Custom => "Write your answer…".to_owned(),
+            QuestionInputKind::Custom => {
+                if question.placeholder.is_empty() {
+                    "Write your answer…".to_owned()
+                } else {
+                    question.placeholder.clone()
+                }
+            }
         };
         lines.push(Line::from(vec![
             Span::styled("  ❯ ", Style::default().fg(INPUT).bold()),
@@ -2485,8 +2630,16 @@ fn render_question_tray(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 fn question_required_height(question: &crate::tui::app::QuestionTray, width: usize) -> usize {
     let prompt = complete_wrapped_lines(&question.question, width).len();
     let choice_prefix_width = 7;
+    if question.answer_type == QuestionAnswerType::Text {
+        return prompt + usize::from(question.input_kind.is_some()) + 2;
+    }
+    let note_width = if question.answer_type == QuestionAnswerType::SingleChoice {
+        UnicodeWidthStr::width("  N add note")
+    } else {
+        0
+    };
     let option_width = width
-        .saturating_sub(choice_prefix_width + UnicodeWidthStr::width("  N add note"))
+        .saturating_sub(choice_prefix_width + note_width)
         .max(1);
     let options = question
         .options
@@ -2505,8 +2658,12 @@ fn question_required_height(question: &crate::tui::app::QuestionTray, width: usi
             label + description
         })
         .sum::<usize>();
-    let custom_width = width.saturating_sub(choice_prefix_width).max(1);
-    let custom = complete_wrapped_lines("Write something else", custom_width).len();
+    let custom = if question.answer_type == QuestionAnswerType::SingleChoice {
+        let custom_width = width.saturating_sub(choice_prefix_width).max(1);
+        complete_wrapped_lines("Write something else", custom_width).len()
+    } else {
+        0
+    };
     prompt + options + custom + usize::from(question.input_kind.is_some()) + 2
 }
 
@@ -2582,6 +2739,24 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     }
     let (title, mut body, width, height) = match &modal {
         Modal::Approval(_) => unreachable!("approvals render in the lower tray"),
+        Modal::ConnectionKey(input) => (
+            "Connect provider",
+            vec![
+                Line::from(input.name.clone()),
+                Line::from(""),
+                Line::from("Paste your API key. Input is hidden."),
+                Line::from(if input.key.is_empty() {
+                    "API key: "
+                } else {
+                    "API key: ••••••••"
+                }),
+                Line::from(""),
+                Line::from(input.key_url.clone()),
+                Line::from("Enter to verify and save · Esc to cancel"),
+            ],
+            76,
+            11,
+        ),
         Modal::Help => {
             let wide = area.width >= 92;
             (
@@ -5060,8 +5235,9 @@ mod tests {
     use crate::tui::app::{
         ActivityPhase, ActivityRow, AgentEditor, AgentEditorPage, App, ApprovalModal, Composer,
         ConnectionState, DreamPhase, HitAction, InlineEditor, InlineEditorKind, MemoryBrowser,
-        MenuAction, MenuOption, Modal, QuestionInputKind, QuestionOption, QuestionTray,
-        ScarBrowser, ScarEditor, Sheet, SheetKind, TranscriptItem, TranscriptPoint, UsageModal,
+        MenuAction, MenuOption, Modal, QuestionAnswerType, QuestionInputKind, QuestionOption,
+        QuestionTray, ScarBrowser, ScarEditor, Sheet, SheetKind, TranscriptItem, TranscriptPoint,
+        UsageModal,
     };
 
     fn usage_projection() -> UsageProjection {
@@ -6644,6 +6820,53 @@ mod tests {
     }
 
     #[test]
+    fn prompt_injection_is_a_collapsed_expandable_transcript_disclosure() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.transcript.push(TranscriptItem::PromptInjection {
+            run_id: "run-context".to_owned(),
+            provider: "codex".to_owned(),
+            model: "gpt-5.6-sol".to_owned(),
+            estimated_input_tokens: 30_000,
+            selected_sources: vec![crate::tui::app::PromptInjectionSource {
+                source_id: "/home/.hames/agents/default/AGENT.md".to_owned(),
+                source_type: "agent".to_owned(),
+                tokens: 1_200,
+                reason: String::new(),
+                truncation: "none".to_owned(),
+            }],
+            omitted_sources: vec![crate::tui::app::PromptInjectionSource {
+                source_id: "memory:old".to_owned(),
+                source_type: "memory".to_owned(),
+                tokens: 400,
+                reason: "budget".to_owned(),
+                truncation: String::new(),
+            }],
+            request_hash: "request-context".to_owned(),
+            created_at: None,
+            collapsed: true,
+        });
+
+        let collapsed = transcript_lines(&app, 90)
+            .iter()
+            .map(|line| line_text(&line.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(collapsed.contains("Prompt injection · 1 source · 1.2k injected · 30k request  ▸"));
+        assert!(!collapsed.contains("AGENT.md"));
+
+        app.toggle_activity(0);
+        let expanded = transcript_lines(&app, 90)
+            .iter()
+            .map(|line| line_text(&line.line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(expanded.contains("codex / gpt-5.6-sol"));
+        assert!(expanded.contains("AGENT.md"));
+        assert!(expanded.contains("memory:old · budget"));
+        assert!(expanded.contains("/context shows the exact prompt"));
+    }
+
+    #[test]
     fn action_errors_render_on_the_notice_line_instead_of_a_modal() {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -6821,7 +7044,7 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("Queued 1/2  first queued request"));
         assert!(rendered.contains("Queued 2/2  second queued request"));
-        assert!(!rendered.contains("Queue full 2/2"));
+        assert!(!rendered.contains("Queue full 3/3"));
         let buffer = terminal.backend().buffer();
         let selected_y = (0..terminal.size().unwrap().height)
             .find(|y| {
@@ -7335,6 +7558,7 @@ mod tests {
             question_id: "question-1".to_owned(),
             run_id: "run-question".to_owned(),
             question: "Which visual direction should Hames use?".to_owned(),
+            answer_type: QuestionAnswerType::SingleChoice,
             options: vec![
                 QuestionOption {
                     label: "Subdued".to_owned(),
@@ -7345,7 +7569,11 @@ mod tests {
                     description: "Sharper visual separation.".to_owned(),
                 },
             ],
+            min_selections: 1,
+            max_selections: 1,
+            placeholder: String::new(),
             selected: 2,
+            checked: vec![false; 2],
             input_kind: Some(QuestionInputKind::Custom),
             response_input: Composer::default(),
         });
@@ -7380,6 +7608,55 @@ mod tests {
             !app.hits
                 .iter()
                 .any(|hit| matches!(hit.action, HitAction::QuestionNote(2)))
+        );
+    }
+
+    #[test]
+    fn multiple_choice_question_renders_checkboxes_and_submit_controls() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-question".to_owned());
+        app.question = Some(QuestionTray {
+            question_id: "question-many".to_owned(),
+            run_id: "run-question".to_owned(),
+            question: "Which checks should run?".to_owned(),
+            answer_type: QuestionAnswerType::MultipleChoice,
+            options: vec![
+                QuestionOption {
+                    label: "Unit".to_owned(),
+                    description: "Fast checks.".to_owned(),
+                },
+                QuestionOption {
+                    label: "Browser".to_owned(),
+                    description: "Rendered checks.".to_owned(),
+                },
+            ],
+            min_selections: 1,
+            max_selections: 2,
+            placeholder: String::new(),
+            selected: 1,
+            checked: vec![true, false],
+            input_kind: None,
+            response_input: Composer::default(),
+        });
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("1. ☑ Unit"));
+        assert!(rendered.contains("2. ☐ Browser"));
+        assert!(rendered.contains("Space"));
+        assert!(rendered.contains("check"));
+        assert!(!rendered.contains("Write something else"));
+        assert!(
+            !app.hits
+                .iter()
+                .any(|hit| matches!(hit.action, HitAction::QuestionNote(_)))
         );
     }
 
@@ -7921,5 +8198,27 @@ mod tests {
         (0..width)
             .map(|x| buffer.cell((x, y)).unwrap().symbol())
             .collect()
+    }
+    #[test]
+    fn provider_key_modal_masks_input() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(session(), Vec::new(), true);
+        app.modal = Some(Modal::ConnectionKey(crate::tui::app::ConnectionKey {
+            profile_id: "deepseek".to_owned(),
+            name: "DeepSeek".to_owned(),
+            key_url: "https://platform.deepseek.com/api_keys".to_owned(),
+            key: "private-test-key".to_owned(),
+        }));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(rendered.contains("API key: ••••••••"));
+        assert!(!rendered.contains("private-test-key"));
     }
 }

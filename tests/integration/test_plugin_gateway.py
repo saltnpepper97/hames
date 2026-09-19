@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import shutil
 from pathlib import Path
 from typing import cast
@@ -85,5 +86,43 @@ async def test_gateway_install_enable_and_disable(tmp_path: Path) -> None:
             proposals = await client.get("/v1/plugins/proposals", headers=headers)
             assert proposals.status_code == 200
             assert proposals.json() == []
+    finally:
+        await state.plugins.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_uploads_inspects_and_installs_plugin_folder(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    package = _package(tmp_path)
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        files = [
+            {
+                "path": path.relative_to(package).as_posix(),
+                "data_base64": base64.b64encode(path.read_bytes()).decode("ascii"),
+            }
+            for path in package.rglob("*")
+            if path.is_file()
+        ]
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            uploaded = await client.post(
+                "/v1/plugins/uploads", headers=headers, json={"files": files}
+            )
+            assert uploaded.status_code == 201
+            body = response_object(uploaded)
+            plugin = JSON_OBJECT.validate_python(body["plugin"])
+            assert plugin["id"] == "project-stats"
+            upload_id = body["upload_id"]
+            assert isinstance(upload_id, str)
+
+            installed = await client.post(
+                f"/v1/plugins/uploads/{upload_id}/install", headers=headers
+            )
+            assert installed.status_code == 201
+            assert response_object(installed)["id"] == "project-stats"
+            assert not (paths.plugin_uploads / upload_id).exists()
     finally:
         await state.plugins.close()

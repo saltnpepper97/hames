@@ -21,7 +21,7 @@ def test_migrations_are_idempotent_and_private(hames_paths: HamesPaths) -> None:
     with database.connect() as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
-        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 18
+        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 24
 
 
 def test_message_submission_receipts_migrate_from_queue_schema(tmp_path: Path) -> None:
@@ -42,7 +42,7 @@ def test_message_submission_receipts_migrate_from_queue_schema(tmp_path: Path) -
             "created_at",
             "updated_at",
         }
-        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 18
+        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 24
 
 
 def test_failed_migration_does_not_advance_schema(tmp_path: Path) -> None:
@@ -142,6 +142,23 @@ def test_session_title_is_normalized_and_attributed(
     assert event.run_id == "run-title"
     assert event.agent_id == "default"
     assert event.payload == {"title": "Refine the TUI"}
+
+
+def test_session_pin_is_persisted_and_attributed(hames_paths: HamesPaths, tmp_path: Path) -> None:
+    ledger = Ledger.open(hames_paths.database)
+    session = ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="fake",
+        model="fixture",
+    )
+
+    assert session.pinned is False
+    assert ledger.update_session_pinned(session.id, pinned=True).pinned is True
+    event = ledger.list_events(session.id)[-1]
+    assert event.type == "session.pinned.changed"
+    assert event.payload == {"pinned": True}
+    assert ledger.update_session_pinned(session.id, pinned=False).pinned is False
 
 
 def test_list_sessions_can_exclude_sessions_without_messages(

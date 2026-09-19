@@ -68,7 +68,12 @@ class BrowserSession:
 class WebUi:
     """Own process-local browser sessions for the persistent gateway."""
 
-    def __init__(self, gateway: GatewayConfig, *, asset_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        gateway: GatewayConfig,
+        *,
+        asset_root: Path | None = None,
+    ) -> None:
         host = "127.0.0.1" if gateway.host == "localhost" else gateway.host
         authority_host = f"[{host}]" if ":" in host else host
         self.authority = f"{authority_host}:{gateway.port}"
@@ -242,7 +247,7 @@ def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
 
 def _secure(response: Response) -> Response:
     response.headers["Content-Security-Policy"] = (
-        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; "
         "connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
     )
     response.headers["X-Content-Type-Options"] = "nosniff"

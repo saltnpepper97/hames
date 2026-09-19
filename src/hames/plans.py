@@ -121,6 +121,7 @@ def project_plans(session_id: str, events: list[Event]) -> PlanState:
             execution_run_id = event.payload.get("execution_run_id")
             updates.update(
                 status="executing",
+                error="",
                 execution_run_id=(str(execution_run_id) if execution_run_id is not None else None),
             )
         elif event.type == "plan.execution.completed":

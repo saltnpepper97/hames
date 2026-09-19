@@ -36,6 +36,7 @@ async def test_gateway_owns_authenticated_web_shell(tmp_path: Path) -> None:
             assert shell.status_code == 200
             assert shell.headers["cache-control"] == "no-store"
             assert "frame-ancestors 'none'" in shell.headers["content-security-policy"]
+            assert "img-src 'self' data: blob:" in shell.headers["content-security-policy"]
 
             asset = await client.get("/assets/app-abc123.js")
             assert asset.status_code == 200
@@ -101,6 +102,13 @@ async def test_gateway_owns_authenticated_web_shell(tmp_path: Path) -> None:
                 },
             )
             assert created.status_code == 201
+            assert state.workspaces.list() == []
+            visible_sessions = await client.get(
+                "/v1/sessions",
+                params={"registered_workspaces_only": True},
+            )
+            assert visible_sessions.status_code == 200
+            assert visible_sessions.json() == []
 
             foreign_host = await client.get(
                 "/_hames/v1/bootstrap",

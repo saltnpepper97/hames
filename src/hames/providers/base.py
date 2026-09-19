@@ -22,6 +22,13 @@ class ToolCall(ProviderBoundary):
     arguments: dict[str, JsonValue]
 
 
+class ProviderAttachment(ProviderBoundary):
+    digest: str
+    name: str
+    media_type: str
+    data_base64: str = Field(default="", exclude=True)
+
+
 class ProviderMessage(ProviderBoundary):
     role: str
     content: str
@@ -29,6 +36,9 @@ class ProviderMessage(ProviderBoundary):
     tool_calls: list[ToolCall] = Field(default_factory=lambda: list[ToolCall]())
     tool_call_id: str | None = None
     tool_name: str | None = None
+    attachments: list[ProviderAttachment] = Field(
+        default_factory=lambda: list[ProviderAttachment]()
+    )
     provider_items: list[dict[str, JsonValue]] = Field(
         default_factory=lambda: list[dict[str, JsonValue]]()
     )

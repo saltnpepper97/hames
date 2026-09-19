@@ -69,7 +69,6 @@ _OUTSIDE_PATH = re.compile(r"(?<![\w$])/(?:home|root|etc|var|opt|srv|mnt|media)/
 _PLAN_DENIED_TOOLS = {
     "write_file",
     "edit_file",
-    "spawn_agent",
     "skill_author",
     "skill_control",
     "memory_add",

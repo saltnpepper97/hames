@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{self, Write};
@@ -111,6 +112,25 @@ pub async fn run() -> Result<()> {
         let _ = editor.add_history_entry(input.as_str());
         if let Err(error) = editor.append_history(&paths.history) {
             warn_history("append", &error);
+        }
+        if let Some(rest) = input.strip_prefix('/') {
+            let (name, note) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            if client
+                .user_commands(&session.id)
+                .await?
+                .iter()
+                .any(|command| command.name == name)
+            {
+                let accepted = client
+                    .execute_user_command(&session.id, name, note.trim())
+                    .await?;
+                session = client.session(&session.id).await?;
+                println!(
+                    "{}",
+                    style::success(&format!("/{name} started · run {}", accepted.run_id))
+                );
+                continue;
+            }
         }
         if input.starts_with('/') && !is_user_skill_command(&client, &session, &input).await? {
             match handle_command(
@@ -285,7 +305,12 @@ async fn handle_command(
 ) -> Result<CommandOutcome> {
     let parts: Vec<&str> = input.split_whitespace().collect();
     match parts.first().copied().unwrap_or("") {
-        "/help" => print_help(),
+        "/help" => {
+            print_help();
+            for command in client.user_commands(&session.id).await? {
+                println!("  /{}  {}", command.name, command.description);
+            }
+        }
         "/quit" | "/exit" => return Ok(CommandOutcome::Exit),
         "/new" => {
             *remember_next = false;
@@ -566,6 +591,16 @@ async fn handle_command(
             );
         }
         "/status" => print_statuses(client).await?,
+        "/dream" => {
+            if input.trim() != "/dream" {
+                bail!("/dream does not accept arguments");
+            }
+            let accepted = client.dream_session(&session.id).await?;
+            println!(
+                "{}",
+                style::success(&format!("Dream started · {}", accepted.dream_id))
+            );
+        }
         "/compact" => {
             let accepted = client.compact_session(&session.id).await?;
             println!(
@@ -1300,6 +1335,21 @@ fn print_context(context: &ContextInspection) {
             );
         }
     }
+    if let Some(system) = context
+        .request_snapshot
+        .get("system")
+        .and_then(serde_json::Value::as_str)
+    {
+        println!();
+        println!("{}", style::section("Model-facing system prompt"));
+        println!("{}", system.chars().take(20_000).collect::<String>());
+        if system.chars().count() > 20_000 {
+            println!(
+                "{}",
+                style::dim("… prompt truncated after 20,000 characters")
+            );
+        }
+    }
     println!();
     println!(
         "{}",
@@ -1943,69 +1993,158 @@ async fn handle_question(
                     .to_owned(),
             ))
         })
-        .take(3)
+        .take(8)
         .collect::<Vec<_>>();
+    let answer_type = event.payload["answer_type"]
+        .as_str()
+        .unwrap_or(if options.is_empty() {
+            "text"
+        } else {
+            "single_choice"
+        });
     println!();
     println!("{}", style::section("Question"));
     println!("  {question}");
-    for (index, (label, description)) in options.iter().enumerate() {
-        println!("  {}. ○ {label}", index + 1);
-        for line in description.lines() {
-            println!("       {line}");
-        }
-    }
-    let custom_index = options.len() + 1;
-    println!("  {custom_index}. ○ Write something else");
-    let (selected_option, note, custom_answer) = loop {
-        let selected = editor.readline("Choose an answer › ")?;
-        let selected = selected.trim();
-        if selected.parse::<usize>().ok() == Some(custom_index)
-            || selected.eq_ignore_ascii_case("other")
-            || selected.eq_ignore_ascii_case("write something else")
-            || options.is_empty()
-        {
-            let custom = editor.readline("Your answer › ")?;
+    let (selected_option, selected_options, note, custom_answer) = if answer_type == "text" {
+        let placeholder = event.payload["placeholder"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Your answer");
+        loop {
+            let custom = editor.readline(&format!("{placeholder} › "))?;
             if !custom.trim().is_empty() {
-                break (None, String::new(), custom);
+                break (None, Vec::new(), String::new(), custom);
             }
             println!("  Please type an answer.");
-            continue;
         }
-        let option = selected
-            .parse::<usize>()
-            .ok()
-            .and_then(|index| index.checked_sub(1))
-            .and_then(|index| options.get(index))
-            .or_else(|| {
-                options
-                    .iter()
-                    .find(|(label, _)| label.eq_ignore_ascii_case(selected))
-            });
-        if let Some(option) = option {
+    } else if answer_type == "multiple_choice" {
+        for (index, (label, description)) in options.iter().enumerate() {
+            println!("  {}. ☐ {label}", index + 1);
+            for line in description.lines() {
+                println!("       {line}");
+            }
+        }
+        let min_selections = event.payload["min_selections"]
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(1)
+            .max(1);
+        let max_selections = event.payload["max_selections"]
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(options.len())
+            .max(min_selections)
+            .min(options.len());
+        loop {
+            let range = if min_selections == max_selections {
+                min_selections.to_string()
+            } else {
+                format!("{min_selections}-{max_selections}")
+            };
+            let raw = editor.readline(&format!(
+                "Choose {range} (comma-separated numbers or labels) › "
+            ))?;
+            let mut selected = Vec::new();
+            let mut valid = true;
+            for value in raw
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                let option = value
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|index| index.checked_sub(1))
+                    .and_then(|index| options.get(index))
+                    .or_else(|| {
+                        options
+                            .iter()
+                            .find(|(label, _)| label.eq_ignore_ascii_case(value))
+                    });
+                let Some((label, _)) = option else {
+                    valid = false;
+                    break;
+                };
+                if !selected.contains(label) {
+                    selected.push(label.clone());
+                }
+            }
+            if !valid || selected.len() < min_selections || selected.len() > max_selections {
+                println!("  Choose {range} valid options.");
+                continue;
+            }
             let add_note = editor.readline("Enter use as-is · N add note › ")?;
             let note = if add_note.trim().eq_ignore_ascii_case("n") {
                 editor.readline("Note › ")?
             } else {
                 String::new()
             };
-            break (Some(option.0.clone()), note, String::new());
+            break (None, selected, note, String::new());
         }
-        println!("  Choose 1-{custom_index}.");
+    } else {
+        for (index, (label, description)) in options.iter().enumerate() {
+            println!("  {}. ○ {label}", index + 1);
+            for line in description.lines() {
+                println!("       {line}");
+            }
+        }
+        let custom_index = options.len() + 1;
+        println!("  {custom_index}. ○ Write something else");
+        loop {
+            let selected = editor.readline("Choose an answer › ")?;
+            let selected = selected.trim();
+            if selected.parse::<usize>().ok() == Some(custom_index)
+                || selected.eq_ignore_ascii_case("other")
+                || selected.eq_ignore_ascii_case("write something else")
+                || options.is_empty()
+            {
+                let custom = editor.readline("Your answer › ")?;
+                if !custom.trim().is_empty() {
+                    break (None, Vec::new(), String::new(), custom);
+                }
+                println!("  Please type an answer.");
+                continue;
+            }
+            let option = selected
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| index.checked_sub(1))
+                .and_then(|index| options.get(index))
+                .or_else(|| {
+                    options
+                        .iter()
+                        .find(|(label, _)| label.eq_ignore_ascii_case(selected))
+                });
+            if let Some(option) = option {
+                let add_note = editor.readline("Enter use as-is · N add note › ")?;
+                let note = if add_note.trim().eq_ignore_ascii_case("n") {
+                    editor.readline("Note › ")?
+                } else {
+                    String::new()
+                };
+                break (Some(option.0.clone()), Vec::new(), note, String::new());
+            }
+            println!("  Choose 1-{custom_index}.");
+        }
     };
     let resolved = client
         .resolve_question(
             question_id,
             selected_option.as_deref(),
+            &selected_options,
             note.trim(),
             custom_answer.trim(),
         )
         .await?;
     debug_assert_eq!(resolved.question_id, question_id);
     debug_assert_eq!(resolved.selected_option, selected_option);
+    debug_assert_eq!(resolved.selected_options, selected_options);
     debug_assert_eq!(resolved.note, note.trim());
     println!(
         "  {}",
-        style::success(if resolved.custom {
+        style::success(if resolved.answer_type == "multiple_choice" {
+            "Choices sent"
+        } else if resolved.custom {
             "Custom answer sent"
         } else if !resolved.note.is_empty() {
             "Answer and note sent"
@@ -2082,7 +2221,10 @@ fn process_envelope(
             return Ok(false);
         }
         match event.event_type.as_str() {
-            "context.compiled" => output.note_compacting(event)?,
+            "context.compiled" => {
+                output.note_prompt_injection(event)?;
+                output.note_compacting(event)?;
+            }
             "model.requested" => output.begin_turn()?,
             "assistant.reasoning" => {
                 if let Some(content) = event
@@ -2200,6 +2342,7 @@ struct RenderedOutput {
     activity_detached: bool,
     logged_activity: Vec<String>,
     logged_category: Option<ActivityCategory>,
+    prompt_context_keys: HashMap<String, String>,
 }
 
 impl RenderedOutput {
@@ -2248,7 +2391,7 @@ impl RenderedOutput {
                     if let Some(started) = self.thinking_started {
                         let heading = style::thought_badge(started.elapsed());
                         if style::interactive() {
-                            self.repaint_heading(&heading)?;
+                            self.collapse_thought_body(&heading)?;
                         } else {
                             println!("{heading}");
                         }
@@ -2364,6 +2507,45 @@ impl RenderedOutput {
         self.write_body("folding context", true)?;
         self.settle()?;
         Ok(())
+    }
+
+    fn collapse_thought_body(&self, heading: &str) -> Result<()> {
+        if self.distance == 0 {
+            println!("{heading}");
+            return Ok(());
+        }
+        let sequence = thought_collapse_sequence(self.distance, heading);
+        let mut out = io::stdout();
+        write!(out, "{sequence}")?;
+        out.flush()?;
+        Ok(())
+    }
+
+    fn note_prompt_injection(&mut self, event: &Event) -> Result<()> {
+        if !crate::prompt_context::prompt_context_changed(&mut self.prompt_context_keys, event) {
+            return Ok(());
+        }
+        let sources = event
+            .payload
+            .get("selected_sources")
+            .and_then(serde_json::Value::as_array);
+        let source_count = sources.map_or(0, Vec::len);
+        let injected_tokens = sources.map_or(0, |values| {
+            values
+                .iter()
+                .filter_map(|source| source.get("selected_tokens"))
+                .filter_map(serde_json::Value::as_u64)
+                .sum::<u64>()
+        });
+        let request_tokens = event
+            .payload
+            .get("estimated_input_tokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        self.note_line(&format!(
+            "Prompt injection · {source_count} {} · {injected_tokens} tokens injected · {request_tokens} request",
+            if source_count == 1 { "source" } else { "sources" },
+        ))
     }
 
     fn push_reasoning(&mut self, text: &str) -> Result<()> {
@@ -2555,6 +2737,10 @@ impl RenderedOutput {
     }
 }
 
+fn thought_collapse_sequence(distance: u16, heading: &str) -> String {
+    format!("\x1b[{distance}A\r\x1b[2K{heading}\x1b[J\n")
+}
+
 fn heading_repaint_sequence(distance: u16, body_col: usize, heading: &str) -> String {
     let mut sequence = format!("\x1b[{distance}A\r\x1b[2K{heading}\x1b[{distance}B\r");
     if body_col > 0 {
@@ -2632,6 +2818,7 @@ fn print_help() {
         ("/provider [provider] [model]", "Change provider or model"),
         ("/model · /reasoning [level]", "Inspect model settings"),
         ("/status · /usage", "Inspect services and token usage"),
+        ("/dream", "Reconcile memories, skills and scars now"),
         ("/compact", "Compact older context with the active model"),
         (
             "/goal [objective|pause|resume|cancel]",
@@ -2684,7 +2871,10 @@ fn print_help_rows(rows: &[(&str, &str)]) {
 mod tests {
     use unicode_width::UnicodeWidthStr;
 
-    use super::{exit_resume_command, heading_repaint_sequence, prepare_history, wrap_body};
+    use super::{
+        exit_resume_command, heading_repaint_sequence, prepare_history, thought_collapse_sequence,
+        wrap_body,
+    };
     use crate::api::SseDecoder;
 
     #[test]
@@ -2749,5 +2939,11 @@ mod tests {
         assert_eq!(sequence, "\x1b[3A\r\x1b[2K◈ Thought (12s)\x1b[3B\r\x1b[17C");
         assert!(!sequence.contains("\x1b[s"));
         assert!(!sequence.contains("\x1b[u"));
+    }
+
+    #[test]
+    fn thought_collapse_erases_the_body_and_leaves_the_settled_heading() {
+        let sequence = thought_collapse_sequence(3, "◈ Thought (12s)");
+        assert_eq!(sequence, "\x1b[3A\r\x1b[2K◈ Thought (12s)\x1b[J\n");
     }
 }

@@ -50,6 +50,7 @@ class Session(LedgerModel):
     lineage_kind: str
     delegation_depth: int
     interaction_mode: Literal["manual", "auto", "plan"] = "auto"
+    pinned: bool = False
 
 
 class Event(LedgerModel):
@@ -170,6 +171,7 @@ class Ledger:
         parent_event_id: str,
         agent_id: str,
         title: str | None = None,
+        execution: tuple[str, str, str, int, str] | None = None,
     ) -> Session:
         """Create a child with inherited execution settings but no conversation replay."""
 
@@ -179,6 +181,13 @@ class Ledger:
             raise ValueError("delegation source event must belong to the parent session")
         session_id = new_id()
         created_at = utc_now()
+        provider, model, effort, window, window_source = execution or (
+            parent.provider,
+            parent.model,
+            parent.reasoning_effort,
+            parent.context_window_tokens,
+            parent.context_window_source,
+        )
         child_title = title or f"Delegation of {parent.title or parent.id}"
         depth = parent.delegation_depth + 1
         with self._write_lock, self.database.connect() as connection:
@@ -198,11 +207,11 @@ class Ledger:
                     child_title,
                     parent.working_directory,
                     agent_id,
-                    parent.provider,
-                    parent.model,
-                    parent.reasoning_effort,
-                    parent.context_window_tokens,
-                    parent.context_window_source,
+                    provider,
+                    model,
+                    effort,
+                    window,
+                    window_source,
                     parent.id,
                     parent_event_id,
                     depth,
@@ -216,11 +225,11 @@ class Ledger:
                 agent_id=agent_id,
                 payload={
                     "working_directory": parent.working_directory,
-                    "provider": parent.provider,
-                    "model": parent.model,
-                    "reasoning_effort": parent.reasoning_effort,
-                    "context_window_tokens": parent.context_window_tokens,
-                    "context_window_source": parent.context_window_source,
+                    "provider": provider,
+                    "model": model,
+                    "reasoning_effort": effort,
+                    "context_window_tokens": window,
+                    "context_window_source": window_source,
                 },
                 causation_id=parent_event_id,
                 correlation_id=session_id,
@@ -357,21 +366,35 @@ class Ledger:
             raise KeyError(session_id)
         return Session.model_validate(dict(row))
 
-    def list_sessions(self, *, has_messages: bool | None = None) -> list[Session]:
+    def list_sessions(
+        self,
+        *,
+        has_messages: bool | None = None,
+        include_titled: bool = False,
+        working_directory: Path | None = None,
+    ) -> list[Session]:
+        canonical = (
+            str(working_directory.expanduser().resolve(strict=True))
+            if working_directory is not None
+            else None
+        )
         with self.database.connect() as connection:
             rows = connection.execute(
                 """
                 SELECT *
                 FROM sessions
-                WHERE ? IS NULL OR EXISTS (
-                    SELECT 1
-                    FROM events e
-                    WHERE e.session_id = sessions.id
-                      AND e.type IN ('user.message', 'assistant.message')
-                ) = ?
+                WHERE (? IS NULL OR working_directory = ?)
+                  AND (
+                    ? IS NULL OR EXISTS (
+                        SELECT 1
+                        FROM events e
+                        WHERE e.session_id = sessions.id
+                          AND e.type IN ('user.message', 'assistant.message')
+                    ) = ? OR (? AND trim(coalesce(title, '')) <> '')
+                  )
                 ORDER BY created_at DESC
                 """,
-                (has_messages, has_messages),
+                (canonical, canonical, has_messages, has_messages, include_titled),
             ).fetchall()
         return [Session.model_validate(dict(row)) for row in rows]
 
@@ -711,6 +734,30 @@ class Ledger:
             connection.commit()
         return self.get_session(session_id)
 
+    def ensure_session_title(self, session_id: str, content: str) -> Event | None:
+        """Persist a fallback for an accepted first message without replacing an authored title."""
+        title = " ".join(content.split()) or "New conversation"
+        if len(title) > 72:
+            title = title[:71].rstrip() + "…"
+        with self._write_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "UPDATE sessions SET title = ? WHERE id = ? AND status = 'open' "
+                "AND (title IS NULL OR trim(title) = '')",
+                (title, session_id),
+            )
+            event = None
+            if cursor.rowcount:
+                event = self._append_on_connection(
+                    connection,
+                    session_id=session_id,
+                    event_type="session.title.changed",
+                    payload={"title": title},
+                    correlation_id=session_id,
+                )
+            connection.commit()
+        return event
+
     def update_session_title(
         self,
         session_id: str,
@@ -747,6 +794,27 @@ class Ledger:
             )
             connection.commit()
         return event
+
+    def update_session_pinned(self, session_id: str, *, pinned: bool) -> Session:
+        """Pin or unpin an open session in conversation directories."""
+
+        with self._write_lock, self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "UPDATE sessions SET pinned = ? WHERE id = ? AND status = 'open'",
+                (int(pinned), session_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(session_id)
+            self._append_on_connection(
+                connection,
+                session_id=session_id,
+                event_type="session.pinned.changed",
+                payload={"pinned": pinned},
+                correlation_id=session_id,
+            )
+            connection.commit()
+        return self.get_session(session_id)
 
     def update_session_mode(
         self, session_id: str, *, mode: Literal["manual", "auto", "plan"]

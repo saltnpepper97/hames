@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::local::LocalPaths;
 
-pub const PROTOCOL_VERSION: u32 = 37;
+pub const PROTOCOL_VERSION: u32 = 38;
 pub const HEAL_SCARS_PROMPT: &str = "Heal behavioral scars now.";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -175,6 +175,19 @@ pub struct SearchRuntimeStatus {
 pub struct SearchServiceStatus {
     pub status: String,
     pub runtime: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ProviderConnection {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub models: Vec<String>,
+    pub model_source: String,
+    pub can_connect: bool,
+    pub can_disconnect: bool,
+    pub configured: bool,
+    pub key_url: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -410,6 +423,11 @@ pub struct MessageAccepted {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+pub struct DreamAccepted {
+    pub dream_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct CompactionAccepted {
     pub run_id: String,
 }
@@ -526,7 +544,13 @@ pub struct ApprovalResolution {
 #[derive(Clone, Debug, Deserialize)]
 pub struct QuestionResolution {
     pub question_id: String,
+    #[serde(default)]
+    pub answer_type: String,
     pub selected_option: Option<String>,
+    #[serde(default)]
+    pub selected_options: Vec<String>,
+    #[serde(default)]
+    pub selected_descriptions: Vec<String>,
     pub note: String,
     pub custom: bool,
 }
@@ -1000,6 +1024,42 @@ impl GatewayClient {
         }
         ensure_success(response).await?;
         Ok(true)
+    }
+
+    pub async fn connections(&self) -> Result<Vec<ProviderConnection>> {
+        decode(self.get("/v1/connections").send().await?).await
+    }
+
+    pub async fn connect_provider(&self, id: &str, key: &str) -> Result<Vec<ProviderConnection>> {
+        decode(
+            self.post(&format!("/v1/connections/{id}"))
+                .timeout(PROVIDER_PROBE_TIMEOUT)
+                .json(&serde_json::json!({ "key": key }))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn test_connection(&self, id: &str) -> Result<Vec<ProviderConnection>> {
+        decode(
+            self.post(&format!("/v1/connections/{id}/test"))
+                .timeout(PROVIDER_PROBE_TIMEOUT)
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn disconnect_provider(&self, id: &str) -> Result<Vec<ProviderConnection>> {
+        decode(
+            self.http
+                .delete(format!("{}/v1/connections/{id}", self.base_url))
+                .bearer_auth(&self.token)
+                .send()
+                .await?,
+        )
+        .await
     }
 
     pub async fn providers(&self) -> Result<Vec<ProviderProfile>> {
@@ -1679,6 +1739,30 @@ impl GatewayClient {
         .await
     }
 
+    pub async fn user_commands(&self, session_id: &str) -> Result<Vec<UserCommand>> {
+        decode(
+            self.get(&format!("/v1/sessions/{session_id}/commands"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn execute_user_command(
+        &self,
+        session_id: &str,
+        name: &str,
+        note: &str,
+    ) -> Result<PlanExecutionAccepted> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/commands/{name}"))
+                .json(&serde_json::json!({ "note": note }))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
     pub async fn tasks(&self, session_id: &str) -> Result<SessionTaskList> {
         decode(
             self.get(&format!("/v1/sessions/{session_id}/tasks"))
@@ -1691,6 +1775,15 @@ impl GatewayClient {
     pub async fn queue_state(&self, session_id: &str) -> Result<QueueState> {
         decode(
             self.get(&format!("/v1/sessions/{session_id}/queue"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn dream_session(&self, session_id: &str) -> Result<DreamAccepted> {
+        decode(
+            self.post(&format!("/v1/sessions/{session_id}/dream"))
                 .send()
                 .await?,
         )
@@ -2139,6 +2232,7 @@ impl GatewayClient {
         &self,
         question_id: &str,
         selected_option: Option<&str>,
+        selected_options: &[String],
         note: &str,
         custom_answer: &str,
     ) -> Result<QuestionResolution> {
@@ -2146,6 +2240,7 @@ impl GatewayClient {
             self.post(&format!("/v1/questions/{question_id}"))
                 .json(&serde_json::json!({
                     "selected_option": selected_option,
+                    "selected_options": selected_options,
                     "note": note,
                     "custom_answer": custom_answer,
                 }))
@@ -2315,4 +2410,10 @@ mod tests {
         assert_eq!(event_reconnect_delay(6), Duration::from_secs(8));
         assert_eq!(event_reconnect_delay(100), Duration::from_secs(8));
     }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct UserCommand {
+    pub name: String,
+    pub description: String,
 }

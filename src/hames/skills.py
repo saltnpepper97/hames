@@ -31,6 +31,7 @@ RESERVED_COMMANDS = {
     "cancel",
     "clear",
     "compact",
+    "dream",
     "context",
     "correct",
     "effort",
@@ -568,7 +569,7 @@ class SkillRegistry:
                 (now, version_id),
             )
             connection.execute(
-                "UPDATE skills SET active_version_id = ?, archived = 0, "
+                "UPDATE skills SET active_version_id = ?, archived = 0, deleted = 0, "
                 "updated_at = ? WHERE id = ?",
                 (version_id, now, candidate.skill_id),
             )
@@ -1108,7 +1109,7 @@ class SkillRegistry:
                 """
                 SELECT v.*, s.slug, s.scope, s.scope_key, s.pinned_version_id
                 FROM skills s JOIN skill_versions v ON v.id = s.active_version_id
-                WHERE s.archived = 0 AND v.status = 'active'
+                WHERE s.archived = 0 AND s.deleted = 0 AND v.status = 'active'
                 ORDER BY v.activated_at DESC, s.slug
                 """
             ).fetchall()
@@ -1154,7 +1155,7 @@ class SkillRegistry:
                 """
                 SELECT v.*, s.slug, s.scope, s.scope_key, s.pinned_version_id, s.archived
                 FROM skill_versions v JOIN skills s ON s.id = v.skill_id
-                WHERE v.version = (
+                WHERE s.deleted = 0 AND v.version = (
                     SELECT MAX(latest.version) FROM skill_versions latest
                     WHERE latest.skill_id = v.skill_id
                 )
@@ -1169,7 +1170,11 @@ class SkillRegistry:
         return list(by_slug.values())[:limit]
 
     def get_visible(self, session: Session, slug: str) -> SkillVersion:
-        matches = [item for item in self.visible(session, limit=200) if item.slug == slug]
+        matches = [
+            item
+            for item in self.visible(session, limit=200)
+            if slug in {item.slug, item.id, item.version_id}
+        ]
         if len(matches) != 1:
             raise KeyError(slug)
         return self.get(matches[0].version_id)
@@ -1322,6 +1327,19 @@ class SkillRegistry:
             )
         return self.get(version.id)
 
+    def delete(self, session: Session, slug: str) -> SkillVersion:
+        """Remove a Hames-managed Skill from the catalog without erasing its audit history."""
+
+        version = self._latest_visible(session, slug)
+        self._require_mutable(version)
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE skills SET archived = 1, deleted = 1, pinned_version_id = NULL, "
+                "updated_at = ? WHERE id = ?",
+                (utc_now(), version.skill_id),
+            )
+        return self.get(version.id)
+
     def evidence(self, version_id: str) -> list[str]:
         if version_id in self._builtin_by_version or version_id in self._external_by_version:
             return []
@@ -1342,7 +1360,7 @@ class SkillRegistry:
             rows = connection.execute(
                 "SELECT v.*, s.slug, s.scope, s.scope_key, s.pinned_version_id "
                 "FROM skill_versions v JOIN skills s ON s.id = v.skill_id "
-                "WHERE s.slug = ? ORDER BY v.version DESC",
+                "WHERE s.slug = ? AND s.deleted = 0 ORDER BY v.version DESC",
                 (slug,),
             ).fetchall()
         values = [self._version_from_row(row) for row in rows]

@@ -3,6 +3,7 @@
 from hames.providers.base import (
     ModelRequest,
     Provider,
+    ProviderAttachment,
     ProviderError,
     ProviderMessage,
     ProviderModel,
@@ -17,6 +18,7 @@ from hames.providers.base import (
 __all__ = [
     "ModelRequest",
     "Provider",
+    "ProviderAttachment",
     "ProviderError",
     "ProviderMessage",
     "ProviderModel",

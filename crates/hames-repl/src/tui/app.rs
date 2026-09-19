@@ -544,6 +544,17 @@ pub enum TranscriptItem {
         note: String,
         custom: bool,
     },
+    PromptInjection {
+        run_id: String,
+        provider: String,
+        model: String,
+        estimated_input_tokens: u64,
+        selected_sources: Vec<PromptInjectionSource>,
+        omitted_sources: Vec<PromptInjectionSource>,
+        request_hash: String,
+        created_at: Option<String>,
+        collapsed: bool,
+    },
     Plan {
         plan_id: String,
         revision: usize,
@@ -592,6 +603,15 @@ pub enum TranscriptItem {
     },
 }
 
+#[derive(Clone, Debug)]
+pub struct PromptInjectionSource {
+    pub source_id: String,
+    pub source_type: String,
+    pub tokens: u64,
+    pub reason: String,
+    pub truncation: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DreamPhase {
     Queued,
@@ -618,8 +638,13 @@ pub struct QuestionTray {
     pub question_id: String,
     pub run_id: String,
     pub question: String,
+    pub answer_type: QuestionAnswerType,
     pub options: Vec<QuestionOption>,
+    pub min_selections: usize,
+    pub max_selections: usize,
+    pub placeholder: String,
     pub selected: usize,
+    pub checked: Vec<bool>,
     pub input_kind: Option<QuestionInputKind>,
     pub response_input: Composer,
 }
@@ -636,9 +661,20 @@ pub enum QuestionInputKind {
     Custom,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QuestionAnswerType {
+    SingleChoice,
+    MultipleChoice,
+    Text,
+}
+
 impl QuestionTray {
     pub fn choice_count(&self) -> usize {
-        self.options.len() + 1
+        match self.answer_type {
+            QuestionAnswerType::SingleChoice => self.options.len() + 1,
+            QuestionAnswerType::MultipleChoice => self.options.len(),
+            QuestionAnswerType::Text => 0,
+        }
     }
 
     pub fn custom_index(&self) -> usize {
@@ -646,7 +682,7 @@ impl QuestionTray {
     }
 
     pub fn start_note(&mut self, index: usize) {
-        if index < self.options.len() {
+        if self.answer_type == QuestionAnswerType::SingleChoice && index < self.options.len() {
             self.selected = index;
             self.input_kind = Some(QuestionInputKind::Note);
             self.response_input.clear();
@@ -654,9 +690,31 @@ impl QuestionTray {
     }
 
     pub fn start_custom(&mut self) {
-        self.selected = self.custom_index();
+        if self.answer_type == QuestionAnswerType::SingleChoice {
+            self.selected = self.custom_index();
+        }
         self.input_kind = Some(QuestionInputKind::Custom);
         self.response_input.clear();
+    }
+
+    pub fn toggle_checked(&mut self, index: usize) {
+        if self.answer_type != QuestionAnswerType::MultipleChoice || index >= self.checked.len() {
+            return;
+        }
+        if self.checked[index] {
+            self.checked[index] = false;
+        } else if self.checked.iter().filter(|checked| **checked).count() < self.max_selections {
+            self.checked[index] = true;
+        }
+    }
+
+    pub fn checked_labels(&self) -> Vec<String> {
+        self.options
+            .iter()
+            .zip(&self.checked)
+            .filter(|(_, checked)| **checked)
+            .map(|(option, _)| option.label.clone())
+            .collect()
     }
 }
 
@@ -975,8 +1033,26 @@ impl ScarEditor {
     }
 }
 
+#[derive(Clone)]
+pub struct ConnectionKey {
+    pub profile_id: String,
+    pub name: String,
+    pub key_url: String,
+    pub key: String,
+}
+
+impl std::fmt::Debug for ConnectionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionKey")
+            .field("profile_id", &self.profile_id)
+            .field("key", &"[redacted]")
+            .finish()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Modal {
+    ConnectionKey(ConnectionKey),
     Approval(ApprovalModal),
     Help,
     Usage(UsageModal),
@@ -1018,7 +1094,9 @@ pub enum MenuAction {
     OpenPlanNote,
     ExecutePlanWithNote(String),
     ExecutePlan(String),
+    UserCommand(String, String),
     Compact,
+    Dream,
     ShowGoal,
     StartGoal(String),
     PauseGoal,
@@ -1028,6 +1106,15 @@ pub enum MenuAction {
     EditQueued(String),
     ForkSession,
     OpenModels,
+    OpenConnections,
+    OpenConnection(String),
+    ConnectProvider {
+        id: String,
+        name: String,
+        key_url: String,
+    },
+    TestConnection(String),
+    DisconnectProvider(String),
     OpenEfforts,
     OpenAgents,
     CreateAgent,
@@ -1364,7 +1451,16 @@ impl HitRegion {
     }
 }
 
+pub struct DelegatedActivity {
+    pub request_id: String,
+    pub run_id: String,
+    pub transcript_index: usize,
+    pub label: String,
+    pub detail: String,
+}
+
 pub struct App {
+    pub delegated_activity: Vec<DelegatedActivity>,
     pub session: Session,
     pub agent_name: String,
     pub workspace_name: String,
@@ -1385,6 +1481,7 @@ pub struct App {
     pub plan: PlanState,
     pub tasks: SessionTaskList,
     pub skill_commands: Vec<SkillSummary>,
+    pub user_commands: Vec<crate::api::UserCommand>,
     pub trusted: bool,
     pub connection_state: ConnectionState,
     pub pending_submission: Option<PendingSubmission>,
@@ -1415,6 +1512,7 @@ pub struct App {
     pub last_sequence: u64,
     pub seen_events: HashSet<String>,
     pub context_usage: Option<ContextUsageProjection>,
+    prompt_context_keys: HashMap<String, String>,
     pub diff_details: bool,
     model_reasoning_efforts: HashMap<(String, String), String>,
     pub hits: Vec<HitRegion>,
@@ -1464,6 +1562,7 @@ impl App {
             message_history: Vec::new(),
             history_index: None,
             history_draft: None,
+            delegated_activity: Vec::new(),
             active_run: None,
             run_started_at: None,
             escape_armed_run: None,
@@ -1481,6 +1580,7 @@ impl App {
                 updated_at: String::new(),
             },
             skill_commands: Vec::new(),
+            user_commands: Vec::new(),
             trusted,
             connection_state: ConnectionState::Connected,
             pending_submission: None,
@@ -1511,6 +1611,7 @@ impl App {
             last_sequence: 0,
             seen_events: HashSet::new(),
             context_usage: None,
+            prompt_context_keys: HashMap::new(),
             diff_details: false,
             model_reasoning_efforts: HashMap::from([(initial_model, initial_effort)]),
             hits: Vec::new(),
@@ -2219,11 +2320,21 @@ impl App {
             option("/resume", "resume recent work", MenuAction::OpenSessions),
             option("/queue", "inspect pending turns", MenuAction::OpenQueue),
             option("/tasks", "current session checklist", MenuAction::OpenTasks),
+            option(
+                "/dream",
+                "reconcile memories, skills and scars now",
+                MenuAction::Dream,
+            ),
             option("/compact", "summarize older context", MenuAction::Compact),
             option(
                 "/goal",
                 "start or inspect autonomous goal work",
                 MenuAction::ShowGoal,
+            ),
+            option(
+                "/connect",
+                "manage provider connections",
+                MenuAction::OpenConnections,
             ),
             option("/fork", "branch this session", MenuAction::ForkSession),
             option(
@@ -2286,10 +2397,23 @@ impl App {
             ),
             option("/quit", "leave the gateway running", MenuAction::Quit),
         ];
+        options.extend(self.user_commands.iter().map(|command| {
+            option(
+                &format!("/{}", command.name),
+                &command.description,
+                MenuAction::UserCommand(command.name.clone(), String::new()),
+            )
+        }));
         options.extend(
             self.skill_commands
                 .iter()
                 .filter(|skill| matches!(skill.invocation.as_str(), "user" | "both"))
+                .filter(|skill| {
+                    !self
+                        .user_commands
+                        .iter()
+                        .any(|command| command.name == skill.slug)
+                })
                 .map(|skill| MenuOption {
                     label: format!("/{}", skill.slug),
                     detail: format!("Skill · {}", skill.description),
@@ -2558,6 +2682,23 @@ impl App {
             "tasks.replaced" | "task.added" | "task.updated" | "task.removed"
         );
         let run_id = event.run_id.clone().unwrap_or_default();
+        if matches!(
+            event.event_type.as_str(),
+            "run.completed" | "run.failed" | "run.cancelled"
+        ) {
+            self.delegated_activity.retain(|worker| {
+                if worker.run_id != run_id {
+                    return true;
+                }
+                if let Some(TranscriptItem::Status { text, error }) =
+                    self.transcript.get_mut(worker.transcript_index)
+                {
+                    *text = format!("{} · Interrupted · {}", worker.label, worker.detail);
+                    *error = true;
+                }
+                false
+            });
+        }
         match event.event_type.as_str() {
             "session.mode.changed" => {
                 self.session.interaction_mode = string(&event.payload, "mode");
@@ -3001,6 +3142,22 @@ impl App {
                     });
                 }
             }
+            "queue.updated" => {
+                let queue_id = string(&event.payload, "queue_id");
+                if let Some(item) = self
+                    .queued_messages
+                    .iter_mut()
+                    .find(|item| item.id == queue_id)
+                {
+                    item.content = string(&event.payload, "content");
+                    item.paste_spans = event
+                        .payload
+                        .get("paste_spans")
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok())
+                        .unwrap_or_default();
+                }
+            }
             "queue.removed" | "queue.promoted" => {
                 let queue_id = string(&event.payload, "queue_id");
                 self.queued_messages.retain(|item| item.id != queue_id);
@@ -3140,7 +3297,7 @@ impl App {
                     *interrupted =
                         event.payload.get("status").and_then(Value::as_str) == Some("interrupted");
                     *live = false;
-                    *collapsed = !*interrupted;
+                    *collapsed = true;
                 }
             }
             "assistant.message" => {
@@ -3163,6 +3320,54 @@ impl App {
                         *live = false;
                         *durable = true;
                         *created_at = Some(event.created_at.clone());
+                    }
+                }
+            }
+            "delegation.requested" => {
+                let label = string(&event.payload, "target_agent_id");
+                let detail = ["provider", "model", "reasoning_effort"]
+                    .iter()
+                    .map(|key| string(&event.payload, key))
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                let index = self.transcript.len();
+                self.transcript.push(TranscriptItem::Status {
+                    text: format!(
+                        "{label} · Working{}",
+                        if detail.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" · {detail}")
+                        }
+                    ),
+                    error: false,
+                });
+                self.delegated_activity.push(DelegatedActivity {
+                    request_id: event.id.clone(),
+                    run_id: run_id.clone(),
+                    transcript_index: index,
+                    label,
+                    detail,
+                });
+            }
+            "delegation.completed" | "delegation.failed" => {
+                if let Some(index) = self.delegated_activity.iter().position(|worker| {
+                    Some(worker.request_id.as_str()) == event.causation_id.as_deref()
+                }) {
+                    let worker = self.delegated_activity.remove(index);
+                    let status = if event.event_type == "delegation.completed" {
+                        "Finished"
+                    } else if string(&event.payload, "status") == "cancelled" {
+                        "Cancelled"
+                    } else {
+                        "Failed"
+                    };
+                    if let Some(TranscriptItem::Status { text, error }) =
+                        self.transcript.get_mut(worker.transcript_index)
+                    {
+                        *text = format!("{} · {status} · {}", worker.label, worker.detail);
+                        *error = event.event_type == "delegation.failed";
                     }
                 }
             }
@@ -3248,6 +3453,7 @@ impl App {
                 }
             }
             "context.compiled" => {
+                self.finish_live_thought(&run_id);
                 self.context_usage = Some(ContextUsageProjection {
                     provider: string(&event.payload, "provider"),
                     model: string(&event.payload, "model"),
@@ -3258,6 +3464,30 @@ impl App {
                     output_reserve_tokens: u64_value(&event.payload, "output_reserve_tokens"),
                     context_window_source: string(&event.payload, "context_window_source"),
                 });
+                if crate::prompt_context::prompt_context_changed(
+                    &mut self.prompt_context_keys,
+                    &event,
+                ) {
+                    self.transcript.push(TranscriptItem::PromptInjection {
+                        run_id: run_id.clone(),
+                        provider: string(&event.payload, "provider"),
+                        model: string(&event.payload, "model"),
+                        estimated_input_tokens: u64_value(&event.payload, "estimated_input_tokens"),
+                        selected_sources: prompt_injection_sources(
+                            &event.payload,
+                            "selected_sources",
+                            false,
+                        ),
+                        omitted_sources: prompt_injection_sources(
+                            &event.payload,
+                            "omitted_sources",
+                            true,
+                        ),
+                        request_hash: string(&event.payload, "request_hash"),
+                        created_at: Some(event.created_at.clone()),
+                        collapsed: true,
+                    });
+                }
             }
             "model.response.failed" | "run.failed" => {
                 if event.event_type == "model.response.failed"
@@ -3516,7 +3746,8 @@ impl App {
                 TranscriptItem::Thought { run_id, .. }
                 | TranscriptItem::Assistant { run_id, .. }
                 | TranscriptItem::Activity { run_id, .. }
-                | TranscriptItem::Compaction { run_id, .. } => run_id == active_run,
+                | TranscriptItem::Compaction { run_id, .. }
+                | TranscriptItem::PromptInjection { run_id, .. } => run_id == active_run,
                 _ => false,
             })
         });
@@ -3567,7 +3798,10 @@ impl App {
         match self.transcript.get_mut(index) {
             Some(TranscriptItem::Activity { collapsed, .. }) => *collapsed = !*collapsed,
             Some(TranscriptItem::Compaction { collapsed, .. })
-            | Some(TranscriptItem::Plan { collapsed, .. }) => *collapsed = !*collapsed,
+            | Some(TranscriptItem::Plan { collapsed, .. })
+            | Some(TranscriptItem::PromptInjection { collapsed, .. }) => {
+                *collapsed = !*collapsed;
+            }
             _ => {}
         }
     }
@@ -3681,6 +3915,9 @@ impl App {
             if !live && index + 1 == self.transcript.len() {
                 return index;
             }
+        }
+        if live {
+            self.finish_live_thought(run_id);
         }
         self.transcript.push(TranscriptItem::Thought {
             run_id: run_id.to_owned(),
@@ -3972,7 +4209,6 @@ impl App {
                 ..
             } = item
                 && id == run_id
-                && *live
             {
                 *live = false;
                 *collapsed = true;
@@ -4174,6 +4410,53 @@ fn u64_value(payload: &Value, key: &str) -> u64 {
     payload.get(key).and_then(Value::as_u64).unwrap_or(0)
 }
 
+fn prompt_injection_sources(
+    payload: &Value,
+    key: &str,
+    use_estimated_tokens: bool,
+) -> Vec<PromptInjectionSource> {
+    payload
+        .get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|value| {
+            let source = value.as_object()?;
+            let tokens_key = if use_estimated_tokens {
+                "estimated_tokens"
+            } else {
+                "selected_tokens"
+            };
+            Some(PromptInjectionSource {
+                source_id: source
+                    .get("skill_slug")
+                    .or_else(|| source.get("memory_id"))
+                    .or_else(|| source.get("source_path"))
+                    .or_else(|| source.get("source_id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("context")
+                    .to_owned(),
+                source_type: source
+                    .get("source_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("context")
+                    .to_owned(),
+                tokens: source.get(tokens_key).and_then(Value::as_u64).unwrap_or(0),
+                reason: source
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                truncation: source
+                    .get("truncation")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            })
+        })
+        .collect()
+}
+
 fn dream_phase(event_type: &str) -> DreamPhase {
     if event_type == "dream.started" {
         DreamPhase::Running
@@ -4240,34 +4523,60 @@ fn approval_from(payload: &Value) -> ApprovalModal {
 }
 
 fn question_from(run_id: &str, payload: &Value) -> QuestionTray {
+    let options = payload
+        .get("options")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|option| {
+            if let Some(label) = option.as_str() {
+                return Some(QuestionOption {
+                    label: label.to_owned(),
+                    description: String::new(),
+                });
+            }
+            let label = option.get("label")?.as_str()?.to_owned();
+            let description = option
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            Some(QuestionOption { label, description })
+        })
+        .take(8)
+        .collect::<Vec<_>>();
+    let answer_type = match payload.get("answer_type").and_then(Value::as_str) {
+        Some("multiple_choice") => QuestionAnswerType::MultipleChoice,
+        Some("text") => QuestionAnswerType::Text,
+        _ if options.is_empty() => QuestionAnswerType::Text,
+        _ => QuestionAnswerType::SingleChoice,
+    };
+    let min_selections = payload
+        .get("min_selections")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(1)
+        .max(1);
+    let max_selections = payload
+        .get("max_selections")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or_else(|| options.len().max(1))
+        .max(min_selections)
+        .min(options.len().max(1));
+    let input_kind = (answer_type == QuestionAnswerType::Text).then_some(QuestionInputKind::Custom);
     QuestionTray {
         question_id: string(payload, "question_id"),
         run_id: run_id.to_owned(),
         question: string(payload, "question"),
-        options: payload
-            .get("options")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|option| {
-                if let Some(label) = option.as_str() {
-                    return Some(QuestionOption {
-                        label: label.to_owned(),
-                        description: String::new(),
-                    });
-                }
-                let label = option.get("label")?.as_str()?.to_owned();
-                let description = option
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
-                Some(QuestionOption { label, description })
-            })
-            .take(3)
-            .collect(),
+        answer_type,
+        checked: vec![false; options.len()],
+        options,
+        min_selections,
+        max_selections,
+        placeholder: string(payload, "placeholder"),
         selected: 0,
-        input_kind: None,
+        input_kind,
         response_input: Composer::default(),
     }
 }
@@ -4369,8 +4678,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ActivityCategory, ActivityPhase, App, Composer, ComposerUnit, DreamPhase, TranscriptItem,
-        TranscriptPoint, TranscriptViewport, is_task_tool, task_checkbox,
+        ActivityCategory, ActivityPhase, App, Composer, ComposerUnit, DreamPhase,
+        QuestionAnswerType, QuestionInputKind, TranscriptItem, TranscriptPoint, TranscriptViewport,
+        is_task_tool, question_from, task_checkbox,
     };
     use crate::api::{Event, PasteSpan, Session, SessionTask, ToolResultDetails};
 
@@ -4603,6 +4913,47 @@ mod tests {
         assert_eq!(app.composer.text(), "first");
         assert!(app.handle_composer_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL,)));
         assert!(app.composer.is_empty());
+    }
+
+    #[test]
+    fn delegation_handoff_replays_and_clears_on_completion_or_cancel() {
+        let mut app = App::new(session(), Vec::new(), true);
+        let request = event(
+            2,
+            "delegation.requested",
+            "run",
+            json!({
+                "target_agent_id": "luna-reviewer", "provider": "codex",
+                "model": "luna", "reasoning_effort": "xhigh"
+            }),
+        );
+        app.ingest_durable(event(1, "run.started", "run", json!({})), false);
+        app.ingest_durable(request.clone(), false);
+        app.ingest_durable(request.clone(), false);
+        assert_eq!(app.delegated_activity.len(), 1);
+        assert!(app.delegated_activity[0].detail.contains("luna · xhigh"));
+        let mut completed = event(
+            3,
+            "delegation.completed",
+            "run",
+            json!({"status": "completed"}),
+        );
+        completed.causation_id = Some(request.id);
+        app.ingest_durable(completed, false);
+        assert!(app.delegated_activity.is_empty());
+        assert!(app.transcript.iter().any(|item| matches!(item, TranscriptItem::Status {text, ..} if text.contains("luna-reviewer · Finished"))));
+        app.ingest_durable(
+            event(
+                4,
+                "delegation.requested",
+                "run",
+                json!({"target_agent_id": "sol-finisher"}),
+            ),
+            true,
+        );
+        app.ingest_durable(event(5, "run.cancelled", "run", json!({})), true);
+        assert!(app.delegated_activity.is_empty());
+        assert!(app.transcript.iter().any(|item| matches!(item, TranscriptItem::Status {text, error: true} if text.contains("sol-finisher · Interrupted"))));
     }
 
     #[test]
@@ -6294,7 +6645,22 @@ mod tests {
                 "context_window_tokens": 114_000,
                 "input_budget_tokens": 100_000,
                 "output_reserve_tokens": 14_000,
-                "context_window_source": "provider"
+                "context_window_source": "provider",
+                "request_hash": "request-context",
+                "selected_sources": [{
+                    "source_id": "agent:default",
+                    "source_type": "agent",
+                    "selected_tokens": 1_200,
+                    "estimated_tokens": 1_200,
+                    "source_path": "/home/.hames/agents/default/AGENT.md",
+                    "truncation": "none"
+                }],
+                "omitted_sources": [{
+                    "source_id": "memory:old",
+                    "source_type": "memory",
+                    "estimated_tokens": 400,
+                    "reason": "budget"
+                }]
             }),
         );
         let mut app = App::new(session(), vec![context], true);
@@ -6302,12 +6668,97 @@ mod tests {
             app.current_context_usage(),
             Some(context) if context.estimated_input_tokens == 28_500
         ));
+        assert!(matches!(
+            app.transcript.iter().find(|item| matches!(item, TranscriptItem::PromptInjection { .. })),
+            Some(TranscriptItem::PromptInjection {
+                estimated_input_tokens: 28_500,
+                selected_sources,
+                omitted_sources,
+                request_hash,
+                collapsed: true,
+                ..
+            }) if selected_sources.len() == 1
+                && selected_sources[0].tokens == 1_200
+                && omitted_sources.len() == 1
+                && request_hash == "request-context"
+        ));
 
         app.ingest_durable(
             event(2, "session.mode.changed", "", json!({"mode": "plan"})),
             true,
         );
         assert!(app.current_context_usage().is_none());
+    }
+
+    #[test]
+    fn unchanged_compiled_context_does_not_repeat_prompt_injection() {
+        let payload = json!({
+            "provider": "fake",
+            "model": "fixture",
+            "agent_id": "default",
+            "estimated_input_tokens": 28_500,
+            "context_window_tokens": 114_000,
+            "input_budget_tokens": 100_000,
+            "output_reserve_tokens": 14_000,
+            "context_window_source": "provider",
+            "request_hash": "request-one",
+            "selected_sources": [{
+                "source_id": "agent:default",
+                "source_type": "agent",
+                "selected_tokens": 1_200,
+                "estimated_tokens": 1_200,
+                "source_path": "/home/.hames/agents/default/AGENT.md",
+                "truncation": "none"
+            }],
+            "omitted_sources": []
+        });
+        let mut app = App::new(
+            session(),
+            vec![event(1, "context.compiled", "run-one", payload.clone())],
+            true,
+        );
+        assert_eq!(
+            app.transcript
+                .iter()
+                .filter(|item| matches!(item, TranscriptItem::PromptInjection { .. }))
+                .count(),
+            1
+        );
+
+        let mut same_sources = payload.clone();
+        same_sources["request_hash"] = json!("request-two");
+        same_sources["estimated_input_tokens"] = json!(30_000);
+        same_sources["selected_sources"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "source_id": "conversation.turn.one",
+                "source_type": "conversation",
+                "content_hash": "growing"
+            }));
+        app.ingest_durable(event(2, "context.compiled", "run-two", same_sources), true);
+        assert_eq!(
+            app.transcript
+                .iter()
+                .filter(|item| matches!(item, TranscriptItem::PromptInjection { .. }))
+                .count(),
+            1
+        );
+        assert!(matches!(
+            app.current_context_usage(),
+            Some(context) if context.estimated_input_tokens == 30_000
+        ));
+
+        let mut changed = payload;
+        changed["selected_sources"][0]["content_hash"] = json!("instructions-v2");
+        app.ingest_durable(event(3, "context.compiled", "run-three", changed), true);
+        assert_eq!(
+            app.transcript
+                .iter()
+                .filter(|item| matches!(item, TranscriptItem::PromptInjection { .. }))
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -6625,6 +7076,151 @@ mod tests {
                 && rows[0].phase == ActivityPhase::Preparing
                 && rows[0].argument_parts.is_empty()
                 && rows[0].verb() == "Preparing write"
+        ));
+    }
+
+    #[test]
+    fn live_thought_starts_open_and_closes_when_the_next_block_starts() {
+        let run_id = "run-thought-close";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_transient(
+            run_id,
+            "response.reasoning_delta",
+            &json!({"text": "I should inspect it."}),
+        );
+        assert!(matches!(
+            app.transcript.last(),
+            Some(TranscriptItem::Thought {
+                live: true,
+                collapsed: false,
+                ..
+            })
+        ));
+
+        app.ingest_durable(
+            event(
+                1,
+                "assistant.reasoning",
+                run_id,
+                json!({
+                    "content": "I should inspect it.",
+                    "status": "interrupted",
+                    "duration_seconds": 4.0
+                }),
+            ),
+            true,
+        );
+        assert!(matches!(
+            app.transcript.last(),
+            Some(TranscriptItem::Thought {
+                live: false,
+                collapsed: true,
+                interrupted: true,
+                duration_seconds,
+                ..
+            }) if *duration_seconds == 4.0
+        ));
+
+        app.ingest_transient(
+            run_id,
+            "response.tool_call_delta",
+            &json!({"index": 0, "name": "read_file", "arguments_delta": ""}),
+        );
+        assert!(matches!(
+            &app.transcript[..],
+            [
+                TranscriptItem::Thought {
+                    live: false,
+                    collapsed: true,
+                    interrupted: true,
+                    ..
+                },
+                TranscriptItem::Activity { .. }
+            ]
+        ));
+    }
+
+    #[test]
+    fn thought_closes_when_the_next_prompt_injection_arrives() {
+        let run_id = "run-thought-then-context";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_transient(
+            run_id,
+            "response.reasoning_delta",
+            &json!({"text": "Need another look."}),
+        );
+        app.ingest_durable(
+            event(
+                1,
+                "context.compiled",
+                run_id,
+                json!({
+                    "provider": "fake",
+                    "model": "fixture",
+                    "agent_id": "default",
+                    "estimated_input_tokens": 1200,
+                    "context_window_tokens": 32_000,
+                    "input_budget_tokens": 24_000,
+                    "output_reserve_tokens": 8_000,
+                    "context_window_source": "provider",
+                    "request_hash": "next-request",
+                    "selected_sources": [{
+                        "source_id": "agent:default",
+                        "source_type": "agent",
+                        "selected_tokens": 100,
+                        "source_path": "/home/.hames/agents/default/AGENT.md"
+                    }],
+                    "omitted_sources": []
+                }),
+            ),
+            true,
+        );
+        assert!(matches!(
+            &app.transcript[..],
+            [
+                TranscriptItem::Thought {
+                    live: false,
+                    collapsed: true,
+                    ..
+                },
+                TranscriptItem::PromptInjection {
+                    collapsed: true,
+                    ..
+                }
+            ]
+        ));
+    }
+
+    #[test]
+    fn completed_durable_reasoning_collapses_even_before_the_answer() {
+        let run_id = "run-thought-complete";
+        let mut app = App::new(session(), Vec::new(), true);
+        app.ingest_transient(
+            run_id,
+            "response.reasoning_delta",
+            &json!({"text": "Ready to answer."}),
+        );
+        app.ingest_durable(
+            event(
+                1,
+                "assistant.reasoning",
+                run_id,
+                json!({
+                    "content": "Ready to answer.",
+                    "status": "completed",
+                    "duration_seconds": 2.0
+                }),
+            ),
+            true,
+        );
+        assert!(matches!(
+            app.transcript.last(),
+            Some(TranscriptItem::Thought {
+                live: false,
+                collapsed: true,
+                interrupted: false,
+                ..
+            })
         ));
     }
 
@@ -7138,6 +7734,41 @@ mod tests {
                 && note.is_empty()
                 && !custom
         ));
+    }
+
+    #[test]
+    fn question_payloads_restore_multiple_choice_and_text_controls() {
+        let multiple = question_from(
+            "run-question",
+            &json!({
+                "question_id": "question-many",
+                "question": "Which checks should run?",
+                "answer_type": "multiple_choice",
+                "options": ["Unit", "Integration", "Browser"],
+                "min_selections": 2,
+                "max_selections": 3
+            }),
+        );
+        assert_eq!(multiple.answer_type, QuestionAnswerType::MultipleChoice);
+        assert_eq!(multiple.choice_count(), 3);
+        assert_eq!(multiple.min_selections, 2);
+        assert_eq!(multiple.max_selections, 3);
+        assert_eq!(multiple.checked, [false; 3]);
+        assert_eq!(multiple.input_kind, None);
+
+        let text = question_from(
+            "run-question",
+            &json!({
+                "question_id": "question-text",
+                "question": "What should the release be called?",
+                "answer_type": "text",
+                "placeholder": "Release name"
+            }),
+        );
+        assert_eq!(text.answer_type, QuestionAnswerType::Text);
+        assert_eq!(text.choice_count(), 0);
+        assert_eq!(text.placeholder, "Release name");
+        assert_eq!(text.input_kind, Some(QuestionInputKind::Custom));
     }
 
     fn session() -> Session {

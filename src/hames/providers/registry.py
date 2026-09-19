@@ -5,9 +5,13 @@ from __future__ import annotations
 from hames.config import HamesConfig
 from hames.providers.base import Provider
 from hames.providers.codex import CodexProvider
+from hames.providers.deepseek import DeepSeekProvider
+from hames.providers.grok import GrokProvider
 from hames.providers.llama_cpp import LlamaCppProvider
 from hames.providers.ollama import OllamaProvider
 from hames.providers.openai import OpenAIProvider
+from hames.providers.xai import XaiProvider
+from hames.providers.zai import ZaiCodingProvider, ZaiProvider
 
 
 def configured_providers(config: HamesConfig) -> dict[str, Provider]:
@@ -33,6 +37,40 @@ def configured_providers(config: HamesConfig) -> dict[str, Provider]:
                 profile.base_url,
                 profile_id=profile_id,
                 api_key_env=profile.api_key_env,
+                api_key_file=profile.api_key_file,
+                timeout_seconds=profile.timeout_seconds,
+                default_model=profile.model,
+                supported_reasoning_efforts=profile.supported_reasoning_efforts,
+            )
+        elif profile.adapter == "xai":
+            providers[profile_id] = XaiProvider(
+                profile.base_url,
+                profile_id=profile_id,
+                api_key_env=profile.api_key_env,
+                api_key_file=profile.api_key_file,
+                timeout_seconds=profile.timeout_seconds,
+                default_model=profile.model,
+                supported_reasoning_efforts=profile.supported_reasoning_efforts,
+            )
+        elif profile.adapter == "grok":
+            providers[profile_id] = GrokProvider(
+                profile.base_url,
+                profile_id=profile_id,
+                timeout_seconds=profile.timeout_seconds,
+                default_model=profile.model,
+                supported_reasoning_efforts=profile.supported_reasoning_efforts,
+            )
+        elif profile.adapter in {"deepseek", "zai", "zai_coding"}:
+            provider_class = {
+                "deepseek": DeepSeekProvider,
+                "zai": ZaiProvider,
+                "zai_coding": ZaiCodingProvider,
+            }[profile.adapter]
+            providers[profile_id] = provider_class(
+                profile.base_url,
+                profile_id=profile_id,
+                api_key_env=profile.api_key_env,
+                api_key_file=profile.api_key_file,
                 timeout_seconds=profile.timeout_seconds,
                 default_model=profile.model,
                 supported_reasoning_efforts=profile.supported_reasoning_efforts,

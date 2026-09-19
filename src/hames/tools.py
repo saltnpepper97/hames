@@ -116,7 +116,7 @@ class ShellArguments(WorkspaceArguments):
 
 
 class SpawnAgentArguments(ToolArguments):
-    agent_id: str
+    agent_id: str = ""
     task: str = Field(min_length=1)
     evidence_event_ids: list[str] = Field(default_factory=list, max_length=8)
     project_scope: Literal["current_workspace"] = "current_workspace"
@@ -269,14 +269,37 @@ class AskUserArguments(ToolArguments):
         max_length=1000,
         description="One clear question that requires the user's input",
     )
+    answer_type: Literal["single_choice", "multiple_choice", "text"] = Field(
+        default="single_choice",
+        description=(
+            "How the user answers: choose one option, check one or more options, or type "
+            "a free-text response. Omit for the legacy single-choice behavior."
+        ),
+    )
     options: list[AskUserOption] = Field(
         default_factory=_empty_ask_user_options,
-        max_length=3,
+        max_length=8,
         description=(
-            "Up to three mutually exclusive suggested answers. Each has a concise label "
-            "and may include a thorough multiline description. Hames always lets the user "
-            "write a different answer."
+            "Up to eight answers for single_choice or multiple_choice. Each has a concise "
+            "label and may include a thorough multiline description. Leave empty for text."
         ),
+    )
+    min_selections: int = Field(
+        default=1,
+        ge=1,
+        le=8,
+        description="Minimum checked options required for multiple_choice",
+    )
+    max_selections: int | None = Field(
+        default=None,
+        ge=1,
+        le=8,
+        description="Maximum checked options allowed for multiple_choice; defaults to all",
+    )
+    placeholder: str = Field(
+        default="",
+        max_length=160,
+        description="Optional hint shown inside the free-text answer field",
     )
 
     @field_validator("options", mode="before")
@@ -295,9 +318,31 @@ class AskUserArguments(ToolArguments):
         question = self.question.strip()
         if not question:
             raise ValueError("question must not be empty")
+        self.placeholder = self.placeholder.strip()
         labels = [option.label for option in self.options]
         if len({label.casefold() for label in labels}) != len(labels):
             raise ValueError("question options must be unique")
+        if self.answer_type == "text":
+            if self.options:
+                raise ValueError("text questions must not include options")
+            self.max_selections = None
+        elif not self.options:
+            # Calls produced before answer_type existed used an empty option list for free text.
+            if self.answer_type == "single_choice":
+                self.answer_type = "text"
+                self.max_selections = None
+            else:
+                raise ValueError("multiple_choice questions require options")
+        elif self.answer_type == "single_choice":
+            self.min_selections = 1
+            self.max_selections = 1
+        else:
+            maximum = self.max_selections if self.max_selections is not None else len(self.options)
+            if maximum > len(self.options):
+                raise ValueError("max_selections must not exceed the number of options")
+            if self.min_selections > maximum:
+                raise ValueError("min_selections must not exceed max_selections")
+            self.max_selections = maximum
         self.question = question
         return self
 
@@ -306,6 +351,18 @@ class GoalReportArguments(ToolArguments):
     status: Literal["progress", "achieved", "blocked"]
     summary: str = Field(min_length=1, max_length=4000)
     evidence: list[str] = Field(min_length=1, max_length=16)
+
+
+class AutomationCreateArguments(ToolArguments):
+    title: str = Field(min_length=1, max_length=120)
+    instructions: str = Field(min_length=1, max_length=16000)
+    frequency: Literal["once", "daily", "weekly"]
+    time: str = Field(description="Explicit local HH:MM chosen by the user")
+    timezone: str = Field(description="IANA timezone confirmed by the user, e.g. America/Halifax")
+    weekdays: list[int] = Field(
+        default_factory=lambda: [0], description="Monday=0 through Sunday=6"
+    )
+    date: str = Field(default="", description="YYYY-MM-DD for one-time schedules")
 
 
 class TaskListArguments(ToolArguments):
@@ -467,9 +524,10 @@ class ToolBase:
 class AskUserTool(ToolBase):
     name = "ask_user"
     description = (
-        "Pause this run to ask the user one necessary question. Supply no more than three "
-        "concise suggested answers; Hames always provides a custom-answer choice. Use this only "
-        "when user input materially changes the work and the answer cannot be safely inferred."
+        "Pause this run to ask the user one necessary question. Use single_choice for mutually "
+        "exclusive answers, multiple_choice when several options may be checked, or text for a "
+        "typed response. Single-choice questions also let the user write a different answer. "
+        "Use this only when user input materially changes the work and cannot be safely inferred."
     )
     side_effect_class = "interaction"
     arguments_type: ClassVar[type[ToolArguments]] = AskUserArguments
@@ -743,7 +801,15 @@ class ShellTool(ToolBase):
 
 class SpawnAgentTool(ToolBase):
     name = "spawn_agent"
-    description = "Delegate a bounded task to an allowed child agent with explicit evidence."
+    description = (
+        "Spawn a subagent for useful delegated work. Omit agent_id to use your own agent. "
+        "Supply a self-contained task and optional evidence IDs; the terminal result returns "
+        "to you. During approved plan execution, the harness automatically attaches the exact "
+        "approved plan and execution note to every child, including nested delegations. "
+        "Use a short assignment naming the whole plan or the assigned portion; do not copy, "
+        "rewrite, or summarize the plan in task. Multiple spawn_agent calls in one response "
+        "run concurrently within limits."
+    )
     side_effect_class = "delegation"
     arguments_type: ClassVar[type[ToolArguments]] = SpawnAgentArguments
 
@@ -873,6 +939,21 @@ class GoalReportTool(ToolBase):
     )
     side_effect_class = "goal_management"
     arguments_type: ClassVar[type[ToolArguments]] = GoalReportArguments
+
+
+class AutomationCreateTool(ToolBase):
+    name = "automation_create"
+    description = (
+        "Create a paused scheduled-task draft for the user to review and enable in Automations. "
+        "Use when the user asks for recurring or scheduled work. "
+        "If they say morning without a time, "
+        "ask_user with 08:00, 09:00, 10:00 choices and custom text; confirm their timezone too. "
+        "Do not guess a time or enable automatically. "
+        "Describe required account access in instructions; "
+        "checking mail does not authorize sending it. Return the review link to the user."
+    )
+    side_effect_class = "session_metadata"
+    arguments_type: ClassVar[type[ToolArguments]] = AutomationCreateArguments
 
 
 class TaskListTool(ToolBase):
@@ -1043,6 +1124,7 @@ class ToolRegistry:
             TerminalStopTool(),
             GoalReportTool(),
             TaskListTool(),
+            AutomationCreateTool(),
             TaskUpdateTool(),
         ]
         if search is not None:

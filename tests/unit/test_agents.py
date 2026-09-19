@@ -141,14 +141,12 @@ def test_agent_avatar_is_portable_and_updates_without_losing_metadata(
 
     updated = registry.update(
         "default",
-        avatar=AgentAvatar(shape="hex", eyes="happy", color="#A855F7"),
+        avatar=AgentAvatar(shape="hex", eyes="pill", color="#A855F7"),
     )
 
     assert updated.metadata.name == original.metadata.name
     assert updated.instructions == original.instructions
-    assert updated.metadata.avatar == AgentAvatar(
-        shape="hex", eyes="happy", color="#a855f7"
-    )
+    assert updated.metadata.avatar == AgentAvatar(shape="hex", eyes="pill", color="#a855f7")
     assert registry.list()[0].avatar == updated.metadata.avatar
     assert "avatar:" in updated.path.read_text(encoding="utf-8")
 
@@ -273,3 +271,36 @@ def test_skill_allow_list_is_a_reduction(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="pin list must be a subset"):
         load_agent(path)
+
+
+def test_rename_updates_slug_and_resolves_it_without_changing_identity(
+    hames_paths: HamesPaths,
+) -> None:
+    hames_paths.ensure_foundation()
+    registry = AgentRegistry(hames_paths.agents)
+    original = registry.create("Builder")
+    renamed = registry.update(original.metadata.id, name="Careful Reviewer")
+    assert renamed.metadata.id == original.metadata.id
+    assert renamed.path == original.path
+    assert renamed.metadata.slug == "careful-reviewer"
+    assert registry.load("careful-reviewer").metadata.id == original.metadata.id
+    assert registry.load("builder").metadata.name == "Careful Reviewer"
+    again = registry.update("careful-reviewer", name="Final Reviewer")
+    assert again.metadata.slug == "final-reviewer"
+    assert registry.load("final-reviewer").metadata.id == "builder"
+    assert (
+        next(agent for agent in registry.list() if agent.id == "builder").slug == "final-reviewer"
+    )
+
+
+def test_rename_slugs_do_not_steal_other_agent_ids_or_slugs(hames_paths: HamesPaths) -> None:
+    hames_paths.ensure_foundation()
+    registry = AgentRegistry(hames_paths.agents)
+    a = registry.create("Builder")
+    b = registry.create("Reviewer")
+    first = registry.update(a.metadata.id, name="Reviewer")
+    assert first.metadata.slug == "reviewer-2"
+    second = registry.create("Reviewer 2")
+    assert second.metadata.id != first.metadata.slug
+    assert registry.load("reviewer").metadata.id == b.metadata.id
+    assert registry.load("reviewer-2").metadata.id == a.metadata.id

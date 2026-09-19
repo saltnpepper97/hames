@@ -57,6 +57,10 @@ class SessionTitleChangedPayload(EventPayload):
     title: str = Field(min_length=1, max_length=80)
 
 
+class SessionPinnedChangedPayload(EventPayload):
+    pinned: bool
+
+
 class PasteSpanPayload(EventPayload):
     start_byte: int = Field(ge=0)
     end_byte: int = Field(gt=0)
@@ -72,8 +76,12 @@ class MessagePayload(EventPayload):
     content: str
     remember: bool = False
     purpose: Literal["turn", "plan_note", "plan_execution", "heal"] = "turn"
+    execution_agent: str | None = None
     paste_spans: list[PasteSpanPayload] = Field(default_factory=_empty_paste_spans, max_length=64)
     submission_id: str | None = None
+    attachments: list[dict[str, JsonValue]] = Field(
+        default_factory=lambda: list[dict[str, JsonValue]](), max_length=8
+    )
 
 
 class ModelProviderStatePayload(EventPayload):
@@ -83,7 +91,13 @@ class ModelProviderStatePayload(EventPayload):
 
 class QueuedMessagePayload(MessagePayload):
     queue_id: str
-    position: int = Field(ge=1, le=2)
+    position: int = Field(ge=1, le=3)
+
+
+class QueueUpdatedPayload(EventPayload):
+    queue_id: str
+    content: str
+    paste_spans: list[PasteSpanPayload] = Field(default_factory=_empty_paste_spans)
 
 
 class QueueRemovedPayload(EventPayload):
@@ -385,9 +399,13 @@ class QuestionRequestedPayload(EventPayload):
     question_id: str
     tool_call_id: str
     question: str
+    answer_type: Literal["single_choice", "multiple_choice", "text"] = "single_choice"
     options: list[QuestionOptionPayload] = Field(
-        default_factory=_empty_question_options, max_length=3
+        default_factory=_empty_question_options, max_length=8
     )
+    min_selections: int = Field(default=1, ge=1, le=8)
+    max_selections: int | None = Field(default=None, ge=1, le=8)
+    placeholder: str = Field(default="", max_length=160)
 
     @field_validator("options", mode="before")
     @classmethod
@@ -403,9 +421,12 @@ class QuestionRequestedPayload(EventPayload):
 
 class QuestionAnsweredPayload(EventPayload):
     question_id: str
-    answer: str = Field(min_length=1, max_length=4200)
+    answer: str = Field(min_length=1, max_length=6000)
+    answer_type: Literal["single_choice", "multiple_choice", "text"] = "single_choice"
     selected_option: str | None = Field(default=None, max_length=160)
     selected_description: str = Field(default="", max_length=2000)
+    selected_options: list[str] = Field(default_factory=list, max_length=8)
+    selected_descriptions: list[str] = Field(default_factory=list, max_length=8)
     note: str = Field(default="", max_length=4000)
     custom: bool = False
 
@@ -465,6 +486,9 @@ def _empty_delegation_evidence() -> list[DelegationEvidencePayload]:
 
 
 class DelegationRequestedPayload(EventPayload):
+    provider: str = ""
+    model: str = ""
+    reasoning_effort: str = ""
     tool_call_id: str
     target_agent_id: str
     task: str
@@ -472,7 +496,16 @@ class DelegationRequestedPayload(EventPayload):
     delegation_depth: int
 
 
+class DelegationPlanPayload(EventPayload):
+    plan_id: str
+    session_id: str
+    revision: int
+    markdown: str
+    execution_note: str = ""
+
+
 class DelegationTaskCardPayload(EventPayload):
+    approved_plan: DelegationPlanPayload | None = None
     parent_session_id: str
     parent_run_id: str
     parent_event_id: str
@@ -480,6 +513,12 @@ class DelegationTaskCardPayload(EventPayload):
     task: str
     evidence: list[DelegationEvidencePayload] = Field(default_factory=_empty_delegation_evidence)
     delegation_depth: int
+
+    allowed_tools: list[str] | None = None
+    delegation_targets: list[str] | None = None
+    skill_allowlists: list[list[str]] = Field(default_factory=lambda: list[list[str]]())
+    skill_denied: list[str] = Field(default_factory=list)
+    requested_result_format: str = "summary"
 
 
 class DelegationTerminalPayload(EventPayload):
@@ -834,8 +873,10 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "session.agent.changed": SessionAgentChangedPayload,
     "session.mode.changed": SessionModeChangedPayload,
     "session.title.changed": SessionTitleChangedPayload,
+    "session.pinned.changed": SessionPinnedChangedPayload,
     "user.message": MessagePayload,
     "queue.enqueued": QueuedMessagePayload,
+    "queue.updated": QueueUpdatedPayload,
     "queue.removed": QueueRemovedPayload,
     "queue.promoted": QueueRemovedPayload,
     "queue.prioritized": QueuePrioritizedPayload,
@@ -906,6 +947,7 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "delegation.task_card": DelegationTaskCardPayload,
     "delegation.completed": DelegationTerminalPayload,
     "delegation.failed": DelegationTerminalPayload,
+    "delegation.stopping": DelegationTerminalPayload,
     "memory.proposed": MemoryRecordPayload,
     "memory.accepted": MemoryTransitionPayload,
     "memory.rejected": MemoryTransitionPayload,
@@ -949,6 +991,7 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "skill.control.requested": SkillControlPayload,
     "skill.staled": SkillControlPayload,
     "skill.archived": SkillControlPayload,
+    "skill.deleted": SkillControlPayload,
     "skill.restored": SkillControlPayload,
     "skill.pinned": SkillControlPayload,
     "skill.unpinned": SkillControlPayload,

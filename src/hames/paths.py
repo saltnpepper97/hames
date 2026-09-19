@@ -74,6 +74,10 @@ class HamesPaths:
         return self.root / "plugins"
 
     @property
+    def plugin_uploads(self) -> Path:
+        return self.runtime / "plugin-uploads"
+
+    @property
     def services(self) -> Path:
         return self.root / "services"
 

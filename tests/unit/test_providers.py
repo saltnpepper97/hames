@@ -18,9 +18,11 @@ from hames.providers import (
     ToolDefinition,
 )
 from hames.providers.codex import CodexProvider
+from hames.providers.grok import GrokProvider
 from hames.providers.llama_cpp import LlamaCppProvider
 from hames.providers.ollama import OllamaProvider
 from hames.providers.openai import OpenAIProvider
+from hames.providers.xai import XaiProvider
 from hames.tools import AskUserArguments
 
 
@@ -779,6 +781,101 @@ async def test_openai_responses_stream_preserves_encrypted_reasoning_state() -> 
     assert seen_request["include"] == ["reasoning.encrypted_content"]
     assert events[-1].provider_items[0]["encrypted_content"] == "opaque"
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_xai_lists_grok_chat_models_and_skips_media() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer fixture-key"
+        assert request.url.path == "/v1/models"
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "grok-4.6"},
+                    {"id": "grok-4.20-0309-non-reasoning"},
+                    {"id": "grok-imagine-image-2.0"},
+                    {"id": "grok-imagine-video-1.5"},
+                    {"id": "grok-voice-think-fast-2.0"},
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = XaiProvider(
+        "https://api.x.ai/v1",
+        environ={"XAI_API_KEY": "fixture-key"},
+        supported_reasoning_efforts=["low", "medium", "high", "xhigh"],
+        client=client,
+    )
+    models = await provider.list_models()
+    assert [model.id for model in models] == ["grok-4.20-0309-non-reasoning", "grok-4.6"]
+    by_id = {model.id: model for model in models}
+    assert by_id["grok-4.6"].reasoning_supported is True
+    assert by_id["grok-4.6"].reasoning_efforts == ["low", "medium", "high", "xhigh"]
+    assert by_id["grok-4.6"].input_modalities == ["text", "image"]
+    assert by_id["grok-4.6"].context_length == 500_000
+    assert by_id["grok-4.20-0309-non-reasoning"].reasoning_supported is False
+    assert by_id["grok-4.20-0309-non-reasoning"].reasoning_efforts == []
+    assert by_id["grok-4.20-0309-non-reasoning"].context_length == 2_000_000
+    await client.aclose()
+
+
+def test_grok_context_windows_follow_published_model_families() -> None:
+    from hames.providers.xai import grok_context_length
+
+    assert grok_context_length("grok-4.6") == 500_000
+    assert grok_context_length("grok-4.5") == 500_000
+    assert grok_context_length("grok-4") == 256_000
+    assert grok_context_length("grok-4-fast") == 2_000_000
+    assert grok_context_length("grok-4.20-0309-non-reasoning") == 2_000_000
+    assert grok_context_length("grok-3-mini") == 131_072
+
+
+@pytest.mark.asyncio
+async def test_grok_build_uses_local_login_headers(tmp_path: Path) -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update({key.decode().lower(): value.decode() for key, value in request.headers.raw})
+        return httpx.Response(
+            200,
+            json={"data": [{"id": "grok-4.6"}, {"id": "grok-imagine-image-2.0"}]},
+        )
+
+    home = tmp_path / ".grok"
+    home.mkdir()
+    (home / "auth.json").write_text(
+        json.dumps(
+            {
+                "https://auth.x.ai::fixture": {
+                    "key": "session-token",
+                    "expires_at": "2099-01-01T00:00:00Z",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = GrokProvider(
+        "https://cli-chat-proxy.grok.com/v1",
+        grok_home=home,
+        client_version="1.0.34",
+        client=client,
+    )
+    models = await provider.list_models()
+    assert [model.id for model in models] == ["grok-4.6"]
+    assert seen["authorization"] == "Bearer session-token"
+    assert seen["x-xai-token-auth"] == "xai-grok-cli"
+    assert seen["x-grok-client-version"] == "1.0.34"
+    await client.aclose()
+
+
+def test_grok_build_requires_login(tmp_path: Path) -> None:
+    provider = GrokProvider(grok_home=tmp_path / "missing")
+    with pytest.raises(ProviderError, match="not signed in") as raised:
+        provider._headers()  # pyright: ignore[reportPrivateUsage]
+    assert raised.value.code == "provider_not_configured"
 
 
 def _fake_codex_app_server(tmp_path: Path) -> Path:

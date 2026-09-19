@@ -13,8 +13,8 @@ use anyhow::{Context, Result, bail};
 use app::{
     AgentEditField, AgentEditor, AgentEditorPage, App, ConnectionState, GoalModal, HitAction,
     InlineEditor, InlineEditorKind, MemoryBrowser, MenuAction, MenuOption, Modal,
-    QuestionInputKind, ScarBrowser, ScarEditField, ScarEditor, ScrollDrag, ScrollTarget, Sheet,
-    SheetKind, ThemeKind, UsageModal,
+    QuestionAnswerType, QuestionInputKind, ScarBrowser, ScarEditField, ScarEditor, ScrollDrag,
+    ScrollTarget, Sheet, SheetKind, ThemeKind, UsageModal,
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -450,6 +450,7 @@ async fn load_app(client: &GatewayClient, session: Session) -> Result<App> {
     app.goal = goals.last().cloned();
     app.set_plan(plan);
     app.set_tasks(tasks);
+    app.user_commands = client.user_commands(&app.session.id).await?;
     app.skill_commands = skills
         .into_iter()
         .filter(|skill| matches!(skill.invocation.as_str(), "user" | "both"))
@@ -461,6 +462,7 @@ async fn load_app(client: &GatewayClient, session: Session) -> Result<App> {
 }
 
 async fn refresh_skill_commands(client: &GatewayClient, app: &mut App) -> Result<()> {
+    app.user_commands = client.user_commands(&app.session.id).await?;
     app.skill_commands = client
         .skills(&app.session.id, "")
         .await?
@@ -499,9 +501,11 @@ fn workspace_identity(working_directory: &str) -> (String, Option<String>) {
 #[derive(Debug)]
 enum Effect {
     Quit,
+    ConnectProvider(app::ConnectionKey),
     ResolveApproval(usize),
     ResolveQuestion {
         selected_option: Option<String>,
+        selected_options: Vec<String>,
         note: String,
         custom_answer: String,
     },
@@ -541,7 +545,11 @@ fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
             handle_key(app, key)
         }
         Event::Paste(value) => {
-            if let Some(question) = &mut app.question
+            if let Some(Modal::ConnectionKey(input)) = &mut app.modal {
+                if input.key.len() + value.trim().len() <= 4096 {
+                    input.key.push_str(value.trim());
+                }
+            } else if let Some(question) = &mut app.question
                 && question.input_kind.is_some()
             {
                 question
@@ -871,6 +879,7 @@ fn handle_question_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                         question.options.get(question.selected).map(|option| {
                             Effect::ResolveQuestion {
                                 selected_option: Some(option.label.clone()),
+                                selected_options: Vec::new(),
                                 note: response,
                                 custom_answer: String::new(),
                             }
@@ -878,6 +887,7 @@ fn handle_question_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                     }
                     QuestionInputKind::Custom => Some(Effect::ResolveQuestion {
                         selected_option: None,
+                        selected_options: Vec::new(),
                         note: String::new(),
                         custom_answer: response,
                     }),
@@ -949,16 +959,35 @@ fn handle_question_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
             }
             None
         }
-        KeyCode::Char(value @ '1'..='4') => {
+        KeyCode::Char(value @ '1'..='8') => {
             let index = usize::from(value as u8 - b'1');
             if index < choices {
                 question.selected = index;
             }
             None
         }
+        KeyCode::Char(' ') if question.answer_type == QuestionAnswerType::MultipleChoice => {
+            question.toggle_checked(question.selected);
+            None
+        }
         KeyCode::Enter if question.selected == question.custom_index() => {
             question.start_custom();
             None
+        }
+        KeyCode::Enter if question.answer_type == QuestionAnswerType::MultipleChoice => {
+            let selected_options = question.checked_labels();
+            if selected_options.len() < question.min_selections
+                || selected_options.len() > question.max_selections
+            {
+                app.notice = Some(selection_requirement(question));
+                return None;
+            }
+            Some(Effect::ResolveQuestion {
+                selected_option: None,
+                selected_options,
+                note: String::new(),
+                custom_answer: String::new(),
+            })
         }
         KeyCode::Enter => {
             question
@@ -966,11 +995,23 @@ fn handle_question_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                 .get(question.selected)
                 .map(|option| Effect::ResolveQuestion {
                     selected_option: Some(option.label.clone()),
+                    selected_options: Vec::new(),
                     note: String::new(),
                     custom_answer: String::new(),
                 })
         }
         _ => None,
+    }
+}
+
+fn selection_requirement(question: &app::QuestionTray) -> String {
+    if question.min_selections == question.max_selections {
+        format!("Choose {} option(s)", question.min_selections)
+    } else {
+        format!(
+            "Choose {}-{} options",
+            question.min_selections, question.max_selections
+        )
     }
 }
 
@@ -1417,6 +1458,35 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                 None
             }
         }
+        Modal::ConnectionKey(input) => {
+            match key.code {
+                KeyCode::Esc => {
+                    app.modal = None;
+                }
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.modal = None;
+                }
+                KeyCode::Backspace => {
+                    input.key.pop();
+                }
+                KeyCode::Enter if !input.key.trim().is_empty() => {
+                    let input = input.clone();
+                    app.modal = None;
+                    return Some(Effect::ConnectProvider(input));
+                }
+                KeyCode::Char(c)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        && c.is_ascii_graphic()
+                        && input.key.len() < 4096 =>
+                {
+                    input.key.push(c);
+                }
+                _ => {}
+            }
+            None
+        }
         Modal::PastePreview(_) => match key.code {
             KeyCode::Backspace | KeyCode::Delete => {
                 app.composer.remove_adjacent_paste();
@@ -1576,7 +1646,11 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                 Some(HitAction::Question(index)) => {
                     app.clear_transcript_selection();
                     let question = app.question.as_mut()?;
-                    if index == question.custom_index() {
+                    if question.answer_type == QuestionAnswerType::MultipleChoice {
+                        question.selected = index;
+                        question.toggle_checked(index);
+                        None
+                    } else if index == question.custom_index() {
                         question.start_custom();
                         None
                     } else {
@@ -1585,6 +1659,7 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Option<Effect> {
                             .get(index)
                             .map(|option| Effect::ResolveQuestion {
                                 selected_option: Some(option.label.clone()),
+                                selected_options: Vec::new(),
                                 note: String::new(),
                                 custom_answer: String::new(),
                             })
@@ -1780,6 +1855,16 @@ fn send_or_command(app: &mut App) -> Option<Effect> {
         app.sheet = None;
         return Some(Effect::Menu(action));
     }
+    if let Some((name, note)) = trimmed
+        .strip_prefix('/')
+        .map(|rest| rest.split_once(char::is_whitespace).unwrap_or((rest, "")))
+        && app.user_commands.iter().any(|command| command.name == name)
+    {
+        let action = MenuAction::UserCommand(name.to_owned(), note.trim().to_owned());
+        app.composer.clear();
+        app.sheet = None;
+        return Some(Effect::Menu(action));
+    }
     let user_skill = trimmed
         .split_whitespace()
         .next()
@@ -1804,7 +1889,7 @@ fn send_message(
     pastes: Vec<PasteSpan>,
     force_turn: bool,
 ) -> Option<Effect> {
-    if app.active_run.is_some() && app.queued_messages.len() >= 2 {
+    if app.active_run.is_some() && app.queued_messages.len() >= 3 {
         app.notice = Some("Queue full · edit or remove a queued message first".to_owned());
         return None;
     }
@@ -1859,7 +1944,7 @@ fn send_now(app: &mut App) -> Option<Effect> {
         app.notice = Some("Type a message before using Ctrl+Enter send now".to_owned());
         return None;
     }
-    if app.queued_messages.len() >= 2 {
+    if app.queued_messages.len() >= 3 {
         app.notice = Some("Queue full · edit or remove a queued message first".to_owned());
         return None;
     }
@@ -1910,6 +1995,7 @@ fn parse_command(value: &str) -> Option<MenuAction> {
             Some(_) => None,
             None => Some(MenuAction::OpenPlanReview),
         },
+        "/dream" if value.trim() == "/dream" => Some(MenuAction::Dream),
         "/compact" => Some(MenuAction::Compact),
         "/goal" => {
             let rest = parts.collect::<Vec<_>>();
@@ -1922,6 +2008,7 @@ fn parse_command(value: &str) -> Option<MenuAction> {
             }
         }
         "/fork" => Some(MenuAction::ForkSession),
+        "/connect" => Some(MenuAction::OpenConnections),
         "/model" | "/provider" => Some(MenuAction::OpenModels),
         "/effort" | "/reasoning" => parts
             .next()
@@ -1991,6 +2078,12 @@ async fn apply_effect(
 ) -> Result<Option<Session>> {
     match effect {
         Effect::Quit => app.should_quit = true,
+        Effect::ConnectProvider(input) => {
+            let rows = client
+                .connect_provider(&input.profile_id, input.key.trim())
+                .await?;
+            show_connections(app, rows);
+        }
         Effect::ResolveApproval(selected) => {
             let Some(Modal::Approval(approval)) = app.modal.clone() else {
                 return Ok(None);
@@ -2017,6 +2110,7 @@ async fn apply_effect(
         }
         Effect::ResolveQuestion {
             selected_option,
+            selected_options,
             note,
             custom_answer,
         } => {
@@ -2027,14 +2121,22 @@ async fn apply_effect(
                 .resolve_question(
                     &question.question_id,
                     selected_option.as_deref(),
+                    &selected_options,
                     &note,
                     &custom_answer,
                 )
                 .await?;
             debug_assert_eq!(resolved.question_id, question.question_id);
             debug_assert_eq!(resolved.selected_option, selected_option);
+            debug_assert_eq!(resolved.selected_options, selected_options);
+            debug_assert_eq!(
+                resolved.selected_descriptions.len(),
+                resolved.selected_options.len()
+            );
             debug_assert_eq!(resolved.note, note.trim());
-            app.notice = Some(if resolved.custom {
+            app.notice = Some(if resolved.answer_type == "multiple_choice" {
+                "Choices sent".to_owned()
+            } else if resolved.custom {
                 "Custom answer sent".to_owned()
             } else if !resolved.note.is_empty() {
                 "Answer and note sent".to_owned()
@@ -2351,6 +2453,24 @@ fn copy_to_clipboard(text: &str) -> Result<()> {
     Ok(())
 }
 
+fn show_connections(app: &mut App, rows: Vec<crate::api::ProviderConnection>) {
+    app.notice = None;
+    app.sheet = Some(Sheet {
+        kind: SheetKind::Models,
+        title: "Connections".to_owned(),
+        options: rows
+            .into_iter()
+            .map(|row| MenuOption {
+                label: row.name,
+                detail: row.status.replace('_', " "),
+                action: MenuAction::OpenConnection(row.id),
+            })
+            .collect(),
+        selected: 0,
+        pending_delete: None,
+    });
+}
+
 async fn apply_menu_action(
     client: &GatewayClient,
     paths: &LocalPaths,
@@ -2420,6 +2540,17 @@ async fn apply_menu_action(
             app.sheet = None;
             app.inline_editor = None;
         }
+        MenuAction::UserCommand(name, note) => {
+            let accepted = client
+                .execute_user_command(&app.session.id, &name, &note)
+                .await?;
+            app.session = client.session(&app.session.id).await?;
+            app.set_plan(accepted.plan);
+            app.set_tasks(accepted.tasks);
+            app.begin_foreground_run(Some(accepted.run_id));
+            app.sheet = None;
+            app.inline_editor = None;
+        }
         MenuAction::ExecutePlan(strategy) => {
             let accepted = client
                 .execute_plan(&app.session.id, &strategy, None)
@@ -2430,6 +2561,10 @@ async fn apply_menu_action(
             app.begin_foreground_run(Some(accepted.run_id));
             app.sheet = None;
             app.inline_editor = None;
+        }
+        MenuAction::Dream => {
+            client.dream_session(&app.session.id).await?;
+            app.notice = Some("Dream started".to_owned());
         }
         MenuAction::Compact => {
             let accepted = client.compact_session(&app.session.id).await?;
@@ -2508,6 +2643,90 @@ async fn apply_menu_action(
                 client.fork_session(&app.session.id, None, None).await?,
             ));
         }
+        MenuAction::OpenConnections => {
+            show_connections(app, client.connections().await?);
+        }
+        MenuAction::OpenConnection(id) => {
+            let row = client
+                .connections()
+                .await?
+                .into_iter()
+                .find(|row| row.id == id)
+                .context("connection is no longer available")?;
+            let mut options = Vec::new();
+            if row.can_connect {
+                options.push(MenuOption {
+                    label: if row.can_disconnect {
+                        "Replace key"
+                    } else {
+                        "Connect"
+                    }
+                    .to_owned(),
+                    detail: "Private API key entry".to_owned(),
+                    action: MenuAction::ConnectProvider {
+                        id: id.clone(),
+                        name: row.name.clone(),
+                        key_url: row.key_url,
+                    },
+                });
+            }
+            if row.configured {
+                options.push(MenuOption {
+                    label: "Test connection".to_owned(),
+                    detail: "Check access and discover models".to_owned(),
+                    action: MenuAction::TestConnection(id.clone()),
+                });
+            }
+            if row.can_disconnect {
+                options.push(MenuOption {
+                    label: "Disconnect".to_owned(),
+                    detail: "Remove the saved key".to_owned(),
+                    action: MenuAction::DisconnectProvider(id),
+                });
+            }
+            options.push(MenuOption {
+                label: "Back".to_owned(),
+                detail: "All connections".to_owned(),
+                action: MenuAction::OpenConnections,
+            });
+            app.sheet = Some(Sheet {
+                kind: SheetKind::Models,
+                title: row.name,
+                options,
+                selected: 0,
+                pending_delete: None,
+            });
+        }
+        MenuAction::ConnectProvider { id, name, key_url } => {
+            app.sheet = None;
+            app.modal = Some(Modal::ConnectionKey(app::ConnectionKey {
+                profile_id: id,
+                name,
+                key_url,
+                key: String::new(),
+            }));
+        }
+        MenuAction::TestConnection(id) => {
+            let rows = client.test_connection(&id).await?;
+            let row = rows
+                .iter()
+                .find(|row| row.id == id)
+                .context("unknown connection")?;
+            app.modal = Some(Modal::Info {
+                title: row.name.clone(),
+                lines: std::iter::once(format!(
+                    "{} · {} models",
+                    row.status.replace('_', " "),
+                    row.model_source
+                ))
+                .chain(row.models.iter().cloned())
+                .collect(),
+            });
+            app.sheet = None;
+        }
+        MenuAction::DisconnectProvider(id) => {
+            show_connections(app, client.disconnect_provider(&id).await?);
+        }
         MenuAction::OpenModels => {
             app.notice = Some("Loading provider models…".to_owned());
             let profiles = client.providers().await?;
@@ -2533,6 +2752,11 @@ async fn apply_menu_action(
                     Ok(_) | Err(_) => {}
                 }
             }
+            options.push(MenuOption {
+                label: "Connect provider".to_owned(),
+                detail: "Manage connections".to_owned(),
+                action: MenuAction::OpenConnections,
+            });
             if options.is_empty() {
                 app.notice = Some("No reachable configured models".to_owned());
                 app.sheet = None;
@@ -2771,21 +2995,66 @@ async fn apply_menu_action(
                 .context("this session has no compiled context yet")?;
             let context = client.inspect_context(&event.id).await?;
             let manifest = context.manifest;
-            app.modal = Some(info(
-                "Latest context",
-                vec![
-                    format!("Model       {} / {}", manifest.provider, manifest.model),
-                    format!("Effort      {}", effort_label(&manifest.reasoning_effort)),
+            let mut lines = vec![
+                format!("Model       {} / {}", manifest.provider, manifest.model),
+                format!("Effort      {}", effort_label(&manifest.reasoning_effort)),
+                format!(
+                    "Window      {} ({})",
+                    manifest.context_window_tokens, manifest.context_window_source
+                ),
+                format!("Input       {} estimated", manifest.estimated_input_tokens),
+                format!("Selected    {} sources", manifest.selected_sources.len()),
+                format!("Omitted     {} sources", manifest.omitted_sources.len()),
+                format!("Request     {}", manifest.request_hash),
+                String::new(),
+                "Injected sources".to_owned(),
+            ];
+            lines.extend(manifest.selected_sources.iter().map(|source| {
+                let label = if !source.skill_slug.is_empty() {
+                    &source.skill_slug
+                } else if !source.memory_id.is_empty() {
+                    &source.memory_id
+                } else if !source.source_path.is_empty() {
+                    &source.source_path
+                } else {
+                    &source.source_id
+                };
+                format!(
+                    "+ {:>6} tokens  {:<14} {}",
+                    source.selected_tokens, source.source_type, label
+                )
+            }));
+            if !manifest.omitted_sources.is_empty() {
+                lines.extend([String::new(), "Omitted sources".to_owned()]);
+                lines.extend(manifest.omitted_sources.iter().map(|source| {
                     format!(
-                        "Window      {} ({})",
-                        manifest.context_window_tokens, manifest.context_window_source
-                    ),
-                    format!("Input       {} estimated", manifest.estimated_input_tokens),
-                    format!("Selected    {} sources", manifest.selected_sources.len()),
-                    format!("Omitted     {} sources", manifest.omitted_sources.len()),
-                    format!("Request     {}", manifest.request_hash),
-                ],
-            ));
+                        "- {:>6} tokens  {:<14} {} · {}",
+                        source.estimated_tokens,
+                        source.source_type,
+                        source.source_id,
+                        source.reason
+                    )
+                }));
+            }
+            if let Some(system) = context
+                .request_snapshot
+                .get("system")
+                .and_then(serde_json::Value::as_str)
+            {
+                lines.extend([String::new(), "Model-facing system prompt".to_owned()]);
+                lines.extend(
+                    system
+                        .chars()
+                        .take(20_000)
+                        .collect::<String>()
+                        .lines()
+                        .map(str::to_owned),
+                );
+                if system.chars().count() > 20_000 {
+                    lines.push("… prompt truncated after 20,000 characters".to_owned());
+                }
+            }
+            app.modal = Some(info("Latest context", lines));
         }
         MenuAction::Details => {
             app.diff_details = !app.diff_details;
@@ -3496,7 +3765,9 @@ fn model_efforts(model: &ProviderModel) -> Vec<String> {
     }
     let mut efforts = model.reasoning_efforts.clone();
     efforts.retain(|effort| effort != "default");
-    if !efforts.iter().any(|effort| effort == "off") {
+    if !model.id.to_lowercase().starts_with("glm-5.3")
+        && !efforts.iter().any(|effort| effort == "off")
+    {
         efforts.push("off".to_owned());
     }
     efforts
@@ -3513,6 +3784,11 @@ fn provider_menu_label(profile: &crate::api::ProviderProfile) -> String {
         "llama_cpp" => "llama.cpp".to_owned(),
         "ollama" => "Ollama".to_owned(),
         "openai" => "OpenAI API".to_owned(),
+        "xai" => "Grok API".to_owned(),
+        "deepseek" => "DeepSeek API".to_owned(),
+        "zai" => "Z.ai API".to_owned(),
+        "zai_coding" => "Z.ai Coding Plan".to_owned(),
+        "grok" => "Grok Build".to_owned(),
         "codex" => "Codex / ChatGPT".to_owned(),
         _ => profile.id.clone(),
     }
@@ -3553,8 +3829,9 @@ mod tests {
     use crate::tui::app::{
         AgentEditor, App, ComposerCell, ComposerRowMap, ComposerViewport, HitAction, HitRegion,
         InlineEditor, InlineEditorKind, MemoryBrowser, MenuAction, MenuOption, Modal,
-        QuestionInputKind, QuestionOption, QuestionTray, ScarBrowser, ScarEditField, ScrollDrag,
-        ScrollTarget, Sheet, SheetKind, ThemeKind, TranscriptItem, TranscriptViewport,
+        QuestionAnswerType, QuestionInputKind, QuestionOption, QuestionTray, ScarBrowser,
+        ScarEditField, ScrollDrag, ScrollTarget, Sheet, SheetKind, ThemeKind, TranscriptItem,
+        TranscriptViewport,
     };
 
     #[test]
@@ -3670,6 +3947,9 @@ mod tests {
             parse_command("/queue clear"),
             Some(MenuAction::ClearQueue)
         ));
+        assert!(parse_command("/build-review").is_none());
+        assert!(matches!(parse_command("/dream"), Some(MenuAction::Dream)));
+        assert!(parse_command("/dream extra").is_none());
         assert!(matches!(
             parse_command("/compact"),
             Some(MenuAction::Compact)
@@ -4016,10 +4296,14 @@ mod tests {
     fn full_queue_preserves_the_unsent_composer_and_history_follows_the_queue() {
         let mut app = App::new(session(), Vec::new(), true);
         app.active_run = Some("run-active".to_owned());
-        app.queued_messages = vec![queued("queue-1", "first"), queued("queue-2", "second")];
-        app.composer.insert_text("third");
+        app.queued_messages = vec![
+            queued("queue-1", "first"),
+            queued("queue-2", "second"),
+            queued("queue-3", "third"),
+        ];
+        app.composer.insert_text("fourth");
         assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).is_none());
-        assert_eq!(app.composer.text(), "third");
+        assert_eq!(app.composer.text(), "fourth");
         assert!(app.notice.as_deref().unwrap().contains("Queue full"));
 
         app.queued_messages.clear();
@@ -4058,6 +4342,7 @@ mod tests {
             question_id: "question-1".to_owned(),
             run_id: "run-question".to_owned(),
             question: "Which direction?".to_owned(),
+            answer_type: QuestionAnswerType::SingleChoice,
             options: vec![
                 QuestionOption {
                     label: "Subdued".to_owned(),
@@ -4068,7 +4353,11 @@ mod tests {
                     description: String::new(),
                 },
             ],
+            min_selections: 1,
+            max_selections: 1,
+            placeholder: String::new(),
             selected: 0,
+            checked: vec![false; 2],
             input_kind: None,
             response_input: Default::default(),
         });
@@ -4110,8 +4399,15 @@ mod tests {
         }
         assert!(matches!(
             handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            Some(Effect::ResolveQuestion { selected_option: Some(option), note, custom_answer })
-                if option == "Subdued" && note == "Keep it calm" && custom_answer.is_empty()
+            Some(Effect::ResolveQuestion {
+                selected_option: Some(option),
+                selected_options,
+                note,
+                custom_answer,
+            }) if option == "Subdued"
+                && selected_options.is_empty()
+                && note == "Keep it calm"
+                && custom_answer.is_empty()
         ));
 
         let question = app.question.as_mut().unwrap();
@@ -4135,6 +4431,96 @@ mod tests {
             app.question.as_ref().unwrap().input_kind,
             Some(QuestionInputKind::Custom)
         );
+    }
+
+    #[test]
+    fn multiple_choice_question_checks_and_submits_a_valid_set() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-question".to_owned());
+        app.question = Some(QuestionTray {
+            question_id: "question-many".to_owned(),
+            run_id: "run-question".to_owned(),
+            question: "Which checks should run?".to_owned(),
+            answer_type: QuestionAnswerType::MultipleChoice,
+            options: ["Unit", "Integration", "Browser"]
+                .into_iter()
+                .map(|label| QuestionOption {
+                    label: label.to_owned(),
+                    description: String::new(),
+                })
+                .collect(),
+            min_selections: 2,
+            max_selections: 2,
+            placeholder: String::new(),
+            selected: 0,
+            checked: vec![false; 3],
+            input_kind: None,
+            response_input: Default::default(),
+        });
+
+        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).is_none());
+        assert_eq!(app.notice.as_deref(), Some("Choose 2 option(s)"));
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        assert_eq!(app.question.as_ref().unwrap().checked, [true, true, false]);
+        assert!(matches!(
+            handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Effect::ResolveQuestion {
+                selected_option: None,
+                selected_options,
+                note,
+                custom_answer,
+            }) if selected_options == ["Unit", "Integration"]
+                && note.is_empty()
+                && custom_answer.is_empty()
+        ));
+    }
+
+    #[test]
+    fn text_question_submits_the_typed_answer() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.active_run = Some("run-question".to_owned());
+        app.question = Some(QuestionTray {
+            question_id: "question-text".to_owned(),
+            run_id: "run-question".to_owned(),
+            question: "What should the release be called?".to_owned(),
+            answer_type: QuestionAnswerType::Text,
+            options: Vec::new(),
+            min_selections: 1,
+            max_selections: 1,
+            placeholder: "Release name".to_owned(),
+            selected: 0,
+            checked: Vec::new(),
+            input_kind: Some(QuestionInputKind::Custom),
+            response_input: Default::default(),
+        });
+        for value in "Moonrise".chars() {
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(value), KeyModifiers::NONE),
+            );
+        }
+        assert!(matches!(
+            handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Effect::ResolveQuestion {
+                selected_option: None,
+                selected_options,
+                note,
+                custom_answer,
+            }) if selected_options.is_empty() && note.is_empty() && custom_answer == "Moonrise"
+        ));
     }
 
     #[test]
@@ -5065,5 +5451,29 @@ mod tests {
             created_at: "2026-08-24T00:00:00Z".to_owned(),
             updated_at: "2026-08-24T00:00:00Z".to_owned(),
         }
+    }
+    #[test]
+    fn provider_keys_never_enter_composer_or_debug_output() {
+        let mut app = App::new(session(), Vec::new(), true);
+        app.modal = Some(Modal::ConnectionKey(crate::tui::app::ConnectionKey {
+            profile_id: "deepseek".to_owned(),
+            name: "DeepSeek".to_owned(),
+            key_url: String::new(),
+            key: String::new(),
+        }));
+        handle_terminal_event(&mut app, Event::Paste("private-test-key".to_owned()));
+        assert!(app.composer.message().0.is_empty());
+        assert!(!format!("{:?}", app.modal).contains("private-test-key"));
+        let effect = handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+        assert!(matches!(effect, Some(Effect::ConnectProvider(_))));
+        assert!(!format!("{effect:?}").contains("private-test-key"));
+        assert!(app.modal.is_none());
+        assert!(matches!(
+            parse_command("/connect"),
+            Some(MenuAction::OpenConnections)
+        ));
     }
 }

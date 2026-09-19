@@ -1,6 +1,7 @@
 mod activity;
 mod api;
 mod local;
+mod prompt_context;
 mod repl;
 mod style;
 mod trust;
@@ -105,9 +106,15 @@ enum GatewayAction {
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum SetupProvider {
+    Deepseek,
+    Zai,
+    ZaiCoding,
     LlamaCpp,
     Ollama,
     Openai,
+    Xai,
+    #[value(alias = "grok", alias = "grok-build")]
+    Grok,
     Codex,
 }
 
@@ -417,6 +424,11 @@ async fn main() -> Result<()> {
                     SetupProvider::LlamaCpp => local::ProviderBackend::LlamaCpp,
                     SetupProvider::Ollama => local::ProviderBackend::Ollama,
                     SetupProvider::Openai => local::ProviderBackend::OpenAi,
+                    SetupProvider::Deepseek => local::ProviderBackend::DeepSeek,
+                    SetupProvider::Zai => local::ProviderBackend::Zai,
+                    SetupProvider::ZaiCoding => local::ProviderBackend::ZaiCoding,
+                    SetupProvider::Xai => local::ProviderBackend::Xai,
+                    SetupProvider::Grok => local::ProviderBackend::Grok,
                     SetupProvider::Codex => local::ProviderBackend::Codex,
                 }),
                 fresh,

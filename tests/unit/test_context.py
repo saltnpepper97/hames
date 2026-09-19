@@ -18,7 +18,7 @@ from hames.context import (
     split_think_document,
 )
 from hames.environment import HostEnvironment, RuntimeEnvironmentSnapshot, WorkspaceEnvironment
-from hames.ledger import Ledger, Session
+from hames.ledger import Event, Ledger, Session
 from hames.memory import MemoryCandidate, MemoryStore, canonical_memory_context
 from hames.paths import HamesPaths
 from hames.providers import ToolDefinition
@@ -160,6 +160,23 @@ def test_context_is_deterministic_and_omits_completed_reasoning(
     omitted = {source.source_id: source for source in first_compile.manifest.omitted_sources}
     assert omitted[f"reasoning.{reasoning.id}"].visibility == "audit"
     assert omitted[f"reasoning.{reasoning.id}"].reason == "completed-run-reasoning"
+
+    preserved = compile_context(
+        session,
+        ledger.replay(session.id),
+        capsule,
+        _tools(),
+        "safe reads",
+        ContextConfig(),
+        run_id="new-run",
+        preserve_reasoning=True,
+    )
+    assistant = next(message for message in preserved.messages if message.role == "assistant")
+    assert assistant.reasoning_content == "private old thought"
+    assert not any(
+        source.source_id == f"reasoning.{reasoning.id}"
+        for source in preserved.manifest.omitted_sources
+    )
 
 
 def test_think_tags_are_split_from_visible_assistant_text() -> None:
@@ -666,3 +683,105 @@ def test_plugin_context_is_attributed_and_hashed(hames_paths: HamesPaths, tmp_pa
     assert source.content_hash == hashlib.sha256(text.encode()).hexdigest()
     assert "Plugin project-stats (files)" in compiled.system
     assert "file count 3" in compiled.system
+
+
+def test_active_checkpoints_preserve_request_and_pending_tool_batch(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger, session, capsule = _fixture(hames_paths, tmp_path)
+    anchor = ledger.append(
+        session_id=session.id, event_type="user.message", payload={"content": "Finish my task"}
+    )
+    completed: list[Event] = []
+    for index in range(3):
+        request = f"request-{index}"
+        ledger.append(
+            session_id=session.id,
+            event_type="assistant.message",
+            payload={"content": f"progress-{index}", "status": "interrupted"},
+            causation_id=request,
+        )
+        for suffix in ("a", "b"):
+            ledger.append(
+                session_id=session.id,
+                event_type="model.tool_call",
+                payload={
+                    "index": 0,
+                    "provider_call_id": None,
+                    "tool_call_id": f"{index}-{suffix}",
+                    "name": "read_file",
+                    "arguments": {"path": "README.md"},
+                    "status": "requested",
+                },
+                causation_id=request,
+            )
+        ledger.append(
+            session_id=session.id,
+            event_type="model.response.completed",
+            payload={"finish_reason": "tool_calls"},
+            causation_id=request,
+        )
+        for suffix in ("a", "b") if index < 2 else ("a",):
+            completed.append(
+                ledger.append(
+                    session_id=session.id,
+                    event_type="tool.completed",
+                    payload={
+                        "tool_call_id": f"{index}-{suffix}",
+                        "name": "read_file",
+                        "status": "completed",
+                        "summary": "read",
+                        "content": "data",
+                    },
+                    causation_id=request,
+                )
+            )
+    history = ledger.replay(session.id)
+    _, candidates = conversation_compaction_candidates(
+        history,
+        preserve_recent_turns=4,
+        include_active=True,
+    )
+    assert len(candidates) == 1
+    assert candidates[0].cutoff_sequence == completed[1].sequence
+    checkpoint = ledger.append(
+        session_id=session.id,
+        event_type="context.compaction.completed",
+        payload={
+            "compaction_id": "checkpoint",
+            "trigger": "automatic",
+            "summary": "First files inspected; finish my task.",
+            "cutoff_event_id": candidates[0].cutoff_event_id,
+            "cutoff_sequence": candidates[0].cutoff_sequence,
+            "source_event_ids": candidates[0].event_ids,
+            "provider": "fake",
+            "model": "fixture",
+            "reasoning_effort": "",
+            "turns_compacted": 1,
+            "before_tokens": 100,
+            "after_tokens": 10,
+            "passes": 1,
+            "partial": False,
+        },
+    )
+    compiled = compile_context(
+        session,
+        ledger.replay(session.id),
+        capsule,
+        _tools(),
+        "safe reads",
+        ContextConfig(),
+        run_id="active",
+    )
+    assert compiled.messages[0].content == "Finish my task"
+    assert not any(message.content == "progress-0" for message in compiled.messages)
+    calls = [call.id for message in compiled.messages for call in message.tool_calls]
+    assert calls == ["1-a", "1-b", "2-a", "2-b"]
+    assert anchor in ledger.replay(session.id)
+    _, next_candidates = conversation_compaction_candidates(
+        ledger.replay(session.id),
+        preserve_recent_turns=4,
+        include_active=True,
+    )
+    assert next_candidates == []
+    assert checkpoint.payload["cutoff_sequence"] < completed[-1].sequence

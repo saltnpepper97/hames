@@ -16,6 +16,7 @@ from hames.providers.base import (
 
 MAINTENANCE_PURPOSES = {
     "memory_extraction",
+    "memory_reconciliation",
     "skill_authoring",
     "skill_evaluation",
     "evolution_review",
@@ -35,6 +36,14 @@ class ScheduledProvider:
         self._preempted_tasks: set[asyncio.Task[object]] = set()
         self._foreground_waiters = 0
         self._foreground_grace_seconds = foreground_grace_seconds
+
+    @property
+    def busy(self) -> bool:
+        return bool(
+            self._active_foreground_tasks
+            or self._active_maintenance_task
+            or self._foreground_waiters
+        )
 
     async def list_models(self) -> list[ProviderModel]:
         # Model discovery uses a separate control request/connection for every

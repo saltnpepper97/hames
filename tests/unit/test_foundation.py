@@ -145,6 +145,50 @@ base_url = "app-server://codex"
         )
 
 
+def test_xai_provider_defaults_the_api_key_environment(
+    hames_paths: HamesPaths,
+) -> None:
+    hames_paths.ensure_foundation()
+    hames_paths.config_file.write_text(
+        """\
+[providers.xai]
+adapter = "xai"
+base_url = "https://api.x.ai/v1"
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(hames_paths, environ={})
+
+    assert config.providers["xai"].api_key_env == "XAI_API_KEY"
+
+
+def test_grok_subscription_profile_rejects_api_key_env(
+    hames_paths: HamesPaths,
+) -> None:
+    hames_paths.ensure_foundation()
+    hames_paths.config_file.write_text(
+        """\
+[providers.grok]
+adapter = "grok"
+base_url = "https://cli-chat-proxy.grok.com/v1"
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(hames_paths, environ={})
+
+    assert config.providers["grok"].api_key_env == ""
+    with pytest.raises(ValidationError, match="subscription auth does not use api_key_env"):
+        config.providers["grok"].model_validate(
+            {
+                "adapter": "grok",
+                "base_url": "https://cli-chat-proxy.grok.com/v1",
+                "api_key_env": "XAI_API_KEY",
+            }
+        )
+
+
 def test_blob_threshold_environment_override(hames_paths: HamesPaths) -> None:
     config = load_config(
         hames_paths,
@@ -179,6 +223,8 @@ def test_agent_runtime_defaults_allow_ninety_nine_sequential_tools() -> None:
     assert config.default_interaction_mode == "auto"
     assert config.max_tool_calls_per_run == 99
     assert config.max_model_turns_per_user_message == 100
+    assert config.max_concurrent_child_runs == 4
+    assert config.max_child_runs_per_parent_run == 4
 
 
 def test_context_capacity_is_strict_and_configurable(hames_paths: HamesPaths) -> None:

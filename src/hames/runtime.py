@@ -1,4 +1,4 @@
-"""Bounded single-agent runtime and durable tool loop."""
+"""Bounded agent runtime, delegation, and durable tool loop."""
 
 from __future__ import annotations
 
@@ -9,10 +9,12 @@ import re
 import shutil
 import signal
 import time
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from hames.agent import (
     AgentCapsule,
@@ -22,10 +24,15 @@ from hames.agent import (
     permitted_tools,
     skill_permitted,
 )
+from hames.agent_execution import resolve_agent_execution
+from hames.attachments import AttachmentReference, AttachmentUpload
+from hames.attachments import admit_attachments as admit_uploads
+from hames.automations import AutomationDefinition, AutomationStore
 from hames.broker import EventBroker
 from hames.config import HamesConfig
 from hames.context import (
     CompactionTurn,
+    CompiledContext,
     ContextBudgetError,
     ContextRuleViolation,
     PluginContextItem,
@@ -70,12 +77,14 @@ from hames.providers import (
 )
 from hames.providers.base import JSON_OBJECT, JsonValue
 from hames.providers.codex import CODEX_DEFAULT_CONTEXT_TOKENS
+from hames.providers.xai import grok_context_length
 from hames.rules import ContextRuleStore, PolicyRuleStore
 from hames.search_runtime import SearchMcpManager
 from hames.skills import SkillRegistry, SkillSummary, SkillVersion, render_skill_invocation
 from hames.tasks import SessionTaskList, TaskStore
 from hames.tools import (
     AskUserArguments,
+    AutomationCreateArguments,
     GoalReportArguments,
     McpToolArguments,
     MemoryAddArguments,
@@ -120,6 +129,7 @@ SELF_MANAGEMENT_TOOLS = frozenset(
         "terminal_stop",
         "goal_report",
         "task_list",
+        "automation_create",
         "task_update",
     }
 )
@@ -180,7 +190,7 @@ MODE_POLICY_SUMMARIES = {
         "runtime availability; initialize libraries with non-persistent or headless settings; and "
         "run non-mutating tests, checks, and linters. Safe command chaining, environment-variable "
         "prefixes, and Python inspection probes are supported. Do not write, edit, delete, "
-        "install, change packages, control processes or services, access the network, delegate, or "
+        "install, change packages, control processes or services, access the network, or "
         "mutate durable agent state. If a command is rejected, do not retry equivalent spellings "
         "of it; continue with available evidence. Do not create a session task checklist, a "
         "'## Tasks' section, or Markdown '- [ ]' checkboxes while planning; those belong to "
@@ -215,22 +225,67 @@ class RunFailure(RuntimeError):
 class ActiveClock:
     limit: float
     elapsed: float = 0.0
+    _depth: int = 0
+    _pauses: int = 0
+    _paused_at: float = 0.0
+    _paused_total: float = 0.0
+    _started: float = 0.0
+    _pause_baseline: float = 0.0
+    _timeout: asyncio.Timeout | None = None
 
     @property
     def remaining(self) -> float:
         return max(0.0, self.limit - self.elapsed)
 
-    async def measure(self, awaitable: Any) -> Any:
-        if self.remaining <= 0:
-            raise RunFailure("active_time_limit", "run active-time limit was exhausted")
-        started = time.monotonic()
+    @contextmanager
+    def pause(self) -> Generator[None]:
+        """Delegated waiting is charged to the worker, not its coordinator."""
+        if self._pauses == 0:
+            self._paused_at = time.monotonic()
+            if self._timeout is not None:
+                self._timeout.reschedule(None)
+        self._pauses += 1
         try:
-            async with asyncio.timeout(self.remaining):
+            yield
+        finally:
+            self._pauses -= 1
+            if self._pauses == 0:
+                self._paused_total += time.monotonic() - self._paused_at
+                if self._timeout is not None and not self._timeout.expired():
+                    active = (
+                        time.monotonic()
+                        - self._started
+                        - (self._paused_total - self._pause_baseline)
+                    )
+                    self._timeout.reschedule(
+                        asyncio.get_running_loop().time() + max(0, self.remaining - active)
+                    )
+
+    async def measure(self, awaitable: Any) -> Any:
+        # Inline tools share the outer model-turn clock; do not count them twice.
+        if self._depth:
+            return await awaitable
+        if self.remaining <= 0:
+            if hasattr(awaitable, "close"):
+                awaitable.close()
+            raise RunFailure("active_time_limit", "run active-time limit was exhausted")
+        self._depth += 1
+        self._started = time.monotonic()
+        self._pause_baseline = self._paused_total
+        try:
+            async with asyncio.timeout(None if self._pauses else self.remaining) as timeout:
+                self._timeout = timeout
                 return await awaitable
         except TimeoutError:
+            if self._timeout is None or not self._timeout.expired():
+                raise
             raise RunFailure("active_time_limit", "run active-time limit was exhausted") from None
         finally:
-            self.elapsed += time.monotonic() - started
+            self.elapsed += max(
+                0, time.monotonic() - self._started - (self._paused_total - self._pause_baseline)
+            )
+            self._timeout = None
+            self._depth -= 1
 
 
 @dataclass(slots=True)
@@ -312,6 +367,7 @@ def _submission_request_hash(
     paste_spans: list[dict[str, int]],
     send_now: bool,
     purpose: str,
+    attachments: list[dict[str, object]],
 ) -> str:
     encoded = json.dumps(
         {
@@ -320,6 +376,7 @@ def _submission_request_hash(
             "purpose": purpose,
             "remember": remember,
             "send_now": send_now,
+            "attachments": attachments,
         },
         separators=(",", ":"),
         sort_keys=True,
@@ -351,10 +408,24 @@ def _submission_result(
 @dataclass(frozen=True, slots=True)
 class QuestionAnswer:
     answer: str
+    answer_type: Literal["single_choice", "multiple_choice", "text"]
     selected_option: str | None
     selected_description: str
+    selected_options: tuple[str, ...]
+    selected_descriptions: tuple[str, ...]
     note: str
     custom: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingQuestion:
+    session_id: str
+    run_id: str
+    agent_id: str
+    answer_type: Literal["single_choice", "multiple_choice", "text"]
+    options: tuple[tuple[str, str], ...]
+    min_selections: int
+    max_selections: int
 
 
 @dataclass(slots=True)
@@ -414,6 +485,7 @@ class RunManager:
         self.submissions = SubmissionReceiptStore(ledger)
         self.goals = GoalStore(ledger)
         self.plans = PlanStore(ledger)
+        self.automations = AutomationStore(ledger.database)
         self.session_tasks = TaskStore(ledger)
         self.policy = PolicyGate(paths.root)
         self.context_rules = ContextRuleStore(ledger)
@@ -424,9 +496,10 @@ class RunManager:
         self._post_terminal_runs: dict[str, set[str]] = {}
         self._approval_waiters: dict[str, asyncio.Future[str]] = {}
         self._question_waiters: dict[str, asyncio.Future[QuestionAnswer]] = {}
-        self._question_runs: dict[str, tuple[str, str, str, tuple[tuple[str, str], ...]]] = {}
+        self._question_runs: dict[str, _PendingQuestion] = {}
         self._question_answering: set[str] = set()
         self._children_by_parent: dict[str, set[str]] = {}
+        self._active_child_count = 0
         self._child_count_by_parent: dict[str, int] = {}
         self._scratch_base = Path("/tmp/hames/runs")
         self.memory_manager: MemoryManager | None = None
@@ -436,7 +509,6 @@ class RunManager:
         self._skill_catalogs: dict[str, list[SkillSummary]] = {}
         self._loaded_skills: dict[str, dict[str, SkillVersion]] = {}
         self._submission_locks: dict[str, asyncio.Lock] = {}
-        self._auto_compacted_runs: set[str] = set()
         self._dream_tasks: dict[str, asyncio.Task[None]] = {}
         self._background_terminals: dict[str, _BackgroundTerminal] = {}
         self._background_terminal_lock = asyncio.Lock()
@@ -480,6 +552,32 @@ class RunManager:
                 break
         return selected
 
+    async def admit_attachments(
+        self, session_id: str, uploads: list[AttachmentUpload]
+    ) -> list[AttachmentReference]:
+        session = await asyncio.to_thread(self.ledger.get_session, session_id)
+        provider = self.providers.get(session.provider)
+        if provider is None:
+            raise KeyError(f"unknown provider: {session.provider}")
+        image_support = False
+        if any(
+            upload.media_type.lower().split(";", 1)[0]
+            in {"image/png", "image/jpeg", "image/webp", "image/gif"}
+            for upload in uploads
+        ):
+            try:
+                models = await provider.list_models()
+            except ProviderError as exc:
+                raise ValueError(f"could not verify image support: {exc}") from exc
+            selected = next((model for model in models if model.id == session.model), None)
+            image_support = selected is not None and "image" in selected.input_modalities
+        return await asyncio.to_thread(
+            admit_uploads,
+            self.ledger.blob_store,
+            uploads,
+            image_input_supported=image_support,
+        )
+
     async def start(
         self,
         session_id: str,
@@ -490,6 +588,7 @@ class RunManager:
         purpose: str = "turn",
         submission_id: str | None = None,
         run_id: str | None = None,
+        attachments: list[dict[str, object]] | None = None,
     ) -> str:
         session = await asyncio.to_thread(self.ledger.get_session, session_id)
         if session.status != "open":
@@ -515,7 +614,7 @@ class RunManager:
             capsule = await asyncio.to_thread(
                 load_agent, self.paths.agents / session.agent_id / "AGENT.md"
             )
-            if not skill_permitted(capsule, user_skill[0].slug):
+            if not self._skill_permitted(session, capsule, user_skill[0].slug):
                 raise ValueError(f"Skill is unavailable to agent {session.agent_id}")
         await self._yield_dream(session_id)
         user_event = await self._append(
@@ -527,6 +626,7 @@ class RunManager:
                 "paste_spans": paste_spans or [],
                 "purpose": purpose,
                 "submission_id": submission_id,
+                "attachments": attachments or [],
             },
             agent_id=session.agent_id,
         )
@@ -556,10 +656,11 @@ class RunManager:
         send_now: bool = False,
         purpose: str = "turn",
         submission_id: str | None = None,
+        attachments: list[dict[str, object]] | None = None,
     ) -> SubmissionResult:
         async with self._submission_lock(session_id):
             request_hash = _submission_request_hash(
-                content, remember, paste_spans or [], send_now, purpose
+                content, remember, paste_spans or [], send_now, purpose, attachments or []
             )
             if submission_id is not None:
                 reservation = await asyncio.to_thread(
@@ -595,6 +696,7 @@ class RunManager:
                     send_now=send_now,
                     purpose=purpose,
                     submission_id=submission_id,
+                    attachments=attachments,
                 )
             except Exception:
                 if submission_id is not None:
@@ -623,6 +725,13 @@ class RunManager:
                     request_hash,
                     _submission_result_json(result),
                 )
+            if purpose in {"turn", "heal", "plan_note"}:
+                await self.ensure_work_title(
+                    session_id,
+                    "Heal scars"
+                    if purpose == "heal"
+                    else content or str((attachments or [{}])[0].get("name", "New conversation")),
+                )
             return SubmissionResult(
                 disposition=result.disposition,
                 run_id=result.run_id,
@@ -640,10 +749,13 @@ class RunManager:
         send_now: bool,
         purpose: str,
         submission_id: str | None,
+        attachments: list[dict[str, object]] | None,
     ) -> SubmissionResult:
         session = await asyncio.to_thread(self.ledger.get_session, session_id)
         if purpose not in {"turn", "plan_note", "heal"}:
             raise ValueError("message purpose must be turn, plan_note, or heal")
+        if attachments and purpose != "turn":
+            raise ValueError("attachments are only supported on conversation turns")
         if purpose == "plan_note":
             if session.interaction_mode != "plan":
                 raise ValueError("plan notes require plan mode")
@@ -661,6 +773,7 @@ class RunManager:
                 content,
                 remember=remember,
                 paste_spans=paste_spans or [],
+                attachments=attachments,
                 priority=True
                 if goal is not None and goal.current_run_id == active_run
                 else send_now,
@@ -694,6 +807,7 @@ class RunManager:
                     content,
                     remember=remember,
                     paste_spans=paste_spans or [],
+                    attachments=attachments,
                     priority=True,
                     purpose=purpose,
                     queue_id=submission_id,
@@ -711,6 +825,7 @@ class RunManager:
                 content,
                 remember=remember,
                 paste_spans=paste_spans or [],
+                attachments=attachments,
                 purpose=purpose,
                 queue_id=submission_id,
                 submission_id=submission_id,
@@ -726,6 +841,7 @@ class RunManager:
             purpose=purpose,
             submission_id=submission_id,
             run_id=submission_id,
+            attachments=attachments,
         )
         return SubmissionResult(disposition="started", run_id=run_id)
 
@@ -760,6 +876,12 @@ class RunManager:
             correlation_id=state.current.id if state.current else session.id,
         )
 
+    async def ensure_work_title(self, session_id: str, title: str) -> None:
+        """Accepted work consumes an untitled session across all clients."""
+        event = await asyncio.to_thread(self.ledger.ensure_session_title, session_id, title)
+        if event is not None:
+            await self._publish_durable(event)
+
     def _submission_lock(self, session_id: str) -> asyncio.Lock:
         return self._submission_locks.setdefault(session_id, asyncio.Lock())
 
@@ -791,6 +913,7 @@ class RunManager:
     async def add_task(self, session_id: str, text: str) -> SessionTaskList:
         session = await asyncio.to_thread(self.ledger.get_session, session_id)
         tasks, event = await asyncio.to_thread(self.session_tasks.add, session, text=text)
+        await self.ensure_work_title(session_id, text)
         await self._publish_store_events((event,))
         return tasks
 
@@ -827,6 +950,7 @@ class RunManager:
         *,
         strategy: Literal["keep", "compact"],
         note: str = "",
+        agent_id: str | None = None,
     ) -> tuple[PlanState, SessionTaskList, str]:
         async with self._submission_lock(session_id):
             execution_note = note.strip()
@@ -862,6 +986,42 @@ class RunManager:
             plan = state.current
             if plan is None or plan.status not in {"ready", "failed"}:
                 raise ValueError("session has no plan ready for approval")
+            if agent_id is not None:
+                await self._validate_goal_session(session)
+                if strategy != "keep":
+                    raise ValueError("agent plan execution currently requires keep strategy")
+                if session.delegation_depth:
+                    raise ValueError("delegated sessions cannot switch execution agents")
+                coordinator = await asyncio.to_thread(self.agents.load, agent_id)
+                selection = None
+                if coordinator.metadata.execution is not None:
+                    selection = await resolve_agent_execution(
+                        coordinator.metadata.execution, self.providers, self.config
+                    )
+                # Fail before approval or settings changes if a configured worker is unavailable.
+                for target in coordinator.metadata.delegation.allowed_agents:
+                    worker = await asyncio.to_thread(self.agents.load, target)
+                    if worker.metadata.execution is not None:
+                        await resolve_agent_execution(
+                            worker.metadata.execution, self.providers, self.config
+                        )
+                if selection is not None:
+                    provider, model, effort, window, source = selection
+                    await asyncio.to_thread(
+                        self.ledger.update_session_settings,
+                        session_id,
+                        provider=provider,
+                        model=model,
+                        reasoning_effort=effort,
+                        context_window_tokens=window,
+                        context_window_source=source,
+                    )
+                session = await asyncio.to_thread(
+                    self.ledger.update_session_agent, session_id, agent_id=agent_id
+                )
+                for event in (await asyncio.to_thread(self.ledger.list_events, session_id))[-2:]:
+                    if event.type in {"session.settings.changed", "session.agent.changed"}:
+                        await self._publish_durable(event)
             run_id = new_id()
             state, requested = await asyncio.to_thread(
                 self.plans.transition,
@@ -873,9 +1033,16 @@ class RunManager:
                 execution_note=execution_note,
             )
             await self._publish_store_events((requested,))
+            await self.ensure_work_title(session_id, plan.title or "Execute plan")
             if strategy == "keep":
                 session, tasks, user_event = await self._prepare_plan_execution(
-                    session, plan.id, run_id, strategy, requested.id, execution_note
+                    session,
+                    plan.id,
+                    run_id,
+                    strategy,
+                    requested.id,
+                    execution_note,
+                    execution_agent=agent_id,
                 )
                 self._launch(session_id, user_event, run_id=run_id)
                 return await self.current_plan(session_id), tasks, run_id
@@ -898,6 +1065,8 @@ class RunManager:
         strategy: Literal["keep", "compact"],
         causation_id: str,
         execution_note: str,
+        *,
+        execution_agent: str | None = None,
     ) -> tuple[Session, SessionTaskList, Event]:
         state = await asyncio.to_thread(self.plans.current, session.id)
         plan = state.current
@@ -951,6 +1120,7 @@ class RunManager:
                 "remember": False,
                 "paste_spans": [],
                 "purpose": "plan_execution",
+                "execution_agent": execution_agent,
             },
             causation_id=approved.id,
             correlation_id=plan_id,
@@ -1160,6 +1330,7 @@ class RunManager:
         )
         await self._publish_durable(step)
         self._launch(session.id, step, run_id=run_id)
+        await self.ensure_work_title(session.id, goal.objective)
         return updated
 
     async def compact(self, session_id: str) -> str:
@@ -1185,6 +1356,7 @@ class RunManager:
             )
             if not candidates:
                 raise ValueError("there is not enough older conversation to compact")
+            await self.ensure_work_title(session_id, "Compact conversation")
             run_id = new_id()
             task = asyncio.create_task(
                 self._run_manual_compaction(run_id, session),
@@ -1231,6 +1403,20 @@ class RunManager:
             if run_id is None:
                 return SubmissionResult(disposition="queued", queued=mutation.item)
             return SubmissionResult(disposition="started", run_id=run_id)
+
+    async def edit_queued(
+        self, session_id: str, queue_id: str, *, content: str, expected_content: str
+    ) -> QueueState:
+        async with self._submission_lock(session_id):
+            event = await asyncio.to_thread(
+                self.message_queue.edit,
+                session_id,
+                queue_id,
+                content=content,
+                expected_content=expected_content,
+            )
+            await self._publish_durable(event)
+            return await self.queue_state(session_id)
 
     async def delete_queued(self, session_id: str, queue_id: str) -> QueueState:
         mutation = await asyncio.to_thread(
@@ -1338,6 +1524,7 @@ class RunManager:
                 "paste_spans": item.paste_spans,
                 "purpose": item.purpose,
                 "submission_id": item.id,
+                "attachments": item.attachments,
             },
             agent_id=session.agent_id,
             correlation_id=item.id,
@@ -1451,7 +1638,6 @@ class RunManager:
         self._child_count_by_parent.pop(run_id, None)
         self._skill_catalogs.pop(run_id, None)
         self._loaded_skills.pop(run_id, None)
-        self._auto_compacted_runs.discard(run_id)
 
     def _mark_post_terminal(self, run_id: str, session_id: str) -> None:
         if self._session_runs.get(session_id) == run_id:
@@ -1461,13 +1647,25 @@ class RunManager:
     def is_session_active(self, session_id: str) -> bool:
         return session_id in self._session_runs
 
-    async def _ensure_provider_context_window(self, session: Session) -> Session:
+    async def ensure_provider_context_window(self, session: Session) -> Session:
         provider = self.providers.get(session.provider)
-        if (
-            provider is None
-            or provider.adapter != "codex"
-            or session.context_window_source != "fallback"
-        ):
+        if provider is None or session.context_window_source != "fallback":
+            return session
+        adapter = getattr(provider, "adapter", "")
+        if adapter == "codex":
+            tokens = CODEX_DEFAULT_CONTEXT_TOKENS
+        elif adapter in {"grok", "xai"}:
+            tokens = grok_context_length(session.model)
+        elif adapter in {"llama_cpp", "ollama", "deepseek", "zai", "zai_coding"}:
+            try:
+                models = await provider.list_models()
+            except ProviderError:
+                return session
+            selected = next((model for model in models if model.id == session.model), None)
+            if selected is None or not selected.context_length or selected.context_length <= 0:
+                return session
+            tokens = selected.context_length
+        else:
             return session
         return await asyncio.to_thread(
             self.ledger.update_session_settings,
@@ -1475,7 +1673,7 @@ class RunManager:
             provider=session.provider,
             model=session.model,
             reasoning_effort=session.reasoning_effort,
-            context_window_tokens=CODEX_DEFAULT_CONTEXT_TOKENS,
+            context_window_tokens=tokens,
             context_window_source="provider",
         )
 
@@ -1622,7 +1820,32 @@ class RunManager:
         task = self._tasks.get(run_id)
         if task is None or task.done():
             return False
-        task.cancel()
+        if task.cancelling():
+            return True
+        session_id = next(
+            session_id
+            for session_id, active_run in self._session_runs.items()
+            if active_run == run_id
+        )
+        session = await asyncio.to_thread(self.ledger.get_session, session_id)
+        if session.lineage_kind == "delegation":
+            scope = self._delegation_scope(session)
+            await self._append(
+                session_id=str(scope["parent_session_id"]),
+                run_id=str(scope["parent_run_id"]),
+                event_type="delegation.stopping",
+                payload={
+                    "child_session_id": session.id,
+                    "child_run_id": run_id,
+                    "target_agent_id": session.agent_id,
+                    "status": "stopping",
+                    "summary": "Child cancellation requested by the user",
+                },
+                causation_id=str(scope["parent_event_id"]),
+                correlation_id=str(scope["parent_run_id"]),
+            )
+        if not task.done() and not task.cancelling():
+            task.cancel()
         return True
 
     async def resolve_approval(
@@ -1655,6 +1878,7 @@ class RunManager:
         question_id: str,
         *,
         selected_option: str | None,
+        selected_options: list[str] | None,
         note: str,
         custom_answer: str,
     ) -> QuestionAnswer:
@@ -1667,39 +1891,93 @@ class RunManager:
             or question_id in self._question_answering
         ):
             raise RuntimeError("question is not attached to an active run")
-        session_id, run_id, agent_id, options = pending
         normalized_note = " ".join(note.splitlines()).strip()
         normalized_custom = " ".join(custom_answer.splitlines()).strip()
         if len(normalized_note) > 4000 or len(normalized_custom) > 4000:
             raise ValueError("question response must not exceed 4000 characters")
         selected = selected_option.strip() if selected_option is not None else None
-        canonical = next(
+        requested_many = [value.strip() for value in selected_options or [] if value.strip()]
+        if len({value.casefold() for value in requested_many}) != len(requested_many):
+            raise ValueError("selected_options must be unique")
+        canonical_single = next(
             (
                 option
-                for option in options
+                for option in pending.options
                 if selected and option[0].casefold() == selected.casefold()
             ),
             None,
         )
-        if normalized_custom:
-            if selected is not None or normalized_note:
-                raise ValueError("a custom answer cannot include an option or option note")
+        if pending.answer_type == "text":
+            if not normalized_custom or selected is not None or requested_many or normalized_note:
+                raise ValueError("text questions require one typed answer")
             resolved = QuestionAnswer(
                 answer=normalized_custom,
+                answer_type="text",
                 selected_option=None,
                 selected_description="",
+                selected_options=(),
+                selected_descriptions=(),
                 note="",
                 custom=True,
             )
-        elif canonical is not None:
-            label, description = canonical
+        elif pending.answer_type == "multiple_choice":
+            if normalized_custom:
+                raise ValueError("multiple-choice questions require checked options")
+            # A pre-v38 client can still answer a multiple-choice question as a one-item set.
+            if selected is not None and not requested_many:
+                requested_many = [selected]
+            if selected is not None and selected_options:
+                raise ValueError("provide selected_options without selected_option")
+            requested_keys = {value.casefold() for value in requested_many}
+            canonical_many = tuple(
+                option for option in pending.options if option[0].casefold() in requested_keys
+            )
+            if len(canonical_many) != len(requested_many):
+                raise ValueError("selected_options contains an unknown option")
+            if not pending.min_selections <= len(canonical_many) <= pending.max_selections:
+                raise ValueError(
+                    f"select between {pending.min_selections} and {pending.max_selections} options"
+                )
+            labels = tuple(option[0] for option in canonical_many)
+            descriptions = tuple(option[1] for option in canonical_many)
+            answer_text = "\n".join(f"- {label}" for label in labels)
+            if normalized_note:
+                answer_text = f"{answer_text}\nNote: {normalized_note}"
+            resolved = QuestionAnswer(
+                answer=answer_text,
+                answer_type="multiple_choice",
+                selected_option=None,
+                selected_description="",
+                selected_options=labels,
+                selected_descriptions=descriptions,
+                note=normalized_note,
+                custom=False,
+            )
+        elif normalized_custom:
+            if selected is not None or requested_many or normalized_note:
+                raise ValueError("a custom answer cannot include an option or option note")
+            resolved = QuestionAnswer(
+                answer=normalized_custom,
+                answer_type="single_choice",
+                selected_option=None,
+                selected_description="",
+                selected_options=(),
+                selected_descriptions=(),
+                note="",
+                custom=True,
+            )
+        elif canonical_single is not None and not requested_many:
+            label, description = canonical_single
             answer_text = label
             if normalized_note:
                 answer_text = f"{label}\nNote: {normalized_note}"
             resolved = QuestionAnswer(
                 answer=answer_text,
+                answer_type="single_choice",
                 selected_option=label,
                 selected_description=description,
+                selected_options=(label,),
+                selected_descriptions=(description,),
                 note=normalized_note,
                 custom=False,
             )
@@ -1708,19 +1986,22 @@ class RunManager:
         self._question_answering.add(question_id)
         try:
             await self._append(
-                session_id=session_id,
-                run_id=run_id,
-                agent_id=agent_id,
+                session_id=pending.session_id,
+                run_id=pending.run_id,
+                agent_id=pending.agent_id,
                 event_type="question.answered",
                 payload={
                     "question_id": question_id,
                     "answer": resolved.answer,
+                    "answer_type": resolved.answer_type,
                     "selected_option": resolved.selected_option,
                     "selected_description": resolved.selected_description,
+                    "selected_options": list(resolved.selected_options),
+                    "selected_descriptions": list(resolved.selected_descriptions),
                     "note": resolved.note,
                     "custom": resolved.custom,
                 },
-                correlation_id=run_id,
+                correlation_id=pending.run_id,
             )
             if waiter.done():
                 raise RuntimeError("question's run ended before the answer was accepted")
@@ -1768,6 +2049,7 @@ class RunManager:
         session: Session | None = None
         try:
             session = await asyncio.to_thread(self.ledger.get_session, session_id)
+            await self._resume_failed_plan(session, run_id, user_event)
             scratch_root = self._scratch_base / run_id / session.agent_id / "workspace"
             await self._execute_run(run_id, session, user_event, scratch_root)
         except asyncio.CancelledError:
@@ -1880,13 +2162,42 @@ class RunManager:
             if scratch_root is not None:
                 await asyncio.to_thread(self._remove_scratch, scratch_root)
 
-    def _schedule_dream(self, session_id: str, causation_id: str) -> None:
+    async def dream(self, session_id: str) -> str:
+        """Start the usual memory, skill and scar maintenance without the idle delay."""
+        async with self._submission_lock(session_id):
+            session = await asyncio.to_thread(self.ledger.get_session, session_id)
+            if session.status != "open":
+                raise ValueError("session is not open")
+            if self.is_session_active(session_id) or (await self.queue_state(session_id)).items:
+                raise ValueError("cannot dream while the session has active or queued work")
+            trust = await asyncio.to_thread(
+                self.controls.get_trust, Path(session.working_directory)
+            )
+            if trust is None:
+                raise PermissionError("working directory is not trusted")
+            existing = self._dream_tasks.get(session_id)
+            if (
+                existing is not None
+                and not existing.done()
+                and existing.get_name().startswith("hames-dream-now-")
+            ):
+                raise ValueError("dream is already running")
+            await self._yield_dream(session_id)
+            await self.ensure_work_title(session_id, "Dream")
+            return self._schedule_dream(session_id, session.id, immediate=True)
+
+    def _schedule_dream(
+        self, session_id: str, causation_id: str, *, immediate: bool = False
+    ) -> str:
         previous = self._dream_tasks.pop(session_id, None)
         if previous is not None and not previous.done():
             previous.cancel()
+        dream_id = new_id()
         task = asyncio.create_task(
-            self._dream_after_idle(session_id, causation_id),
-            name=f"hames-dream-{session_id}",
+            self._dream_after_idle(
+                session_id, causation_id, dream_id=dream_id, immediate=immediate
+            ),
+            name=f"hames-dream-now-{session_id}" if immediate else f"hames-dream-{session_id}",
         )
         self._dream_tasks[session_id] = task
         task.add_done_callback(
@@ -1897,6 +2208,8 @@ class RunManager:
             )
         )
 
+        return dream_id
+
     async def _yield_dream(self, session_id: str) -> None:
         task = self._dream_tasks.pop(session_id, None)
         if task is None or task.done():
@@ -1904,11 +2217,13 @@ class RunManager:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
-    async def _dream_after_idle(self, session_id: str, causation_id: str) -> None:
-        dream_id = new_id()
+    async def _dream_after_idle(
+        self, session_id: str, causation_id: str, *, dream_id: str, immediate: bool = False
+    ) -> None:
         started: Event | None = None
         try:
-            await asyncio.sleep(self.config.runtime.dream_idle_seconds)
+            if not immediate:
+                await asyncio.sleep(self.config.runtime.dream_idle_seconds)
             if self.is_session_active(session_id) or (await self.queue_state(session_id)).items:
                 return
             if self.memory_manager is not None:
@@ -1976,20 +2291,62 @@ class RunManager:
                     correlation_id=dream_id,
                 )
             raise
-        except (KeyError, OSError, ValueError) as exc:
+        except (KeyError, OSError, ValueError, ProviderError) as exc:
             session = await asyncio.to_thread(self.ledger.get_session, session_id)
             await self._append(
                 session_id=session_id,
                 agent_id=session.agent_id,
-                event_type="dream.failed",
+                event_type="dream.paused"
+                if isinstance(exc, ProviderError) and exc.code == "maintenance_preempted"
+                else "dream.failed",
                 payload={
                     "dream_id": dream_id,
-                    "status": "failed",
+                    "status": "paused"
+                    if isinstance(exc, ProviderError) and exc.code == "maintenance_preempted"
+                    else "failed",
                     "message": str(exc),
                 },
                 causation_id=started.id if started is not None else causation_id,
                 correlation_id=dream_id,
             )
+
+    async def _resume_failed_plan(self, session: Session, run_id: str, user_event: Event) -> None:
+        """Link an explicit continuation to the unfinished approved plan."""
+        if (
+            session.interaction_mode != "auto"
+            or user_event.payload.get("purpose", "turn") != "turn"
+        ):
+            return
+        content = str(user_event.payload.get("content", "")).strip().lower()
+        # Do not turn status questions or unrelated messages into plan execution.
+        if not re.match(
+            r"^(?:(?:please|okay|ok|shit|can you|could you)\s+)*"
+            r"(?:continue|resume|keep going|finish (?:this|it|the (?:approved )?plan)(?: up)?)"
+            r"(?:[.!?]|$|\s+(?:please|with|from|and|the|working)\b)",
+            content,
+        ):
+            return
+        state = await asyncio.to_thread(self.plans.current, session.id)
+        plan = state.current
+        if plan is None or plan.status != "failed" or not plan.execution_run_id:
+            return
+        events = await asyncio.to_thread(self.ledger.list_events, session.id)
+        if not any(
+            event.type == "plan.approved" and event.payload.get("plan_id") == plan.id
+            for event in events
+        ):
+            return
+        _, event = await asyncio.to_thread(
+            self.plans.transition,
+            session,
+            plan.id,
+            "plan.execution.started",
+            strategy=plan.strategy,
+            execution_run_id=run_id,
+            execution_note=plan.execution_note,
+            causation_id=user_event.id,
+        )
+        await self._publish_store_events((event,))
 
     async def _finalize_plan_execution(self, session_id: str, run_id: str) -> None:
         state = await asyncio.to_thread(self.plans.current, session_id)
@@ -2066,6 +2423,7 @@ class RunManager:
         trigger: str,
         causation_id: str | None = None,
         preserve_recent_turns: int | None = None,
+        preserve_latest_exchange: bool = True,
     ) -> Event:
         history = await asyncio.to_thread(self.ledger.replay, session.id)
         preserved = (
@@ -2076,6 +2434,8 @@ class RunManager:
         rolling_summary, candidates = conversation_compaction_candidates(
             history,
             preserve_recent_turns=preserved,
+            include_active=trigger == "automatic",
+            preserve_latest_exchange=preserve_latest_exchange,
         )
         initial_summary_tokens = (
             max(1, len(rolling_summary.encode()) // 4) if rolling_summary else 0
@@ -2359,7 +2719,7 @@ class RunManager:
             capsule = await asyncio.to_thread(
                 load_agent, self.paths.agents / session.agent_id / "AGENT.md"
             )
-            if not skill_permitted(capsule, skill.slug):
+            if not self._skill_permitted(session, capsule, skill.slug):
                 raise RunFailure(
                     "skill_unavailable", f"Skill is unavailable to agent {session.agent_id}"
                 )
@@ -2391,8 +2751,9 @@ class RunManager:
                 causation_id=skill_event.id if skill_event is not None else run_started.id,
                 correlation_id=run_id,
             )
-        user_requested_memory_maintenance = _explicit_memory_maintenance_request(
-            str(user_event.payload.get("content", ""))
+        user_requested_memory_maintenance = (
+            session.lineage_kind != "delegation"
+            and _explicit_memory_maintenance_request(str(user_event.payload.get("content", "")))
         )
         healing_run = str(user_event.payload.get("purpose", "turn")) == "heal"
         tool_context = ToolContext(
@@ -2444,6 +2805,14 @@ class RunManager:
                 continuation_reason: Literal["output_limit", "unfinished_execution"] | None = None
                 if turn.finish_reason == "length":
                     continuation_reason = "output_limit"
+                elif executing_plan and user_event.payload.get("execution_agent") and unfinished:
+                    # A bounded review pass returns to the human; never turn unresolved
+                    # findings into an implicit repeated implementation loop.
+                    raise RunFailure(
+                        "workflow_needs_attention",
+                        "workflow returned with unfinished checklist items; review its report",
+                        details={"unfinished_task_ids": [item.id for item in unfinished]},
+                    )
                 elif executing_plan and blocked:
                     raise RunFailure(
                         "plan_execution_blocked",
@@ -2497,25 +2866,51 @@ class RunManager:
                 )
                 return
             continuation_attempts = 0
+            batches: list[list[ToolInvocation]] = []
             for invocation in turn.tool_calls:
-                if tool_count >= limits.max_tool_calls_per_run:
+                if (
+                    invocation.name == "spawn_agent"
+                    and batches
+                    and all(item.name == "spawn_agent" for item in batches[-1])
+                ):
+                    batches[-1].append(invocation)
+                else:
+                    batches.append([invocation])
+            for batch in batches:
+                if tool_count + len(batch) > limits.max_tool_calls_per_run:
                     raise RunFailure("tool_call_limit", "run tool-call limit was exhausted")
-                tool_count += 1
-                await self._handle_tool(
-                    run_id,
-                    session,
-                    invocation,
-                    tool_context,
-                    clock,
-                    turn.allowed_tools,
-                    turn.capsule,
-                    user_requested_memory_maintenance,
-                    "auto"
-                    if healing_run
-                    else "plan"
-                    if session.interaction_mode == "plan"
-                    else None,
-                )
+                tool_count += len(batch)
+                pending = [
+                    asyncio.create_task(
+                        self._handle_tool(
+                            run_id,
+                            session,
+                            invocation,
+                            tool_context,
+                            clock,
+                            turn.allowed_tools,
+                            turn.capsule,
+                            user_requested_memory_maintenance,
+                            "auto"
+                            if healing_run
+                            else "plan"
+                            if session.interaction_mode == "plan"
+                            else None,
+                        )
+                    )
+                    for invocation in batch
+                ]
+                try:
+                    results = asyncio.gather(*pending)
+                    if batch[0].name == "spawn_agent":
+                        await clock.measure(results)
+                    else:
+                        await results
+                except BaseException:
+                    for task in pending:
+                        task.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+                    raise
 
     async def _repair_legacy_provider_state(
         self, session: Session, run_id: str, causation_id: str
@@ -2613,7 +3008,7 @@ class RunManager:
         structured_final_answer: str | None = None
         structured_final_item_id: str | None = None
         tool_calls: dict[int, ToolCallAssembly] = {}
-        session = await self._ensure_provider_context_window(session)
+        session = await self.ensure_provider_context_window(session)
         capsule = await asyncio.to_thread(
             load_agent, self.paths.agents / session.agent_id / "AGENT.md"
         )
@@ -2622,11 +3017,14 @@ class RunManager:
             self.plugin_manager.names() if self.plugin_manager is not None else set()
         )
         mcp_names: set[str] = self.mcp.names() if self.mcp is not None else set()
-        allowed_tools = permitted_tools(
-            capsule, set(self.tools.names()) | plugin_names | mcp_names
-        )
+        allowed_tools = permitted_tools(capsule, set(self.tools.names()) | plugin_names | mcp_names)
+        inherited = self._delegation_scope(session)
+        inherited_tools = inherited.get("allowed_tools")
+        if isinstance(inherited_tools, list):
+            allowed_tools = frozenset(allowed_tools.intersection(cast(list[str], inherited_tools)))
         if (
             not capsule.metadata.delegation.allow
+            or not self._delegation_targets(session, capsule)
             or session.delegation_depth >= self.config.runtime.max_delegation_depth
         ):
             allowed_tools = frozenset(allowed_tools - {"spawn_agent"})
@@ -2676,50 +3074,93 @@ class RunManager:
         policy_summary = f"{POLICY_SUMMARY} {MODE_POLICY_SUMMARIES[interaction_mode]}"
         if healing_run:
             policy_summary = f"{policy_summary} {HEALING_POLICY_SUMMARY}"
+        if "spawn_agent" in allowed_tools:
+            targets = self._delegation_targets(session, capsule)
+            policy_summary += (
+                " You can spawn subagents autonomously whenever useful; no user request to "
+                "delegate is needed. Consider parallel delegation for broad reviews, many files, "
+                "independent investigations, or separable implementation work. Stay local when "
+                "coordination would cost more than it helps or the next step depends on your work. "
+                "Write self-contained assignments with objective, relevant context/evidence, "
+                "constraints, file ownership, and expected result. Children share the workspace; "
+                "avoid conflicting edits. Submit independent spawn_agent calls together to run "
+                "them in parallel. Inspect child results, resolve conflicts and integrate evidence "
+                "before reporting completion. Omit agent_id to use yourself; permitted targets: "
+                + ", ".join(targets)
+                + "."
+            )
+        if session.lineage_kind == "delegation":
+            policy_summary += (
+                " You are a subagent. Work within your task card and inherited permissions. "
+                "Return results, evidence, changed files and any blockers to your parent. "
+                "If user input or approval is needed, report it to your parent instead of waiting."
+            )
         environment = await asyncio.to_thread(
             self.environment.capture, Path(session.working_directory)
         )
-        context = compile_context(
-            session,
-            history,
-            capsule,
-            definitions,
-            policy_summary,
-            self.config.context,
-            run_id=run_id,
-            memories=memories,
-            skill_catalog=self._skill_catalogs.get(run_id, []),
-            loaded_skills=list(self._loaded_skills.get(run_id, {}).values()),
-            skill_catalog_budget_tokens=self.config.skills.catalog_budget_tokens,
-            loaded_skill_budget_tokens=self.config.skills.loaded_budget_tokens,
-            context_rules=active_context_rules,
-            active_scars=guard_scars,
-            scar_budget_tokens=self.config.evolution.scar_context_budget_tokens,
-            plugin_sources=plugin_sources,
-            plugin_budget_tokens=self.config.plugins.context_budget_tokens,
-            environment=environment,
-        )
-        should_compact = context.manifest.estimated_input_tokens >= (
-            self.config.context.auto_compaction_threshold_tokens(
-                context.manifest.input_budget_tokens
+
+        def compile_current_context() -> CompiledContext:
+            return compile_context(
+                session,
+                history,
+                capsule,
+                definitions,
+                policy_summary,
+                self.config.context,
+                run_id=run_id,
+                memories=memories,
+                skill_catalog=self._skill_catalogs.get(run_id, []),
+                loaded_skills=list(self._loaded_skills.get(run_id, {}).values()),
+                skill_catalog_budget_tokens=self.config.skills.catalog_budget_tokens,
+                loaded_skill_budget_tokens=self.config.skills.loaded_budget_tokens,
+                context_rules=active_context_rules,
+                active_scars=guard_scars,
+                scar_budget_tokens=self.config.evolution.scar_context_budget_tokens,
+                plugin_sources=plugin_sources,
+                plugin_budget_tokens=self.config.plugins.context_budget_tokens,
+                environment=environment,
+                blobs=self.ledger.blob_store,
+                preserve_reasoning=self.providers[session.provider].adapter
+                in {"deepseek", "zai", "zai_coding"},
             )
-        ) or any(
-            source.source_type == "conversation" and source.reason == "budget"
-            for source in context.manifest.omitted_sources
+
+        context_error: ContextBudgetError | None = None
+        try:
+            context = compile_current_context()
+        except ContextBudgetError as exc:
+            context_error = exc
+            context = None
+        should_compact = (
+            context is None
+            or context.manifest.estimated_input_tokens
+            >= (
+                self.config.context.auto_compaction_threshold_tokens(
+                    context.manifest.input_budget_tokens
+                )
+            )
+            or any(
+                source.source_type == "conversation" and source.reason in {"budget", "compacted"}
+                for source in context.manifest.omitted_sources
+            )
         )
-        if should_compact and run_id not in self._auto_compacted_runs:
-            self._auto_compacted_runs.add(run_id)
+        if should_compact:
             provider = self.providers[session.provider]
             preserved_turns = (
                 1
                 if getattr(provider, "adapter", "") == "codex"
                 else self.config.context.compaction_preserve_recent_turns
             )
-            _, candidates = conversation_compaction_candidates(
-                history,
-                preserve_recent_turns=preserved_turns,
-            )
-            if candidates:
+            # Each successful checkpoint must advance the durable cutoff. Retry
+            # compilation after every bounded batch, including within one long run.
+            while True:
+                _, candidates = conversation_compaction_candidates(
+                    history,
+                    preserve_recent_turns=preserved_turns,
+                    include_active=True,
+                    preserve_latest_exchange=context is not None,
+                )
+                if not candidates:
+                    break
                 try:
                     await self._perform_compaction(
                         session,
@@ -2727,6 +3168,7 @@ class RunManager:
                         trigger="automatic",
                         causation_id=initial_causation_id,
                         preserve_recent_turns=preserved_turns,
+                        preserve_latest_exchange=context is not None,
                     )
                 except asyncio.CancelledError:
                     await self._append(
@@ -2757,28 +3199,18 @@ class RunManager:
                         causation_id=initial_causation_id,
                         correlation_id=run_id,
                     )
-                else:
-                    history = await asyncio.to_thread(self.ledger.replay, session.id)
-                    context = compile_context(
-                        session,
-                        history,
-                        capsule,
-                        definitions,
-                        policy_summary,
-                        self.config.context,
-                        run_id=run_id,
-                        memories=memories,
-                        skill_catalog=self._skill_catalogs.get(run_id, []),
-                        loaded_skills=list(self._loaded_skills.get(run_id, {}).values()),
-                        skill_catalog_budget_tokens=self.config.skills.catalog_budget_tokens,
-                        loaded_skill_budget_tokens=self.config.skills.loaded_budget_tokens,
-                        context_rules=active_context_rules,
-                        active_scars=guard_scars,
-                        scar_budget_tokens=self.config.evolution.scar_context_budget_tokens,
-                        plugin_sources=plugin_sources,
-                        plugin_budget_tokens=self.config.plugins.context_budget_tokens,
-                        environment=environment,
-                    )
+                    break
+                history = await asyncio.to_thread(self.ledger.replay, session.id)
+                try:
+                    context = compile_current_context()
+                except ContextBudgetError as exc:
+                    context_error = exc
+                    context = None
+                    continue
+                break
+        if context is None:
+            assert context_error is not None
+            raise context_error
         reasoning_budget_tokens = (
             512
             if continuation
@@ -3011,6 +3443,11 @@ class RunManager:
                                 request_event.id,
                                 provider_item_id=item_id,
                             )
+                            # Commentary has its own durable message. Discard its plan
+                            # marker holdback before streaming the next message item.
+                            answer_parts.clear()
+                            published_answer_length = 0
+                            think_splitter = ThinkTagSplitter()
                     elif stream_event.message_phase == "final_answer":
                         structured_final_answer = visible_item
                         structured_final_item_id = item_id
@@ -3258,7 +3695,13 @@ class RunManager:
             load_agent, self.paths.agents / session.agent_id / "AGENT.md"
         )
         selected = apply_agent_skill_policy(
-            capsule, list(by_slug.values()), limit=self.config.skills.max_catalog_entries
+            capsule,
+            [
+                item
+                for item in by_slug.values()
+                if self._skill_permitted(session, capsule, item.slug)
+            ],
+            limit=self.config.skills.max_catalog_entries,
         )
         event = await self._append(
             session_id=session.id,
@@ -3613,6 +4056,41 @@ class RunManager:
                 ToolResult(status="rejected", summary=decision.reason),
                 policy_decided.id,
             )
+        if (
+            session.lineage_kind == "delegation"
+            and isinstance(arguments, ShellArguments)
+            and arguments.background
+        ):
+            return await self._persist_tool_result(
+                session,
+                run_id,
+                invocation,
+                ToolResult(
+                    status="rejected",
+                    summary=(
+                        "Subagents cannot leave background terminals running. Use a bounded "
+                        "foreground command or ask the parent to own the background process."
+                    ),
+                ),
+                policy_decided.id,
+            )
+        if session.lineage_kind == "delegation" and (
+            decision.decision is PolicyDecisionKind.REQUIRE_CONFIRMATION
+            or invocation.name == "ask_user"
+        ):
+            return await self._persist_tool_result(
+                session,
+                run_id,
+                invocation,
+                ToolResult(
+                    status="rejected",
+                    summary=(
+                        "This action needs user input or approval. Return the request as a blocker "
+                        "to your parent; delegation does not grant additional permissions."
+                    ),
+                ),
+                policy_decided.id,
+            )
         if decision.decision is PolicyDecisionKind.REQUIRE_CONFIRMATION:
             approved = await self._request_approval(
                 run_id,
@@ -3641,14 +4119,16 @@ class RunManager:
                 causation_id=policy_decided.id,
                 correlation_id=run_id,
             )
-            result = await self._delegate(
-                run_id,
-                session,
-                invocation,
-                arguments,
-                capsule,
-                started.id,
-            )
+            with clock.pause():
+                result = await self._delegate(
+                    run_id,
+                    session,
+                    invocation,
+                    arguments,
+                    capsule,
+                    started.id,
+                    allowed_tools,
+                )
             return await self._persist_tool_result(session, run_id, invocation, result, started.id)
         if invocation.name == "ask_user":
             started = await self._append(
@@ -3839,6 +4319,32 @@ class RunManager:
                     status="completed",
                     summary=f"goal reported {goal.status}",
                     structured_data={"goal": goal.model_dump(mode="json")},
+                )
+            if isinstance(arguments, AutomationCreateArguments):
+                with self.ledger.database.connect() as db:
+                    scheduled = db.execute(
+                        "SELECT 1 FROM automation_runs WHERE session_id=?", (session.id,)
+                    ).fetchone()
+                if scheduled or session.delegation_depth:
+                    raise ValueError(
+                        "Scheduled runs and delegated workers cannot create automations"
+                    )
+                spec = AutomationDefinition(
+                    **arguments.model_dump(),
+                    working_directory=session.working_directory,
+                    agent_id=session.agent_id,
+                    provider=session.provider,
+                    model=session.model,
+                    reasoning_effort=session.reasoning_effort,
+                    enabled=False,
+                )
+                automation = await asyncio.to_thread(self.automations.save, spec)
+                return ToolResult(
+                    status="completed",
+                    summary="Automation draft ready for review",
+                    content=f"Review and enable [{spec.title}](/automations/{automation['id']}). "
+                    "It will not run until enabled.",
+                    structured_data={"automation": automation},
                 )
             if isinstance(arguments, TaskListArguments):
                 task_list = await asyncio.to_thread(self.session_tasks.current, session.id)
@@ -4252,10 +4758,14 @@ class RunManager:
                 capsule = await asyncio.to_thread(
                     load_agent, self.paths.agents / session.agent_id / "AGENT.md"
                 )
-                if not skill_permitted(capsule, skill.slug):
+                if not self._skill_permitted(session, capsule, skill.slug):
                     raise KeyError(arguments.id)
+                already_loaded = self._loaded_skills.get(run_id, {}).get(skill.slug)
                 if skill.metadata.invocation == "user":
-                    raise ValueError("Skill is user-invocable only")
+                    if already_loaded is None or already_loaded.id != skill.id:
+                        raise ValueError("Skill is user-invocable only")
+                    # Keep arguments rendered by the explicit user invocation.
+                    skill = already_loaded
             except (KeyError, ValueError) as exc:
                 return ToolResult(status="rejected", summary=f"Skill cannot be loaded: {exc}")
             self._loaded_skills.setdefault(run_id, {})[skill.slug] = skill
@@ -4318,7 +4828,14 @@ class RunManager:
             )
         if not isinstance(arguments, SkillRunArguments):
             return ToolResult(status="failed", summary=f"invalid {tool_name} arguments")
-        skill = self._loaded_skills.get(run_id, {}).get(arguments.id)
+        skill = next(
+            (
+                item
+                for item in self._loaded_skills.get(run_id, {}).values()
+                if arguments.id in {item.slug, item.skill_id, item.id}
+            ),
+            None,
+        )
         if skill is None:
             return ToolResult(status="rejected", summary="Skill must be loaded before script use")
         script = next(
@@ -4481,6 +4998,51 @@ class RunManager:
                 duration_seconds=time.monotonic() - started,
             )
 
+    def _delegation_scope(self, session: Session) -> dict[str, Any]:
+        if session.lineage_kind != "delegation":
+            return {}
+        for event in self.ledger.list_events(session.id):
+            if event.type == "delegation.task_card":
+                scope = dict(event.payload)
+                # Older children have no captured authority; never infer broader access.
+                if scope.get("allowed_tools") is None:
+                    scope["allowed_tools"] = []
+                return scope
+        return {"allowed_tools": [], "delegation_targets": []}
+
+    def _delegation_plan(self, session: Session, run_id: str) -> dict[str, JsonValue] | None:
+        """Capture authoritative plan text, never a model-authored handoff summary."""
+        current = self.plans.current(session.id).current
+        if (
+            current is not None
+            and current.status in {"approved", "executing"}
+            and current.execution_run_id == run_id
+        ):
+            return {
+                "plan_id": current.id,
+                "session_id": current.session_id,
+                "revision": current.revision,
+                "markdown": current.markdown,
+                "execution_note": current.execution_note,
+            }
+        inherited = self._delegation_scope(session).get("approved_plan")
+        return JSON_OBJECT.validate_python(inherited) if inherited is not None else None
+
+    def _delegation_targets(self, session: Session, capsule: AgentCapsule) -> list[str]:
+        targets = capsule.metadata.delegation.allowed_agents or [session.agent_id]
+        inherited = self._delegation_scope(session).get("delegation_targets")
+        return (
+            targets if inherited is None else [target for target in targets if target in inherited]
+        )
+
+    def _skill_permitted(self, session: Session, capsule: AgentCapsule, slug: str) -> bool:
+        scope = self._delegation_scope(session)
+        return (
+            skill_permitted(capsule, slug)
+            and slug not in scope.get("skill_denied", [])
+            and all(slug in allowed for allowed in scope.get("skill_allowlists", []))
+        )
+
     async def _delegate(
         self,
         run_id: str,
@@ -4489,6 +5051,7 @@ class RunManager:
         arguments: ToolArguments,
         capsule: AgentCapsule,
         causation_id: str,
+        allowed_tools: frozenset[str],
     ) -> ToolResult:
         """Run one explicitly-scoped child and return its durable terminal outcome."""
 
@@ -4498,16 +5061,58 @@ class RunManager:
             return ToolResult(status="rejected", summary="agent delegation is not permitted")
         if session.delegation_depth >= self.config.runtime.max_delegation_depth:
             return ToolResult(status="rejected", summary="delegation depth limit was reached")
-        if arguments.agent_id not in capsule.metadata.delegation.allowed_agents:
+        target_agent = arguments.agent_id or session.agent_id
+        targets = self._delegation_targets(session, capsule)
+        if target_agent not in targets:
             return ToolResult(status="rejected", summary="target agent is not permitted")
-        count = self._child_count_by_parent.get(run_id, 0)
-        if count >= self.config.runtime.max_child_runs_per_parent_run:
-            return ToolResult(status="rejected", summary="child-run limit was reached")
         try:
-            await asyncio.to_thread(self.agents.load, arguments.agent_id)
+            await asyncio.to_thread(self.agents.load, target_agent)
         except (FileNotFoundError, ValueError) as exc:
             return ToolResult(status="rejected", summary=f"unknown child agent: {exc}")
 
+        count = self._child_count_by_parent.get(run_id, 0)
+        child_limit = getattr(self.config.runtime, "max_child_runs_per_parent_run", 4)
+        concurrent_limit = getattr(self.config.runtime, "max_concurrent_child_runs", 4)
+        if count >= child_limit:
+            return ToolResult(status="rejected", summary="child-run limit was reached")
+        if self._active_child_count >= concurrent_limit:
+            return ToolResult(status="rejected", summary="concurrent child-run limit was reached")
+        self._child_count_by_parent[run_id] = count + 1
+        self._active_child_count += 1
+        try:
+            return await self._run_delegated_child(
+                run_id,
+                session,
+                invocation,
+                arguments,
+                capsule,
+                causation_id,
+                allowed_tools,
+                target_agent,
+            )
+        finally:
+            self._active_child_count -= 1
+
+    async def _run_delegated_child(
+        self,
+        run_id: str,
+        session: Session,
+        invocation: ToolInvocation,
+        arguments: SpawnAgentArguments,
+        capsule: AgentCapsule,
+        causation_id: str,
+        allowed_tools: frozenset[str],
+        target_agent: str,
+    ) -> ToolResult:
+        target = await asyncio.to_thread(self.agents.load, target_agent)
+        execution = None
+        if target.metadata.execution is not None:
+            try:
+                execution = await resolve_agent_execution(
+                    target.metadata.execution, self.providers, self.config
+                )
+            except (ValueError, ProviderError) as exc:
+                return ToolResult(status="rejected", summary=f"child model selection failed: {exc}")
         evidence: list[dict[str, str]] = []
         for event_ref in arguments.evidence_event_ids:
             try:
@@ -4546,7 +5151,10 @@ class RunManager:
             event_type="delegation.requested",
             payload={
                 "tool_call_id": invocation.tool_call_id,
-                "target_agent_id": arguments.agent_id,
+                "target_agent_id": target_agent,
+                "provider": execution[0] if execution else session.provider,
+                "model": execution[1] if execution else session.model,
+                "reasoning_effort": execution[2] if execution else session.reasoning_effort,
                 "task": arguments.task,
                 "evidence": evidence,
                 "delegation_depth": session.delegation_depth + 1,
@@ -4558,13 +5166,23 @@ class RunManager:
             self.ledger.create_delegated_session,
             session.id,
             parent_event_id=requested.id,
-            agent_id=arguments.agent_id,
+            agent_id=target_agent,
+            execution=execution,
+        )
+        approved_plan = await asyncio.to_thread(self._delegation_plan, session, run_id)
+        inherited = self._delegation_scope(session)
+        skill_allowlists = list(inherited.get("skill_allowlists", []))
+        if capsule.metadata.skills.allow:
+            skill_allowlists.append(capsule.metadata.skills.allow)
+        skill_denied = sorted(
+            set(inherited.get("skill_denied", [])) | set(capsule.metadata.skills.deny)
         )
         await self._append(
             session_id=child.id,
             agent_id=child.agent_id,
             event_type="delegation.task_card",
             payload={
+                "approved_plan": approved_plan,
                 "parent_session_id": session.id,
                 "parent_run_id": run_id,
                 "parent_event_id": requested.id,
@@ -4572,19 +5190,47 @@ class RunManager:
                 "task": arguments.task,
                 "evidence": evidence,
                 "delegation_depth": child.delegation_depth,
+                "allowed_tools": sorted(allowed_tools),
+                "delegation_targets": self._delegation_targets(session, capsule),
+                "skill_allowlists": skill_allowlists,
+                "skill_denied": skill_denied,
+                "requested_result_format": arguments.requested_result_format,
             },
             causation_id=requested.id,
             correlation_id=child.id,
         )
-        self._child_count_by_parent[run_id] = count + 1
-        child_run_id = await self.start(child.id, arguments.task)
+        admission = asyncio.create_task(self.start(child.id, arguments.task))
+        try:
+            child_run_id = await asyncio.shield(admission)
+        except asyncio.CancelledError:
+            child_run_id = await admission
+            self._children_by_parent.setdefault(run_id, set()).add(child_run_id)
+            await self._cancel_children(run_id)
+            raise
         self._children_by_parent.setdefault(run_id, set()).add(child_run_id)
-        child_task = self._tasks[child_run_id]
+        child_task = self._tasks.get(child_run_id)
         started = time.monotonic()
         try:
-            await asyncio.shield(child_task)
+            if child_task is not None:
+                await self._wait_child_terminal(child.id, child_run_id, child_task)
         except asyncio.CancelledError:
             await self._cancel_children(run_id)
+            await self._append(
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                event_type="delegation.failed",
+                payload={
+                    "child_session_id": child.id,
+                    "child_run_id": child_run_id,
+                    "target_agent_id": child.agent_id,
+                    "status": "cancelled",
+                    "summary": "Child cancelled with its parent",
+                    "duration_seconds": time.monotonic() - started,
+                },
+                causation_id=requested.id,
+                correlation_id=run_id,
+            )
             raise
 
         events = await asyncio.to_thread(self.ledger.list_run_events, child_run_id)
@@ -4597,8 +5243,16 @@ class RunManager:
             ),
             "",
         )
+        cancelled = any(event.type == "run.cancelled" for event in events)
         status = "completed" if completed else "failed"
-        summary = "child agent completed" if completed else "child agent did not complete"
+        summary = (
+            "Child cancelled by the user. Report the interruption and wait for user direction; "
+            "do not restart or re-delegate this work automatically."
+            if cancelled
+            else "child agent completed"
+            if completed
+            else "child agent did not complete"
+        )
         terminal = "delegation.completed" if completed else "delegation.failed"
         await self._append(
             session_id=session.id,
@@ -4609,25 +5263,56 @@ class RunManager:
                 "child_session_id": child.id,
                 "child_run_id": child_run_id,
                 "target_agent_id": child.agent_id,
-                "status": status,
+                "status": "cancelled" if cancelled else status,
                 "summary": summary,
                 "duration_seconds": time.monotonic() - started,
             },
             causation_id=requested.id,
             correlation_id=run_id,
         )
+        result_limit = self.config.tools.model_result_char_limit
         return ToolResult(
             status=status,
             summary=summary,
-            content=message,
+            content=message[:result_limit],
+            truncated=len(message) > result_limit,
             structured_data={
                 "child_session_id": child.id,
                 "child_run_id": child_run_id,
                 "agent_id": child.agent_id,
                 "requested_result_format": arguments.requested_result_format,
+                "cancelled": cancelled,
             },
             duration_seconds=time.monotonic() - started,
         )
+
+    async def _wait_child_terminal(
+        self, session_id: str, run_id: str, task: asyncio.Task[None]
+    ) -> None:
+        # Subscribe before checking history so a terminal transition cannot be lost.
+        # Post-run memory/skill maintenance must not keep the parent waiting.
+        terminal = {"run.completed", "run.failed", "run.cancelled"}
+        async with self.broker.subscribe(session_id) as queue:
+            events = await asyncio.to_thread(self.ledger.list_run_events, run_id)
+            if any(event.type in terminal for event in events):
+                return
+            while not task.done():
+                receive = asyncio.create_task(queue.get())
+                try:
+                    done, _ = await asyncio.wait(
+                        {task, receive}, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    if receive in done:
+                        value = receive.result().get("event")
+                        if isinstance(value, dict):
+                            event = cast(dict[str, object], value)
+                            if event.get("run_id") == run_id and event.get("type") in terminal:
+                                return
+                    if task in done:
+                        return
+                finally:
+                    receive.cancel()
+                    await asyncio.gather(receive, return_exceptions=True)
 
     async def _cancel_children(self, parent_run_id: str) -> None:
         child_run_ids = tuple(self._children_by_parent.get(parent_run_id, set()))
@@ -4635,7 +5320,8 @@ class RunManager:
         for child_run_id in child_run_ids:
             task = self._tasks.get(child_run_id)
             if task is not None and not task.done():
-                task.cancel()
+                if not task.cancelling():
+                    task.cancel()
                 tasks.append(task)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -4700,11 +5386,15 @@ class RunManager:
         question_id = new_id()
         waiter: asyncio.Future[QuestionAnswer] = asyncio.get_running_loop().create_future()
         self._question_waiters[question_id] = waiter
-        self._question_runs[question_id] = (
-            session.id,
-            run_id,
-            session.agent_id,
-            tuple((option.label, option.description) for option in arguments.options),
+        maximum = arguments.max_selections or max(1, len(arguments.options))
+        self._question_runs[question_id] = _PendingQuestion(
+            session_id=session.id,
+            run_id=run_id,
+            agent_id=session.agent_id,
+            answer_type=arguments.answer_type,
+            options=tuple((option.label, option.description) for option in arguments.options),
+            min_selections=arguments.min_selections,
+            max_selections=maximum,
         )
         await self._append(
             session_id=session.id,
@@ -4715,7 +5405,11 @@ class RunManager:
                 "question_id": question_id,
                 "tool_call_id": invocation.tool_call_id,
                 "question": arguments.question,
+                "answer_type": arguments.answer_type,
                 "options": [option.model_dump(mode="json") for option in arguments.options],
+                "min_selections": arguments.min_selections,
+                "max_selections": arguments.max_selections,
+                "placeholder": arguments.placeholder,
             },
             causation_id=causation_id,
             correlation_id=run_id,
@@ -4725,8 +5419,14 @@ class RunManager:
             return ToolResult(
                 status="completed",
                 summary=(
-                    "user supplied a custom answer"
-                    if answer.custom
+                    "user supplied a text answer"
+                    if answer.answer_type == "text"
+                    else (
+                        f"user selected {len(answer.selected_options)} options"
+                        if answer.answer_type == "multiple_choice"
+                        else "user supplied a custom answer"
+                    )
+                    if answer.custom or answer.answer_type != "single_choice"
                     else (
                         f"user selected {answer.selected_option} with a note"
                         if answer.note
@@ -4737,8 +5437,11 @@ class RunManager:
                 structured_data={
                     "question_id": question_id,
                     "answer": answer.answer,
+                    "answer_type": answer.answer_type,
                     "selected_option": answer.selected_option,
                     "selected_description": answer.selected_description,
+                    "selected_options": list(answer.selected_options),
+                    "selected_descriptions": list(answer.selected_descriptions),
                     "note": answer.note,
                     "custom": answer.custom,
                 },
@@ -4749,7 +5452,7 @@ class RunManager:
 
     def _cancel_questions(self, run_id: str) -> None:
         for question_id, pending in tuple(self._question_runs.items()):
-            if pending[1] != run_id:
+            if pending.run_id != run_id:
                 continue
             waiter = self._question_waiters.get(question_id)
             if waiter is not None and not waiter.done():

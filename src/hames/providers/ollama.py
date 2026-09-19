@@ -75,7 +75,7 @@ class OllamaProvider:
                     context_length=context_length,
                     parameter_size=_optional_str(details.get("parameter_size")),
                     quantization=_optional_str(details.get("quantization_level")),
-                    input_modalities=["text"],
+                    input_modalities=(["text", "image"] if "vision" in capabilities else ["text"]),
                     output_modalities=["text"],
                     reasoning_supported=reasoning,
                     reasoning_efforts=efforts,
@@ -224,6 +224,8 @@ def _ollama_message(message: object) -> dict[str, object]:
 
     value = ProviderMessage.model_validate(message)
     result: dict[str, object] = {"role": value.role, "content": value.content}
+    if value.attachments:
+        result["images"] = [attachment.data_base64 for attachment in value.attachments]
     if value.reasoning_content:
         result["thinking"] = value.reasoning_content
     if value.tool_calls:

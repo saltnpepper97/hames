@@ -28,6 +28,7 @@ class RuntimeConfig(StrictModel):
     max_tool_calls_per_run: int = Field(default=99, ge=1)
     max_active_seconds_per_run: float = Field(default=1800.0, gt=0)
     max_delegation_depth: int = Field(default=1, ge=0, le=2)
+    max_concurrent_child_runs: int = Field(default=4, ge=1, le=16)
     max_child_runs_per_parent_run: int = Field(default=4, ge=1, le=16)
     dream_idle_seconds: float = Field(default=300.0, ge=0.01)
     dream_recent_days: int = Field(default=7, ge=1, le=90)
@@ -155,6 +156,7 @@ class ProviderProfileConfig(StrictModel):
     adapter: str
     base_url: str
     api_key_env: str = ""
+    api_key_file: str = ""
     model: str = ""
     reasoning_effort: str = ""
     supported_reasoning_efforts: list[str] = Field(default_factory=list)
@@ -164,7 +166,17 @@ class ProviderProfileConfig(StrictModel):
     @field_validator("adapter")
     @classmethod
     def known_adapter(cls, value: str) -> str:
-        if value not in {"llama_cpp", "ollama", "openai", "codex"}:
+        if value not in {
+            "llama_cpp",
+            "ollama",
+            "openai",
+            "xai",
+            "grok",
+            "codex",
+            "deepseek",
+            "zai",
+            "zai_coding",
+        }:
             raise ValueError(f"unknown provider adapter: {value}")
         return value
 
@@ -181,12 +193,24 @@ class ProviderProfileConfig(StrictModel):
     def valid_endpoint(self) -> ProviderProfileConfig:
         from urllib.parse import urlsplit
 
+        if self.api_key_file and self.adapter not in {
+            "openai",
+            "xai",
+            "deepseek",
+            "zai",
+            "zai_coding",
+        }:
+            raise ValueError(
+                "api_key_file is supported by openai, xai, deepseek, zai and zai_coding"
+            )
         if self.adapter == "codex":
             if self.base_url != "app-server://codex":
                 raise ValueError("codex provider base_url must be app-server://codex")
             if self.api_key_env:
                 raise ValueError("codex subscription auth does not use api_key_env")
             return self
+        if self.adapter == "grok" and self.api_key_env:
+            raise ValueError("grok subscription auth does not use api_key_env")
         parsed = urlsplit(self.base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("provider base_url must be an absolute HTTP(S) URL")
@@ -195,6 +219,12 @@ class ProviderProfileConfig(StrictModel):
         self.base_url = self.base_url.rstrip("/")
         if self.adapter == "openai" and not self.api_key_env:
             self.api_key_env = "OPENAI_API_KEY"
+        if self.adapter == "xai" and not self.api_key_env:
+            self.api_key_env = "XAI_API_KEY"
+        if self.adapter == "deepseek" and not self.api_key_env:
+            self.api_key_env = "DEEPSEEK_API_KEY"
+        if self.adapter in {"zai", "zai_coding"} and not self.api_key_env:
+            self.api_key_env = "ZAI_API_KEY"
         return self
 
     @field_validator("supported_reasoning_efforts")
@@ -329,6 +359,16 @@ def load_config(
             _deep_merge(source, _translate_legacy_config(file_config))
         else:
             _deep_merge(source, file_config)
+    connections_file = paths.root / "connections.json"
+    if connections_file.exists():
+        managed = json.loads(connections_file.read_text())
+        if not isinstance(managed, dict):
+            raise ValueError("connections.json must contain provider profiles")
+        for profile_id, profile in cast(dict[str, object], managed).items():
+            validated = ProviderProfileConfig.model_validate(profile)
+            if validated.adapter not in {"openai", "xai", "deepseek", "zai", "zai_coding"}:
+                raise ValueError("unsupported managed connection")
+            source["providers"][profile_id] = validated.model_dump()
     merged = _deep_merge(source, _environment_overrides(env))
     return HamesConfig.model_validate(merged)
 

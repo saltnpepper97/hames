@@ -5,14 +5,17 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
+import shutil
 import sqlite3
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Annotated, Literal, cast
+from pathlib import Path, PurePosixPath
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, Query, Request
@@ -24,6 +27,7 @@ from hames import PROTOCOL_VERSION, __version__
 from hames.agent import (
     AgentAvatar,
     AgentCapsule,
+    AgentExecution,
     AgentRegistry,
     AgentSkills,
     AgentSummary,
@@ -32,13 +36,16 @@ from hames.agent import (
     load_agent,
     skill_permitted,
 )
+from hames.agent_execution import resolve_agent_execution
+from hames.attachments import AttachmentUpload
+from hames.automations import AutomationDefinition, AutomationScheduler
 from hames.blobs import BlobIntegrityError
 from hames.broker import EventBroker
 from hames.config import HamesConfig, ProviderProfileConfig, load_config
 from hames.control import ControlStore
 from hames.database import Database
 from hames.environment import RuntimeEnvironmentSnapshot
-from hames.evolution import Scar, ScarStatus, ScarStore
+from hames.evolution import Scar, ScarScope, ScarSeverity, ScarStatus, ScarStore
 from hames.evolution_runtime import EvolutionManager
 from hames.goals import Goal
 from hames.inspection import (
@@ -53,12 +60,15 @@ from hames.inspection import (
     inspect_context,
     inspect_run,
     inspect_scar,
+    pooled_usage,
     session_runs,
     session_usage,
+    workspace_daily_usage,
 )
 from hames.ledger import Event, EventIntegrityError, IntegrityResult, Ledger, Session
 from hames.mcp_runtime import McpManager, McpServerSpec, McpServerView
 from hames.memory import (
+    MemoryCandidate,
     MemoryJob,
     MemoryLayer,
     MemoryRecord,
@@ -97,6 +107,12 @@ from hames.skill_runtime import SkillManager
 from hames.skills import SkillJob, SkillSummary, SkillVersion
 from hames.tasks import SessionTaskList, TaskStatus
 from hames.web_ui import WebUi, WebUiError, install_web_routes, web_error_response
+from hames.workspaces import (
+    DirectoryListing,
+    NativeDirectoryPickerUnavailable,
+    Workspace,
+    WorkspaceRegistry,
+)
 
 
 class ApiModel(BaseModel):
@@ -113,6 +129,24 @@ class CreateSessionRequest(ApiModel):
     inherit_session_id: str | None = None
 
 
+class WorkspaceCreateRequest(ApiModel):
+    path: str = Field(min_length=1, max_length=4096)
+    title: str | None = Field(default=None, max_length=160)
+
+
+class WorkspaceRenameRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=160)
+
+
+class DirectoryCreateRequest(ApiModel):
+    parent: str = Field(min_length=1, max_length=4096)
+    name: str = Field(min_length=1, max_length=255)
+
+
+class DirectoryPickerRequest(ApiModel):
+    initial_path: str | None = Field(default=None, max_length=4096)
+
+
 class PasteSpan(ApiModel):
     start_byte: int = Field(ge=0)
     end_byte: int = Field(gt=0)
@@ -124,16 +158,26 @@ def _empty_paste_spans() -> list[PasteSpan]:
     return []
 
 
+class QueuedMessageEditRequest(ApiModel):
+    content: str = Field(max_length=500_000)
+    expected_content: str = Field(max_length=500_000)
+
+
 class MessageRequest(ApiModel):
     submission_id: UUID = Field(default_factory=uuid4)
-    content: str = Field(min_length=1)
+    content: str = Field(default="", max_length=500_000)
     remember: bool = False
     send_now: bool = False
     purpose: Literal["turn", "plan_note", "heal"] = "turn"
     paste_spans: list[PasteSpan] = Field(default_factory=_empty_paste_spans, max_length=64)
+    attachments: list[AttachmentUpload] = Field(
+        default_factory=lambda: list[AttachmentUpload](), max_length=8
+    )
 
     @model_validator(mode="after")
     def validate_paste_spans(self) -> MessageRequest:
+        if not self.content.strip() and not self.attachments:
+            raise ValueError("message content or an attachment is required")
         encoded = self.content.encode()
         previous_end = 0
         for span in self.paste_spans:
@@ -172,6 +216,10 @@ class UpdateSessionTitleRequest(ApiModel):
     title: str = Field(min_length=1, max_length=80)
 
 
+class UpdateSessionPinnedRequest(ApiModel):
+    pinned: bool
+
+
 class MessageAccepted(ApiModel):
     submission_id: str
     replayed: bool = False
@@ -186,6 +234,7 @@ class CompactionAccepted(ApiModel):
 
 
 class PlanExecuteRequest(ApiModel):
+    agent_id: str | None = None
     strategy: Literal["keep", "compact"]
     note: str = Field(default="", max_length=8000)
 
@@ -237,13 +286,25 @@ class ApprovalResolution(ApiModel):
 
 class QuestionAnswerRequest(ApiModel):
     selected_option: str | None = Field(default=None, min_length=1, max_length=160)
+    selected_options: list[str] = Field(default_factory=list, max_length=8)
     note: str = Field(default="", max_length=4000)
     custom_answer: str = Field(default="", max_length=4000)
 
     @model_validator(mode="after")
     def valid_answer(self) -> QuestionAnswerRequest:
-        if (self.selected_option is None) == (not self.custom_answer.strip()):
-            raise ValueError("provide either selected_option or custom_answer")
+        modes = sum(
+            (
+                self.selected_option is not None,
+                bool(self.selected_options),
+                bool(self.custom_answer.strip()),
+            )
+        )
+        if modes != 1:
+            raise ValueError("provide selected_option, selected_options, or custom_answer")
+        if len({option.strip().casefold() for option in self.selected_options}) != len(
+            self.selected_options
+        ):
+            raise ValueError("selected_options must be unique")
         if self.custom_answer.strip() and self.note.strip():
             raise ValueError("a custom answer cannot also have an option note")
         return self
@@ -252,8 +313,11 @@ class QuestionAnswerRequest(ApiModel):
 class QuestionResolution(ApiModel):
     question_id: str
     answer: str
+    answer_type: Literal["single_choice", "multiple_choice", "text"]
     selected_option: str | None
     selected_description: str
+    selected_options: list[str]
+    selected_descriptions: list[str]
     note: str
     custom: bool
 
@@ -271,6 +335,7 @@ class AgentCreateRequest(ApiModel):
 
 
 class AgentUpdateRequest(ApiModel):
+    default_model: AgentExecution | None = None
     name: str | None = Field(default=None, min_length=1, max_length=80)
     instructions: str | None = Field(default=None, min_length=1, max_length=65_536)
     source: str | None = Field(default=None, min_length=1, max_length=65_536)
@@ -280,7 +345,7 @@ class AgentUpdateRequest(ApiModel):
 
     @model_validator(mode="after")
     def has_one_update_form(self) -> AgentUpdateRequest:
-        structured = any(
+        structured = "default_model" in self.model_fields_set or any(
             value is not None
             for value in (self.name, self.instructions, self.tools, self.skills, self.avatar)
         )
@@ -293,6 +358,25 @@ class AgentUpdateRequest(ApiModel):
 
 class MemoryCaptureRequest(ApiModel):
     content: str = Field(min_length=1, max_length=32_000)
+
+
+class MemoryCreateRequest(ApiModel):
+    layer: MemoryLayer
+    visibility: MemoryVisibility
+    subject: str = Field(min_length=1, max_length=300)
+    predicate: str = Field(min_length=1, max_length=120)
+    value: str = Field(min_length=1, max_length=32_000)
+    summary: str = Field(min_length=1, max_length=2000)
+
+    @model_validator(mode="after")
+    def normalize_fields(self) -> MemoryCreateRequest:
+        for name in ("subject", "predicate", "value", "summary"):
+            current = getattr(self, name)
+            normalized = current.strip() if name == "value" else " ".join(current.split())
+            if not normalized:
+                raise ValueError(f"{name} must not be blank")
+            setattr(self, name, normalized)
+        return self
 
 
 class MemoryTransitionRequest(ApiModel):
@@ -314,6 +398,32 @@ class ScarDeleteResponse(ApiModel):
     deleted: bool
 
 
+class ScarCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=300)
+    severity: ScarSeverity = "medium"
+    scope: ScarScope = "workspace"
+    failure_signature: str = Field(min_length=1, max_length=1000)
+    description: str = Field(min_length=1, max_length=4000)
+    expected_behavior: str = Field(min_length=1, max_length=4000)
+
+    @model_validator(mode="after")
+    def normalize_fields(self) -> ScarCreateRequest:
+        self.title = " ".join(self.title.split())
+        self.failure_signature = " ".join(self.failure_signature.split())
+        self.description = self.description.strip()
+        self.expected_behavior = self.expected_behavior.strip()
+        for name in ("title", "failure_signature", "description", "expected_behavior"):
+            if not getattr(self, name):
+                raise ValueError(f"{name} must not be blank")
+        return self
+
+
+class SkillDeleteResponse(ApiModel):
+    skill_id: str
+    slug: str
+    deleted: bool
+
+
 class SkillAuthorRequest(ApiModel):
     goal: str = Field(min_length=1, max_length=4000)
     scope: Literal["workspace", "agent"] = "workspace"
@@ -322,6 +432,20 @@ class SkillAuthorRequest(ApiModel):
 
 class PluginPathRequest(ApiModel):
     path: str = Field(min_length=1, max_length=1024)
+
+
+class PluginUploadFile(ApiModel):
+    path: str = Field(min_length=1, max_length=512)
+    data_base64: str = Field(max_length=20_000_000)
+
+
+class PluginUploadRequest(ApiModel):
+    files: list[PluginUploadFile] = Field(min_length=1, max_length=256)
+
+
+class PluginUploadInspection(ApiModel):
+    upload_id: str
+    plugin: PluginInspectView
 
 
 class SkillControlRequest(ApiModel):
@@ -377,6 +501,7 @@ def _rule_action(action: str, kind: str) -> Literal["activate", "retire"]:
 
 
 class AgentPublic(ApiModel):
+    slug: str = ""
     id: str
     name: str
     authority: str
@@ -386,6 +511,7 @@ class AgentPublic(ApiModel):
 
 
 class AgentDetail(AgentPublic):
+    default_model: AgentExecution | None = None
     source: str
     instructions: str
     tools_allow: list[str]
@@ -515,11 +641,50 @@ class ApiError(Exception):
         self.details = details or {}
 
 
+async def _attach_codex_account_usage(
+    usage: UsageProjection,
+    provider: Provider | None,
+) -> None:
+    if provider is None or provider.adapter != "codex":
+        return
+    cached = getattr(provider, "cached_account_rate_limits", lambda: None)()
+    reader = getattr(provider, "account_rate_limits", None)
+    try:
+        if reader is not None:
+            usage.account_rate_limits = await asyncio.wait_for(reader(), timeout=1.5)
+    except TimeoutError:
+        if cached is not None:
+            usage.account_rate_limits = cached
+        else:
+            usage.account_rate_limits_error = "Codex account usage unavailable: timed out"
+    # Optional account metrics must never make locally recorded token totals unavailable.
+    except Exception as exc:
+        if cached is not None:
+            usage.account_rate_limits = cached
+        else:
+            usage.account_rate_limits_error = f"Codex account usage unavailable: {exc}"
+
+
+async def _attach_grok_account_usage(usage: UsageProjection, provider: Provider | None) -> None:
+    if provider is None:
+        return
+    usage.grok_account_configured = True
+    reader = getattr(provider, "account_rate_limits", None)
+    try:
+        if reader is None:
+            raise ValueError("Account limits unavailable")
+        usage.grok_account_usage = await asyncio.wait_for(reader(), timeout=5.0)
+    except Exception:
+        # Never expose upstream billing payloads or block locally recorded totals.
+        usage.grok_account_usage_error = "Grok account usage is unavailable. Try refreshing."
+
+
 @dataclass(slots=True)
 class GatewayState:
     paths: HamesPaths
     config: HamesConfig
     ledger: Ledger
+    workspaces: WorkspaceRegistry
     controls: ControlStore
     providers: dict[str, Provider]
     broker: EventBroker
@@ -545,6 +710,7 @@ class GatewayState:
         database = Database(paths.database)
         database.migrate()
         ledger = Ledger(database, blob_threshold_bytes=config.ledger.blob_threshold_bytes)
+        workspaces = WorkspaceRegistry(database)
         controls = ControlStore(database)
         broker = EventBroker()
         last_mcp_notice: dict[tuple[str, str, str | None], float] = {}
@@ -631,10 +797,12 @@ class GatewayState:
         runs.attach_skill_manager(skills)
         runs.attach_evolution_manager(evolution)
         runs.attach_plugin_manager(plugins)
+
         return cls(
             paths,
             config,
             ledger,
+            workspaces,
             controls,
             selected_providers,
             broker,
@@ -658,6 +826,8 @@ class GatewayState:
 
 
 def create_app(state: GatewayState) -> FastAPI:
+    scheduler = AutomationScheduler(state.runs, f"http://127.0.0.1:{state.config.gateway.port}")
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
         await state.search.start()
@@ -665,8 +835,12 @@ def create_app(state: GatewayState) -> FastAPI:
         await state.plugins.start_enabled()
         await state.runs.recover_queues()
         await state.runs.recover_goals()
-        yield
-        await state.runs.close()
+        await scheduler.start()
+        try:
+            yield
+        finally:
+            await scheduler.close()
+            await state.runs.close()
 
     app = FastAPI(title="Hames Gateway", version=__version__, lifespan=lifespan)
 
@@ -758,6 +932,10 @@ def create_app(state: GatewayState) -> FastAPI:
             mcp_degraded=sum(server.status == "degraded" for server in mcp_servers),
         )
 
+    from hames.connections import install_connections
+
+    install_connections(app, state, auth)
+
     @app.get("/v1/providers", dependencies=auth, response_model=list[ProviderProfile])
     async def providers_endpoint() -> list[ProviderProfile]:
         return [
@@ -832,6 +1010,19 @@ def create_app(state: GatewayState) -> FastAPI:
                     selected_effort = "off"
                 elif efforts == ["on"]:
                     selected_effort = "on"
+        if (
+            configured
+            and configured.adapter in {"zai", "zai_coding"}
+            and selected.id.lower().startswith("glm-5.3")
+            and selected_effort == "off"
+        ):
+            if requested_effort == "off":
+                raise ApiError(
+                    400,
+                    "reasoning_required",
+                    "This GLM model requires reasoning; choose low, high, or max",
+                )
+            selected_effort = "low"
         if selected_effort and selected_effort != "off":
             if selected.reasoning_supported is False:
                 raise ApiError(400, "reasoning_not_supported", "model does not advertise reasoning")
@@ -858,6 +1049,99 @@ def create_app(state: GatewayState) -> FastAPI:
             context_window_tokens = state.config.context.fallback_window_tokens
             context_window_source = "fallback"
         return selected_model_id, selected_effort, context_window_tokens, context_window_source
+
+    @app.get("/v1/workspaces", dependencies=auth, response_model=list[Workspace])
+    async def list_workspaces() -> list[Workspace]:
+        return await asyncio.to_thread(state.workspaces.list)
+
+    async def register_explicit_workspace(workspace: Workspace) -> Workspace:
+        """Persist execution trust only for a directory the user explicitly added."""
+        try:
+            await asyncio.to_thread(state.controls.grant_trust, Path(workspace.path))
+        except (FileNotFoundError, OSError, ValueError, sqlite3.Error) as exc:
+            raise ApiError(
+                500,
+                "workspace_trust_persistence_failed",
+                f"workspace was registered but its trust grant could not be persisted: {exc}",
+                retryable=True,
+            ) from exc
+        return workspace
+
+    @app.post("/v1/workspaces", dependencies=auth, response_model=Workspace, status_code=201)
+    async def create_workspace(request: WorkspaceCreateRequest) -> Workspace:
+        try:
+            workspace = await asyncio.to_thread(
+                state.workspaces.register,
+                Path(request.path),
+                title=request.title,
+                touch=False,
+            )
+            return await register_explicit_workspace(workspace)
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            raise ApiError(400, "invalid_workspace", str(exc)) from exc
+
+    @app.patch("/v1/workspaces/{workspace_id}", dependencies=auth, response_model=Workspace)
+    async def rename_workspace(workspace_id: str, request: WorkspaceRenameRequest) -> Workspace:
+        try:
+            return await asyncio.to_thread(state.workspaces.rename, workspace_id, request.title)
+        except KeyError as exc:
+            raise ApiError(404, "workspace_not_found", "workspace is not registered") from exc
+        except ValueError as exc:
+            raise ApiError(400, "invalid_workspace_title", str(exc)) from exc
+
+    @app.delete("/v1/workspaces/{workspace_id}", dependencies=auth)
+    async def delete_workspace(workspace_id: str) -> dict[str, bool]:
+        deleted = await asyncio.to_thread(state.workspaces.delete, workspace_id)
+        if not deleted:
+            raise ApiError(404, "workspace_not_found", "workspace is not registered")
+        return {"deleted": True}
+
+    @app.get("/v1/directories", dependencies=auth, response_model=DirectoryListing)
+    async def list_directories(path: str | None = None) -> DirectoryListing:
+        try:
+            return await asyncio.to_thread(
+                state.workspaces.list_directory, Path(path) if path else None
+            )
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            raise ApiError(400, "invalid_directory", str(exc)) from exc
+
+    @app.post("/v1/directories/pick", dependencies=auth, response_model=Workspace | None)
+    async def pick_directory(request: DirectoryPickerRequest) -> Workspace | None:
+        try:
+            workspace = await asyncio.to_thread(
+                state.workspaces.pick_directory,
+                Path(request.initial_path) if request.initial_path else None,
+            )
+            return await register_explicit_workspace(workspace) if workspace is not None else None
+        except NativeDirectoryPickerUnavailable as exc:
+            raise ApiError(501, "native_directory_picker_unavailable", str(exc)) from exc
+        except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+            raise ApiError(500, "native_directory_picker_failed", str(exc)) from exc
+
+    @app.post("/v1/directories/select", dependencies=auth)
+    async def select_directory(request: DirectoryPickerRequest) -> dict[str, str] | None:
+        try:
+            selected = await asyncio.to_thread(
+                state.workspaces.select_directory,
+                Path(request.initial_path) if request.initial_path else None,
+            )
+            return {"path": str(selected)} if selected is not None else None
+        except NativeDirectoryPickerUnavailable as exc:
+            raise ApiError(501, "native_directory_picker_unavailable", str(exc)) from exc
+        except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+            raise ApiError(500, "native_directory_picker_failed", str(exc)) from exc
+
+    @app.post("/v1/directories", dependencies=auth, response_model=Workspace, status_code=201)
+    async def create_directory(request: DirectoryCreateRequest) -> Workspace:
+        try:
+            workspace = await asyncio.to_thread(
+                state.workspaces.create_directory, Path(request.parent), request.name
+            )
+            return await register_explicit_workspace(workspace)
+        except FileExistsError as exc:
+            raise ApiError(409, "directory_exists", str(exc)) from exc
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            raise ApiError(400, "invalid_directory", str(exc)) from exc
 
     @app.post("/v1/sessions", dependencies=auth, response_model=Session, status_code=201)
     async def create_session(request: CreateSessionRequest) -> Session:
@@ -899,7 +1183,27 @@ def create_app(state: GatewayState) -> FastAPI:
                     raise ApiError(400, "unknown_agent", str(fallback_exc)) from fallback_exc
             else:
                 raise ApiError(400, "unknown_agent", str(exc)) from exc
-        if inherited is None:
+        capsule = await asyncio.to_thread(state.agents.load, agent_id)
+        agent_id = capsule.metadata.id
+        if (
+            inherited is None
+            and capsule.metadata.execution is not None
+            and not (request.provider or request.model)
+        ):
+            try:
+                (
+                    provider_name,
+                    model,
+                    reasoning_effort,
+                    context_window_tokens,
+                    context_window_source,
+                ) = await resolve_agent_execution(
+                    capsule.metadata.execution, state.providers, state.config
+                )
+            except (ValueError, ProviderError) as exc:
+                raise ApiError(400, "invalid_agent_default_model", str(exc)) from exc
+            interaction_mode = state.config.runtime.default_interaction_mode
+        elif inherited is None:
             provider_name = request.provider or state.config.runtime.default_provider
             selection = await resolve_selection(
                 provider_name,
@@ -919,7 +1223,7 @@ def create_app(state: GatewayState) -> FastAPI:
             context_window_source = inherited.context_window_source
             interaction_mode = inherited.interaction_mode
         try:
-            return await asyncio.to_thread(
+            session = await asyncio.to_thread(
                 state.ledger.create_session,
                 working_directory=Path(request.working_directory),
                 agent_id=agent_id,
@@ -931,12 +1235,34 @@ def create_app(state: GatewayState) -> FastAPI:
                 title=request.title,
                 interaction_mode=interaction_mode,
             )
+            return session
         except (FileNotFoundError, ValueError) as exc:
             raise ApiError(400, "invalid_working_directory", str(exc)) from exc
 
     @app.get("/v1/sessions", dependencies=auth, response_model=list[Session])
-    async def list_sessions(has_messages: bool | None = None) -> list[Session]:
-        return await asyncio.to_thread(state.ledger.list_sessions, has_messages=has_messages)
+    async def list_sessions(
+        has_messages: bool | None = None,
+        include_titled: bool = False,
+        working_directory: str | None = None,
+        registered_workspaces_only: bool = False,
+    ) -> list[Session]:
+        try:
+            sessions = await asyncio.to_thread(
+                state.ledger.list_sessions,
+                has_messages=has_messages,
+                include_titled=include_titled,
+                working_directory=Path(working_directory) if working_directory else None,
+            )
+            if not registered_workspaces_only:
+                return sessions
+            authorized_paths = {
+                workspace.path for workspace in await asyncio.to_thread(state.workspaces.list)
+            }
+            return [
+                session for session in sessions if session.working_directory in authorized_paths
+            ]
+        except (FileNotFoundError, ValueError) as exc:
+            raise ApiError(400, "invalid_working_directory", str(exc)) from exc
 
     @app.get("/v1/sessions/recent", dependencies=auth, response_model=Session | None)
     async def recent_session(
@@ -971,7 +1297,8 @@ def create_app(state: GatewayState) -> FastAPI:
         working_directory: Annotated[str, Query(min_length=1)],
     ) -> AgentCapabilities:
         try:
-            await asyncio.to_thread(state.agents.load, agent_id)
+            capsule = await asyncio.to_thread(state.agents.load, agent_id)
+            agent_id = capsule.metadata.id
         except (FileNotFoundError, ValueError) as exc:
             raise ApiError(404, "agent_not_found", str(exc)) from exc
         workspace = await asyncio.to_thread(
@@ -1029,6 +1356,12 @@ def create_app(state: GatewayState) -> FastAPI:
     @app.patch("/v1/agents/{agent_id}", dependencies=auth, response_model=AgentDetail)
     async def update_agent(agent_id: str, request: AgentUpdateRequest) -> AgentDetail:
         try:
+            if request.default_model is not None:
+                current = await asyncio.to_thread(state.agents.load, agent_id)
+                if current.metadata.execution != request.default_model:
+                    await resolve_agent_execution(
+                        request.default_model, state.providers, state.config
+                    )
             capsule = await asyncio.to_thread(
                 state.agents.update,
                 agent_id,
@@ -1038,12 +1371,16 @@ def create_app(state: GatewayState) -> FastAPI:
                 skills=request.skills,
                 avatar=request.avatar,
                 source=request.source,
+                default_model=request.default_model,
+                update_default_model="default_model" in request.model_fields_set,
             )
             return _agent_detail(capsule)
         except FileNotFoundError as exc:
             raise ApiError(404, "agent_not_found", str(exc)) from exc
         except ValueError as exc:
             raise ApiError(400, "invalid_agent", str(exc)) from exc
+        except ProviderError as exc:
+            raise ApiError(400, "invalid_agent_default_model", str(exc)) from exc
 
     @app.post("/v1/agents/{agent_id}/validate", dependencies=auth, response_model=AgentDetail)
     async def validate_agent(agent_id: str) -> AgentDetail:
@@ -1052,7 +1389,8 @@ def create_app(state: GatewayState) -> FastAPI:
     @app.get("/v1/agents/{agent_id}/usage", dependencies=auth, response_model=AgentUsageProjection)
     async def get_agent_usage(agent_id: str) -> AgentUsageProjection:
         try:
-            await asyncio.to_thread(state.agents.load, agent_id)
+            capsule = await asyncio.to_thread(state.agents.load, agent_id)
+            agent_id = capsule.metadata.id
         except (FileNotFoundError, ValueError) as exc:
             raise ApiError(404, "agent_not_found", str(exc)) from exc
         return await asyncio.to_thread(agent_usage, state.ledger, agent_id)
@@ -1091,9 +1429,7 @@ def create_app(state: GatewayState) -> FastAPI:
         except (OSError, ValueError) as exc:
             raise ApiError(400, "invalid_mcp_server", str(exc)) from exc
 
-    @app.get(
-        "/v1/mcp/servers/{server_id}", dependencies=auth, response_model=McpServerView
-    )
+    @app.get("/v1/mcp/servers/{server_id}", dependencies=auth, response_model=McpServerView)
     async def get_mcp_server(server_id: str) -> McpServerView:
         try:
             return await asyncio.to_thread(state.mcp.describe, server_id)
@@ -1179,6 +1515,46 @@ def create_app(state: GatewayState) -> FastAPI:
             raise ApiError(400, "invalid_plugin", str(exc)) from exc
 
     @app.post(
+        "/v1/plugins/uploads",
+        dependencies=auth,
+        response_model=PluginUploadInspection,
+        status_code=201,
+    )
+    async def inspect_plugin_upload(request: PluginUploadRequest) -> PluginUploadInspection:
+        upload_id = uuid4().hex
+        upload_root = state.paths.plugin_uploads / upload_id
+        try:
+            await asyncio.to_thread(_write_plugin_upload, upload_root, request.files)
+            inspected = await asyncio.to_thread(state.plugins.inspect, upload_root)
+            return PluginUploadInspection(upload_id=upload_id, plugin=inspected)
+        except (binascii.Error, FileNotFoundError, ValueError, OSError) as exc:
+            await asyncio.to_thread(shutil.rmtree, upload_root, True)
+            raise ApiError(400, "invalid_plugin", str(exc)) from exc
+
+    @app.post(
+        "/v1/plugins/uploads/{upload_id}/install",
+        dependencies=auth,
+        response_model=PluginView,
+        status_code=201,
+    )
+    async def install_plugin_upload(upload_id: str) -> PluginView:
+        upload_root = _plugin_upload_root(state.paths, upload_id)
+        try:
+            return await state.plugins.install(upload_root)
+        except FileExistsError as exc:
+            raise ApiError(409, "plugin_exists", str(exc)) from exc
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            raise ApiError(400, "invalid_plugin", str(exc)) from exc
+        finally:
+            await asyncio.to_thread(shutil.rmtree, upload_root, True)
+
+    @app.delete("/v1/plugins/uploads/{upload_id}", dependencies=auth)
+    async def discard_plugin_upload(upload_id: str) -> dict[str, bool]:
+        upload_root = _plugin_upload_root(state.paths, upload_id)
+        await asyncio.to_thread(shutil.rmtree, upload_root, True)
+        return {"discarded": True}
+
+    @app.post(
         "/v1/plugins/install",
         dependencies=auth,
         response_model=PluginView,
@@ -1219,9 +1595,10 @@ def create_app(state: GatewayState) -> FastAPI:
     @app.get("/v1/sessions/{session_id}", dependencies=auth, response_model=Session)
     async def get_session(session_id: str) -> Session:
         try:
-            return await asyncio.to_thread(state.ledger.get_session, session_id)
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+        return await state.runs.ensure_provider_context_window(session)
 
     @app.get(
         "/v1/sessions/{session_id}/environment",
@@ -1370,10 +1747,30 @@ def create_app(state: GatewayState) -> FastAPI:
         if not await state.runs.finish_terminal_session(session_id):
             raise ApiError(409, "session_run_active", "cannot change agent during an active run")
         try:
-            await asyncio.to_thread(state.agents.load, request.agent_id)
-            return await asyncio.to_thread(
+            capsule = await asyncio.to_thread(state.agents.load, request.agent_id)
+            events = await asyncio.to_thread(state.ledger.list_events, session_id)
+            selection = None
+            if capsule.metadata.execution is not None and not any(
+                event.type in {"user.message", "run.started"} for event in events
+            ):
+                selection = await resolve_agent_execution(
+                    capsule.metadata.execution, state.providers, state.config
+                )
+            session = await asyncio.to_thread(
                 state.ledger.update_session_agent, session_id, agent_id=request.agent_id
             )
+            if selection is not None:
+                provider, model, effort, window, source = selection
+                session = await asyncio.to_thread(
+                    state.ledger.update_session_settings,
+                    session_id,
+                    provider=provider,
+                    model=model,
+                    reasoning_effort=effort,
+                    context_window_tokens=window,
+                    context_window_source=source,
+                )
+            return session
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
         except (FileNotFoundError, ValueError) as exc:
@@ -1407,6 +1804,19 @@ def create_app(state: GatewayState) -> FastAPI:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
         except ValueError as exc:
             raise ApiError(400, "invalid_session_title", str(exc)) from exc
+
+    @app.put("/v1/sessions/{session_id}/pinned", dependencies=auth, response_model=Session)
+    async def update_session_pinned(
+        session_id: str, request: UpdateSessionPinnedRequest
+    ) -> Session:
+        try:
+            return await asyncio.to_thread(
+                state.ledger.update_session_pinned,
+                session_id,
+                pinned=request.pinned,
+            )
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
 
     @app.get(
         "/v1/sessions/{session_id}/memories",
@@ -1455,6 +1865,61 @@ def create_app(state: GatewayState) -> FastAPI:
             raise ApiError(404, "memory_not_found", f"unknown visible memory: {memory_id}") from exc
 
     @app.post(
+        "/v1/sessions/{session_id}/memories",
+        dependencies=auth,
+        response_model=MemoryRecord,
+        status_code=201,
+    )
+    async def create_memory(session_id: str, request: MemoryCreateRequest) -> MemoryRecord:
+        encoded = "\n".join((request.subject, request.predicate, request.value, request.summary))
+        if contains_secret(encoded):
+            raise ApiError(
+                400,
+                "memory_secret_rejected",
+                "explicit memory resembles a credential or private key",
+            )
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            source = await asyncio.to_thread(
+                state.ledger.append,
+                session_id=session.id,
+                agent_id=session.agent_id,
+                event_type="memory.capture.requested",
+                payload={"content": request.summary.strip(), "explicit": True},
+                correlation_id=session.id,
+            )
+            mutation = await asyncio.to_thread(
+                state.memory.store.create_candidate,
+                session=session,
+                candidate=MemoryCandidate(
+                    layer=request.layer,
+                    visibility=request.visibility,
+                    subject=request.subject.strip(),
+                    predicate=request.predicate.strip(),
+                    value=request.value.strip(),
+                    summary=request.summary.strip(),
+                    confidence=1.0,
+                    importance=0.8,
+                    provenance_event_ids=[source.id],
+                    evidence_basis="explicit_user",
+                ),
+                run_id=None,
+                origin_kind="explicit",
+                activate=True,
+                causation_id=source.id,
+            )
+            for event in (source, *mutation.events):
+                await state.broker.publish(
+                    event.session_id,
+                    {"durable": True, "event": event.model_dump(mode="json")},
+                )
+            return mutation.record
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+        except ValueError as exc:
+            raise ApiError(400, "invalid_memory", str(exc)) from exc
+
+    @app.post(
         "/v1/sessions/{session_id}/memories/capture",
         dependencies=auth,
         response_model=MemoryJob,
@@ -1481,7 +1946,9 @@ def create_app(state: GatewayState) -> FastAPI:
                 source.session_id,
                 {"durable": True, "event": source.model_dump(mode="json")},
             )
-            return await state.memory.enqueue_capture(session, request.content, source)
+            job = await state.memory.enqueue_capture(session, request.content, source)
+            await state.runs.ensure_work_title(session_id, "Remember")
+            return job
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
 
@@ -1594,7 +2061,9 @@ def create_app(state: GatewayState) -> FastAPI:
     async def retry_memory_job(session_id: str, job_id: str) -> MemoryJob:
         try:
             await asyncio.to_thread(state.ledger.get_session, session_id)
-            return await state.memory.retry(session_id, job_id)
+            job = await state.memory.retry(session_id, job_id)
+            await state.runs.ensure_work_title(session_id, "Memory maintenance")
+            return job
         except KeyError as exc:
             raise ApiError(404, "memory_job_not_found", f"unknown memory job: {job_id}") from exc
         except ValueError as exc:
@@ -1696,12 +2165,14 @@ def create_app(state: GatewayState) -> FastAPI:
     async def author_skill(session_id: str, request: SkillAuthorRequest) -> SkillJob:
         try:
             session = await asyncio.to_thread(state.ledger.get_session, session_id)
-            return await state.skills.author(
+            job = await state.skills.author(
                 session,
                 goal=request.goal,
                 scope=request.scope,
                 target_skill_id=request.target_skill_id,
             )
+            await state.runs.ensure_work_title(session_id, f"Skill: {request.goal}")
+            return job
         except KeyError as exc:
             raise ApiError(404, "session_or_skill_not_found", str(exc)) from exc
         except ValueError as exc:
@@ -1728,11 +2199,62 @@ def create_app(state: GatewayState) -> FastAPI:
     async def retry_skill_job(session_id: str, job_id: str) -> SkillJob:
         try:
             await asyncio.to_thread(state.ledger.get_session, session_id)
-            return await state.skills.retry(session_id, job_id)
+            job = await state.skills.retry(session_id, job_id)
+            await state.runs.ensure_work_title(session_id, "Skill maintenance")
+            return job
         except KeyError as exc:
             raise ApiError(404, "skill_job_not_found", f"unknown Skill job: {job_id}") from exc
         except ValueError as exc:
             raise ApiError(409, "skill_job_not_retryable", str(exc)) from exc
+
+    @app.delete(
+        "/v1/sessions/{session_id}/skills/{slug}",
+        dependencies=auth,
+        response_model=SkillDeleteResponse,
+    )
+    async def delete_skill(session_id: str, slug: str) -> SkillDeleteResponse:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            current = await asyncio.to_thread(state.runs.skills.latest_visible, session, slug)
+            source = await asyncio.to_thread(
+                state.ledger.append,
+                session_id=session.id,
+                agent_id=session.agent_id,
+                event_type="skill.control.requested",
+                payload={
+                    "skill_id": current.skill_id,
+                    "version_id": current.id,
+                    "action": "delete",
+                    "reason": "user_request",
+                },
+                correlation_id=current.skill_id,
+            )
+            await state.broker.publish(
+                source.session_id, {"durable": True, "event": source.model_dump(mode="json")}
+            )
+            result = await asyncio.to_thread(state.runs.skills.delete, session, slug)
+            event = await asyncio.to_thread(
+                state.ledger.append,
+                session_id=session.id,
+                agent_id=session.agent_id,
+                event_type="skill.deleted",
+                payload={
+                    "skill_id": current.skill_id,
+                    "version_id": result.id,
+                    "action": "delete",
+                    "reason": "user_request",
+                },
+                causation_id=source.id,
+                correlation_id=current.skill_id,
+            )
+            await state.broker.publish(
+                event.session_id, {"durable": True, "event": event.model_dump(mode="json")}
+            )
+            return SkillDeleteResponse(skill_id=current.skill_id, slug=slug, deleted=True)
+        except KeyError as exc:
+            raise ApiError(404, "skill_not_found", f"unknown visible Skill: {slug}") from exc
+        except ValueError as exc:
+            raise ApiError(409, "skill_delete_rejected", str(exc)) from exc
 
     @app.post(
         "/v1/sessions/{session_id}/skills/{slug}/{action}",
@@ -1852,6 +2374,44 @@ def create_app(state: GatewayState) -> FastAPI:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
         except ValueError as exc:
             raise ApiError(422, "invalid_status_filter", str(exc)) from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/scars",
+        dependencies=auth,
+        response_model=Scar,
+        status_code=201,
+    )
+    async def create_scar(session_id: str, request: ScarCreateRequest) -> Scar:
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            recorded = await asyncio.to_thread(
+                state.evolution.store.record_candidate,
+                session=session,
+                title=request.title,
+                severity=request.severity,
+                failure_signature=request.failure_signature,
+                description=request.description,
+                expected_behavior=request.expected_behavior,
+                evidence_event_ids=[],
+                detection="manual",
+                scope=request.scope,
+            )
+            opened = await asyncio.to_thread(
+                state.evolution.store.open,
+                session=session,
+                scar_id=recorded.scar.id,
+                reason="created manually",
+            )
+            for event in (*recorded.events, *opened.events):
+                await state.broker.publish(
+                    event.session_id,
+                    {"durable": True, "event": event.model_dump(mode="json")},
+                )
+            return opened.scar
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+        except ValueError as exc:
+            raise ApiError(400, "invalid_scar", str(exc)) from exc
 
     @app.get("/v1/sessions/{session_id}/scars/{scar_id}", dependencies=auth, response_model=Scar)
     async def get_scar(session_id: str, scar_id: str) -> Scar:
@@ -2074,29 +2634,108 @@ def create_app(state: GatewayState) -> FastAPI:
         try:
             usage = await asyncio.to_thread(session_usage, state.ledger, session_id)
             session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            usage.daily_activity = await asyncio.to_thread(
+                workspace_daily_usage,
+                state.ledger,
+                session.working_directory,
+            )
             provider = state.providers.get(session.provider)
-            if provider is not None and provider.adapter == "codex":
-                cached = getattr(provider, "cached_account_rate_limits", lambda: None)()
-                reader = getattr(provider, "account_rate_limits", None)
-                try:
-                    if reader is not None:
-                        usage.account_rate_limits = await asyncio.wait_for(reader(), timeout=1.5)
-                except TimeoutError:
-                    if cached is not None:
-                        usage.account_rate_limits = cached
-                    else:
-                        usage.account_rate_limits_error = (
-                            "Codex account usage unavailable: timed out"
-                        )
-                # Optional account metrics must never make the local session totals unavailable.
-                except Exception as exc:
-                    if cached is not None:
-                        usage.account_rate_limits = cached
-                    else:
-                        usage.account_rate_limits_error = f"Codex account usage unavailable: {exc}"
+            await _attach_codex_account_usage(usage, provider)
             return usage
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+
+    @app.get("/v1/automations", dependencies=auth)
+    async def list_automations() -> dict[str, object]:
+        return {
+            "items": await asyncio.to_thread(state.runs.automations.list),
+            "runs": await asyncio.to_thread(state.runs.automations.history),
+            "native_notifications": scheduler.native_available,
+        }
+
+    async def validate_automation(spec: AutomationDefinition) -> AutomationDefinition:
+        if spec.working_directory:
+            workspace = await asyncio.to_thread(
+                lambda: Path(spec.working_directory).expanduser().resolve(strict=True)
+            )
+            if not workspace.is_dir() or state.controls.get_trust(workspace) is None:
+                raise ValueError("Choose a trusted workspace before scheduling work")
+            spec.working_directory = str(workspace)
+        agent = state.agents.load(spec.agent_id)
+        spec.agent_id = agent.metadata.id
+        if not spec.provider or not spec.model:
+            default = agent.metadata.execution
+            spec.provider = default.provider if default else state.config.runtime.default_provider
+            spec.model = default.model if default else state.config.runtime.default_model
+            spec.reasoning_effort = default.reasoning_effort if default else ""
+        if spec.provider not in state.providers:
+            raise ValueError("Connect the selected provider before scheduling work")
+        if not spec.model:
+            models = await asyncio.wait_for(
+                state.providers[spec.provider].list_models(), timeout=15
+            )
+            if not models:
+                raise ValueError("No models are available for this provider")
+            spec.model = models[0].id
+        return spec
+
+    @app.post("/v1/automations", dependencies=auth, status_code=201)
+    async def create_automation(spec: AutomationDefinition) -> dict[str, Any]:
+        try:
+            spec = await validate_automation(spec)
+            return await asyncio.to_thread(state.runs.automations.save, spec)
+        except (ValueError, KeyError, OSError, ProviderError) as exc:
+            raise ApiError(400, "invalid_automation", str(exc)) from exc
+
+    @app.put("/v1/automations/{automation_id}", dependencies=auth)
+    async def update_automation(automation_id: str, spec: AutomationDefinition) -> dict[str, Any]:
+        try:
+            spec = await validate_automation(spec)
+            return await asyncio.to_thread(state.runs.automations.save, spec, automation_id)
+        except (ValueError, KeyError, OSError, ProviderError) as exc:
+            raise ApiError(400, "invalid_automation", str(exc)) from exc
+
+    @app.post("/v1/automations/{automation_id}/run", dependencies=auth)
+    async def run_automation(automation_id: str) -> dict[str, object]:
+        try:
+            job = await asyncio.to_thread(state.runs.automations.enqueue, automation_id)
+            return {"run_id": job}
+        except (ValueError, KeyError) as exc:
+            raise ApiError(409, "automation_busy", str(exc)) from exc
+
+    @app.delete("/v1/automations/{automation_id}", dependencies=auth)
+    async def delete_automation(automation_id: str) -> dict[str, bool]:
+        try:
+            await asyncio.to_thread(state.runs.automations.delete, automation_id)
+            return {"deleted": True}
+        except ValueError as exc:
+            raise ApiError(409, "automation_busy", str(exc)) from exc
+
+    @app.get("/v1/usage", dependencies=auth, response_model=UsageProjection)
+    async def inspect_pooled_usage() -> UsageProjection:
+        usage = await asyncio.to_thread(pooled_usage, state.ledger, days=365)
+        preferred = state.providers.get(state.config.runtime.default_provider)
+        provider = (
+            preferred
+            if preferred is not None and preferred.adapter == "codex"
+            else next(
+                (
+                    candidate
+                    for candidate in state.providers.values()
+                    if candidate.adapter == "codex"
+                ),
+                None,
+            )
+        )
+        grok = next(
+            (candidate for candidate in state.providers.values() if candidate.adapter == "grok"),
+            None,
+        )
+        await asyncio.gather(
+            _attach_codex_account_usage(usage, provider),
+            _attach_grok_account_usage(usage, grok),
+        )
+        return usage
 
     @app.get("/v1/runs/{run_id}/inspection", dependencies=auth, response_model=RunInspection)
     async def inspect_run_endpoint(run_id: str) -> RunInspection:
@@ -2167,6 +2806,33 @@ def create_app(state: GatewayState) -> FastAPI:
         except KeyError as exc:
             raise ApiError(404, "event_not_found", f"unknown event: {event_id}") from exc
 
+    @app.get("/v1/sessions/{session_id}/attachments/{digest}", dependencies=auth)
+    async def get_message_attachment(session_id: str, digest: str) -> Response:
+        try:
+            events = await asyncio.to_thread(state.ledger.list_events, session_id)
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
+        reference: dict[str, object] | None = None
+        for event in events:
+            raw_value = event.payload.get("attachments", [])
+            if not isinstance(raw_value, list):
+                continue
+            raw_attachments = cast(list[object], raw_value)
+            for raw_attachment in raw_attachments:
+                if not isinstance(raw_attachment, dict):
+                    continue
+                item = cast(dict[str, object], raw_attachment)
+                if item.get("digest") == digest:
+                    reference = item
+        if reference is None:
+            raise ApiError(404, "attachment_not_found", "unknown session attachment")
+        try:
+            content = await asyncio.to_thread(state.ledger.blob_store.read, digest)
+        except (BlobIntegrityError, ValueError) as exc:
+            raise ApiError(409, "attachment_unavailable", str(exc)) from exc
+        media_type = str(reference.get("media_type", "application/octet-stream"))
+        return Response(content=content, media_type=media_type)
+
     @app.get(
         "/v1/events/{event_id}/tool-result-details",
         dependencies=auth,
@@ -2213,6 +2879,7 @@ def create_app(state: GatewayState) -> FastAPI:
     )
     async def send_message(session_id: str, request: MessageRequest) -> MessageAccepted:
         try:
+            attachments = await state.runs.admit_attachments(session_id, request.attachments)
             result = await state.runs.submit(
                 session_id,
                 request.content,
@@ -2221,6 +2888,7 @@ def create_app(state: GatewayState) -> FastAPI:
                 send_now=request.send_now,
                 purpose=request.purpose,
                 submission_id=str(request.submission_id),
+                attachments=[attachment.model_dump(mode="json") for attachment in attachments],
             )
             return MessageAccepted(
                 submission_id=str(request.submission_id),
@@ -2292,12 +2960,12 @@ def create_app(state: GatewayState) -> FastAPI:
     async def execute_plan(session_id: str, request: PlanExecuteRequest) -> PlanExecutionAccepted:
         try:
             plan, tasks, run_id = await state.runs.execute_plan(
-                session_id, strategy=request.strategy, note=request.note
+                session_id, strategy=request.strategy, note=request.note, agent_id=request.agent_id
             )
             return PlanExecutionAccepted(plan=plan, tasks=tasks, run_id=run_id)
         except KeyError as exc:
             raise ApiError(404, "session_not_found", str(exc)) from exc
-        except ValueError as exc:
+        except (ValueError, FileNotFoundError, ProviderError) as exc:
             raise ApiError(409, "plan_execution_rejected", str(exc)) from exc
 
     @app.get(
@@ -2354,6 +3022,17 @@ def create_app(state: GatewayState) -> FastAPI:
             return await state.runs.remove_task(session_id, task_id)
         except KeyError as exc:
             raise ApiError(404, "task_not_found", str(exc)) from exc
+
+    @app.post("/v1/sessions/{session_id}/dream", dependencies=auth, status_code=202)
+    async def dream_session(session_id: str) -> dict[str, str]:
+        try:
+            return {"dream_id": await state.runs.dream(session_id)}
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(409, "session_not_dreamable", str(exc)) from exc
+        except PermissionError as exc:
+            raise ApiError(409, "working_directory_untrusted", str(exc)) from exc
 
     @app.post(
         "/v1/sessions/{session_id}/compact",
@@ -2500,6 +3179,30 @@ def create_app(state: GatewayState) -> FastAPI:
         except ValueError as exc:
             raise ApiError(409, "queued_message_not_sendable", str(exc)) from exc
 
+    @app.patch(
+        "/v1/sessions/{session_id}/queue/{queue_id}",
+        dependencies=auth,
+        response_model=QueueState,
+    )
+    async def edit_queued(
+        session_id: str, queue_id: str, request: QueuedMessageEditRequest
+    ) -> QueueState:
+        try:
+            return await state.runs.edit_queued(
+                session_id,
+                queue_id,
+                content=request.content,
+                expected_content=request.expected_content,
+            )
+        except KeyError as exc:
+            raise ApiError(
+                404,
+                "queued_message_not_found",
+                "This message already started or was removed. Your edit was not sent.",
+            ) from exc
+        except ValueError as exc:
+            raise ApiError(409, "queued_message_edit_conflict", str(exc)) from exc
+
     @app.delete(
         "/v1/sessions/{session_id}/queue/{queue_id}",
         dependencies=auth,
@@ -2581,6 +3284,7 @@ def create_app(state: GatewayState) -> FastAPI:
             answer = await state.runs.resolve_question(
                 question_id,
                 selected_option=request.selected_option,
+                selected_options=request.selected_options,
                 note=request.note,
                 custom_answer=request.custom_answer,
             )
@@ -2591,11 +3295,64 @@ def create_app(state: GatewayState) -> FastAPI:
         return QuestionResolution(
             question_id=question_id,
             answer=answer.answer,
+            answer_type=answer.answer_type,
             selected_option=answer.selected_option,
             selected_description=answer.selected_description,
+            selected_options=list(answer.selected_options),
+            selected_descriptions=list(answer.selected_descriptions),
             note=answer.note,
             custom=answer.custom,
         )
+
+    @app.get("/v1/sessions/{session_id}/commands", dependencies=auth)
+    async def user_commands(session_id: str) -> list[dict[str, object]]:
+        from hames.commands import load_commands
+
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            commands = await asyncio.to_thread(
+                load_commands, state.paths.root, Path(session.working_directory)
+            )
+            return [command.model_dump() for command in commands]
+        except KeyError as exc:
+            raise ApiError(404, "session_not_found", str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(400, "invalid_command_config", str(exc)) from exc
+
+    @app.post(
+        "/v1/sessions/{session_id}/commands/{name}",
+        dependencies=auth,
+        response_model=PlanExecutionAccepted,
+        status_code=202,
+    )
+    async def invoke_user_command(
+        session_id: str, name: str, request: Request
+    ) -> PlanExecutionAccepted:
+        from hames.commands import load_commands
+
+        try:
+            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            commands = await asyncio.to_thread(
+                load_commands, state.paths.root, Path(session.working_directory)
+            )
+            command = next((item for item in commands if item.name == name), None)
+            if command is None:
+                raise ApiError(404, "command_not_found", f"Unknown command: /{name}")
+            body = await request.json()
+            note = cast(dict[str, object], body).get("note", "") if isinstance(body, dict) else None
+            if not isinstance(note, str):
+                raise ValueError("Command note must be text")
+            agent = await asyncio.to_thread(state.agents.load, command.agent)
+            plan, tasks, run_id = await state.runs.execute_plan(
+                session_id, strategy="keep", note=note, agent_id=agent.metadata.id
+            )
+            return PlanExecutionAccepted(plan=plan, tasks=tasks, run_id=run_id)
+        except (KeyError, FileNotFoundError) as exc:
+            raise ApiError(404, "command_target_not_found", str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(400, "command_rejected", str(exc)) from exc
+        except ProviderError as exc:
+            raise ApiError(400, "command_provider_unavailable", str(exc)) from exc
 
     @app.get("/v1/events", dependencies=auth)
     async def stream_events(
@@ -2607,21 +3364,43 @@ def create_app(state: GatewayState) -> FastAPI:
         resume_after = _resume_sequence(after_sequence, last_event_id)
 
         async def generate() -> AsyncIterator[str]:
-            async with state.broker.subscribe(session_id) as queue:
+            async with state.broker.subscribe(session_id, include_snapshot=True) as queue:
                 # Send headers only after the subscriber is registered.  Clients can
                 # now safely open the stream before starting a run without either
                 # side waiting for the other or losing the first transient delta.
                 yield ": connected\n\n"
+                # Snapshot and subscription share a lock: all subsequent deltas are queued.
+                # Its watermark lets clients replay older durable messages without erasing
+                # the current response, even across several model turns in the same run.
+                yield _sse(queue.get_nowait())
                 replay = await asyncio.to_thread(
                     state.ledger.list_events, session_id, after_sequence=resume_after
                 )
+                # Events published while the ledger was read must retain their queue
+                # ordering with transient deltas, rather than being replayed ahead of them.
+                buffered: list[dict[str, object]] = []
+                while not queue.empty():
+                    buffered.append(queue.get_nowait())
+                buffered_ids: set[str] = set()
+                for item in buffered:
+                    value = item.get("event")
+                    if isinstance(value, dict):
+                        identifier = cast(dict[str, object], value).get("id")
+                        if isinstance(identifier, str):
+                            buffered_ids.add(identifier)
                 seen = resume_after
                 for event in replay:
+                    if event.id in buffered_ids:
+                        continue
                     seen = max(seen, event.sequence)
                     yield _sse({"durable": True, "event": event.model_dump(mode="json")})
                 while not await request.is_disconnected():
                     try:
-                        item = await asyncio.wait_for(queue.get(), timeout=15)
+                        item = (
+                            buffered.pop(0)
+                            if buffered
+                            else await asyncio.wait_for(queue.get(), timeout=15)
+                        )
                     except TimeoutError:
                         yield ": keepalive\n\n"
                         continue
@@ -2703,6 +3482,7 @@ def _public_profile(state: GatewayState, profile_id: str, provider: Provider) ->
 def _agent_public(agent: AgentSummary) -> AgentPublic:
     return AgentPublic(
         id=agent.id,
+        slug=agent.slug or agent.id,
         name=agent.name,
         authority=agent.authority,
         path=str(agent.path),
@@ -2716,6 +3496,7 @@ def _agent_detail(capsule: AgentCapsule) -> AgentDetail:
         **_agent_public(
             AgentSummary(
                 id=capsule.metadata.id,
+                slug=capsule.metadata.slug or capsule.metadata.id,
                 name=capsule.metadata.name,
                 authority=capsule.metadata.authority,
                 path=capsule.path,
@@ -2723,6 +3504,7 @@ def _agent_detail(capsule: AgentCapsule) -> AgentDetail:
                 avatar=capsule.metadata.avatar,
             )
         ).model_dump(),
+        default_model=capsule.metadata.execution,
         source=capsule.path.read_text(encoding="utf-8"),
         instructions=capsule.instructions,
         tools_allow=capsule.metadata.tools.allow,
@@ -2758,3 +3540,33 @@ async def _probe(profile_id: str, provider: Provider) -> ProviderProbe:
                 details=dict(exc.details),
             ),
         )
+
+
+def _plugin_upload_root(paths: HamesPaths, upload_id: str) -> Path:
+    if len(upload_id) != 32 or any(character not in "0123456789abcdef" for character in upload_id):
+        raise ApiError(404, "plugin_upload_not_found", "unknown plugin upload")
+    root = paths.plugin_uploads / upload_id
+    if not root.is_dir():
+        raise ApiError(404, "plugin_upload_not_found", "unknown plugin upload")
+    return root
+
+
+def _write_plugin_upload(root: Path, files: list[PluginUploadFile]) -> None:
+    total = 0
+    root.mkdir(mode=0o700, parents=True, exist_ok=False)
+    for uploaded in files:
+        relative = PurePosixPath(uploaded.path.replace("\\", "/"))
+        if (
+            relative.is_absolute()
+            or not relative.parts
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            raise ValueError(f"unsafe plugin upload path: {uploaded.path}")
+        encoded = base64.b64decode(uploaded.data_base64, validate=True)
+        total += len(encoded)
+        if len(encoded) > 12_000_000 or total > 24_000_000:
+            raise ValueError("plugin upload exceeds the 24 MB package limit")
+        destination = root.joinpath(*relative.parts)
+        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        destination.write_bytes(encoded)
+        destination.chmod(0o600)

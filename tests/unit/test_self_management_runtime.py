@@ -5,13 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import TypeAdapter
 
 from hames.gateway import GatewayState
 from hames.paths import HamesPaths
 from hames.providers.codex import CODEX_DEFAULT_CONTEXT_TOKENS
 from hames.providers.fake import FakeProvider
 from hames.runtime import _explicit_memory_maintenance_request
-from hames.skills import SkillDraft
+from hames.skills import SkillDraft, SkillSummary
 from hames.tools import (
     MemoryAddArguments,
     MemoryEditArguments,
@@ -263,7 +264,10 @@ async def test_runtime_skill_catalog_and_controls_reuse_registry(tmp_path: Path)
             "skill_catalog",
             _evidence(state, session.id, "skill-list"),
         )
-        assert catalog.structured_data["count"] == 1
+        summaries = TypeAdapter(list[SkillSummary]).validate_python(
+            catalog.structured_data["skills"]
+        )
+        assert any(skill.slug == "inspect-carefully" for skill in summaries)
 
         pinned = await state.runs._handle_self_management_tool(
             "run-skill-pin",
@@ -311,6 +315,15 @@ class _CodexWindowStub:
         return None
 
 
+class _GrokWindowStub:
+    profile_id = "grok"
+    adapter = "grok"
+    base_url = "https://cli-chat-proxy.grok.com/v1"
+
+    async def aclose(self) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_codex_fallback_context_window_is_raised_before_compaction(
     tmp_path: Path,
@@ -325,8 +338,72 @@ async def test_codex_fallback_context_window_is_raised_before_compaction(
     )
     try:
         assert session.context_window_source == "fallback"
-        refreshed = await state.runs._ensure_provider_context_window(session)
+        refreshed = await state.runs.ensure_provider_context_window(session)
         assert refreshed.context_window_tokens == CODEX_DEFAULT_CONTEXT_TOKENS
         assert refreshed.context_window_source == "provider"
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_grok_fallback_context_window_is_raised_before_compaction(
+    tmp_path: Path,
+) -> None:
+    from hames.providers.xai import GROK_DEFAULT_CONTEXT_TOKENS
+
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"grok": _GrokWindowStub()})  # type: ignore[arg-type]
+    session = state.ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="grok",
+        model="grok-4.6",
+    )
+    try:
+        assert session.context_window_source == "fallback"
+        refreshed = await state.runs.ensure_provider_context_window(session)
+        assert refreshed.context_window_tokens == GROK_DEFAULT_CONTEXT_TOKENS
+        assert refreshed.context_window_source == "provider"
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adapter", ["llama_cpp", "ollama"])
+@pytest.mark.parametrize("source", ["fallback", "profile"])
+async def test_local_provider_refreshes_fallback_but_preserves_explicit_window(
+    tmp_path: Path,
+    adapter: str,
+    source: str,
+) -> None:
+    from hames.providers.base import ProviderModel
+
+    class LocalProvider(FakeProvider):
+        async def list_models(self) -> list[ProviderModel]:
+            return [ProviderModel(id="fixture", provider="local", context_length=131072)]
+
+    provider = LocalProvider([])
+    provider.adapter = adapter
+    state = GatewayState.create(
+        HamesPaths.resolve(root=tmp_path / "home"), providers={"local": provider}
+    )
+    session = state.ledger.create_session(
+        working_directory=tmp_path,
+        agent_id="default",
+        provider="local",
+        model="fixture",
+        context_window_tokens=32768,
+        context_window_source=source,
+    )
+    try:
+        refreshed = await state.runs.ensure_provider_context_window(session)
+        assert refreshed.context_window_tokens == (131072 if source == "fallback" else 32768)
+        assert refreshed.context_window_source == (
+            "provider" if source == "fallback" else "profile"
+        )
+        assert (
+            state.ledger.get_session(session.id).context_window_tokens
+            == refreshed.context_window_tokens
+        )
     finally:
         await state.runs.close()

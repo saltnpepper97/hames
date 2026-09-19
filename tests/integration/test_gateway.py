@@ -30,6 +30,7 @@ from hames.providers import (
 from hames.providers.base import JSON_OBJECT, JsonValue
 from hames.providers.fake import FakeProvider
 from hames.skills import SkillDraft
+from hames.workspaces import Workspace
 
 EVENT_LIST = TypeAdapter(list[dict[str, JsonValue]])
 
@@ -84,6 +85,178 @@ class ForegroundOverlapProvider:
         return None
 
 
+class VisionFakeProvider(FakeProvider):
+    async def list_models(self) -> list[ProviderModel]:
+        return [
+            ProviderModel(
+                id="fixture",
+                provider="fake",
+                status="available",
+                input_modalities=["text", "image"],
+                output_modalities=["text"],
+            )
+        ]
+
+
+@pytest.mark.asyncio
+async def test_workspace_crud_directory_browser_and_scoped_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            added = await client.post("/v1/workspaces", headers=headers, json={"path": str(first)})
+            assert added.status_code == 201
+            workspace = response_object(added)
+            assert workspace["title"] == "first"
+            assert workspace["available"] is True
+
+            first_session = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(first), "provider": "fake", "model": "fixture"},
+            )
+            first_session_id = str(response_object(first_session)["id"])
+            trusted_after_add = await client.get(
+                f"/v1/sessions/{first_session_id}/trust", headers=headers
+            )
+            assert response_object(trusted_after_add)["trusted"] is True
+
+            renamed = await client.patch(
+                f"/v1/workspaces/{workspace['id']}",
+                headers=headers,
+                json={"title": "First project"},
+            )
+            assert response_object(renamed)["title"] == "First project"
+
+            listing = await client.get(
+                "/v1/directories", headers=headers, params={"path": str(tmp_path)}
+            )
+            assert listing.status_code == 200
+            assert {entry["name"] for entry in listing.json()["directories"]} >= {
+                "first",
+                "second",
+            }
+
+            created_folder = await client.post(
+                "/v1/directories",
+                headers=headers,
+                json={"parent": str(tmp_path), "name": "third"},
+            )
+            assert created_folder.status_code == 201
+            assert (tmp_path / "third").is_dir()
+            created_folder_session = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path / "third"),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            created_folder_trust = await client.get(
+                f"/v1/sessions/{created_folder_session.json()['id']}/trust", headers=headers
+            )
+            assert response_object(created_folder_trust)["trusted"] is True
+
+            def select_second(_: Path | None) -> Path:
+                return second
+
+            before_selection = state.workspaces.list()
+            monkeypatch.setattr(state.workspaces, "select_directory", select_second)
+            selected_folder = await client.post(
+                "/v1/directories/select",
+                headers=headers,
+                json={"initial_path": str(first)},
+            )
+            assert selected_folder.status_code == 200
+            assert response_object(selected_folder)["path"] == str(second)
+            assert state.workspaces.list() == before_selection
+            named_folder = await client.post(
+                "/v1/workspaces",
+                headers=headers,
+                json={"path": str(second), "title": "Named project"},
+            )
+            assert named_folder.status_code == 201
+            assert response_object(named_folder)["title"] == "Named project"
+
+            def pick_second(_: Path | None) -> Workspace:
+                return state.workspaces.register(second, touch=False)
+
+            monkeypatch.setattr(state.workspaces, "pick_directory", pick_second)
+            picked_folder = await client.post(
+                "/v1/directories/pick",
+                headers=headers,
+                json={"initial_path": str(first)},
+            )
+            assert picked_folder.status_code == 200
+            assert response_object(picked_folder)["path"] == str(second)
+
+            second_session = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(second),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            scoped = await client.get(
+                "/v1/sessions",
+                headers=headers,
+                params={"working_directory": str(first)},
+            )
+            assert [session["id"] for session in scoped.json()] == [first_session.json()["id"]]
+            assert second_session.json()["id"] not in {session["id"] for session in scoped.json()}
+
+            deleted = await client.delete(f"/v1/workspaces/{workspace['id']}", headers=headers)
+            assert deleted.status_code == 200
+            assert first.is_dir()
+            assert first_session.json()["id"] in {
+                session["id"]
+                for session in (await client.get("/v1/sessions", headers=headers)).json()
+            }
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_explicit_workspace_add_reports_trust_persistence_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+
+    def fail_grant(_: Path) -> object:
+        raise OSError("database temporarily unavailable")
+
+    monkeypatch.setattr(state.controls, "grant_trust", fail_grant)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/v1/workspaces", headers=headers, json={"path": str(workspace_path)}
+            )
+            assert response.status_code == 500
+            body = response_object(response)
+            error = body["error"]
+            assert isinstance(error, dict)
+            assert error["code"] == "workspace_trust_persistence_failed"
+            assert "trust grant could not be persisted" in str(error["message"])
+    finally:
+        await state.runs.close()
+
+
 @pytest.mark.asyncio
 async def test_session_environment_endpoint_exposes_current_workspace(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
@@ -112,6 +285,66 @@ async def test_session_environment_endpoint_exposes_current_workspace(tmp_path: 
             assert workspace["repository"] is False
             assert environment["tool_shell"] == "/bin/bash"
             assert environment["tool_terminal"] == "noninteractive"
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_message_image_is_durable_and_reaches_vision_provider(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    provider = VisionFakeProvider(
+        [
+            StreamEvent(kind=StreamEventKind.STARTED),
+            StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="seen"),
+            StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+        ]
+    )
+    state = GatewayState.create(paths, providers={"fake": provider})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    encoded = "iVBORw0KGgpyZXN0"
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+
+            sent = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={
+                    "content": "What is this?",
+                    "attachments": [
+                        {"name": "pixel.png", "media_type": "image/png", "data_base64": encoded}
+                    ],
+                },
+            )
+            assert sent.status_code == 202
+            await _wait_for_event(client, headers, session_id, "run.completed")
+            assert provider.requests[-1].messages[-1].attachments[0].data_base64 == encoded
+
+            user_event = next(
+                event
+                for event in state.ledger.list_events(session_id)
+                if event.type == "user.message"
+            )
+            references = cast(list[object], user_event.payload["attachments"])
+            reference = JSON_OBJECT.validate_python(references[0])
+            digest = str(reference["digest"])
+            assert "data_base64" not in reference
+            fetched = await client.get(
+                f"/v1/sessions/{session_id}/attachments/{digest}", headers=headers
+            )
+            assert fetched.status_code == 200
+            assert fetched.content.startswith(b"\x89PNG\r\n\x1a\n")
     finally:
         await state.runs.close()
 
@@ -476,13 +709,76 @@ class QuestionProvider:
         assert result["structured_data"] == {
             "question_id": result["structured_data"]["question_id"],
             "answer": "Subdued\nNote: Keep it calm",
+            "answer_type": "single_choice",
             "selected_option": "Subdued",
             "selected_description": "Calm contrast.\n\nUse motion sparingly.",
+            "selected_options": ["Subdued"],
+            "selected_descriptions": ["Calm contrast.\n\nUse motion sparingly."],
             "note": "Keep it calm",
             "custom": False,
         }
         yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="I will use the subdued direction.")
         yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
+
+    async def aclose(self) -> None:
+        return None
+
+
+class QuestionKindsProvider:
+    profile_id = "fake"
+    adapter = "fake"
+    base_url = ""
+
+    def __init__(self) -> None:
+        self.requests: list[ModelRequest] = []
+
+    async def list_models(self) -> list[ProviderModel]:
+        return [ProviderModel(id="fixture", provider="fake", status="available")]
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+        self.requests.append(request)
+        yield StreamEvent(kind=StreamEventKind.STARTED)
+        if len(self.requests) == 1:
+            arguments = {
+                "question": "Which checks should run?",
+                "answer_type": "multiple_choice",
+                "options": [
+                    {"label": "Unit", "description": "Fast checks."},
+                    {"label": "Integration", "description": "Gateway checks."},
+                    {"label": "Browser", "description": "Rendered checks."},
+                ],
+                "min_selections": 2,
+                "max_selections": 3,
+            }
+        elif len(self.requests) == 2:
+            result = json.loads(request.messages[-1].content)
+            assert result["structured_data"]["selected_options"] == ["Unit", "Browser"]
+            assert result["structured_data"]["selected_descriptions"] == [
+                "Fast checks.",
+                "Rendered checks.",
+            ]
+            arguments = {
+                "question": "What should the release be called?",
+                "answer_type": "text",
+                "placeholder": "Release name",
+            }
+        else:
+            result = json.loads(request.messages[-1].content)
+            assert result["structured_data"]["answer_type"] == "text"
+            assert result["structured_data"]["answer"] == "Moonrise"
+            yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="The checks and name are set.")
+            yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
+            return
+        yield StreamEvent(
+            kind=StreamEventKind.TOOL_CALL_DELTA,
+            tool_call=ToolCallDelta(
+                index=0,
+                provider_call_id=f"question-{len(self.requests)}",
+                name="ask_user",
+                arguments_delta=json.dumps(arguments),
+            ),
+        )
+        yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls")
 
     async def aclose(self) -> None:
         return None
@@ -771,7 +1067,7 @@ class GoalForegroundProvider:
 
 
 @pytest.mark.asyncio
-async def test_gateway_queues_two_messages_and_promotes_them_fifo(tmp_path: Path) -> None:
+async def test_gateway_queues_three_messages_and_promotes_them_fifo(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     provider = QueueProvider()
     state = GatewayState.create(paths, providers={"fake": provider})
@@ -799,7 +1095,7 @@ async def test_gateway_queues_two_messages_and_promotes_them_fifo(tmp_path: Path
             assert response_object(started)["disposition"] == "started"
             await asyncio.wait_for(provider.first_started.wait(), timeout=1)
 
-            for content, position in [("two", 1), ("three", 2)]:
+            for content, position in [("two", 1), ("three", 2), ("four", 3)]:
                 queued = await client.post(
                     f"/v1/sessions/{session_id}/messages",
                     headers=headers,
@@ -812,19 +1108,47 @@ async def test_gateway_queues_two_messages_and_promotes_them_fifo(tmp_path: Path
             full = await client.post(
                 f"/v1/sessions/{session_id}/messages",
                 headers=headers,
-                json={"content": "four"},
+                json={"content": "five"},
             )
             assert full.status_code == 409
             assert response_object(full)["error"]["code"] == "session_queue_full"  # type: ignore[index]
 
+            queue_before = (
+                await client.get(f"/v1/sessions/{session_id}/queue", headers=headers)
+            ).json()
+            edit_id = queue_before["items"][1]["id"]
+            edited = await client.patch(
+                f"/v1/sessions/{session_id}/queue/{edit_id}",
+                headers=headers,
+                json={"content": "three edited", "expected_content": "three"},
+            )
+            assert edited.status_code == 200
+            assert [item["id"] for item in edited.json()["items"]] == [
+                item["id"] for item in queue_before["items"]
+            ]
+            stale = await client.patch(
+                f"/v1/sessions/{session_id}/queue/{edit_id}",
+                headers=headers,
+                json={"content": "stale edit", "expected_content": "three"},
+            )
+            assert stale.status_code == 409
+
             provider.release_first.set()
             events = await _wait_for_event(
-                client, headers, session_id, "run.completed", occurrences=3
+                client, headers, session_id, "run.completed", occurrences=4
             )
             users = _user_contents(events)
-            assert users == ["one", "two", "three"]
+            assert users == ["one", "two", "three edited", "four"]
             queue = await client.get(f"/v1/sessions/{session_id}/queue", headers=headers)
             assert response_object(queue)["items"] == []
+            late = await client.patch(
+                f"/v1/sessions/{session_id}/queue/{edit_id}",
+                headers=headers,
+                json={"content": "do not recreate", "expected_content": "three edited"},
+            )
+            assert late.status_code == 404
+            assert any(event["type"] == "queue.updated" for event in events)
+
     finally:
         await state.runs.close()
 
@@ -1031,6 +1355,63 @@ async def test_usage_includes_codex_account_progress_when_available(tmp_path: Pa
             assert isinstance(weekly, dict)
             assert weekly["used"] == 58
             assert weekly["remaining"] == 42
+            pooled = response_object(await client.get("/v1/usage", headers=headers))
+            pooled_account = pooled["account_rate_limits"]
+            assert isinstance(pooled_account, dict)
+            assert pooled_account["plan_type"] == "prolite"
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_pooled_usage_combines_activity_from_every_workspace(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text("[memory]\nenabled = false\n", encoding="utf-8")
+    fake = FakeProvider(
+        [
+            StreamEvent(kind=StreamEventKind.STARTED),
+            StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="done"),
+            StreamEvent(kind=StreamEventKind.USAGE, usage=Usage(input_tokens=10, output_tokens=2)),
+            StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+        ]
+    )
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            for index in range(2):
+                workspace = tmp_path / f"workspace-{index}"
+                workspace.mkdir()
+                created = await client.post(
+                    "/v1/sessions",
+                    headers=headers,
+                    json={
+                        "working_directory": str(workspace),
+                        "provider": "fake",
+                        "model": "fixture",
+                    },
+                )
+                session_id = str(response_object(created)["id"])
+                await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+                await client.post(
+                    f"/v1/sessions/{session_id}/messages",
+                    headers=headers,
+                    json={"content": f"turn {index}"},
+                )
+                await _wait_for_event(client, headers, session_id, "run.completed")
+
+            pooled = response_object(await client.get("/v1/usage", headers=headers))
+            assert pooled["input_tokens"] == 20
+            assert pooled["output_tokens"] == 4
+            assert pooled["model_requests"] == 2
+            activity = pooled["daily_activity"]
+            assert isinstance(activity, list)
+            assert len(activity) == 1
+            assert activity[0]["input_tokens"] == 20  # type: ignore[index]
+            assert activity[0]["output_tokens"] == 4  # type: ignore[index]
+            assert activity[0]["model_requests"] == 2  # type: ignore[index]
     finally:
         await state.runs.close()
 
@@ -1154,7 +1535,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 37
+            assert health_body["protocol_version"] == 38
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -1213,7 +1594,8 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                 if "run.completed" in event_types:
                     break
                 await asyncio.sleep(0.01)
-            assert event_types[:14] == [
+            assert "session.title.changed" in event_types
+            assert [kind for kind in event_types if kind != "session.title.changed"][:14] == [
                 "session.opened",
                 "trust.granted",
                 "user.message",
@@ -1294,6 +1676,21 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             usage_response = await client.get(f"/v1/sessions/{session_id}/usage", headers=headers)
             usage_body = usage_response.json()
             assert usage_body["input_tokens"] == 10
+            assert usage_body["daily_activity"] == [
+                {
+                    "date": str(
+                        next(event for event in events if event["type"] == "model.usage")[
+                            "created_at"
+                        ]
+                    )[:10],
+                    "input_tokens": 10,
+                    "output_tokens": 2,
+                    "cached_input_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "provider_reported_cost": 0.0,
+                    "model_requests": 1,
+                }
+            ]
             assert usage_body["latest_context"] == {
                 "provider": context_payload["provider"],
                 "model": context_payload["model"],
@@ -1330,7 +1727,9 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                 client, headers, session_id, "session.title.changed"
             )
             title_event = next(
-                event for event in title_events if event["type"] == "session.title.changed"
+                event
+                for event in reversed(title_events)
+                if event["type"] == "session.title.changed"
             )
             assert title_event["payload"] == {"title": "Durable gateway conversation"}
 
@@ -1391,15 +1790,37 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
         await state.runs.close()
 
 
+@pytest.mark.parametrize("interaction_mode", ["auto", "plan"])
 @pytest.mark.asyncio
 async def test_structured_commentary_and_reasoning_keep_their_tool_boundaries(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interaction_mode: str,
 ) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     paths.ensure_foundation()
     paths.config_file.write_text("[memory]\nenabled = false\n", encoding="utf-8")
     provider = StructuredMessageProvider()
     state = GatewayState.create(paths, providers={provider.profile_id: provider})
+    live_text = ""
+    streamed_messages: list[str] = []
+    publish = state.broker.publish
+
+    async def capture(session_id: str, envelope: dict[str, object]) -> None:
+        nonlocal live_text
+        if envelope.get("type") == "response.text_delta":
+            payload = JSON_OBJECT.validate_python(envelope["payload"])
+            live_text += str(payload.get("text", ""))
+        event = envelope.get("event")
+        if (
+            isinstance(event, dict)
+            and JSON_OBJECT.validate_python(event).get("type") == "assistant.message"
+        ):
+            streamed_messages.append(live_text)
+            live_text = ""
+        await publish(session_id, envelope)
+
+    monkeypatch.setattr(state.broker, "publish", capture)
     headers = {"Authorization": f"Bearer {state.token}"}
     transport = httpx.ASGITransport(app=create_app(state))
     try:
@@ -1414,6 +1835,11 @@ async def test_structured_commentary_and_reasoning_keep_their_tool_boundaries(
                 },
             )
             session_id = str(response_object(created)["id"])
+            await client.put(
+                f"/v1/sessions/{session_id}/mode",
+                headers=headers,
+                json={"mode": interaction_mode},
+            )
             assert (
                 await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
             ).status_code == 200
@@ -1446,6 +1872,8 @@ async def test_structured_commentary_and_reasoning_keep_their_tool_boundaries(
                 "I'll inspect this first.",
                 "Final answer only.",
             ]
+            # Inspect the transient stream, not just the corrected durable answer.
+            assert streamed_messages[-1] == "Final answer only."
             reasoning = [
                 JSON_OBJECT.validate_python(event["payload"])
                 for event in visible
@@ -1517,8 +1945,11 @@ async def test_agent_question_pauses_and_resumes_the_same_run(tmp_path: Path) ->
             assert response_object(resolved) == {
                 "question_id": payload["question_id"],
                 "answer": "Subdued\nNote: Keep it calm",
+                "answer_type": "single_choice",
                 "selected_option": "Subdued",
                 "selected_description": "Calm contrast.\n\nUse motion sparingly.",
+                "selected_options": ["Subdued"],
+                "selected_descriptions": ["Calm contrast.\n\nUse motion sparingly."],
                 "note": "Keep it calm",
                 "custom": False,
             }
@@ -1532,6 +1963,81 @@ async def test_agent_question_pauses_and_resumes_the_same_run(tmp_path: Path) ->
             )
             assert answer["payload"]["content"] == "I will use the subdued direction."  # type: ignore[index]
             assert len(provider.requests) == 2
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_supports_multiple_choice_and_text_questions(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text("[memory]\nenabled = false\n", encoding="utf-8")
+    provider = QuestionKindsProvider()
+    state = GatewayState.create(paths, providers={"fake": provider})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            accepted = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Ask me what to run and what to call the release."},
+            )
+            run_id = str(response_object(accepted)["run_id"])
+            events = await _wait_for_event(client, headers, session_id, "question.requested")
+            requested = next(event for event in events if event["type"] == "question.requested")
+            payload = JSON_OBJECT.validate_python(requested["payload"])
+            assert payload["answer_type"] == "multiple_choice"
+            assert payload["min_selections"] == 2
+            assert payload["max_selections"] == 3
+
+            invalid = await client.post(
+                f"/v1/questions/{payload['question_id']}",
+                headers=headers,
+                json={"selected_options": ["Unit"]},
+            )
+            assert invalid.status_code == 422
+            resolved = await client.post(
+                f"/v1/questions/{payload['question_id']}",
+                headers=headers,
+                json={"selected_options": ["Browser", "Unit"]},
+            )
+            assert resolved.status_code == 200, resolved.text
+            resolution = response_object(resolved)
+            assert resolution["selected_options"] == ["Unit", "Browser"]
+            assert resolution["selected_descriptions"] == ["Fast checks.", "Rendered checks."]
+
+            events = await _wait_for_event(
+                client, headers, session_id, "question.requested", occurrences=2
+            )
+            questions = [event for event in events if event["type"] == "question.requested"]
+            text_payload = JSON_OBJECT.validate_python(questions[-1]["payload"])
+            assert text_payload["answer_type"] == "text"
+            assert text_payload["options"] == []
+            assert text_payload["placeholder"] == "Release name"
+
+            text_resolution = await client.post(
+                f"/v1/questions/{text_payload['question_id']}",
+                headers=headers,
+                json={"custom_answer": "Moonrise"},
+            )
+            assert text_resolution.status_code == 200, text_resolution.text
+            assert response_object(text_resolution)["answer"] == "Moonrise"
+            events = await _wait_for_event(client, headers, session_id, "run.completed")
+            completed = next(event for event in events if event["type"] == "run.completed")
+            assert completed["run_id"] == run_id
+            assert len(provider.requests) == 3
     finally:
         await state.runs.close()
 
@@ -1854,6 +2360,7 @@ async def test_explicit_heal_repairs_scars_without_changing_plan_mode(tmp_path: 
             assert accepted.status_code == 202, accepted.text
             await _wait_for_event(client, headers, session_id, "run.completed")
 
+            assert state.ledger.get_session(session_id).title == "Heal scars"
             assert state.evolution.store.get(scar.id).status == "guarded"
             assert state.ledger.get_session(session_id).interaction_mode == "plan"
             assert "Execution mode is auto" in fake.requests[0].system
@@ -2435,6 +2942,14 @@ async def test_gateway_closes_session_without_erasing_audit_history(tmp_path: Pa
             assert created.status_code == 201
             session_id = str(response_object(created)["id"])
 
+            pinned = await client.put(
+                f"/v1/sessions/{session_id}/pinned",
+                headers=headers,
+                json={"pinned": True},
+            )
+            assert pinned.status_code == 200
+            assert response_object(pinned)["pinned"] is True
+
             closed = await client.delete(f"/v1/sessions/{session_id}", headers=headers)
             assert closed.status_code == 200
             assert response_object(closed)["status"] == "closed"
@@ -2452,6 +2967,7 @@ async def test_gateway_closes_session_without_erasing_audit_history(tmp_path: Pa
             events = EVENT_LIST.validate_python(cast(object, history.json()))
             assert [event["type"] for event in events] == [
                 "session.opened",
+                "session.pinned.changed",
                 "session.closed",
             ]
 
@@ -3193,6 +3709,7 @@ async def test_goal_runs_multiple_bounded_steps_until_evidence_backed_achievemen
             )
             assert started.status_code == 202
             assert response_object(started)["status"] == "running"
+            assert state.ledger.get_session(session_id).title == "Complete the whole feature"
             events = await _wait_for_event(client, headers, session_id, "goal.achieved")
 
             history = await client.get(f"/v1/sessions/{session_id}/goals", headers=headers)
@@ -3370,6 +3887,7 @@ async def test_manual_compaction_uses_active_provider_and_records_a_durable_cuto
             )
             payload = JSON_OBJECT.validate_python(completed["payload"])
             assert completed["run_id"] == run_id
+            assert state.ledger.get_session(session_id).title == "Compact conversation"
             assert payload["summary"] == "Keep the earlier requirements and completed verification."
             assert payload["turns_compacted"] == 2
             assert payload["provider"] == "fake"
@@ -3589,7 +4107,7 @@ async def test_model_can_title_the_active_session(tmp_path: Path) -> None:
             )
             events = await _wait_for_event(client, headers, session_id, "run.completed")
             title_event = next(
-                event for event in events if event["type"] == "session.title.changed"
+                event for event in reversed(events) if event["type"] == "session.title.changed"
             )
             assert title_event["payload"] == {"title": "Theme and composer polish"}
             assert title_event["run_id"] is not None
@@ -3929,11 +4447,11 @@ async def test_runtime_delegates_with_an_explicit_task_card(tmp_path: Path) -> N
                 "memory_search",
                 "scar_list",
                 "skill_catalog",
-                    "session_title_set",
-                    "task_list",
-                    "task_update",
-                    "mcp_resource_list",
-                    "mcp_resource_read",
+                "session_title_set",
+                "task_list",
+                "task_update",
+                "mcp_resource_list",
+                "mcp_resource_read",
             ]
             assert fake.requests[2].messages[-1].tool_name == "spawn_agent"
             assert run_id
@@ -4009,15 +4527,16 @@ async def test_agent_selection_changes_only_future_turns(tmp_path: Path) -> None
                 "ask_user",
                 "read_file",
                 "list_dir",
+                "spawn_agent",
                 "skill_load",
                 "memory_search",
                 "scar_list",
                 "skill_catalog",
-                    "session_title_set",
-                    "task_list",
-                    "task_update",
-                    "mcp_resource_list",
-                    "mcp_resource_read",
+                "session_title_set",
+                "task_list",
+                "task_update",
+                "mcp_resource_list",
+                "mcp_resource_read",
             ]
     finally:
         await state.runs.close()
@@ -4240,6 +4759,58 @@ async def test_agent_active_time_limit_is_typed(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_gateway_creates_each_explicit_memory_layer(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            for layer in ("relationship", "semantic", "episodic"):
+                response = await client.post(
+                    f"/v1/sessions/{session_id}/memories",
+                    headers=headers,
+                    json={
+                        "layer": layer,
+                        "visibility": "workspace",
+                        "subject": f"test:{layer}",
+                        "predicate": "records_fact",
+                        "value": f"A durable {layer} value",
+                        "summary": f"An explicit {layer} memory.",
+                    },
+                )
+                assert response.status_code == 201
+                body = response_object(response)
+                assert body["layer"] == layer
+                assert body["status"] == "active"
+                assert body["origin_kind"] == "explicit"
+                assert body["visibility"] == "workspace"
+
+            listed = await client.get(
+                f"/v1/sessions/{session_id}/memories",
+                headers=headers,
+                params={"status": "active"},
+            )
+            assert {item["layer"] for item in listed.json()} == {
+                "relationship",
+                "semantic",
+                "episodic",
+            }
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
 async def test_gateway_exposes_memory_review_and_promotion(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
@@ -4341,6 +4912,17 @@ async def test_gateway_exposes_memory_review_and_promotion(tmp_path: Path) -> No
 @pytest.mark.asyncio
 async def test_gateway_exposes_skill_inspection_and_lifecycle_controls(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
+    portable_dir = paths.portable_global_skills / "portable-review"
+    portable_dir.mkdir(parents=True)
+    portable_dir.joinpath("SKILL.md").write_text(
+        """---
+name: portable-review
+description: Review code from the global portable Skill directory.
+---
+Review the requested code.
+""",
+        encoding="utf-8",
+    )
     state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
     headers = {"Authorization": f"Bearer {state.token}"}
     transport = httpx.ASGITransport(app=create_app(state))
@@ -4449,6 +5031,32 @@ async def test_gateway_exposes_skill_inspection_and_lifecycle_controls(tmp_path:
             )
             assert history.status_code == 200
             assert len(history.json()) == 1
+            deleted = await client.delete(
+                f"/v1/sessions/{session_id}/skills/inspect-files", headers=headers
+            )
+            assert deleted.status_code == 200
+            assert deleted.json() == {
+                "skill_id": drafted.version.skill_id,
+                "slug": "inspect-files",
+                "deleted": True,
+            }
+            after_delete = await client.get(
+                f"/v1/sessions/{session_id}/skills/available", headers=headers
+            )
+            assert "inspect-files" not in {item["slug"] for item in after_delete.json()}
+            events = await client.get(f"/v1/sessions/{session_id}/events", headers=headers)
+            assert "skill.deleted" in {item["type"] for item in events.json()}
+
+            builtin_delete = await client.delete(
+                f"/v1/sessions/{session_id}/skills/visual-verification", headers=headers
+            )
+            assert builtin_delete.status_code == 409
+            assert "read-only" in builtin_delete.text
+            portable_delete = await client.delete(
+                f"/v1/sessions/{session_id}/skills/portable-review", headers=headers
+            )
+            assert portable_delete.status_code == 409
+            assert "read-only" in portable_delete.text
             jobs = await client.get(f"/v1/sessions/{session_id}/skill-jobs", headers=headers)
             assert jobs.status_code == 200
             assert jobs.json() == []
@@ -4509,6 +5117,37 @@ Teach $ARGUMENTS with one example.
             assert available.status_code == 200
             assert available.json()["created_by"] == "external"
             assert available.json()["instructions"].startswith("Teach $ARGUMENTS")
+            fake.turns = [
+                [
+                    StreamEvent(kind=StreamEventKind.STARTED),
+                    StreamEvent(
+                        kind=StreamEventKind.TOOL_CALL_DELTA,
+                        tool_call=ToolCallDelta(
+                            index=0,
+                            provider_call_id="reload-selected",
+                            name="skill_load",
+                            arguments_delta=json.dumps({"id": teach["id"]}),
+                        ),
+                    ),
+                    StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+                ],
+                [
+                    StreamEvent(kind=StreamEventKind.STARTED),
+                    StreamEvent(
+                        kind=StreamEventKind.TOOL_CALL_DELTA,
+                        tool_call=ToolCallDelta(
+                            index=0,
+                            provider_call_id="undeclared-script",
+                            name="skill_run",
+                            arguments_delta=json.dumps(
+                                {"id": teach["id"], "script": "missing", "args": []}
+                            ),
+                        ),
+                    ),
+                    StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+                ],
+                fake.events,
+            ]
             accepted = await client.post(
                 f"/v1/sessions/{session_id}/messages",
                 headers=headers,
@@ -4519,6 +5158,15 @@ Teach $ARGUMENTS with one example.
             loaded = next(event for event in events if event["type"] == "skill.loaded")
             assert loaded["payload"]["reason"] == "user_selected"  # type: ignore[index]
             assert "Teach finite state machines with one example." in fake.requests[0].system
+            completed = [event for event in events if event["type"] == "tool.completed"]
+            assert any("loaded Skill teach" in str(event["payload"]) for event in completed)
+            assert any(
+                "Skill does not declare that script" in str(event["payload"])
+                for event in events
+                if event["type"] == "tool.rejected"
+            )
+            assert "Teach finite state machines with one example." in str(fake.requests[1].messages)
+
     finally:
         await state.runs.close()
 
@@ -4891,5 +5539,313 @@ async def test_correction_scar_and_rule_lifecycle_over_gateway(tmp_path: Path) -
             assert response_object(policy_activated)["status"] == "active"
             active_rules = await client.get("/v1/policy-rules?status=active", headers=headers)
             assert len(active_rules.json()) == 1
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_creates_a_manual_scar(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created_session = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created_session)["id"])
+            response = await client.post(
+                f"/v1/sessions/{session_id}/scars",
+                headers=headers,
+                json={
+                    "title": "Verify before reporting success",
+                    "severity": "high",
+                    "scope": "agent",
+                    "failure_signature": "reports success without verification",
+                    "description": "The assistant reported success without checking the result.",
+                    "expected_behavior": "Verify the result before reporting completion.",
+                },
+            )
+            assert response.status_code == 201
+            scar = response_object(response)
+            assert scar["status"] == "open"
+            assert scar["scope"] == "agent"
+            assert scar["owner_agent_id"] == "default"
+            assert scar["detection"] == "manual"
+            assert scar["evidence_event_ids"] == []
+
+            listed = await client.get(f"/v1/sessions/{session_id}/scars", headers=headers)
+            assert [item["id"] for item in listed.json()] == [scar["id"]]
+            events = await client.get(f"/v1/sessions/{session_id}/events", headers=headers)
+            types = [item["type"] for item in events.json()]
+            assert "scar.recorded" in types
+            assert "scar.opened" in types
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_explicit_dream_bypasses_idle_and_requires_trust(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text(
+        "[runtime]\ndream_idle_seconds = 3600\n"
+        "[memory]\nenabled = false\n[skills]\nenabled = false\n"
+        "[evolution]\nenabled = false\n",
+        encoding="utf-8",
+    )
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(state)), base_url="http://test"
+        ) as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            endpoint = f"/v1/sessions/{session_id}/dream"
+            assert (await client.post(endpoint)).status_code == 401
+            assert (await client.post(endpoint, headers=headers)).status_code == 409
+            assert state.ledger.get_session(session_id).title is None
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            state.runs._schedule_dream(session_id, session_id)  # pyright: ignore[reportPrivateUsage]
+            pending_idle = state.runs._dream_tasks[session_id]  # pyright: ignore[reportPrivateUsage]
+            accepted = await client.post(endpoint, headers=headers)
+            assert pending_idle.cancelled()
+            assert accepted.status_code == 202
+            assert state.ledger.get_session(session_id).title == "Dream"
+            assert state.ledger.list_sessions(has_messages=True) == []
+            assert [
+                session.id
+                for session in state.ledger.list_sessions(has_messages=True, include_titled=True)
+            ] == [session_id]
+            listed = await client.get(
+                "/v1/sessions?has_messages=true&include_titled=true", headers=headers
+            )
+            assert '"Dream"' in listed.text
+            dream_id = response_object(accepted)["dream_id"]
+            events = await _wait_for_event(client, headers, session_id, "dream.completed")
+            dreams = [event for event in events if str(event["type"]).startswith("dream.")]
+            assert [event["type"] for event in dreams] == ["dream.started", "dream.completed"]
+            assert all(
+                JSON_OBJECT.validate_python(event["payload"])["dream_id"] == dream_id
+                for event in dreams
+            )
+            assert not any(event["type"] == "user.message" for event in events)
+
+            state.ledger.update_session_title(session_id, title="My maintenance chat")
+            entered = asyncio.Event()
+
+            async def blocked_cleanup(session_id: str) -> int:
+                entered.set()
+                await asyncio.Event().wait()
+                return 0
+
+            monkeypatch.setattr(state.evolution, "dream_cleanup", blocked_cleanup)
+            state.runs.evolution_manager = state.evolution
+            assert (await client.post(endpoint, headers=headers)).status_code == 202
+            await asyncio.wait_for(entered.wait(), timeout=2)
+            assert state.ledger.get_session(session_id).title == "My maintenance chat"
+            assert (await client.post(endpoint, headers=headers)).status_code == 409
+            await state.runs._yield_dream(session_id)  # pyright: ignore[reportPrivateUsage]
+            await _wait_for_event(client, headers, session_id, "dream.paused")
+
+            def always_active(session_id: str) -> bool:
+                return True
+
+            monkeypatch.setattr(state.runs, "is_session_active", always_active)
+            assert (await client.post(endpoint, headers=headers)).status_code == 409
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_first_greeting_persists_title_without_browser_title_request(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": QueueProvider()})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            ids: list[str] = []
+            for content in ("hi", "hello again"):
+                created = await client.post(
+                    "/v1/sessions",
+                    headers=headers,
+                    json={
+                        "working_directory": str(tmp_path),
+                        "provider": "fake",
+                        "model": "fixture",
+                    },
+                )
+                session_id = str(response_object(created)["id"])
+                ids.append(session_id)
+                await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+                accepted = await client.post(
+                    f"/v1/sessions/{session_id}/messages",
+                    headers=headers,
+                    json={"content": content},
+                )
+                assert accepted.status_code == 202
+                assert state.ledger.get_session(session_id).title == content
+                titles = [
+                    event
+                    for event in state.ledger.replay(session_id)
+                    if event.type == "session.title.changed"
+                ]
+                assert len(titles) == 1
+                assert titles[0].payload["title"] == content
+            assert ids[0] != ids[1]
+            state.ledger.update_session_title(ids[0], title="Authoritative model title")
+            assert state.ledger.ensure_session_title(ids[0], "late provisional greeting") is None
+            assert state.ledger.get_session(ids[0]).title == "Authoritative model title"
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_work_titles_follow_acceptance_and_preserve_existing_titles(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text("[memory]\nenabled = false\n", encoding="utf-8")
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            for endpoint in ("tasks", "goals/current", "plans/current"):
+                assert (
+                    await client.get(f"/v1/sessions/{session_id}/{endpoint}", headers=headers)
+                ).status_code == 200
+            rejected = await client.post(f"/v1/sessions/{session_id}/compact", headers=headers)
+            assert rejected.status_code >= 400
+            assert state.ledger.get_session(session_id).title is None
+            accepted = await client.post(
+                f"/v1/sessions/{session_id}/tasks",
+                headers=headers,
+                json={"text": "Inspect the drawer"},
+            )
+            assert accepted.status_code < 300, accepted.text
+            assert state.ledger.get_session(session_id).title == "Inspect the drawer"
+            await client.put(
+                f"/v1/sessions/{session_id}/title",
+                headers=headers,
+                json={"title": "Authored title"},
+            )
+            await client.post(
+                f"/v1/sessions/{session_id}/tasks",
+                headers=headers,
+                json={"text": "Another task"},
+            )
+            assert state.ledger.get_session(session_id).title == "Authored title"
+            assert not any(
+                event.type == "user.message" for event in state.ledger.replay(session_id)
+            )
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_active_turn_recovers_before_compile_and_compacts_repeatedly(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text(
+        "[context]\nfallback_window_tokens = 32768\noutput_reserve_tokens = 16384\n"
+    )
+
+    def response(text: str, *, tool: bool = False) -> list[StreamEvent]:
+        result = [StreamEvent(kind=StreamEventKind.STARTED)]
+        result.append(StreamEvent(kind=StreamEventKind.TEXT_DELTA, text=text))
+        if tool:
+            result.append(
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="read",
+                        name="read_file",
+                        arguments_delta='{"path":"README.md"}',
+                    ),
+                )
+            )
+        result.append(
+            StreamEvent(
+                kind=StreamEventKind.COMPLETED, finish_reason="tool_calls" if tool else "stop"
+            )
+        )
+        return result
+
+    # Each response independently exceeds the remaining input budget, while
+    # still fitting the summarizer's input window. Recovery must fold even the
+    # newest completed exchange, then do it again within the very same run.
+    fake = FakeProvider(
+        [],
+        turns=[
+            response("first progress " + "x" * 65000, tool=True),
+            response("checkpoint one: README inspected; finish the original task"),
+            response("second progress " + "y" * 65000, tool=True),
+            response("checkpoint two: both inspections completed; finish the original task"),
+            response("done"),
+        ],
+    )
+    (tmp_path / "README.md").write_text("fixture")
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(state)), base_url="http://test"
+        ) as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            sent = await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Finish the original task"},
+            )
+            assert sent.status_code == 202
+            events = await _wait_for_event(client, headers, session_id, "run.completed")
+            checkpoints = [
+                event for event in events if event["type"] == "context.compaction.completed"
+            ]
+            assert len(checkpoints) == 2
+            assert not any(event["type"] == "run.failed" for event in events)
+            assert len(fake.requests) == 5
+            for request in (fake.requests[2], fake.requests[4]):
+                assert request.messages[0].content == "Finish the original task"
+            assert "checkpoint two" in fake.requests[4].system
+            assert fake.requests[1].metadata["purpose"] == "context_compaction"
+            assert fake.requests[3].metadata["purpose"] == "context_compaction"
     finally:
         await state.runs.close()

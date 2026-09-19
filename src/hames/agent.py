@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Literal, Protocol, cast
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 AGENT_ID = re.compile(r"[a-z][a-z0-9-]{0,62}")
 _NON_SLUG = re.compile(r"[^a-z0-9]+")
@@ -21,6 +21,7 @@ _AVATAR_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
 READ_ONLY_TOOLS = frozenset(
     {
         "ask_user",
+        "spawn_agent",
         "read_file",
         "list_dir",
         "skill_load",
@@ -84,7 +85,7 @@ class AgentSkills(BaseModel):
 class DelegationPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    allow: bool = False
+    allow: bool = True
     allowed_agents: list[str] = Field(default_factory=list)
 
     @field_validator("allowed_agents")
@@ -108,7 +109,7 @@ class AgentAvatar(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    shape: Literal["circle", "square", "triangle", "cloud", "hex"] = "circle"
+    shape: Literal["circle", "square", "triangle", "cloud", "hex", "drop"] = "circle"
     eyes: Literal["dots", "visor", "pill"] = "dots"
     face: Literal["solid", "none"] = "solid"
     color: str = "#64748b"
@@ -142,20 +143,43 @@ class AgentAvatar(BaseModel):
         return value.lower()
 
 
+class AgentExecution(BaseModel):
+    """Human-configured execution selection; never supplied by a delegated model."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    reasoning_effort: str = ""
+
+
 class AgentMetadata(BaseModel):
     """The M05 capsule contract. Provider/model legacy fields are inert compatibility input."""
 
     model_config = ConfigDict(extra="forbid")
 
     id: str
+    slug: str = ""
     name: str = Field(min_length=1, max_length=80)
     tools: AgentTools = Field(default_factory=AgentTools)
     skills: AgentSkills = Field(default_factory=AgentSkills)
     authority: Literal["standard", "read_only"] = "standard"
     delegation: DelegationPolicy = Field(default_factory=DelegationPolicy)
     avatar: AgentAvatar | None = None
+    execution: AgentExecution | None = Field(
+        default=None,
+        validation_alias=AliasChoices("default_model", "execution"),
+        serialization_alias="default_model",
+    )
     provider: str | None = None
     model: str | None = None
+
+    @field_validator("slug")
+    @classmethod
+    def valid_slug(cls, value: str) -> str:
+        if value:
+            _validate_id(value)
+        return value
 
     @field_validator("id")
     @classmethod
@@ -185,6 +209,7 @@ class AgentSummary:
     path: Path
     content_hash: str
     avatar: AgentAvatar | None
+    slug: str = ""
 
 
 class AgentRegistry:
@@ -197,8 +222,16 @@ class AgentRegistry:
         return self.root / agent_id / "AGENT.md"
 
     def load(self, agent_id: str) -> AgentCapsule:
-        capsule = load_agent(self.path_for(agent_id))
-        if capsule.metadata.id != agent_id:
+        path = self.path_for(agent_id)
+        if not path.is_file() and self.root.exists():
+            for candidate in self.root.glob("*/AGENT.md"):
+                if candidate.parent.name.startswith("."):
+                    continue
+                if load_agent(candidate).metadata.slug == agent_id:
+                    path = candidate
+                    break
+        capsule = load_agent(path)
+        if capsule.metadata.id != path.parent.name:
             raise ValueError(f"{capsule.path}: frontmatter id does not match its directory")
         return capsule
 
@@ -216,6 +249,7 @@ class AgentRegistry:
             values.append(
                 AgentSummary(
                     id=capsule.metadata.id,
+                    slug=capsule.metadata.slug or capsule.metadata.id,
                     name=capsule.metadata.name,
                     authority=capsule.metadata.authority,
                     path=path,
@@ -253,6 +287,7 @@ class AgentRegistry:
         skills = AgentSkills()
         delegation = DelegationPolicy()
         avatar = None
+        execution = None
         if source is not None:
             metadata_raw, body = _split_agent_markdown(source)
             if "id" in metadata_raw and metadata_raw["id"] is not None:
@@ -266,8 +301,12 @@ class AgentRegistry:
             delegation = DelegationPolicy.model_validate(metadata_raw.get("delegation") or {})
             if metadata_raw.get("avatar") is not None:
                 avatar = AgentAvatar.model_validate(metadata_raw["avatar"])
+            selection = metadata_raw.get("default_model", metadata_raw.get("execution"))
+            if selection is not None:
+                execution = AgentExecution.model_validate(selection)
             extra = set(metadata_raw) - {
                 "id",
+                "slug",
                 "name",
                 "authority",
                 "tools",
@@ -276,6 +315,8 @@ class AgentRegistry:
                 "avatar",
                 "provider",
                 "model",
+                "execution",
+                "default_model",
             }
             if extra:
                 raise ValueError(f"unknown AGENT.md frontmatter key: {sorted(extra)[0]}")
@@ -285,7 +326,7 @@ class AgentRegistry:
         agent_id, display = allocate_agent_identity(
             name=name or source_name,
             agent_id=source_id,
-            taken=self.taken_ids(),
+            taken=self.taken_ids() | {agent.slug for agent in self.list() if agent.slug},
         )
         path = self.path_for(agent_id)
         if path.exists():
@@ -302,10 +343,12 @@ class AgentRegistry:
             payload["tools"] = tools.model_dump(mode="json", exclude_defaults=True)
         if skills.allow or skills.deny or skills.pin:
             payload["skills"] = skills.model_dump(mode="json", exclude_defaults=True)
-        if delegation.allow or delegation.allowed_agents:
+        if delegation != DelegationPolicy():
             payload["delegation"] = delegation.model_dump(mode="json", exclude_defaults=True)
         if avatar is not None:
             payload["avatar"] = avatar.model_dump(mode="json")
+        if execution is not None:
+            payload["default_model"] = execution.model_dump(mode="json")
         raw = f"---\n{yaml.safe_dump(payload, sort_keys=False)}---\n{instructions}\n"
         AgentMetadata.model_validate(payload)
         descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -316,6 +359,7 @@ class AgentRegistry:
         return self.load(agent_id)
 
     def retire(self, agent_id: str) -> Path:
+        agent_id = self.load(agent_id).metadata.id
         if agent_id == "default":
             raise ValueError("the default agent cannot be retired")
         source = self.path_for(agent_id).parent
@@ -340,20 +384,32 @@ class AgentRegistry:
         skills: AgentSkills | None = None,
         avatar: AgentAvatar | None = None,
         source: str | None = None,
+        default_model: AgentExecution | None = None,
+        update_default_model: bool = False,
     ) -> AgentCapsule:
         """Atomically update a capsule without changing its stable identity."""
 
         current = self.load(agent_id)
+        agent_id = current.metadata.id
         if source is not None:
-            if any(value is not None for value in (name, instructions, tools, skills, avatar)):
+            if update_default_model or any(
+                value is not None for value in (name, instructions, tools, skills, avatar)
+            ):
                 raise ValueError("source cannot be combined with structured agent updates")
             raw = source
         else:
-            if all(value is None for value in (name, instructions, tools, skills, avatar)):
+            if not update_default_model and all(
+                value is None for value in (name, instructions, tools, skills, avatar)
+            ):
                 raise ValueError("agent update requires source or a structured field")
             metadata_raw, current_instructions = _split_agent_markdown(
                 current.path.read_text(encoding="utf-8"), origin=str(current.path)
             )
+            if update_default_model:
+                metadata_raw.pop("execution", None)
+                metadata_raw.pop("default_model", None)
+                if default_model is not None:
+                    metadata_raw["default_model"] = default_model.model_dump(mode="json")
             if name is not None:
                 stripped_name = name.strip()
                 if not stripped_name:
@@ -369,8 +425,28 @@ class AgentRegistry:
             raw = f"---\n{yaml.safe_dump(metadata_raw, sort_keys=False)}---\n{body}\n"
 
         candidate = _load_agent_source(raw, current.path)
+        if candidate.metadata.name != current.metadata.name or (
+            name is not None and not current.metadata.slug
+        ):
+            taken = {
+                value
+                for agent in self.list()
+                if agent.id != agent_id
+                for value in (agent.id, agent.slug or agent.id)
+            }
+            slug, _ = allocate_agent_identity(
+                name=candidate.metadata.name, agent_id=None, taken=taken
+            )
+            metadata_raw, body = _split_agent_markdown(raw)
+            metadata_raw["slug"] = slug
+            raw = f"---\n{yaml.safe_dump(metadata_raw, sort_keys=False)}---\n{body}\n"
+            candidate = _load_agent_source(raw, current.path)
         if candidate.metadata.id != agent_id:
             raise ValueError("agent ID cannot be changed")
+        if candidate.metadata.slug:
+            for agent in self.list():
+                if agent.id != agent_id and candidate.metadata.slug in {agent.id, agent.slug}:
+                    raise ValueError("agent slug is already in use")
         _atomic_replace(current.path, raw)
         return self.load(agent_id)
 

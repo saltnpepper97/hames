@@ -334,7 +334,7 @@ class CodexProvider:
                 "turn/start",
                 {
                     "threadId": thread_id,
-                    "input": [{"type": "text", "text": _codex_input(request.messages)}],
+                    "input": _codex_user_input(request.messages),
                     "model": request.model,
                     "effort": _codex_wire_effort(request.reasoning_effort),
                     # App-server does not reliably enable reasoning summaries when this is
@@ -596,6 +596,21 @@ def _codex_input(messages: list[ProviderMessage]) -> str:
             )
     sections.append("Continue from the final transcript entry.")
     return "\n\n".join(sections)
+
+
+def _codex_user_input(messages: list[ProviderMessage]) -> list[dict[str, object]]:
+    inputs: list[dict[str, object]] = [{"type": "text", "text": _codex_input(messages)}]
+    for message in messages:
+        if message.role != "user":
+            continue
+        inputs.extend(
+            {
+                "type": "image",
+                "url": f"data:{attachment.media_type};base64,{attachment.data_base64}",
+            }
+            for attachment in message.attachments
+        )
+    return inputs
 
 
 def _codex_wire_effort(value: str) -> str | None:
