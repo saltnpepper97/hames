@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/hames-icon.png" width="256" alt="Hames horse and harness mark on a rounded sage background">
+  <img src="docs/assets/hames-icon.png" width="160" alt="Hames horse and harness mark on a rounded sage background">
 </p>
 
 <h1 align="center">
