@@ -76,8 +76,31 @@ def test_plan_projection_keeps_revisions_and_tracks_execution(
     state, _ = store.transition(
         session,
         plan_id,
-        "plan.execution.completed",
+        "plan.execution.attention",
         execution_run_id="run-3",
+        code="provider_disconnected",
+        message="connection was interrupted",
+    )
+    assert state.current is not None
+    assert state.current.status == "needs_attention"
+    assert state.current.error_code == "provider_disconnected"
+    assert state.current.error == "connection was interrupted"
+    state, _ = store.transition(
+        session,
+        plan_id,
+        "plan.execution.resumed",
+        execution_run_id="run-4",
+        execution_agent="build-review",
+    )
+    assert state.current is not None
+    assert state.current.status == "executing"
+    assert state.current.execution_run_id == "run-4"
+    assert state.current.execution_agent == "build-review"
+    state, _ = store.transition(
+        session,
+        plan_id,
+        "plan.execution.completed",
+        execution_run_id="run-4",
     )
     assert state.current is not None
     assert state.current.status == "completed"

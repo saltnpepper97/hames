@@ -49,6 +49,9 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 - Preserve the exact approved plan when respawning workers after a failed execution;
   reject plan-based delegation before starting a child if the plan is missing.
+- Preserve interrupted plan executions as a resumable needs-attention state, including
+  the exact failure and blocker reasons. Resuming keeps completed checklist work and the
+  approved execution note instead of rebuilding the plan from a phrase-matched chat turn.
 - Exclude unrelated episodic task reports from delegated worker context so historical
   assignments cannot substitute for the current plan.
 - Accept memory extraction tool calls with nonzero indexes and multiple submissions.

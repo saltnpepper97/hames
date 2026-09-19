@@ -27,6 +27,7 @@ class SessionTask(TaskModel):
     status: TaskStatus = "pending"
     position: int = 0
     created_by: str = "agent"
+    blocked_reason: str = ""
 
 
 def _empty_tasks() -> list[SessionTask]:
@@ -82,6 +83,13 @@ def project_tasks(session_id: str, events: list[Event]) -> SessionTaskList:
                 update={
                     "text": str(text) if text is not None else item.text,
                     "status": status or item.status,
+                    "blocked_reason": (
+                        str(event.payload.get("blocked_reason") or "")
+                        if status == "blocked"
+                        else ""
+                        if status is not None
+                        else item.blocked_reason
+                    ),
                 }
             )
             raw_position = event.payload.get("position")
@@ -191,6 +199,7 @@ class TaskStore:
         text: str | None = None,
         status: TaskStatus | None = None,
         position: int | None = None,
+        blocked_reason: str | None = None,
         causation_id: str | None = None,
     ) -> tuple[SessionTaskList, Event]:
         current = self.current(session.id)
@@ -204,6 +213,8 @@ class TaskStore:
             payload["status"] = status
         if position is not None:
             payload["position"] = position
+        if blocked_reason is not None:
+            payload["blocked_reason"] = blocked_reason.strip()
         if len(payload) == 1:
             raise ValueError("task update requires text, status, or position")
         event = self.ledger.append(

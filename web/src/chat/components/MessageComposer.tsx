@@ -138,8 +138,10 @@ export function MessageComposer(props: MessageComposerProps) {
   const [executionSubmitted, setExecutionSubmitted] = createSignal("");
   const [feedbackPlan, setFeedbackPlan] = createSignal("");
   const [feedbackSubmitted, setFeedbackSubmitted] = createSignal("");
-  const reviewingPlan = () => props.session.interaction_mode === "plan" && props.plan
-    && ["ready", "failed", "reviewing"].includes(props.plan.status);
+  const reviewingPlan = () => props.plan && (
+    ["failed", "needs_attention"].includes(props.plan.status)
+    || (props.session.interaction_mode === "plan" && ["ready", "reviewing"].includes(props.plan.status))
+  );
   const visiblePlan = createMemo(() => {
     const plan = props.plan;
     if (!plan || ["approved", "executing", "completed"].includes(plan.status)) return undefined;

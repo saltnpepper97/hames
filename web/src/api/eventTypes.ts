@@ -23,6 +23,8 @@ plan.note.applied
 plan.execution.requested
 plan.approved
 plan.execution.started
+plan.execution.resumed
+plan.execution.attention
 plan.execution.completed
 plan.execution.failed
 tasks.replaced

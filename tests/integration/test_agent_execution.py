@@ -170,7 +170,7 @@ async def test_plan_workflow_routes_models_efforts_and_reviewer_authority(
                 for e in events
             )
             assert not any(e.type == "run.continuation.requested" for e in events)
-            assert any(e.type == "plan.execution.failed" for e in events)
+            assert any(e.type == "plan.execution.attention" for e in events)
         else:
             assert any(e.type == "plan.execution.completed" for e in events)
     finally:

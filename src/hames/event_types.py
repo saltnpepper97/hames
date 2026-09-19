@@ -129,7 +129,9 @@ class PlanTransitionPayload(EventPayload):
     plan_id: str
     strategy: Literal["keep", "compact"] | None = None
     execution_run_id: str | None = None
+    execution_agent: str | None = None
     execution_note: str = ""
+    code: str = ""
     message: str = ""
 
 
@@ -145,6 +147,7 @@ class TaskPayload(EventPayload):
     status: Literal["pending", "in_progress", "completed", "blocked"]
     position: int = Field(ge=0)
     created_by: str
+    blocked_reason: str = ""
 
 
 def _empty_tasks() -> list[TaskPayload]:
@@ -166,6 +169,7 @@ class TaskUpdatedPayload(EventPayload):
     text: str | None = None
     status: Literal["pending", "in_progress", "completed", "blocked"] | None = None
     position: int | None = Field(default=None, ge=0)
+    blocked_reason: str | None = None
 
 
 class TaskRemovedPayload(EventPayload):
@@ -888,6 +892,8 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "plan.execution.requested": PlanTransitionPayload,
     "plan.approved": PlanTransitionPayload,
     "plan.execution.started": PlanTransitionPayload,
+    "plan.execution.resumed": PlanTransitionPayload,
+    "plan.execution.attention": PlanTransitionPayload,
     "plan.execution.completed": PlanTransitionPayload,
     "plan.execution.failed": PlanTransitionPayload,
     "tasks.replaced": TasksReplacedPayload,

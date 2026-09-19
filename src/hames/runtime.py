@@ -963,7 +963,7 @@ class RunManager:
                 if (
                     not terminal
                     and plan is not None
-                    and plan.status in {"ready", "failed"}
+                    and plan.status in {"ready", "failed", "needs_attention"}
                     and plan.source_run_id == active_run
                 ):
                     deadline = asyncio.get_running_loop().time() + 0.5
@@ -981,8 +981,14 @@ class RunManager:
             session = await asyncio.to_thread(self.ledger.get_session, session_id)
             state = await asyncio.to_thread(self.plans.current, session_id)
             plan = state.current
-            if plan is None or plan.status not in {"ready", "failed"}:
+            if plan is None or plan.status not in {"ready", "failed", "needs_attention"}:
                 raise ValueError("session has no plan ready for approval")
+            resuming = plan.status in {"failed", "needs_attention"}
+            if resuming and strategy != "keep":
+                raise ValueError("resuming a plan requires keep strategy")
+            effective_execution_note = (
+                execution_note or plan.execution_note if resuming else execution_note
+            )
             if agent_id is not None:
                 await self._validate_goal_session(session)
                 if strategy != "keep":
@@ -1027,20 +1033,31 @@ class RunManager:
                 "plan.execution.requested",
                 strategy=strategy,
                 execution_run_id=run_id,
-                execution_note=execution_note,
+                execution_agent=agent_id or plan.execution_agent,
+                execution_note=effective_execution_note,
             )
             await self._publish_store_events((requested,))
             await self.ensure_work_title(session_id, plan.title or "Execute plan")
             if strategy == "keep":
-                session, tasks, user_event = await self._prepare_plan_execution(
-                    session,
-                    plan.id,
-                    run_id,
-                    strategy,
-                    requested.id,
-                    execution_note,
-                    execution_agent=agent_id,
-                )
+                if resuming:
+                    session, tasks, user_event = await self._prepare_plan_resume(
+                        session,
+                        plan.id,
+                        run_id,
+                        requested.id,
+                        effective_execution_note,
+                        execution_agent=agent_id or plan.execution_agent,
+                    )
+                else:
+                    session, tasks, user_event = await self._prepare_plan_execution(
+                        session,
+                        plan.id,
+                        run_id,
+                        strategy,
+                        requested.id,
+                        effective_execution_note,
+                        execution_agent=agent_id,
+                    )
                 self._launch(session_id, user_event, run_id=run_id)
                 return await self.current_plan(session_id), tasks, run_id
             task = asyncio.create_task(
@@ -1053,6 +1070,69 @@ class RunManager:
             self._session_runs[session_id] = run_id
             task.add_done_callback(lambda _: self._finish(run_id, session_id))
             return state, await self.current_tasks(session_id), run_id
+
+    async def _prepare_plan_resume(
+        self,
+        session: Session,
+        plan_id: str,
+        run_id: str,
+        causation_id: str,
+        execution_note: str,
+        *,
+        execution_agent: str | None,
+    ) -> tuple[Session, SessionTaskList, Event]:
+        """Resume an approved execution without replacing its durable checklist."""
+        state = await asyncio.to_thread(self.plans.current, session.id)
+        plan = state.current
+        if plan is None or plan.id != plan_id:
+            raise ValueError("approved plan changed before execution resumed")
+        events = await asyncio.to_thread(self.ledger.list_events, session.id)
+        if not any(
+            event.type == "plan.approved" and event.payload.get("plan_id") == plan_id
+            for event in events
+        ):
+            raise ValueError("plan has not been approved")
+        session = await asyncio.to_thread(self.ledger.update_session_mode, session.id, mode="auto")
+        mode_event = next(
+            event
+            for event in reversed(await asyncio.to_thread(self.ledger.list_events, session.id))
+            if event.type == "session.mode.changed"
+        )
+        await self._publish_durable(mode_event)
+        user_event = await self._append(
+            session_id=session.id,
+            agent_id=session.agent_id,
+            event_type="user.message",
+            payload={
+                "content": "Resume the approved plan from its durable checklist. Keep completed "
+                "work intact, inspect the recorded failure, and retry only the unfinished stage."
+                + (
+                    f"\n\nAdditional user execution note:\n{execution_note}"
+                    if execution_note
+                    else ""
+                ),
+                "remember": False,
+                "paste_spans": [],
+                "purpose": "plan_execution",
+                "execution_agent": execution_agent,
+            },
+            causation_id=causation_id,
+            correlation_id=plan_id,
+        )
+        _, resumed = await asyncio.to_thread(
+            self.plans.transition,
+            session,
+            plan_id,
+            "plan.execution.resumed",
+            strategy=plan.strategy or "keep",
+            execution_run_id=run_id,
+            execution_agent=execution_agent,
+            execution_note=execution_note or plan.execution_note,
+            causation_id=user_event.id,
+        )
+        await self._publish_store_events((resumed,))
+        tasks = await asyncio.to_thread(self.session_tasks.current, session.id)
+        return session, tasks, user_event
 
     async def _prepare_plan_execution(
         self,
@@ -1097,6 +1177,7 @@ class RunManager:
             "plan.approved",
             strategy=strategy,
             execution_run_id=run_id,
+            execution_agent=execution_agent,
             execution_note=execution_note,
             causation_id=approved_causation_id,
         )
@@ -1129,6 +1210,7 @@ class RunManager:
             "plan.execution.started",
             strategy=strategy,
             execution_run_id=run_id,
+            execution_agent=execution_agent,
             execution_note=execution_note,
             causation_id=user_event.id,
         )
@@ -2046,7 +2128,6 @@ class RunManager:
         session: Session | None = None
         try:
             session = await asyncio.to_thread(self.ledger.get_session, session_id)
-            await self._resume_failed_plan(session, run_id, user_event)
             scratch_root = self._scratch_base / run_id / session.agent_id / "workspace"
             await self._execute_run(run_id, session, user_event, scratch_root)
         except asyncio.CancelledError:
@@ -2307,44 +2388,6 @@ class RunManager:
                 correlation_id=dream_id,
             )
 
-    async def _resume_failed_plan(self, session: Session, run_id: str, user_event: Event) -> None:
-        """Link an explicit continuation to the unfinished approved plan."""
-        if (
-            session.interaction_mode != "auto"
-            or user_event.payload.get("purpose", "turn") != "turn"
-        ):
-            return
-        content = str(user_event.payload.get("content", "")).strip().lower()
-        # Do not turn status questions or unrelated messages into plan execution.
-        if not re.match(
-            r"^(?:(?:please|okay|ok|shit|can you|could you)\s+)*"
-            r"(?:continue|resume|keep going|finish (?:this|it|the (?:approved )?plan)(?: up)?)"
-            r"(?:[.!?]|$|\s+(?:please|with|from|and|the|working)\b)",
-            content,
-        ):
-            return
-        state = await asyncio.to_thread(self.plans.current, session.id)
-        plan = state.current
-        if plan is None or plan.status != "failed" or not plan.execution_run_id:
-            return
-        events = await asyncio.to_thread(self.ledger.list_events, session.id)
-        if not any(
-            event.type == "plan.approved" and event.payload.get("plan_id") == plan.id
-            for event in events
-        ):
-            return
-        _, event = await asyncio.to_thread(
-            self.plans.transition,
-            session,
-            plan.id,
-            "plan.execution.started",
-            strategy=plan.strategy,
-            execution_run_id=run_id,
-            execution_note=plan.execution_note,
-            causation_id=user_event.id,
-        )
-        await self._publish_store_events((event,))
-
     async def _finalize_plan_execution(self, session_id: str, run_id: str) -> None:
         state = await asyncio.to_thread(self.plans.current, session_id)
         plan = state.current
@@ -2363,7 +2406,9 @@ class RunManager:
             return
         completed = terminal.type == "run.completed"
         message = ""
+        code = ""
         if not completed:
+            code = str(terminal.payload.get("code", ""))
             message = str(terminal.payload.get("message", "")) or (
                 "plan execution was cancelled"
                 if terminal.type == "run.cancelled"
@@ -2374,9 +2419,11 @@ class RunManager:
             self.plans.transition,
             session,
             plan.id,
-            "plan.execution.completed" if completed else "plan.execution.failed",
+            "plan.execution.completed" if completed else "plan.execution.attention",
             strategy=plan.strategy,
             execution_run_id=run_id,
+            execution_agent=plan.execution_agent,
+            code=code,
             message=message,
             causation_id=terminal.id,
         )
@@ -2798,6 +2845,21 @@ class RunManager:
                 continuation_reason: Literal["output_limit", "unfinished_execution"] | None = None
                 if turn.finish_reason == "length":
                     continuation_reason = "output_limit"
+                elif executing_plan and blocked:
+                    raise RunFailure(
+                        "plan_execution_blocked",
+                        "approved plan needs attention because checklist work is blocked",
+                        details={
+                            "blocked_tasks": [
+                                {
+                                    "id": item.id,
+                                    "text": item.text,
+                                    "reason": item.blocked_reason,
+                                }
+                                for item in blocked
+                            ]
+                        },
+                    )
                 elif executing_plan and user_event.payload.get("execution_agent") and unfinished:
                     # A bounded review pass returns to the human; never turn unresolved
                     # findings into an implicit repeated implementation loop.
@@ -2805,12 +2867,6 @@ class RunManager:
                         "workflow_needs_attention",
                         "workflow returned with unfinished checklist items; review its report",
                         details={"unfinished_task_ids": [item.id for item in unfinished]},
-                    )
-                elif executing_plan and blocked:
-                    raise RunFailure(
-                        "plan_execution_blocked",
-                        "approved plan needs attention because checklist work is blocked",
-                        details={"blocked_task_ids": [item.id for item in blocked]},
                     )
                 elif executing_plan and (unfinished or not turn.answer_text.strip()):
                     continuation_reason = "unfinished_execution"
@@ -4352,7 +4408,13 @@ class RunManager:
                 if arguments.status == "blocked":
                     run_events = await asyncio.to_thread(self.ledger.list_run_events, run_id)
                     verified_blocker = any(
-                        event.type in {"tool.failed", "tool.rejected", "model.response.failed"}
+                        event.type
+                        in {
+                            "tool.failed",
+                            "tool.rejected",
+                            "model.response.failed",
+                            "delegation.failed",
+                        }
                         for event in run_events
                     )
                     if not verified_blocker:
@@ -4377,6 +4439,7 @@ class RunManager:
                         text=arguments.text,
                         status=arguments.status,
                         position=arguments.position,
+                        blocked_reason=arguments.blocked_reason,
                         causation_id=causation_id,
                     )
                 else:

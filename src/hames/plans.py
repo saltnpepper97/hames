@@ -13,7 +13,15 @@ PLAN_READY_MARKER = "<!-- hames:plan-ready -->"
 _TASK = re.compile(r"^\s*[-*]\s+\[\s\]\s+(.+?)\s*$")
 _HEADING = re.compile(r"^#\s+(.+?)\s*$")
 
-PlanStatus = Literal["ready", "requested", "approved", "executing", "completed", "failed"]
+PlanStatus = Literal[
+    "ready",
+    "requested",
+    "approved",
+    "executing",
+    "needs_attention",
+    "completed",
+    "failed",
+]
 
 
 class PlanModel(BaseModel):
@@ -32,7 +40,9 @@ class PlanRevision(PlanModel):
     status: PlanStatus = "ready"
     strategy: Literal["keep", "compact"] | None = None
     execution_run_id: str | None = None
+    execution_agent: str | None = None
     execution_note: str = ""
+    error_code: str = ""
     error: str = ""
     created_at: str
     updated_at: str
@@ -108,26 +118,45 @@ def project_plans(session_id: str, events: list[Event]) -> PlanState:
             updates.update(
                 status="requested",
                 strategy=event.payload.get("strategy"),
+                execution_agent=event.payload.get("execution_agent"),
                 execution_note=str(event.payload.get("execution_note") or ""),
             )
         elif event.type == "plan.approved":
             updates.update(
                 status="approved",
                 strategy=event.payload.get("strategy"),
+                execution_agent=(
+                    event.payload.get("execution_agent") or plan.execution_agent
+                ),
                 execution_note=str(event.payload.get("execution_note") or plan.execution_note),
+                error_code="",
                 error="",
             )
-        elif event.type == "plan.execution.started":
+        elif event.type in {"plan.execution.started", "plan.execution.resumed"}:
             execution_run_id = event.payload.get("execution_run_id")
             updates.update(
                 status="executing",
+                execution_agent=(
+                    event.payload.get("execution_agent") or plan.execution_agent
+                ),
+                error_code="",
                 error="",
                 execution_run_id=(str(execution_run_id) if execution_run_id is not None else None),
             )
+        elif event.type == "plan.execution.attention":
+            updates.update(
+                status="needs_attention",
+                error_code=str(event.payload.get("code", "")),
+                error=str(event.payload.get("message", "")),
+            )
         elif event.type == "plan.execution.completed":
-            updates.update(status="completed", error="")
+            updates.update(status="completed", error_code="", error="")
         elif event.type == "plan.execution.failed":
-            updates.update(status="failed", error=str(event.payload.get("message", "")))
+            updates.update(
+                status="failed",
+                error_code=str(event.payload.get("code", "")),
+                error=str(event.payload.get("message", "")),
+            )
         revisions[index] = plan.model_copy(update=updates)
     return PlanState(
         session_id=session_id,
@@ -177,7 +206,9 @@ class PlanStore:
         *,
         strategy: Literal["keep", "compact"] | None = None,
         execution_run_id: str | None = None,
+        execution_agent: str | None = None,
         execution_note: str = "",
+        code: str = "",
         message: str = "",
         causation_id: str | None = None,
     ) -> tuple[PlanState, Event]:
@@ -193,7 +224,9 @@ class PlanStore:
                 "plan_id": plan_id,
                 "strategy": strategy,
                 "execution_run_id": execution_run_id,
+                "execution_agent": execution_agent,
                 "execution_note": execution_note,
+                "code": code,
                 "message": message,
             },
             causation_id=causation_id,

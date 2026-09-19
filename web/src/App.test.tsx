@@ -2350,9 +2350,10 @@ describe("Hames web shell", () => {
     expect(screen.queryByText("Plan execution started")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Execute plan" })).not.toBeInTheDocument();
     expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/plans/current/execute"))).toHaveLength(2);
-    source.emit("plan.execution.failed", durableEvent("plan.execution.failed", 5, { plan_id: "plan-two", message: "Execution could not start" }));
+    source.emit("plan.execution.attention", durableEvent("plan.execution.attention", 5, { plan_id: "plan-two", message: "Execution could not start" }));
     expect(await screen.findByText("Plan execution needs attention")).toBeInTheDocument();
     expect(screen.getByText("Execution could not start")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resume execution" })).toBeInTheDocument();
   });
 
   it("updates mode and thinking through plugin-contributed composer controls", async () => {

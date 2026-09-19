@@ -38,8 +38,17 @@ def test_task_projection_supports_replace_add_reorder_status_and_remove(
     assert tasks.items[0].status == "in_progress"
     assert next(item for item in tasks.items if item.id == first_id).status == "pending"
 
+    tasks, _ = store.update(
+        session,
+        discovered_id,
+        status="blocked",
+        blocked_reason="reviewer process was interrupted",
+    )
+    assert tasks.items[0].blocked_reason == "reviewer process was interrupted"
+
     tasks, _ = store.update(session, discovered_id, status="completed", text="Found work")
     assert tasks.items[0].text == "Found work"
+    assert tasks.items[0].blocked_reason == ""
     tasks, _ = store.remove(session, discovered_id)
     assert all(item.id != discovered_id for item in tasks.items)
     assert [item.position for item in tasks.items] == list(range(len(tasks.items)))
