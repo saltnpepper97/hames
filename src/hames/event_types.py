@@ -498,6 +498,10 @@ class DelegationRequestedPayload(EventPayload):
     task: str
     evidence: list[DelegationEvidencePayload] = Field(default_factory=_empty_delegation_evidence)
     delegation_depth: int
+    workflow_id: str = ""
+    stage_id: str = ""
+    depends_on: list[str] = Field(default_factory=list)
+    attempt: int = 0
 
 
 class DelegationPlanPayload(EventPayload):
@@ -523,6 +527,10 @@ class DelegationTaskCardPayload(EventPayload):
     skill_allowlists: list[list[str]] = Field(default_factory=lambda: list[list[str]]())
     skill_denied: list[str] = Field(default_factory=list)
     requested_result_format: str = "summary"
+    workflow_id: str = ""
+    stage_id: str = ""
+    depends_on: list[str] = Field(default_factory=list)
+    attempt: int = 0
 
 
 class DelegationTerminalPayload(EventPayload):
@@ -532,6 +540,12 @@ class DelegationTerminalPayload(EventPayload):
     status: str
     summary: str
     duration_seconds: float = 0.0
+    workflow_id: str = ""
+    stage_id: str = ""
+    attempt: int = 0
+    failure_code: str = ""
+    failure_message: str = ""
+    retryable: bool = False
 
 
 class MemoryAnchorPayload(EventPayload):
@@ -953,6 +967,8 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "delegation.task_card": DelegationTaskCardPayload,
     "delegation.completed": DelegationTerminalPayload,
     "delegation.failed": DelegationTerminalPayload,
+    "delegation.followup.completed": DelegationTerminalPayload,
+    "delegation.followup.failed": DelegationTerminalPayload,
     "delegation.stopping": DelegationTerminalPayload,
     "memory.proposed": MemoryRecordPayload,
     "memory.accepted": MemoryTransitionPayload,

@@ -21,6 +21,10 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
   bounded retries, restart reconciliation, and native desktop or browser notifications.
 - Configurable personal and workspace slash commands, with a documented build-review
   example instead of a setup-specific built-in workflow.
+- Durable coordinator-built workflow graphs for delegated stages, with dependencies, attempt
+  history, automatic evidence handoff, exact child failure details, and child-chat follow-ups.
+- A bounded read-only Git inspection tool for reviewers to inspect status, commits, and diffs
+  without shell access.
 - Agent model defaults, a model step during creation, additional avatar shapes including
   a water drop, and more expressive eye and visor movement.
 - Rolling annual token activity with month labels, broader usage presentation, and

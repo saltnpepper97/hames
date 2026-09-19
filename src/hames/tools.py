@@ -7,6 +7,7 @@ import difflib
 import hashlib
 import json
 import os
+import re
 import signal
 import tempfile
 import time
@@ -115,12 +116,46 @@ class ShellArguments(WorkspaceArguments):
     )
 
 
+class VcsInspectArguments(ToolArguments):
+    action: Literal["status", "diff", "show", "log", "tracked_files"]
+    revision: str = Field(default="", max_length=200)
+    paths: list[str] = Field(default_factory=list, max_length=32)
+    limit: int = Field(default=20, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def safe_revision(self) -> VcsInspectArguments:
+        if self.revision and (
+            self.revision.startswith("-")
+            or re.fullmatch(
+                r"[A-Za-z0-9._/@{}^~:+-]+(?:\.{2,3}[A-Za-z0-9._/@{}^~:+-]+)?",
+                self.revision,
+            )
+            is None
+        ):
+            raise ValueError("revision is not a safe Git revision or range")
+        return self
+
+
 class SpawnAgentArguments(ToolArguments):
     agent_id: str = ""
     task: str = Field(min_length=1)
     evidence_event_ids: list[str] = Field(default_factory=list, max_length=8)
+    stage_id: str = Field(default="", pattern=r"^[a-z][a-z0-9-]{0,62}$|^$")
+    depends_on: list[str] = Field(default_factory=list, max_length=8)
     project_scope: Literal["current_workspace"] = "current_workspace"
     requested_result_format: Literal["summary", "markdown", "json"] = "summary"
+
+    @model_validator(mode="after")
+    def valid_stage(self) -> SpawnAgentArguments:
+        if self.depends_on and not self.stage_id:
+            raise ValueError("depends_on requires stage_id")
+        if len(self.depends_on) != len(set(self.depends_on)):
+            raise ValueError("depends_on entries must be unique")
+        if any(not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", item) for item in self.depends_on):
+            raise ValueError("depends_on entries must be stage IDs")
+        if self.stage_id and self.stage_id in self.depends_on:
+            raise ValueError("a stage cannot depend on itself")
+        return self
 
 
 class SkillLoadArguments(ToolArguments):
@@ -799,12 +834,95 @@ class ShellTool(ToolBase):
             return _failure(self.name, exc, started)
 
 
+class VcsInspectTool(ToolBase):
+    name = "vcs_inspect"
+    description = (
+        "Inspect the current Git repository without changing it. Use status for the worktree, "
+        "diff for a revision/range or unstaged changes, show for one commit, log for recent "
+        "commits, and tracked_files for the repository file list. Optional paths narrow results."
+    )
+    arguments_type: ClassVar[type[ToolArguments]] = VcsInspectArguments
+
+    async def execute(self, context: ToolContext, arguments: ToolArguments) -> ToolResult:
+        started = time.monotonic()
+        args = VcsInspectArguments.model_validate(arguments)
+        try:
+            relative_paths: list[str] = []
+            for raw_path in args.paths:
+                resolved = context.resolve("project", raw_path, must_exist=False)
+                relative_paths.append(resolved.relative_to(context.project_root).as_posix())
+            command = ["git", "-C", str(context.project_root)]
+            if args.action == "status":
+                command.extend(["status", "--short", "--branch"])
+            elif args.action == "diff":
+                command.extend(["diff", "--no-ext-diff", "--unified=80"])
+                if args.revision:
+                    command.append(args.revision)
+            elif args.action == "show":
+                command.extend(
+                    [
+                        "show",
+                        "--no-ext-diff",
+                        "--format=fuller",
+                        "--stat",
+                        "--patch",
+                        args.revision or "HEAD",
+                    ]
+                )
+            elif args.action == "log":
+                command.extend(["log", "--oneline", "--decorate", f"-{args.limit}"])
+                if args.revision:
+                    command.append(args.revision)
+            else:
+                command.extend(["ls-files"])
+            if relative_paths:
+                command.extend(["--", *relative_paths])
+            env = dict(os.environ)
+            env.update({"GIT_PAGER": "cat", "PAGER": "cat", "LC_ALL": "C"})
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=context.project_root,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+            except TimeoutError:
+                kill_process_group(process)
+                await process.wait()
+                raise ValueError("Git inspection timed out") from None
+            output = stdout.decode("utf-8", errors="replace")
+            error = stderr.decode("utf-8", errors="replace")
+            if process.returncode:
+                raise ValueError(error.strip() or f"git exited with code {process.returncode}")
+            content, truncated, references = _bounded_content(output, context)
+            return ToolResult(
+                status="completed",
+                summary=f"inspected Git {args.action}",
+                content=content,
+                structured_data={
+                    "action": args.action,
+                    "revision": args.revision,
+                    "paths": cast(list[JsonValue], relative_paths),
+                },
+                truncated=truncated,
+                blob_references=references,
+                duration_seconds=time.monotonic() - started,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            return _failure(self.name, exc, started)
+
+
 class SpawnAgentTool(ToolBase):
     name = "spawn_agent"
     description = (
         "Spawn a subagent for useful delegated work. Omit agent_id to use your own agent. "
         "Supply a self-contained task and optional evidence IDs; the terminal result returns "
-        "to you. During approved plan execution, the harness automatically attaches the exact "
+        "to you. For staged work, supply a stable stage_id and completed depends_on stages; "
+        "Hames records each retry as a new attempt and attaches dependency evidence. "
+        "During approved plan execution, the harness automatically attaches the exact "
         "approved plan and execution note to every child, including nested delegations. "
         "Use a short assignment naming the whole plan or the assigned portion; do not copy, "
         "rewrite, or summarize the plan in task. Multiple spawn_agent calls in one response "
@@ -1107,6 +1225,7 @@ class ToolRegistry:
             WriteFileTool(),
             EditFileTool(),
             ShellTool(),
+            VcsInspectTool(),
             SpawnAgentTool(),
             SkillLoadTool(),
             SkillAuthorTool(),

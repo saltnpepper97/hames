@@ -17,6 +17,7 @@ from hames.gateway import GatewayState, create_app
 from hames.paths import HamesPaths
 from hames.providers import ModelRequest, StreamEvent, StreamEventKind, ToolCallDelta
 from hames.providers.fake import FakeProvider
+from hames.workflows import project_workflow
 
 
 class DelegationProvider(FakeProvider):
@@ -620,5 +621,139 @@ async def test_missing_approved_plan_rejects_child_before_execution(tmp_path: Pa
             for e in events
         )
         assert not any(e.type == "delegation.requested" for e in events)
+    finally:
+        await state.runs.close()
+
+
+class SequentialStageProvider(DelegationProvider):
+    def __init__(self, *, fail_child_with_tools: bool = False) -> None:
+        super().__init__(children=1)
+        self.fail_child_with_tools = fail_child_with_tools
+        self.release.set()
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+        self.requests.append(request)
+        yield StreamEvent(kind=StreamEventKind.STARTED)
+        first_user = next(message.content for message in request.messages if message.role == "user")
+        results = [
+            message
+            for message in request.messages
+            if message.role == "tool" and message.tool_name == "spawn_agent"
+        ]
+        if first_user == "Review these files":
+            if not results:
+                arguments = {"task": "Build", "stage_id": "builder"}
+            elif len(results) == 1 and not self.fail_child_with_tools:
+                arguments = {
+                    "task": "Review",
+                    "stage_id": "review",
+                    "depends_on": ["builder"],
+                }
+            else:
+                yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="Workflow complete.")
+                yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
+                return
+            yield StreamEvent(
+                kind=StreamEventKind.TOOL_CALL_DELTA,
+                tool_call=ToolCallDelta(
+                    index=0,
+                    provider_call_id=f"stage-{len(results)}",
+                    name="spawn_agent",
+                    arguments_delta=json.dumps(arguments),
+                ),
+            )
+            yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls")
+            return
+        if self.fail_child_with_tools:
+            for index in range(2):
+                yield StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=index,
+                        provider_call_id=f"read-{index}",
+                        name="read_file",
+                        arguments_delta=json.dumps({"path": "README.md"}),
+                    ),
+                )
+            yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls")
+            return
+        yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text=f"Completed {first_user}.")
+        yield StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop")
+
+
+@pytest.mark.asyncio
+async def test_staged_delegation_records_dependencies_and_attaches_evidence(
+    tmp_path: Path,
+) -> None:
+    provider = SequentialStageProvider()
+    state, session_id, run_id = await start_parent(tmp_path, provider)
+    try:
+        await asyncio.wait_for(asyncio.shield(state.runs._tasks[run_id]), 5)
+        events = state.ledger.list_events(session_id)
+        requested = [event for event in events if event.type == "delegation.requested"]
+        completed = [event for event in events if event.type == "delegation.completed"]
+        assert [event.payload["stage_id"] for event in requested] == ["builder", "review"]
+        assert requested[1].payload["depends_on"] == ["builder"]
+        assert requested[1].payload["attempt"] == 1
+        assert requested[1].payload["evidence"][0]["event_id"] == completed[0].id
+        review_child = state.ledger.get_session(str(completed[1].payload["child_session_id"]))
+        card = next(
+            event
+            for event in state.ledger.list_events(review_child.id)
+            if event.type == "delegation.task_card"
+        )
+        assert card.payload["stage_id"] == "review"
+        assert card.payload["evidence"][0]["event_type"] == "delegation.completed"
+        parent_requests = [
+            request
+            for request in provider.requests
+            if next(message.content for message in request.messages if message.role == "user")
+            == "Review these files"
+        ]
+        assert "Durable execution stages" in parent_requests[-1].system
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_child_tool_limit_failure_is_returned_to_parent(tmp_path: Path) -> None:
+    provider = SequentialStageProvider(fail_child_with_tools=True)
+    state, session_id, run_id = await start_parent(
+        tmp_path, provider, limits="max_tool_calls_per_run=1"
+    )
+    try:
+        await asyncio.wait_for(asyncio.shield(state.runs._tasks[run_id]), 5)
+        failed = next(
+            event
+            for event in state.ledger.list_events(session_id)
+            if event.type == "delegation.failed"
+        )
+        assert failed.payload["stage_id"] == "builder"
+        assert failed.payload["failure_code"] == "tool_call_limit"
+        assert failed.payload["failure_message"] == "run tool-call limit was exhausted"
+        parent_result = next(
+            message
+            for message in provider.requests[-1].messages
+            if message.role == "tool" and message.tool_name == "spawn_agent"
+        )
+        structured = json.loads(parent_result.content)["structured_data"]
+        assert structured["failure_code"] == "tool_call_limit"
+        assert structured["failure_message"] == "run tool-call limit was exhausted"
+
+        provider.fail_child_with_tools = False
+        child_session_id = str(failed.payload["child_session_id"])
+        followup_run_id = await state.runs.start(child_session_id, "Continue the review")
+        await asyncio.wait_for(asyncio.shield(state.runs._tasks[followup_run_id]), 5)
+        parent_events = state.ledger.list_events(session_id)
+        followup = next(
+            event
+            for event in parent_events
+            if event.type == "delegation.followup.completed"
+        )
+        assert followup.payload["child_run_id"] == followup_run_id
+        workflow = project_workflow(run_id, parent_events)
+        builder_stage = workflow.stage("builder")
+        assert builder_stage is not None
+        assert builder_stage.latest.status == "completed"
     finally:
         await state.runs.close()

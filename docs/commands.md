@@ -57,7 +57,10 @@ override that default. Reviewers stay read-only. The coordinator checks reported
 commit hashes and remaining changes before declaring completion. Pushing requires
 an explicit user request.
 
-The harness transfers the exact approved plan and execution note automatically.
+The harness transfers the exact approved plan and execution note automatically. Coordinators
+can also give delegated calls stable `stage_id` and `depends_on` values. Completed dependencies
+are attached as evidence, failed attempts remain available after restart, and invoking the
+command again resumes a needs-attention plan without replacing completed checklist work.
 Coordinator prompts should contain only the stage assignment and necessary reports,
 not a rewritten copy of the plan. Existing active runs keep their loaded agent
 instructions; configuration edits are intended for the next invocation.

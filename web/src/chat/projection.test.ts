@@ -423,7 +423,10 @@ describe("delegated worker activity", () => {
   it("clears failed and cancelled workers without claiming a review passed", () => {
     const failed = {...event(5, "delegation.failed", {status: "failed"}), causation_id: luna.id};
     expect(projectConversation([start, qwen, done, luna, failed]).activeWorker).toBeUndefined();
-    const cancelled = projectConversation([start, qwen, event(6, "run.cancelled", {})]);
+    const followup = {...event(6, "delegation.followup.completed", {status: "completed"}), causation_id: luna.id};
+    expect(projectConversation([start, qwen, done, luna, failed, followup]).nodes
+      .find(n => n.kind === "delegation" && n.id === luna.id)).toMatchObject({status: "completed"});
+    const cancelled = projectConversation([start, qwen, event(7, "run.cancelled", {})]);
     expect(cancelled.activeWorker).toBeUndefined();
     expect(cancelled.nodes.find(n => n.kind === "delegation")).toMatchObject({status: "cancelled"});
   });

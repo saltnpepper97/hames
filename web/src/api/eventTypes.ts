@@ -84,6 +84,8 @@ delegation.requested
 delegation.task_card
 delegation.completed
 delegation.failed
+delegation.followup.completed
+delegation.followup.failed
 delegation.stopping
 memory.proposed
 memory.accepted

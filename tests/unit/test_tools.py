@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -26,6 +28,8 @@ from hames.tools import (
     TerminalStopArguments,
     ToolContext,
     ToolRegistry,
+    VcsInspectArguments,
+    VcsInspectTool,
     WriteFileArguments,
     WriteFileTool,
 )
@@ -254,6 +258,52 @@ async def test_shell_captures_channels_filters_secrets_and_times_out(
     timed_out = await ShellTool().execute(context, ShellArguments(command="sleep 5"))
     assert timed_out.status == "failed"
     assert "timed out" in timed_out.summary
+
+
+@pytest.mark.asyncio
+async def test_vcs_inspect_exposes_bounded_read_only_git_state(tmp_path: Path) -> None:
+    context = tool_context(tmp_path)
+    source = context.project_root / "value.txt"
+
+    def initialize_repository() -> None:
+        subprocess.run(["git", "init", "-q", str(context.project_root)], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(context.project_root),
+                "config",
+                "user.email",
+                "test@example.com",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(context.project_root), "config", "user.name", "Test"],
+            check=True,
+        )
+        source.write_text("before\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(context.project_root), "add", "value.txt"], check=True)
+        subprocess.run(
+            ["git", "-C", str(context.project_root), "commit", "-qm", "initial"], check=True
+        )
+
+    await asyncio.to_thread(initialize_repository)
+    source.write_text("after\n", encoding="utf-8")
+
+    status = await VcsInspectTool().execute(
+        context, VcsInspectArguments(action="status")
+    )
+    diff = await VcsInspectTool().execute(
+        context, VcsInspectArguments(action="diff", paths=["value.txt"])
+    )
+
+    assert status.status == "completed"
+    assert " M value.txt" in status.content
+    assert diff.status == "completed"
+    assert "-before" in diff.content and "+after" in diff.content
+    with pytest.raises(ValueError, match="safe Git revision"):
+        VcsInspectArguments(action="show", revision="--exec=bad")
 
 
 def test_policy_classifies_safe_dangerous_and_protected_actions(tmp_path: Path) -> None:

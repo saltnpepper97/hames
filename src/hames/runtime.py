@@ -112,6 +112,7 @@ from hames.tools import (
     kill_process_group,
     shell_environment,
 )
+from hames.workflows import project_workflow
 
 SELF_MANAGEMENT_TOOLS = frozenset(
     {
@@ -2186,6 +2187,7 @@ class RunManager:
             await self._append_failure(session_id, run_id, error.id, "runtime_error", str(exc), {})
         finally:
             await self._finalize_plan_execution(session_id, run_id)
+            await self._publish_delegation_followup(session_id, run_id)
             self._mark_post_terminal(run_id, session_id)
             await self._promote_next(session_id)
             await self._advance_goal_after_run(session_id, run_id)
@@ -2428,6 +2430,87 @@ class RunManager:
             causation_id=terminal.id,
         )
         await self._publish_store_events((event,))
+
+    async def _publish_delegation_followup(self, session_id: str, run_id: str) -> None:
+        """Return a later child-chat result to its original parent workflow."""
+        child_events = await asyncio.to_thread(self.ledger.list_events, session_id)
+        card = next(
+            (event for event in child_events if event.type == "delegation.task_card"), None
+        )
+        if card is None:
+            return
+        parent_session_id = str(card.payload.get("parent_session_id", ""))
+        if not parent_session_id:
+            return
+        parent_events = await asyncio.to_thread(self.ledger.list_events, parent_session_id)
+        original = next(
+            (
+                event
+                for event in parent_events
+                if event.type in {"delegation.completed", "delegation.failed"}
+                and event.payload.get("child_session_id") == session_id
+            ),
+            None,
+        )
+        if original is None or original.payload.get("child_run_id") == run_id:
+            return
+        if any(
+            event.type.startswith("delegation.followup.")
+            and event.payload.get("child_run_id") == run_id
+            for event in parent_events
+        ):
+            return
+        run_events = await asyncio.to_thread(self.ledger.list_run_events, run_id)
+        terminal = next(
+            (
+                event
+                for event in reversed(run_events)
+                if event.type in {"run.completed", "run.failed", "run.cancelled"}
+            ),
+            None,
+        )
+        if terminal is None:
+            return
+        completed = terminal.type == "run.completed"
+        message = next(
+            (
+                str(event.payload.get("content", ""))
+                for event in reversed(run_events)
+                if event.type == "assistant.message" and event.payload.get("status") == "completed"
+            ),
+            "",
+        )
+        failure_code = "" if completed else str(terminal.payload.get("code", ""))
+        failure_message = "" if completed else str(terminal.payload.get("message", ""))
+        summary = (
+            message or "child follow-up completed"
+            if completed
+            else f"child follow-up failed: {failure_message or failure_code or 'unknown failure'}"
+        )
+        parent_run_id = str(card.payload.get("parent_run_id", "")) or None
+        await self._append(
+            session_id=parent_session_id,
+            run_id=parent_run_id,
+            agent_id=str(card.payload.get("target_agent_id", "")) or None,
+            event_type=(
+                "delegation.followup.completed" if completed else "delegation.followup.failed"
+            ),
+            payload={
+                "child_session_id": session_id,
+                "child_run_id": run_id,
+                "target_agent_id": str(card.payload.get("target_agent_id", "")),
+                "status": "completed" if completed else "failed",
+                "summary": summary,
+                "workflow_id": str(card.payload.get("workflow_id", "")),
+                "stage_id": str(card.payload.get("stage_id", "")),
+                "attempt": int(card.payload.get("attempt", 0) or 0),
+                "failure_code": failure_code,
+                "failure_message": failure_message,
+                "retryable": bool(terminal.payload.get("retryable", False)),
+            },
+            causation_id=original.causation_id,
+            correlation_id=str(card.payload.get("workflow_id", "")) or parent_session_id,
+        )
 
     async def _run_manual_compaction(self, run_id: str, session: Session) -> None:
         try:
@@ -4414,6 +4497,7 @@ class RunManager:
                             "tool.rejected",
                             "model.response.failed",
                             "delegation.failed",
+                            "delegation.followup.failed",
                         }
                         for event in run_events
                     )
@@ -5202,8 +5286,44 @@ class RunManager:
                 )
             except (ValueError, ProviderError) as exc:
                 return ToolResult(status="rejected", summary=f"child model selection failed: {exc}")
+        workflow_id = (
+            str(approved_plan.get("plan_id", "")) if approved_plan is not None else run_id
+        )
+        attempt = 0
+        dependency_event_ids: list[str] = []
+        if arguments.stage_id:
+            parent_events = await asyncio.to_thread(self.ledger.list_events, session.id)
+            workflow = project_workflow(workflow_id, parent_events)
+            existing = workflow.stage(arguments.stage_id)
+            if existing is not None and existing.latest.status == "running":
+                return ToolResult(
+                    status="rejected",
+                    summary=f"workflow stage is already running: {arguments.stage_id}",
+                )
+            for dependency_id in arguments.depends_on:
+                dependency = workflow.stage(dependency_id)
+                if dependency is None:
+                    return ToolResult(
+                        status="rejected",
+                        summary=f"workflow dependency does not exist: {dependency_id}",
+                    )
+                if dependency.latest.status != "completed":
+                    return ToolResult(
+                        status="rejected",
+                        summary=(
+                            f"workflow dependency is not completed: {dependency_id} "
+                            f"({dependency.latest.status})"
+                        ),
+                    )
+                if dependency.latest.terminal_event_id:
+                    dependency_event_ids.append(dependency.latest.terminal_event_id)
+            attempt = len(existing.attempts) + 1 if existing is not None else 1
+
         evidence: list[dict[str, str]] = []
-        for event_ref in arguments.evidence_event_ids:
+        evidence_ids = list(
+            dict.fromkeys([*arguments.evidence_event_ids, *dependency_event_ids])
+        )
+        for event_ref in evidence_ids:
             try:
                 event = await asyncio.to_thread(
                     self.ledger.resolve_visible_event, session.id, event_ref
@@ -5219,6 +5339,8 @@ class RunManager:
                 "tool.completed",
                 "tool.failed",
                 "tool.rejected",
+                "delegation.completed",
+                "delegation.followup.completed",
             }:
                 return ToolResult(
                     status="rejected",
@@ -5247,6 +5369,10 @@ class RunManager:
                 "task": arguments.task,
                 "evidence": evidence,
                 "delegation_depth": session.delegation_depth + 1,
+                "workflow_id": workflow_id if arguments.stage_id else "",
+                "stage_id": arguments.stage_id,
+                "depends_on": cast(list[JsonValue], arguments.depends_on),
+                "attempt": attempt,
             },
             causation_id=causation_id,
             correlation_id=run_id,
@@ -5283,6 +5409,10 @@ class RunManager:
                 "skill_allowlists": skill_allowlists,
                 "skill_denied": skill_denied,
                 "requested_result_format": arguments.requested_result_format,
+                "workflow_id": workflow_id if arguments.stage_id else "",
+                "stage_id": arguments.stage_id,
+                "depends_on": arguments.depends_on,
+                "attempt": attempt,
             },
             causation_id=requested.id,
             correlation_id=child.id,
@@ -5315,6 +5445,12 @@ class RunManager:
                     "status": "cancelled",
                     "summary": "Child cancelled with its parent",
                     "duration_seconds": time.monotonic() - started,
+                    "workflow_id": workflow_id if arguments.stage_id else "",
+                    "stage_id": arguments.stage_id,
+                    "attempt": attempt,
+                    "failure_code": "cancelled",
+                    "failure_message": "Child cancelled with its parent",
+                    "retryable": False,
                 },
                 causation_id=requested.id,
                 correlation_id=run_id,
@@ -5332,6 +5468,12 @@ class RunManager:
             "",
         )
         cancelled = any(event.type == "run.cancelled" for event in events)
+        failure = next((event for event in reversed(events) if event.type == "run.failed"), None)
+        failure_code = str(failure.payload.get("code", "")) if failure is not None else ""
+        failure_message = (
+            str(failure.payload.get("message", "")) if failure is not None else ""
+        )
+        retryable = bool(failure.payload.get("retryable", False)) if failure is not None else False
         status = "completed" if completed else "failed"
         summary = (
             "Child cancelled by the user. Report the interruption and wait for user direction; "
@@ -5339,6 +5481,8 @@ class RunManager:
             if cancelled
             else "child agent completed"
             if completed
+            else f"child agent failed: {failure_message}"
+            if failure_message
             else "child agent did not complete"
         )
         terminal = "delegation.completed" if completed else "delegation.failed"
@@ -5354,6 +5498,12 @@ class RunManager:
                 "status": "cancelled" if cancelled else status,
                 "summary": summary,
                 "duration_seconds": time.monotonic() - started,
+                "workflow_id": workflow_id if arguments.stage_id else "",
+                "stage_id": arguments.stage_id,
+                "attempt": attempt,
+                "failure_code": failure_code,
+                "failure_message": failure_message,
+                "retryable": retryable,
             },
             causation_id=requested.id,
             correlation_id=run_id,
@@ -5362,14 +5512,21 @@ class RunManager:
         return ToolResult(
             status=status,
             summary=summary,
-            content=message[:result_limit],
-            truncated=len(message) > result_limit,
+            content=(message or failure_message)[:result_limit],
+            truncated=len(message or failure_message) > result_limit,
             structured_data={
                 "child_session_id": child.id,
                 "child_run_id": child_run_id,
                 "agent_id": target.metadata.slug or target.metadata.id,
                 "requested_result_format": arguments.requested_result_format,
                 "cancelled": cancelled,
+                "workflow_id": workflow_id if arguments.stage_id else "",
+                "stage_id": arguments.stage_id,
+                "depends_on": cast(list[JsonValue], arguments.depends_on),
+                "attempt": attempt,
+                "failure_code": failure_code,
+                "failure_message": failure_message,
+                "retryable": retryable,
             },
             duration_seconds=time.monotonic() - started,
         )

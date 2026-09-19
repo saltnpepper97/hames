@@ -227,8 +227,10 @@ keep`. It validates the coordinator and declared worker models/efforts before ch
 session settings or approving the plan, then runs the selected coordinator in Auto mode.
 It rejects delegated sessions, active work, queued turns, missing plans, untrusted
 workspaces, and unavailable selections. Existing execution requests remain unchanged.
-An explicitly selected execution agent returns unfinished checklist work to the human
-as `workflow_needs_attention`, rather than automatically repeating an implementation pass.
+An explicitly selected execution agent returns unfinished checklist work to the human as a
+resumable needs-attention state, rather than automatically repeating an implementation pass.
+The same execute action resumes it while preserving the approved plan, completed checklist
+items, execution note, and exact failure.
 
 The optional capsules in `contrib/build-review/` implement the initial experiment.
 Install each Markdown capsule as `~/.hames/agents/<id>/AGENT.md` (do not overwrite existing capsules).
@@ -242,11 +244,16 @@ with an optional execution note. This approves the current plan and selects the
 The example starts with DeepSeek high → Luna xhigh → Sol medium only for actionable findings →
 final Luna review → human. Clean reviews skip Sol. Architectural blockers stop for the
 human. The coordinator owns the parent checklist and must mark only verified work done.
-The order and conditional verdict interpretation are agent instructions, not a new
-workflow engine; the runtime enforces model routing, permission inheritance, child
-limits, cancellation and rejection of invalid selections. The builder and finisher commit verified, scoped changes unless the user forbids it;
+The coordinator constructs a small durable dependency graph as it delegates: each child call
+can name a stable `stage_id` and completed `depends_on` stages. Hames records every attempt,
+attaches prerequisite results as evidence, preserves exact child failures, and returns later
+child-chat results to the parent graph. The graph describes execution state; stage order and
+verdict interpretation remain agent instructions. The runtime also enforces model routing,
+permission inheritance, child limits, cancellation, and rejection of invalid dependencies or
+selections. The builder and finisher commit verified, scoped changes unless the user forbids it;
 they never push without an explicit request. Existing workspace shell policy still applies.
-The reviewer has runtime read-only authority (no shell, including no Git shell commands).
+The reviewer has runtime read-only authority (no shell) and uses the bounded `vcs_inspect` tool
+for Git status, history, commits, and diffs.
 Selecting an agent with the ordinary picker still preserves session model settings;
 `default_model` applies to new chats, delegation, and explicitly selected plan execution. The legacy `execution` key remains readable. Agent settings can clear the default; delegated work then inherits the parent model. Explicit new-chat model selections override the default. Selecting an agent in an empty chat loads its default; changing the model in the chat afterward overrides it for that chat. Changing saved defaults never rewrites existing chats, and switching agents in an established conversation keeps its current model.
 

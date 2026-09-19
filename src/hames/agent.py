@@ -24,6 +24,7 @@ READ_ONLY_TOOLS = frozenset(
         "spawn_agent",
         "read_file",
         "list_dir",
+        "vcs_inspect",
         "skill_load",
         "memory_search",
         "scar_list",

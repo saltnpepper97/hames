@@ -245,7 +245,11 @@ def agent_usage(ledger: Ledger, agent_id: str) -> AgentUsageProjection:
         for event in events
         if event.type in {"tool.completed", "tool.failed", "tool.rejected"}
     ]
-    delegation_events = [event for event in events if event.type == "delegation.completed"]
+    delegation_events = [
+        event
+        for event in events
+        if event.type in {"delegation.completed", "delegation.followup.completed"}
+    ]
     return AgentUsageProjection(
         agent_id=agent_id,
         session_count=len({event.session_id for event in events}),
@@ -258,7 +262,9 @@ def agent_usage(ledger: Ledger, agent_id: str) -> AgentUsageProjection:
             float(event.payload.get("duration_seconds", 0.0)) for event in delegation_events
         ),
         errors=sum(
-            event.type in {"run.failed", "runtime.error", "delegation.failed"} for event in events
+            event.type
+            in {"run.failed", "runtime.error", "delegation.failed", "delegation.followup.failed"}
+            for event in events
         ),
     )
 

@@ -24,6 +24,7 @@ from hames.providers.base import JsonValue
 from hames.rules import ContextRule
 from hames.skills import SkillSummary, SkillVersion
 from hames.tasks import project_tasks
+from hames.workflows import project_workflow
 
 CORE_CONTRACT = """You are the reasoning model inside Hames, a trusted local coding-agent
 harness. Hames owns context assembly, provider calls, permissions, persistence,
@@ -260,6 +261,7 @@ def compile_context(
         else None
     )
     plan_part: tuple[str, str] | None = None
+    workflow_part: tuple[str, str] | None = None
     if approved_plan is not None:
         execution_note = (
             f"\n\nUser execution note:\n{approved_plan.execution_note}"
@@ -274,6 +276,29 @@ def compile_context(
             "assignment of the whole plan or a specific portion; do not rewrite, summarize, "
             "or copy the plan into spawn_agent.task:\n"
             f"{approved_plan.markdown}{execution_note}",
+        )
+    workflow_id = approved_plan.id if approved_plan is not None else run_id
+    workflow = project_workflow(workflow_id, session_events)
+    if workflow.stages:
+        workflow_rows: list[str] = []
+        for stage in workflow.stages:
+            latest = stage.latest
+            dependency_text = ",".join(latest.depends_on) or "none"
+            failure_text = (
+                f" failure={latest.failure_code or 'failed'}: {latest.failure_message}"
+                if latest.status in {"failed", "cancelled"}
+                else ""
+            )
+            workflow_rows.append(
+                f"- {stage.id} attempt={latest.attempt} status={latest.status} "
+                f"agent={latest.target_agent_id} depends_on={dependency_text}{failure_text}"
+            )
+        workflow_part = (
+            f"workflow.{workflow_id}",
+            "Durable execution stages. Completed stages and their evidence survive retries. "
+            "Retry only failed or unfinished stages with the same stage_id; use depends_on to "
+            "attach completed prerequisite results. Do not repeat completed stages unless their "
+            "output is invalidated:\n" + "\n".join(workflow_rows),
         )
     task_list = project_tasks(session.id, session_events)
     task_part: tuple[str, str] | None = None
@@ -349,6 +374,8 @@ def compile_context(
         stable_tokens += _estimate_text(goal_part[1])
     if plan_part is not None:
         stable_tokens += _estimate_text(plan_part[1])
+    if workflow_part is not None:
+        stable_tokens += _estimate_text(workflow_part[1])
     if task_part is not None:
         stable_tokens += _estimate_text(task_part[1])
     if delegation_part is not None:
@@ -412,6 +439,15 @@ def compile_context(
             and str(event.payload.get("plan_id", "")) == approved_plan.id
         ]
         selected.append(plan_source)
+    if workflow_part is not None:
+        workflow_source = _source(workflow_part[0], "workflow", workflow_part[1], 184)
+        workflow_source.event_ids = [
+            event.id
+            for event in session_events
+            if event.type.startswith("delegation.")
+            and str(event.payload.get("workflow_id", "")) == workflow_id
+        ]
+        selected.append(workflow_source)
     if task_part is not None:
         task_source = _source(task_part[0], "tasks", task_part[1], 182)
         task_source.event_ids = [
@@ -595,6 +631,8 @@ def compile_context(
         system_parts.append(goal_part[1])
     if plan_part is not None:
         system_parts.append(plan_part[1])
+    if workflow_part is not None:
+        system_parts.append(workflow_part[1])
     if task_part is not None:
         system_parts.append(task_part[1])
     if delegation_part is not None:

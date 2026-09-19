@@ -429,9 +429,15 @@ export function projectConversation(
       nodes.push(node);
       continue;
     }
-    if (["delegation.completed", "delegation.failed", "delegation.stopping"].includes(event.type)) {
+    if ([
+      "delegation.completed",
+      "delegation.failed",
+      "delegation.followup.completed",
+      "delegation.followup.failed",
+      "delegation.stopping",
+    ].includes(event.type)) {
       const node = delegations.get(event.causation_id || "");
-      if (node) node.status = text(event.payload, "status") || (event.type === "delegation.completed" ? "completed" : "failed");
+      if (node) node.status = text(event.payload, "status") || (event.type.endsWith("completed") ? "completed" : "failed");
       continue;
     }
 
