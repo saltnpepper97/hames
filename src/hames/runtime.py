@@ -3066,7 +3066,7 @@ class RunManager:
         if healing_run:
             policy_summary = f"{policy_summary} {HEALING_POLICY_SUMMARY}"
         if "spawn_agent" in allowed_tools:
-            targets = self._delegation_targets(session, capsule)
+            targets = self._delegation_target_slugs(session, capsule)
             policy_summary += (
                 " You can spawn subagents autonomously whenever useful; no user request to "
                 "delegate is needed. Consider parallel delegation for broad reviews, many files, "
@@ -5036,6 +5036,17 @@ class RunManager:
             else [target for target in targets if target in {resolve(value) for value in inherited}]
         )
 
+    def _delegation_target_slugs(self, session: Session, capsule: AgentCapsule) -> list[str]:
+        slugs: list[str] = []
+        for target in self._delegation_targets(session, capsule):
+            try:
+                metadata = self.agents.load(target).metadata
+            except (FileNotFoundError, ValueError):
+                slugs.append(target)
+            else:
+                slugs.append(metadata.slug or metadata.id)
+        return slugs
+
     def _skill_permitted(self, session: Session, capsule: AgentCapsule, slug: str) -> bool:
         scope = self._delegation_scope(session)
         return (
@@ -5293,7 +5304,7 @@ class RunManager:
             structured_data={
                 "child_session_id": child.id,
                 "child_run_id": child_run_id,
-                "agent_id": child.agent_id,
+                "agent_id": target.metadata.slug or target.metadata.id,
                 "requested_result_format": arguments.requested_result_format,
                 "cancelled": cancelled,
             },
