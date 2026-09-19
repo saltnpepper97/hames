@@ -7,7 +7,7 @@
 </h1>
 
 <p align="center">
-  A local-first agent harness with durable context, explicit control, and a terminal-native interface.
+  A local-first agent harness for the Web and terminal, with durable context, scheduled work, and explicit control.
 </p>
 
 <p align="center">
@@ -18,29 +18,40 @@
 </p>
 
 > [!NOTE]
-> Hames is under active development. M0–M9, the Ratatui client, and the M10 web
-> foundation are implemented; interfaces and storage formats may still change.
+> Hames is under active development. This README describes `main`, including the Web UI
+> and other changes planned for **v0.2.0**, which is still unreleased. The tagged installer
+> currently installs **0.1.0**. See the [changelog](CHANGELOG.md) for what is coming next.
 
-Hames is a local coding-agent runtime built around one principle: capable agents
-should remain inspectable and under your control. A trusted Python gateway owns
-execution, policy, context, and provenance, while a fast Rust client keeps active
-work responsive in the terminal.
+Hames brings coding agents and scheduled tasks into one local workspace. Work in
+the browser or terminal, review plans before execution, and follow delegated work
+through its own conversations. A shared gateway keeps sessions, context, tools,
+and execution history durable across clients, with controls for approvals and
+account connections.
 
 ## Feature set
 
-- **Local-first runtime** — use llama.cpp, Ollama, OpenAI, Codex, or named custom
-  provider profiles without moving Hames's durable state out of your home directory.
-- **Three local interfaces** — use the transcript-first Ratatui UI, classic REPL,
-  or the new browser workbench backed by the same gateway and durable sessions.
+- **Web and terminal** — a browser workspace with live chat, agent editing, settings,
+  event inspection, and memory, skills, and plugin management; a Ratatui TUI and classic
+  REPL share the same gateway and durable sessions.
+- **Local and cloud models** — connect llama.cpp, Ollama, OpenAI API, Codex,
+  DeepSeek, Z.ai API or Coding Plan, Grok API, and Grok Build. Choose provider,
+  model, and reasoning effort, with connection controls in Web and TUI.
+- **Scheduled work** — create one-time, daily, or weekday automations with a local
+  time and timezone. Review before enabling, run with or without a project workspace,
+  and get a separate chat per attempt plus desktop notifications. Sleep catch-up
+  avoids building a backlog.
+- **Plan, build, and review** — approve or revise a plan before execution, delegate
+  to agents with their own model defaults, and follow implementation and review chats.
 - **Explicit safety modes** — Manual, Auto, and Plan behavior is enforced by the
   gateway, with exact one-shot approval for high-risk operations.
 - **Durable sessions and goals** — resume or branch conversations, run autonomous
-  goals across bounded turns, and keep foreground chat responsive while work continues.
+  goals across bounded turns, recover context as conversations grow, and keep foreground
+  chat responsive while work continues.
 - **Auditable context and memory** — inspect compiled context, token use, immutable
   events, request snapshots, layered memories, corrections, and Markdown/JSONL exports.
 - **Extensible tools** — built-in filesystem and shell tools, private web search,
   external MCP servers, portable agents, delegation, [isolated plugins](docs/plugins.md),
-  and evolving Skills.
+  evolving Skills, and configurable personal or project slash commands.
 
 ## Install
 
@@ -65,7 +76,7 @@ gateway. Running the command again installs the latest stable version tag.
 The script is fetched from main, but the installed source comes exclusively from a tag.
 Set `HAMES_VERSION=0.1.0` to pin that version; branches and commit hashes are rejected.
 
-To review the installer first, or build from your own checkout:
+To use the unreleased Web UI and current features, review and build from `main`:
 
 ~~~bash
 git clone https://github.com/saltnpepper97/hames.git
@@ -80,19 +91,28 @@ require `HAMES_INSTALL_LOCAL=1`; the default always installs tagged source.
 
 ## Quick start
 
-Run the guided setup, verify the environment, and open the TUI:
+Run the guided setup and verify the environment:
 
 ~~~bash
 hames setup
 hames doctor
-hames
+~~~
+
+Then choose your interface:
+
+~~~bash
+hames web       # Open the Web UI (unreleased v0.2.0 / main)
+hames           # Open the terminal UI
+hames repl      # Open the classic REPL
 ~~~
 
 Setup can configure llama.cpp, Ollama, OpenAI, Grok API, Grok Build, or Codex. Hames defaults to a local
 llama.cpp endpoint at <code>http://127.0.0.1:8080</code>; the gateway starts on
-demand and stays available after the client exits.
+demand and stays available after the client exits. In Web, use **Settings** to
+manage provider connections, **Agents** to configure collaborators, and
+**Automations** to schedule recurring work.
 
-Useful commands:
+Useful terminal commands:
 
 ~~~text
 /model                 choose a reachable provider, model, and reasoning level
@@ -118,16 +138,17 @@ available for as long as the gateway is running.
 
 Hames separates presentation from authority:
 
-1. The **Rust client** renders the TUI or classic REPL and opens authenticated
-   browser sessions for the SolidJS workbench.
+1. The **Web UI and terminal clients** present conversations and controls. The
+   SolidJS Web UI is served locally; the Rust launcher opens authenticated browser
+   sessions and provides the TUI and classic REPL.
 2. The **Python gateway** owns sessions, providers, context compilation, tools,
    policy decisions, memory, and background work.
 3. The **event ledger** records durable, integrity-checked provenance and
    content-addressed payloads.
 
 All clients talk to the same gateway and session model. Closing a client does not
-discard an active goal or background terminal; <code>/sessions</code> restores
-the durable conversation explicitly in the terminal clients.
+discard an active goal or background terminal. Reopen a chat from the Web sidebar
+or use <code>/sessions</code> in the terminal.
 
 ### Interaction modes
 
@@ -144,7 +165,8 @@ deterministic high-risk shell signatures remain protected.
 ### Sessions, goals, and agents
 
 Sessions preserve provider, model, reasoning effort, interaction mode, ancestry,
-and transcript state. Use <code>/new</code> for a fresh conversation,
+and transcript state. Web provides chat and agent controls in the sidebar and
+composer. In the terminal, use <code>/new</code> for a fresh conversation,
 <code>/sessions</code> to resume, and <code>/fork</code> to branch after an answer.
 
 <code>/goal &lt;objective&gt;</code> starts independently bounded agent turns under
@@ -156,7 +178,9 @@ silently copying the parent conversation.
 
 ### Context, memory, and correction
 
-Every model request passes through a deterministic, budgeted context compiler.
+Web exposes conversation activity in the Events tab, with dedicated pages for
+memory, Skills, and Scars. Every model request passes through a deterministic,
+budgeted context compiler. In the terminal,
 <code>/context</code> explains selected, compacted, and omitted sources and links
 them to the exact request snapshot. <code>/inspect</code>, <code>/events</code>,
 and <code>/export</code> expose the corresponding activity and provenance.
@@ -289,7 +313,8 @@ milestones:
 - [Model evaluations](docs/model-evaluations/)
 - [GitHub repository](https://github.com/saltnpepper97/hames)
 
-The original planning archive remains untouched at the repository root.
+See [Unreleased changes](CHANGELOG.md), [automation setup](docs/automations.md),
+and [custom command configuration](docs/commands.md) for current capabilities.
 
 ## License
 

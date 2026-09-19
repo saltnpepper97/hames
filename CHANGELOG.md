@@ -34,7 +34,9 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
   Building the current checkout requires `HAMES_INSTALL_LOCAL=1`.
 - Refined Web navigation, dark appearance, forms, dialogs, dropdown hover and selection
   feedback, connection labels, status colors, branding, and tab icon.
-- README logo now uses the tab icon’s rounded-square sage background.
+- README logo now uses the tab icon’s rounded-square sage background at a smaller size.
+  Updated the overview and quick start for Web and terminal use, highlighting automations,
+  provider connections, planning, and delegation, with explicit unreleased version guidance.
 - Improved event table layout and resizing, wide Markdown table scrolling, composer
   menus, workspace and agent sidebar labels, and responsive chat layout.
 - Expanded architecture, provider, plugin, command, automation, and workflow documentation.
