@@ -34,6 +34,7 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
   Building the current checkout requires `HAMES_INSTALL_LOCAL=1`.
 - Refined Web navigation, dark appearance, forms, dialogs, dropdown hover and selection
   feedback, connection labels, status colors, branding, and tab icon.
+- README logo now uses the tab icon’s rounded-square sage background.
 - Improved event table layout and resizing, wide Markdown table scrolling, composer
   menus, workspace and agent sidebar labels, and responsive chat layout.
 - Expanded architecture, provider, plugin, command, automation, and workflow documentation.
@@ -41,6 +42,8 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
   the actual execution models.
 
 ### Fixed
+
+- Added proper padding to the automation task input and removed its resize handle.
 
 - Long-running conversation context recovery, including active-turn input budget
   exhaustion, context compaction, and provider-specific recovery behavior.
