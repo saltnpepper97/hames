@@ -58,9 +58,7 @@ async def test_explicit_plan_resume_preserves_checklist_and_approved_plan(tmp_pa
             title="Exact plan",
             tasks=["Keep completed work", "Retry review"],
         )
-        tasks, _ = state.runs.session_tasks.update(
-            session, tasks.items[0].id, status="completed"
-        )
+        tasks, _ = state.runs.session_tasks.update(session, tasks.items[0].id, status="completed")
         original_ids = [item.id for item in tasks.items]
 
         _, requested = plans.transition(
@@ -159,8 +157,7 @@ async def test_execute_plan_uses_explicit_resume_path(tmp_path: Path) -> None:
         assert resumed.current.execution_run_id == run_id
         assert resumed.current.execution_note == "Preserve the public API"
         assert any(
-            event.type == "plan.execution.resumed"
-            for event in state.ledger.list_events(session.id)
+            event.type == "plan.execution.resumed" for event in state.ledger.list_events(session.id)
         )
         launch.assert_called_once()
     finally:

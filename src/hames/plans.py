@@ -125,9 +125,7 @@ def project_plans(session_id: str, events: list[Event]) -> PlanState:
             updates.update(
                 status="approved",
                 strategy=event.payload.get("strategy"),
-                execution_agent=(
-                    event.payload.get("execution_agent") or plan.execution_agent
-                ),
+                execution_agent=(event.payload.get("execution_agent") or plan.execution_agent),
                 execution_note=str(event.payload.get("execution_note") or plan.execution_note),
                 error_code="",
                 error="",
@@ -136,9 +134,7 @@ def project_plans(session_id: str, events: list[Event]) -> PlanState:
             execution_run_id = event.payload.get("execution_run_id")
             updates.update(
                 status="executing",
-                execution_agent=(
-                    event.payload.get("execution_agent") or plan.execution_agent
-                ),
+                execution_agent=(event.payload.get("execution_agent") or plan.execution_agent),
                 error_code="",
                 error="",
                 execution_run_id=(str(execution_run_id) if execution_run_id is not None else None),

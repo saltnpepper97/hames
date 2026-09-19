@@ -2434,9 +2434,7 @@ class RunManager:
     async def _publish_delegation_followup(self, session_id: str, run_id: str) -> None:
         """Return a later child-chat result to its original parent workflow."""
         child_events = await asyncio.to_thread(self.ledger.list_events, session_id)
-        card = next(
-            (event for event in child_events if event.type == "delegation.task_card"), None
-        )
+        card = next((event for event in child_events if event.type == "delegation.task_card"), None)
         if card is None:
             return
         parent_session_id = str(card.payload.get("parent_session_id", ""))
@@ -5286,9 +5284,7 @@ class RunManager:
                 )
             except (ValueError, ProviderError) as exc:
                 return ToolResult(status="rejected", summary=f"child model selection failed: {exc}")
-        workflow_id = (
-            str(approved_plan.get("plan_id", "")) if approved_plan is not None else run_id
-        )
+        workflow_id = str(approved_plan.get("plan_id", "")) if approved_plan is not None else run_id
         attempt = 0
         dependency_event_ids: list[str] = []
         if arguments.stage_id:
@@ -5320,9 +5316,7 @@ class RunManager:
             attempt = len(existing.attempts) + 1 if existing is not None else 1
 
         evidence: list[dict[str, str]] = []
-        evidence_ids = list(
-            dict.fromkeys([*arguments.evidence_event_ids, *dependency_event_ids])
-        )
+        evidence_ids = list(dict.fromkeys([*arguments.evidence_event_ids, *dependency_event_ids]))
         for event_ref in evidence_ids:
             try:
                 event = await asyncio.to_thread(
@@ -5470,9 +5464,7 @@ class RunManager:
         cancelled = any(event.type == "run.cancelled" for event in events)
         failure = next((event for event in reversed(events) if event.type == "run.failed"), None)
         failure_code = str(failure.payload.get("code", "")) if failure is not None else ""
-        failure_message = (
-            str(failure.payload.get("message", "")) if failure is not None else ""
-        )
+        failure_message = str(failure.payload.get("message", "")) if failure is not None else ""
         retryable = bool(failure.payload.get("retryable", False)) if failure is not None else False
         status = "completed" if completed else "failed"
         summary = (

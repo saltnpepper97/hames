@@ -291,9 +291,7 @@ async def test_vcs_inspect_exposes_bounded_read_only_git_state(tmp_path: Path) -
     await asyncio.to_thread(initialize_repository)
     source.write_text("after\n", encoding="utf-8")
 
-    status = await VcsInspectTool().execute(
-        context, VcsInspectArguments(action="status")
-    )
+    status = await VcsInspectTool().execute(context, VcsInspectArguments(action="status"))
     diff = await VcsInspectTool().execute(
         context, VcsInspectArguments(action="diff", paths=["value.txt"])
     )

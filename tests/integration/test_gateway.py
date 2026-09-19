@@ -1535,7 +1535,7 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             health = await client.get("/v1/health")
             assert health.status_code == 200
             health_body = response_object(health)
-            assert health_body["protocol_version"] == 38
+            assert health_body["protocol_version"] == 39
             assert health_body["provider_profiles"] == ["fake"]
             assert (await client.get("/v1/sessions")).status_code == 401
 
@@ -2766,7 +2766,7 @@ async def test_plan_execution_continues_until_the_configured_model_turn_limit(
                 headers=headers,
                 json={"strategy": "keep"},
             )
-            events = await _wait_for_event(client, headers, session_id, "plan.execution.failed")
+            events = await _wait_for_event(client, headers, session_id, "plan.execution.attention")
             run_id = str(response_object(executed)["run_id"])
             run_events = [event for event in events if event.get("run_id") == run_id]
             failure = next(event for event in run_events if event["type"] == "run.failed")
@@ -4443,6 +4443,7 @@ async def test_runtime_delegates_with_an_explicit_task_card(tmp_path: Path) -> N
                 "ask_user",
                 "read_file",
                 "list_dir",
+                "vcs_inspect",
                 "skill_load",
                 "memory_search",
                 "scar_list",
@@ -4527,6 +4528,7 @@ async def test_agent_selection_changes_only_future_turns(tmp_path: Path) -> None
                 "ask_user",
                 "read_file",
                 "list_dir",
+                "vcs_inspect",
                 "spawn_agent",
                 "skill_load",
                 "memory_search",

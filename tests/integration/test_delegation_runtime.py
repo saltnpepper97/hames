@@ -746,9 +746,7 @@ async def test_child_tool_limit_failure_is_returned_to_parent(tmp_path: Path) ->
         await asyncio.wait_for(asyncio.shield(state.runs._tasks[followup_run_id]), 5)
         parent_events = state.ledger.list_events(session_id)
         followup = next(
-            event
-            for event in parent_events
-            if event.type == "delegation.followup.completed"
+            event for event in parent_events if event.type == "delegation.followup.completed"
         )
         assert followup.payload["child_run_id"] == followup_run_id
         workflow = project_workflow(run_id, parent_events)
