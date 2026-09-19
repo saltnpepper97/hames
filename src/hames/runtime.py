@@ -2393,7 +2393,10 @@ class RunManager:
     async def _finalize_plan_execution(self, session_id: str, run_id: str) -> None:
         state = await asyncio.to_thread(self.plans.current, session_id)
         plan = state.current
-        if plan is None or plan.execution_run_id != run_id or plan.status != "executing":
+        if plan is None:
+            return
+        if plan.execution_run_id != run_id or plan.status != "executing":
+            await self._reconcile_completed_plan_followup(session_id, run_id)
             return
         events = await asyncio.to_thread(self.ledger.list_run_events, run_id)
         terminal = next(
@@ -2427,6 +2430,70 @@ class RunManager:
             execution_agent=plan.execution_agent,
             code=code,
             message=message,
+            causation_id=terminal.id,
+        )
+        await self._publish_store_events((event,))
+
+    async def _reconcile_completed_plan_followup(self, session_id: str, run_id: str) -> None:
+        """Close an attention plan when a later turn finishes its durable checklist."""
+        state = await asyncio.to_thread(self.plans.current, session_id)
+        plan = state.current
+        if plan is None or plan.status not in {"failed", "needs_attention"}:
+            return
+        tasks = await asyncio.to_thread(self.session_tasks.current, session_id)
+        if not tasks.items or any(item.status != "completed" for item in tasks.items):
+            return
+
+        events = await asyncio.to_thread(self.ledger.list_events, session_id)
+        attention = next(
+            (
+                event
+                for event in reversed(events)
+                if event.type in {"plan.execution.attention", "plan.execution.failed"}
+                and event.payload.get("plan_id") == plan.id
+            ),
+            None,
+        )
+        terminal = next(
+            (
+                event
+                for event in reversed(events)
+                if event.run_id == run_id and event.type == "run.completed"
+            ),
+            None,
+        )
+        started = next(
+            (event for event in events if event.run_id == run_id and event.type == "run.started"),
+            None,
+        )
+        if (
+            attention is None
+            or started is None
+            or terminal is None
+            or started.sequence <= attention.sequence
+            or terminal.sequence <= started.sequence
+        ):
+            return
+        resolved_task = any(
+            started.sequence < event.sequence < terminal.sequence
+            and (
+                (event.type == "task.updated" and event.payload.get("status") == "completed")
+                or event.type == "task.removed"
+            )
+            for event in events
+        )
+        if not resolved_task:
+            return
+
+        session = await asyncio.to_thread(self.ledger.get_session, session_id)
+        _, event = await asyncio.to_thread(
+            self.plans.transition,
+            session,
+            plan.id,
+            "plan.execution.completed",
+            strategy=plan.strategy,
+            execution_run_id=run_id,
+            execution_agent=plan.execution_agent,
             causation_id=terminal.id,
         )
         await self._publish_store_events((event,))

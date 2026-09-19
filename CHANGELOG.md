@@ -56,6 +56,8 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 - Preserve interrupted plan executions as a resumable needs-attention state, including
   the exact failure and blocker reasons. Resuming keeps completed checklist work and the
   approved execution note instead of rebuilding the plan from a phrase-matched chat turn.
+- Reconcile a failed or needs-attention plan when a later successful turn resolves its
+  remaining checklist, without allowing unrelated turns or empty checklists to mark it complete.
 - Exclude unrelated episodic task reports from delegated worker context so historical
   assignments cannot substitute for the current plan.
 - Accept memory extraction tool calls with nonzero indexes and multiple submissions.

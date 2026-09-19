@@ -162,3 +162,90 @@ async def test_execute_plan_uses_explicit_resume_path(tmp_path: Path) -> None:
         launch.assert_called_once()
     finally:
         await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_completed_followup_reconciles_attention_plan(tmp_path: Path) -> None:
+    state = GatewayState.create(
+        HamesPaths.resolve(root=tmp_path), providers={"fake": FakeProvider([])}
+    )
+    session = state.ledger.create_session(
+        working_directory=tmp_path, provider="fake", model="fixture", agent_id="default"
+    )
+    try:
+        proposed, _ = state.runs.plans.propose(
+            session, run_id="planning", markdown="# Repair later", causation_id=None
+        )
+        assert proposed.current is not None
+        plan_id = proposed.current.id
+        state.runs.plans.transition(
+            session,
+            plan_id,
+            "plan.execution.started",
+            strategy="keep",
+            execution_run_id="execution",
+        )
+        tasks, _ = state.runs.session_tasks.replace(
+            session, title="Repair later", tasks=["Finish verification"]
+        )
+        state.runs.plans.transition(
+            session,
+            plan_id,
+            "plan.execution.attention",
+            strategy="keep",
+            execution_run_id="execution",
+            code="workflow_needs_attention",
+            message="one checklist item remains",
+        )
+
+        state.ledger.append(
+            session_id=session.id,
+            run_id="unrelated",
+            agent_id=session.agent_id,
+            event_type="run.started",
+            payload={
+                "max_model_turns": 10,
+                "max_tool_calls": 20,
+                "max_active_seconds": 60.0,
+            },
+        )
+        state.ledger.append(
+            session_id=session.id,
+            run_id="unrelated",
+            agent_id=session.agent_id,
+            event_type="run.completed",
+            payload={"model_turns": 1, "tool_calls": 0, "active_seconds": 1.0},
+        )
+        await state.runs._finalize_plan_execution(session.id, "unrelated")
+        unchanged = state.runs.plans.current(session.id).current
+        assert unchanged is not None and unchanged.status == "needs_attention"
+
+        state.ledger.append(
+            session_id=session.id,
+            run_id="followup",
+            agent_id=session.agent_id,
+            event_type="run.started",
+            payload={
+                "max_model_turns": 10,
+                "max_tool_calls": 20,
+                "max_active_seconds": 60.0,
+            },
+        )
+        state.runs.session_tasks.update(session, tasks.items[0].id, status="completed")
+        terminal = state.ledger.append(
+            session_id=session.id,
+            run_id="followup",
+            agent_id=session.agent_id,
+            event_type="run.completed",
+            payload={"model_turns": 1, "tool_calls": 1, "active_seconds": 1.0},
+        )
+
+        await state.runs._finalize_plan_execution(session.id, "followup")
+
+        completed = state.runs.plans.current(session.id).current
+        assert completed is not None and completed.status == "completed"
+        event = state.ledger.list_events(session.id)[-1]
+        assert event.type == "plan.execution.completed"
+        assert event.causation_id == terminal.id
+    finally:
+        await state.runs.close()
