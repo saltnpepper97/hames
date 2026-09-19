@@ -10563,7 +10563,7 @@ a {
 .automation-editor { padding: 1.25rem; display: grid; gap: 1rem; }
 .automation-editor fieldset { display: grid; border: 0; padding: 0; margin: 0; gap: 0.7rem; }
 .automation-field { display: grid; gap: 0.45rem; font-size: 0.8rem; font-weight: 600; }
-.automation-field textarea { width: 100%; resize: vertical; min-height: 6rem; }
+.automation-field textarea { width: 100%; resize: none; min-height: 6rem; padding: 0.75rem; line-height: 1.5; font-weight: 400; }
 .automation-editor p { margin: 0; }
 .automation-hint { color: var(--muted); font-size: 0.8rem; line-height: 1.5; }
 .automation-error { color: var(--danger); font-size: 0.8rem; overflow-wrap: anywhere; }
