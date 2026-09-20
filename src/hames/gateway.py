@@ -2647,6 +2647,7 @@ def create_app(state: GatewayState) -> FastAPI:
                 run_id = await state.runs.start_flow_recipe(
                     request.session_id, recipe.coordinator, instruction
                 )
+            await state.runs.record_flow_start(request.session_id, run_id, identifier)
             return {"run_id": run_id, "session_id": request.session_id}
         except PermissionError as exc:
             raise ApiError(403, "working_directory_untrusted", str(exc)) from exc

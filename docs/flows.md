@@ -21,13 +21,20 @@ guidance. Existing approval, cancellation, queue, plan, and delegation behavior
 continues to apply. `/flow build-review --plan` approves and executes the current
 ready plan through the same coordinator.
 
-A highlighted icon appears while the conversation has ongoing delegated work.
-It opens a simple drawer of agent tabs and live transcripts. Luna's coordinating
-transcript is the main chat. Each worker has its own tab; earlier work by the same
-agent remains available there. A delegation card can reopen a transcript after
-completion. Workers do not appear as separate entries in the normal chat list.
+The flow icon appears once a worker transcript is available and stays available
+for that chat after completion or cancellation. The drawer keeps the latest flow's
+agent tabs through ordinary follow-up messages. Starting another flow clears its
+contents and selection; previous flows are not loaded into this view. Normal
+session refreshes and worker updates keep the drawer open. Maximize expands it
+across the chat area; Restore returns it to sidebar width without switching
+transcripts. Workers do not appear as separate entries in the normal chat list.
+This view reset does not erase the durable event ledger.
 
 Recipes live in `~/.hames/flow-recipes/<identifier>.json`. The identifier and exact
 chat command are displayed on the recipe page. Deleting a recipe preserves chat
 history. The former experimental pipeline definitions and ledger records are not
 reinterpreted or automatically resumed by this system.
+
+Each worker transcript has a compact message input. Messages go to the selected
+worker; they queue while it is busy and start a normal follow-up when it is idle.
+Enter sends and Shift+Enter inserts a newline. Drafts stay with their worker tab.

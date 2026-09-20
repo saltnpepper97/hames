@@ -34,13 +34,20 @@ function TaskStatusGlyph(props: { status: SessionTaskItem["status"] }) {
 }
 
 export function createTaskCardState(sessionId: Accessor<string>) {
-  const [open, setOpen] = createSignal(true);
-  let previousSession = "";
-  createEffect(() => {
-    if (previousSession !== sessionId()) setOpen(true);
-    previousSession = sessionId();
-  });
-  return { open, toggle: () => setOpen(value => !value) };
+  const currentSession = createMemo(sessionId);
+  const storageKey = () => `hames.tasks-expanded:${currentSession()}`;
+  const read = () => {
+    try { return localStorage.getItem(storageKey()) !== "false"; }
+    catch { return true; }
+  };
+  const [open, setOpen] = createSignal(read());
+  createEffect(() => { currentSession(); setOpen(read()); });
+  const toggle = () => {
+    const next = !open();
+    setOpen(next);
+    try { localStorage.setItem(storageKey(), String(next)); } catch { /* Optional UI state. */ }
+  };
+  return { open, toggle };
 }
 
 export function TaskPanel(props: {

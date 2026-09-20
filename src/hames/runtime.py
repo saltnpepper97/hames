@@ -942,6 +942,15 @@ class RunManager:
         await self._publish_store_events((event,))
         return tasks
 
+    async def record_flow_start(self, session_id: str, run_id: str, recipe_id: str) -> None:
+        await self._append(
+            session_id=session_id,
+            run_id=run_id,
+            event_type="flow.started",
+            payload={"recipe_id": recipe_id},
+            correlation_id=run_id,
+        )
+
     async def start_flow_recipe(self, session_id: str, coordinator_id: str, content: str) -> str:
         """Select a coordinator and submit an ordinary turn in the existing chat."""
         async with self._submission_lock(session_id):

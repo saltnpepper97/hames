@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { hamesIconPack } from "../../plugins/icons/hames";
 import { IconProvider } from "../../shell/icons";
 import type { SessionTaskProjection } from "../projection";
@@ -29,6 +29,7 @@ function renderPanel(value = tasks) {
 }
 
 describe("task drawer", () => {
+  beforeEach(() => localStorage.clear());
   it("opens with progress and the checklist, then can collapse and reopen", () => {
     renderPanel();
 
@@ -66,4 +67,23 @@ describe("task drawer", () => {
     const { container } = renderPanel({ ...tasks, items: [] });
     expect(container.querySelector(".task-panel")).toBeNull();
   });
+});
+
+it("remembers collapse across remounts and separately for each chat", () => {
+  localStorage.clear();
+  const [session, setSession] = createSignal("first-chat");
+  const Harness = () => {
+    const state = createTaskCardState(session);
+    return <button aria-expanded={state.open()} onClick={state.toggle}>Tasks</button>;
+  };
+  const first = render(() => <Harness />);
+  fireEvent.click(screen.getByRole("button", { name: "Tasks" }));
+  expect(screen.getByRole("button", { name: "Tasks" })).toHaveAttribute("aria-expanded", "false");
+  first.unmount();
+  render(() => <Harness />);
+  expect(screen.getByRole("button", { name: "Tasks" })).toHaveAttribute("aria-expanded", "false");
+  setSession("second-chat");
+  expect(screen.getByRole("button", { name: "Tasks" })).toHaveAttribute("aria-expanded", "true");
+  setSession("first-chat");
+  expect(screen.getByRole("button", { name: "Tasks" })).toHaveAttribute("aria-expanded", "false");
 });

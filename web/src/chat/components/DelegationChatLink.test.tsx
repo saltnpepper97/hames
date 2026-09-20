@@ -7,7 +7,7 @@ it("opens the worker transcript inside its parent chat instead of navigating", (
   try {
     fireEvent.click(screen.getByRole("button", { name: "View transcript" }));
     expect(listener).toHaveBeenCalledOnce();
-    expect((listener.mock.calls[0]![0] as CustomEvent).detail).toEqual({ sessionId: "parent", agentId: "qwen-builder" });
+    expect((listener.mock.calls[0]![0] as CustomEvent).detail).toEqual({ sessionId: "parent", runId: "run", agentId: "qwen-builder" });
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
     expect(screen.queryByText(/separate chat/)).not.toBeInTheDocument();
   } finally { unmount(); window.removeEventListener("hames:open-worker", listener); }

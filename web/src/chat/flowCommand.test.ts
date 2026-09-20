@@ -9,6 +9,7 @@ it("starts any saved flow in the existing conversation without opening another c
   const result = await executeWebCommand(command!, "existing-chat");
   expect(startFlow).toHaveBeenCalledWith("research-report", "existing-chat", "Research accessible navigation\nUse primary sources", false);
   expect(result.openedSession).toBeUndefined();
+  expect(result.note).toBe("");
   const planned = parseWebCommand("/flow build-review --plan Preserve the API")!;
   await executeWebCommand(planned, "existing-chat");
   expect(startFlow).toHaveBeenLastCalledWith("build-review", "existing-chat", "Preserve the API", true);

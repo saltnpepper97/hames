@@ -31,6 +31,8 @@ export const semanticIconNames = [
   "action.send",
   "action.stop",
   "action.expand",
+  "action.maximize",
+  "action.restore",
   "action.back",
   "action.next",
   "action.selected",

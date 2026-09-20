@@ -6,6 +6,11 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Added
 
+- Compact message inputs in worker transcripts, with per-worker drafts and the normal
+  queue and follow-up behavior.
+
+- Maximize and restore controls for the current-run worker transcript drawer.
+
 - Saved flow recipes with a coordinator and plain-language instructions. `/flow <identifier> <task>`
   starts in the current chat; `--plan` uses the approved-plan execution path. Recipes have an
   editor, visible identifiers, and confirmed deletion. Workers remain attached to the parent
@@ -40,6 +45,10 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Changed
 
+- Removed routine started/queued success banners and persistent plan-attention badges
+  from the chat input. Resume remains available in the composer action menu; ready plans
+  retain explicit approval controls, and failed sends keep their error and draft.
+
 - Consecutive successful edits to the same file appear in one expandable transcript row,
   preserving individual diffs and boundaries between runs, messages, and other actions.
 - The normal Web chat list excludes delegated worker sessions; delegation cards open their
@@ -62,6 +71,15 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
   the actual execution models.
 
 ### Fixed
+
+- Split-pane chat headers adapt to the available pane width without overlapping controls.
+  Worker message inputs share the normal round Send button and borderless focus styling.
+
+- The worker drawer keeps the latest flow available after completion and ordinary
+  follow-up messages, resetting only when another flow starts. Its trigger waits for
+  a real worker transcript, and session polling no longer closes the drawer.
+- The task list remembers its expanded state per chat across navigation and reloads,
+  with the disclosure arrow direction corrected.
 
 - Waiting for approvals or answers no longer consumes the run's active-time budget.
   Pending approvals are cancelled when a run ends and reconciled after a gateway restart,

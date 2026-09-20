@@ -28,7 +28,7 @@ export async function executeWebCommand(command: WebCommand, sessionId: string):
     case "flow":
       if (!command.id || (!command.input && !command.usePlan)) throw new Error("Use /flow <flow-id> <task>, or /flow <flow-id> --plan to use the current ready plan.");
       await startFlow(command.id, sessionId, command.input, command.usePlan);
-      return { note: "Flow started in this conversation" };
+      return { note: "" };
     case "custom":
       return { note: `/${command.name} started`,
         openedSession: await executeUserCommand(sessionId, command.name, command.note) };

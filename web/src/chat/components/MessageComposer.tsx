@@ -37,6 +37,7 @@ interface MessageComposerProps {
   queueRevision?: string;
   hidden?: boolean;
   onSessionChanged: () => void;
+  onCommandResult?: (message: string) => void;
   onSessionUpdated: (session: Session) => void;
   onSessionOpened: (session: Session) => void;
   workspaceControl?: JSX.Element;
@@ -138,19 +139,17 @@ export function MessageComposer(props: MessageComposerProps) {
   const [executionSubmitted, setExecutionSubmitted] = createSignal("");
   const [feedbackPlan, setFeedbackPlan] = createSignal("");
   const [feedbackSubmitted, setFeedbackSubmitted] = createSignal("");
-  const reviewingPlan = () => props.plan && (
-    ["failed", "needs_attention"].includes(props.plan.status)
-    || (props.session.interaction_mode === "plan" && ["ready", "reviewing"].includes(props.plan.status))
-  );
+  const reviewingPlan = () => props.plan && props.session.interaction_mode === "plan"
+    && ["ready", "reviewing"].includes(props.plan.status);
+  const resumablePlan = () => props.plan && ["failed", "needs_attention"].includes(props.plan.status);
   const visiblePlan = createMemo(() => {
     const plan = props.plan;
-    if (!plan || ["approved", "executing", "completed"].includes(plan.status)) return undefined;
-    if (plan.id === executionSubmitted() && plan.status === "ready") return { ...plan, status: "requested" as const };
-    if (plan.id === feedbackSubmitted() && plan.status === "ready") return { ...plan, status: "reviewing" as const };
+    if (!plan || !reviewingPlan() || props.activeRunId || plan.status !== "ready"
+      || plan.id === executionSubmitted() || plan.id === feedbackSubmitted()) return undefined;
     return plan;
   });
   const approvePlan = async () => {
-    if (sending() || executingPlan() || props.activeRunId || !reviewingPlan() || draft().trim() || attachments().length) return;
+    if (sending() || executingPlan() || props.activeRunId || (!reviewingPlan() && !resumablePlan()) || draft().trim() || attachments().length) return;
     const source = props.session;
     const planId = props.plan!.id;
     setExecutingPlan(true);
@@ -457,7 +456,8 @@ export function MessageComposer(props: MessageComposerProps) {
           setDraft("");
           if (!command) clearAttachments();
         }
-        setSubmissionNote(outcome.note);
+        setSubmissionNote(String(generation));
+        if (command?.kind === "goal" && command.action === "show" && outcome.note) props.onCommandResult?.(outcome.note);
         if (outcome.openedSession) props.onSessionOpened(outcome.openedSession);
       }
       props.onSessionChanged();
@@ -693,9 +693,9 @@ export function MessageComposer(props: MessageComposerProps) {
               void submit();
             }}
           />
-          <Show when={composerError() || submissionNote()}>
+          <Show when={composerError()}>
             <div class="composer-feedback" aria-live="polite">
-              <Show when={composerError()} fallback={submissionNote()}>
+              <Show when={composerError()}>
                 <span class="composer-error">{composerError()}</span>
                 <Show when={trustRequired()}>
                   <Button
@@ -721,6 +721,8 @@ export function MessageComposer(props: MessageComposerProps) {
               attachmentInput.click();
             }}
             onCommands={openCommands}
+            onResumePlan={resumablePlan() && !props.activeRunId ? () => { setActionsOpen(false); void approvePlan(); } : undefined}
+            resumeDisabled={!!draft().trim() || attachments().length > 0}
           />
 
             <ComposerSeat

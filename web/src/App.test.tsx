@@ -2336,8 +2336,8 @@ describe("Hames web shell", () => {
     expect(screen.getByRole("button", { name: "Execute plan" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
     await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/messages") && JSON.parse(String(init?.body)).purpose === "plan_note")).toBe(true));
-    expect(await screen.findByText("Plan changes requested")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Execute plan" })).toBeDisabled();
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Plan review" })).not.toBeInTheDocument());
+    expect(screen.queryByText("Plan changes requested")).not.toBeInTheDocument();
     source.emit("plan.proposed", durableEvent("plan.proposed", 2, { plan_id: "plan-two", title: "Revised layout", revision: 2 }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Execute plan" })).not.toBeDisabled());
     fireEvent.click(screen.getByRole("button", { name: "Execute plan" }));
@@ -2345,7 +2345,8 @@ describe("Hames web shell", () => {
     expect(screen.getByRole("button", { name: "Execute plan" })).not.toBeDisabled();
     executeFails = false;
     fireEvent.click(screen.getByRole("button", { name: "Execute plan" }));
-    expect(await screen.findByText("Starting plan execution…")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Plan review" })).not.toBeInTheDocument());
+    expect(screen.queryByText("Starting plan execution…")).not.toBeInTheDocument();
     source.emit("plan.approved", durableEvent("plan.approved", 3, { plan_id: "plan-two" }));
     await waitFor(() => expect(screen.queryByRole("region", { name: "Plan review" })).not.toBeInTheDocument());
     source.emit("plan.execution.started", durableEvent("plan.execution.started", 4, { plan_id: "plan-two", execution_run_id: "run-execution" }));
@@ -2354,9 +2355,17 @@ describe("Hames web shell", () => {
     expect(screen.queryByRole("button", { name: "Execute plan" })).not.toBeInTheDocument();
     expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/plans/current/execute"))).toHaveLength(2);
     source.emit("plan.execution.attention", durableEvent("plan.execution.attention", 5, { plan_id: "plan-two", message: "Execution could not start" }));
-    expect(await screen.findByText("Plan execution needs attention")).toBeInTheDocument();
-    expect(screen.getByText("Execution could not start")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Resume execution" })).toBeInTheDocument();
+    expect(screen.queryByText("Plan execution needs attention")).not.toBeInTheDocument();
+    expect(document.querySelector('[data-chat-region="composer"] .plan-review')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add to message" }));
+    expect(await screen.findByRole("menuitem", { name: "Resume plan execution" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add to message" }));
+    fireEvent.input(screen.getByRole("textbox", { name: "Message Hames" }), { target: { value: "Review the remaining blocker" } });
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message Hames" }), { key: "Enter" });
+    await waitFor(() => {
+      const messages = fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/messages") && init?.method === "POST");
+      expect(JSON.parse(String(messages.at(-1)?.[1]?.body))).toMatchObject({ content: "Review the remaining blocker", purpose: "turn" });
+    });
   });
 
   it("updates mode and thinking through plugin-contributed composer controls", async () => {
@@ -2512,7 +2521,8 @@ describe("Hames web shell", () => {
 
     fireEvent.input(composer, { target: { value: "/dream " } });
     fireEvent.keyDown(composer, { key: "Enter" });
-    expect(await screen.findByText("Dream started")).toBeInTheDocument();
+    await waitFor(() => expect(composer).toHaveValue(""));
+    expect(screen.queryByText("Dream started")).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
       "/v1/sessions/session-current/dream",
       expect.objectContaining({ method: "POST" }),
@@ -2520,7 +2530,8 @@ describe("Hames web shell", () => {
 
     fireEvent.input(composer, { target: { value: "/compact " } });
     fireEvent.keyDown(composer, { key: "Enter" });
-    expect(await screen.findByText("Compaction started")).toBeInTheDocument();
+    await waitFor(() => expect(composer).toHaveValue(""));
+    expect(screen.queryByText("Compaction started")).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
       "/v1/sessions/session-current/compact",
       expect.objectContaining({ method: "POST" }),
@@ -2554,7 +2565,8 @@ describe("Hames web shell", () => {
 
     fireEvent.input(composer, { target: { value: "/goal Ship the command palette" } });
     fireEvent.keyDown(composer, { key: "Enter" });
-    expect(await screen.findByText("Running goal · Ship the command palette")).toBeInTheDocument();
+    await waitFor(() => expect(composer).toHaveValue(""));
+    expect(screen.queryByText("Running goal · Ship the command palette")).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
       "/v1/sessions/session-current/goals",
       expect.objectContaining({ method: "POST" }),
@@ -2996,7 +3008,9 @@ describe("Hames web shell", () => {
     await waitFor(() => expect(window.location.pathname).toBe("/chat/session-new"));
     fireEvent.input(screen.getByRole("textbox", { name: "Message Hames" }), { target: { value: command.input } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-    await screen.findByText(command.note);
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Message Hames" })).toHaveValue(""));
+    if (command.input === "/goal") await screen.findByText(command.note);
+    else expect(screen.queryByText(command.note)).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "New chat" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete New chat" })).not.toBeInTheDocument();
   });
@@ -3022,7 +3036,8 @@ describe("Hames web shell", () => {
     await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
     fireEvent.input(screen.getByRole("textbox", { name: "Message Hames" }), { target: { value: "/dream" } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-    await screen.findByText("Dream started");
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Message Hames" })).toHaveValue(""));
+    expect(screen.queryByText("Dream started")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Dream" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "New chat" })).not.toBeInTheDocument();
     MockEventSource.instances[0]!.emit("dream.completed", durableEvent("dream.completed", 99,

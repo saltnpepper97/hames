@@ -3,6 +3,8 @@ import brain from "@phosphor-icons/core/regular/brain.svg";
 import robot from "@phosphor-icons/core/regular/robot.svg";
 import {
   IconArrowUp,
+  IconMaximize,
+  IconMinimize,
   IconCalendarClock,
   IconArrowLeft,
   IconBandage,
@@ -110,6 +112,8 @@ export const hamesIconPack = {
     "action.send": tablerIcon(IconArrowUp),
     "action.stop": tablerIcon(IconSquare),
     "action.expand": tablerIcon(IconChevronDown),
+    "action.maximize": tablerIcon(IconMaximize),
+    "action.restore": tablerIcon(IconMinimize),
     "action.back": tablerIcon(IconArrowLeft),
     "action.next": tablerIcon(IconChevronRight),
     "action.selected": tablerIcon(IconCheck),

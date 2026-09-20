@@ -890,12 +890,17 @@ class PluginProposalPayload(EventPayload):
     permissions: list[str] = Field(default_factory=_empty_permissions)
 
 
+class FlowStartedPayload(EventPayload):
+    recipe_id: str
+
+
 class FlowStatePayload(EventPayload):
     flow_id: str
     state: dict[str, Any]
 
 
 EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
+    "flow.started": FlowStartedPayload,
     "flow.created": FlowStatePayload,
     "flow.updated": FlowStatePayload,
     "session.opened": SessionOpenedPayload,

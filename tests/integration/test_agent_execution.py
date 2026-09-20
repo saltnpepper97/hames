@@ -393,7 +393,11 @@ async def test_flow_recipe_uses_native_coordinator_and_attached_workers(
             if task:
                 await asyncio.wait_for(asyncio.shield(task), 10)
             events = state.ledger.list_events(session.id)
-            assert not any(event.type.startswith("flow.") for event in events)
+            flow_events = [event for event in events if event.type.startswith("flow.")]
+            assert len(flow_events) == 1
+            assert flow_events[0].type == "flow.started"
+            assert flow_events[0].run_id == response.json()["run_id"]
+            assert flow_events[0].payload["recipe_id"] == "review"
             assert [
                 e.payload["target_agent_id"] for e in events if e.type == "delegation.requested"
             ] == ["builder", "reviewer"]
