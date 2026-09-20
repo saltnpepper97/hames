@@ -16,6 +16,8 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Fixed
 
+- Chat agent picker displays current slugs instead of legacy internal IDs.
+
 - Sidebar width follows the remaining navigation tabs, removing unused horizontal space.
 
 
