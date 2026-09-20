@@ -14,9 +14,9 @@ interface ChatSessionBarProps {
   streamState: StreamState;
   working: boolean;
   workerLabel?: string;
-  flowStatus?: string;
-  flowOpen?: boolean;
-  onFlowToggle?: () => void;
+  agentStatus?: string;
+  agentsOpen?: boolean;
+  onAgentsToggle?: () => void;
   onViewChanged: (view: ChatView) => void;
   onSessionUpdated: (session: Session) => void;
 }
@@ -50,7 +50,7 @@ export function ChatSessionBar(props: ChatSessionBarProps) {
           disabled={props.working}
           onSessionUpdated={props.onSessionUpdated}
         />
-        <Show when={props.onFlowToggle && props.flowStatus}><Button variant="bare" class="chat-flow-trigger" aria-label="Flow agents" title={`Flow agents · ${props.flowStatus?.replaceAll("_", " ")}`} aria-expanded={props.flowOpen} aria-controls="chat-flow-panel" onClick={props.onFlowToggle}><Icon name="nav.flows" size={19} /></Button></Show>
+        <Show when={props.onAgentsToggle && props.agentStatus}><Button variant="bare" class="chat-agents-trigger" aria-label="Delegated agents" title={`Delegated agents · ${props.agentStatus?.replaceAll("_", " ")}`} aria-expanded={props.agentsOpen} aria-controls="chat-agents-panel" onClick={props.onAgentsToggle}><Icon name="nav.agents" size={19} /></Button></Show>
       </div>
     </header>
   );

@@ -4,17 +4,21 @@
 
 Planned version: **v0.2.0**. These changes are in development and have not been released.
 
+### Removed
+
+- Flows recipes, their editor/history pages, `/flow`, and recipe execution APIs.
+  Ordinary agent delegation and attached worker transcripts remain. Existing chats
+  and historical events are preserved.
+- The Automations navigation tab and page routes. Existing scheduler data and backend
+  automation support remain unchanged.
+
 ### Fixed
 
-- Mobile flow layouts: remove doubled page padding, fit editor fields and history to
-  narrow screens, give worker text inputs a full row, and use touch-sized controls.
+- Mobile delegated-agent inputs use a full row and touch-sized controls.
   Hide the redundant maximize action when the worker panel already fills mobile chat.
 
 ### Added
 
-- Flow team editing with per-agent responsibilities and run history containing coordinator
-  and worker transcripts plus durable events. Team selection is scoped to the flow and does
-  not rewrite reusable agents or expand their tool permissions.
 - Worker Stop and explicit Return to coordinator controls. Direct worker messages hold the
   handoff for private followups; stopping the coordinator cancels descendant work and pauses
   its queued messages.
@@ -24,10 +28,6 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 - Maximize and restore controls for the current-run worker transcript drawer.
 
-- Saved flow recipes with a coordinator and plain-language instructions. `/flow <identifier> <task>`
-  starts in the current chat; `--plan` uses the approved-plan execution path. Recipes have an
-  editor, visible identifiers, and confirmed deletion. Workers remain attached to the parent
-  chat, with an optional transcript drawer and tabs for each agent.
 - Atomic batch edits to one file through `edit_file`: related replacements can share one call
   and one combined diff; a failed replacement leaves the entire file unchanged.
 
@@ -40,8 +40,8 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 - Provider connections for DeepSeek, Z.ai API and Coding Plan, xAI Grok API, and
   OpenAI API, alongside existing Codex and Grok Build integrations. Web and TUI connection
   controls, automatic connection status, and provider model discovery.
-- Scheduled automations with a calendar-clock navigation tab, guided setup, timezone-aware
-  schedules, review before enabling, pause, Run now, run history, and a chat per attempt.
+- Backend scheduled automations with timezone-aware schedules, pause, Run now,
+  run history, and a chat per attempt.
   Project workspaces are optional for automations. Includes sleep catch-up, overlap prevention,
   bounded retries, restart reconciliation, and native desktop or browser notifications.
 - Configurable personal and workspace slash commands, with a documented build-review

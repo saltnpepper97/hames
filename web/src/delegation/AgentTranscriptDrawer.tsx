@@ -25,7 +25,7 @@ export function AgentTranscriptDrawer(props: { sessionId: string; sessions: Sess
   const selected = () => workerIds().includes(props.selectedAgent) ? props.selectedAgent : props.workers.find(worker => worker.status === "working" && workerIds().includes(worker.agentId))?.agentId || workerIds().at(-1);
   const history = createMemo(() => props.workers.filter(worker => worker.agentId === selected()).map(worker => props.sessions.find(session => session.fork_event_id === worker.id)).filter((session): session is Session => Boolean(session)));
   const latest = () => history().at(-1);
-  return <aside class="agent-transcript-drawer" id="chat-flow-panel" aria-label="Agent transcripts" onKeyDown={event => { if (event.key === "Escape") props.onClose(); }}>
+  return <aside class="agent-transcript-drawer" id="chat-agents-panel" aria-label="Agent transcripts" onKeyDown={event => { if (event.key === "Escape") props.onClose(); }}>
     <header><strong>Agents</strong><div class="agent-transcript-actions">
       <Button variant="bare" class="agent-transcript-maximize" aria-label={props.maximized ? "Restore sidebar" : "Maximize agent transcripts"}
         title={props.maximized ? "Restore sidebar" : "Maximize"} aria-pressed={Boolean(props.maximized)}

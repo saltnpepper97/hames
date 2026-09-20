@@ -46,7 +46,6 @@ from hames.database import Database
 from hames.environment import RuntimeEnvironmentSnapshot
 from hames.evolution import Scar, ScarScope, ScarSeverity, ScarStatus, ScarStore
 from hames.evolution_runtime import EvolutionManager
-from hames.flows import FlowRecipe, FlowRecipeStore
 from hames.goals import Goal
 from hames.inspection import (
     AgentUsageProjection,
@@ -117,12 +116,6 @@ from hames.workspaces import (
 
 class ApiModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
-
-class FlowStartRequest(ApiModel):
-    session_id: str
-    input: str = Field(default="", max_length=16000)
-    use_plan: bool = False
 
 
 class CreateSessionRequest(ApiModel):
@@ -2604,183 +2597,6 @@ def create_app(state: GatewayState) -> FastAPI:
         result = mutation.rule
         assert isinstance(result, PolicyRule)
         return result
-
-    @app.get("/v1/flows", dependencies=auth)
-    async def list_flows() -> dict[str, object]:
-        return {"items": await asyncio.to_thread(FlowRecipeStore(state.paths.root).list)}
-
-    @app.put("/v1/flows/{identifier}", dependencies=auth)
-    async def save_flow(identifier: str, recipe: FlowRecipe) -> dict[str, str]:
-        try:
-            coordinator = await asyncio.to_thread(state.agents.load, recipe.coordinator)
-            if recipe.participants and not coordinator.metadata.delegation.allow:
-                raise ValueError("Choose a coordinator with delegation enabled")
-            for participant in recipe.participants or []:
-                await asyncio.to_thread(state.agents.load, participant.agent)
-            await asyncio.to_thread(FlowRecipeStore(state.paths.root).save, identifier, recipe)
-            return {"id": identifier}
-        except (ValueError, FileNotFoundError) as exc:
-            raise ApiError(400, "invalid_flow_recipe", str(exc)) from exc
-
-    @app.delete("/v1/flows/{identifier}", dependencies=auth)
-    async def delete_flow(identifier: str) -> dict[str, bool]:
-        try:
-            await asyncio.to_thread(FlowRecipeStore(state.paths.root).delete, identifier)
-            return {"deleted": True}
-        except (ValueError, FileNotFoundError) as exc:
-            raise ApiError(404, "flow_not_found", str(exc)) from exc
-
-    @app.get("/v1/flows/{identifier}/runs", dependencies=auth)
-    async def flow_runs(identifier: str) -> list[dict[str, object]]:
-        def collect() -> list[dict[str, object]]:
-            result: list[dict[str, object]] = []
-            with state.ledger.database.connect() as connection:
-                rows = connection.execute(
-                    "SELECT DISTINCT session_id FROM events WHERE type = 'flow.started'"
-                ).fetchall()
-            for row in rows:
-                session = state.ledger.get_session(row["session_id"])
-                events = state.ledger.list_events(session.id)
-                for marker in events:
-                    if (
-                        marker.type != "flow.started"
-                        or marker.payload.get("recipe_id") != identifier
-                    ):
-                        continue
-                    terminal = next(
-                        (
-                            event
-                            for event in reversed(events)
-                            if event.run_id == marker.run_id
-                            and event.type in {"run.completed", "run.failed", "run.cancelled"}
-                        ),
-                        None,
-                    )
-                    result.append(
-                        {
-                            "run_id": marker.run_id,
-                            "session_id": session.id,
-                            "title": session.title or "Untitled chat",
-                            "created_at": marker.created_at,
-                            "status": terminal.type.removeprefix("run.") if terminal else "running",
-                        }
-                    )
-            return sorted(result, key=lambda item: str(item["created_at"]), reverse=True)
-
-        return await asyncio.to_thread(collect)
-
-    @app.get("/v1/flows/{identifier}/runs/{run_id}", dependencies=auth)
-    async def flow_run_transcripts(identifier: str, run_id: str) -> dict[str, object]:
-        def collect() -> dict[str, object]:
-            marker = next(
-                (
-                    event
-                    for event in state.ledger.list_run_events(run_id)
-                    if event.type == "flow.started" and event.payload.get("recipe_id") == identifier
-                ),
-                None,
-            )
-            if marker is None:
-                raise ApiError(404, "flow_run_not_found", "Flow run not found")
-            session = state.ledger.get_session(marker.session_id)
-            events = state.ledger.list_events(session.id)
-            end = next(
-                (
-                    event.sequence
-                    for event in events
-                    if event.type == "flow.started" and event.sequence > marker.sequence
-                ),
-                None,
-            )
-            if end is not None:
-                next_prompt = next(
-                    (
-                        event
-                        for event in reversed(events)
-                        if event.sequence < end and event.type == "user.message"
-                    ),
-                    None,
-                )
-                if next_prompt is not None and next_prompt.sequence > marker.sequence:
-                    end = next_prompt.sequence
-            scoped = [
-                event
-                for event in events
-                if event.sequence >= marker.sequence and (end is None or event.sequence < end)
-            ]
-            # The initiating user message precedes the marker, and has no run ID.
-            prompt = next(
-                (
-                    event
-                    for event in reversed(events)
-                    if event.sequence < marker.sequence and event.type == "user.message"
-                ),
-                None,
-            )
-            if prompt is not None:
-                scoped.insert(0, prompt)
-            requested = {event.id for event in scoped if event.type == "delegation.requested"}
-            transcripts: list[dict[str, object]] = [
-                {
-                    "session": session.model_dump(mode="json"),
-                    "events": [event.model_dump(mode="json") for event in scoped],
-                }
-            ]
-            for child in state.ledger.list_sessions():
-                if child.parent_session_id == session.id and child.fork_event_id in requested:
-                    transcripts.append(
-                        {
-                            "session": child.model_dump(mode="json"),
-                            "events": [
-                                event.model_dump(mode="json")
-                                for event in state.ledger.list_events(child.id)
-                            ],
-                        }
-                    )
-            return {"transcripts": transcripts}
-
-        return await asyncio.to_thread(collect)
-
-    @app.post("/v1/flows/{identifier}/run", dependencies=auth, status_code=202)
-    async def start_flow(identifier: str, request: FlowStartRequest) -> dict[str, str]:
-        try:
-            recipe = await asyncio.to_thread(FlowRecipeStore(state.paths.root).get, identifier)
-            if not request.input.strip() and not request.use_plan:
-                raise ValueError("Tell the coordinator what you want done")
-            participants: list[str] | None = None
-            team = ""
-            if recipe.participants is not None:
-                participants = []
-                for participant in recipe.participants:
-                    agent = await asyncio.to_thread(state.agents.load, participant.agent)
-                    participants.append(agent.metadata.id)
-                    slug = agent.metadata.slug or agent.metadata.id
-                    team += f"\n- {slug}: {participant.instructions}"
-                team = "\n\nFlow team (delegate only to these agents):" + (team or " no workers")
-            instruction = (
-                f"Flow recipe: {recipe.name}\n{recipe.instructions}{team}\n\n"
-                f"User instruction or execution note:\n{request.input}"
-            )
-            if request.use_plan:
-                _, _, run_id = await state.runs.execute_plan(
-                    request.session_id,
-                    strategy="keep",
-                    note=instruction,
-                    agent_id=recipe.coordinator,
-                    flow=(identifier, participants),
-                )
-            else:
-                run_id = await state.runs.start_flow_recipe(
-                    request.session_id,
-                    recipe.coordinator,
-                    instruction,
-                    flow=(identifier, participants),
-                )
-            return {"run_id": run_id, "session_id": request.session_id}
-        except PermissionError as exc:
-            raise ApiError(403, "working_directory_untrusted", str(exc)) from exc
-        except (ValueError, FileNotFoundError, KeyError, ProviderError) as exc:
-            raise ApiError(409, "flow_start_rejected", str(exc)) from exc
 
     @app.get("/v1/sessions/{session_id}/events", dependencies=auth, response_model=list[Event])
     async def list_events(session_id: str, after_sequence: int = 0) -> list[Event]:

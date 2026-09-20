@@ -1,5 +1,5 @@
 import {
-  startFlow, executeUserCommand, cancelGoal, compactSession, createGoal, dreamSession, forkSession,
+  executeUserCommand, cancelGoal, compactSession, createGoal, dreamSession, forkSession,
   getCurrentGoal, healScars, pauseGoal, resumeGoal, stopBackgroundTerminals,
 } from "../api/client";
 import type { Session } from "../api/types";
@@ -7,7 +7,6 @@ import type { WebCommand } from "./webCommands";
 
 export function commandWorkTitle(command: WebCommand): string | undefined {
   switch (command.kind) {
-    case "flow": return `Run ${command.id}`;
     case "custom": return `Run /${command.name}`;
     case "dream": return "Dream";
     case "heal": return "Heal scars";
@@ -25,10 +24,6 @@ export interface CommandOutcome {
 
 export async function executeWebCommand(command: WebCommand, sessionId: string): Promise<CommandOutcome> {
   switch (command.kind) {
-    case "flow":
-      if (!command.id || (!command.input && !command.usePlan)) throw new Error("Use /flow <flow-id> <task>, or /flow <flow-id> --plan to use the current ready plan.");
-      await startFlow(command.id, sessionId, command.input, command.usePlan);
-      return { note: "" };
     case "custom":
       return { note: `/${command.name} started`,
         openedSession: await executeUserCommand(sessionId, command.name, command.note) };

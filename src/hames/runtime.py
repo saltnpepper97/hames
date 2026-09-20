@@ -591,7 +591,6 @@ class RunManager:
         submission_id: str | None = None,
         run_id: str | None = None,
         attachments: list[dict[str, object]] | None = None,
-        flow: tuple[str, list[str] | None] | None = None,
     ) -> str:
         session = await asyncio.to_thread(self.ledger.get_session, session_id)
         if session.status != "open":
@@ -645,9 +644,6 @@ class RunManager:
                 causation_id=user_event.id,
                 correlation_id=state.current.id if state.current else session_id,
             )
-        if flow is not None:
-            run_id = run_id or new_id()
-            await self.record_flow_start(session_id, run_id, flow[0], session.agent_id, flow[1])
         return self._launch(session_id, user_event, run_id=run_id)
 
     async def submit(
@@ -948,85 +944,6 @@ class RunManager:
         await self._publish_store_events((event,))
         return tasks
 
-    async def record_flow_start(
-        self,
-        session_id: str,
-        run_id: str,
-        recipe_id: str,
-        coordinator: str = "",
-        participants: list[str] | None = None,
-    ) -> None:
-        await self._append(
-            session_id=session_id,
-            run_id=run_id,
-            event_type="flow.started",
-            payload={
-                "recipe_id": recipe_id,
-                "coordinator": coordinator,
-                "participants": participants,
-            },
-            correlation_id=run_id,
-        )
-
-    async def start_flow_recipe(
-        self,
-        session_id: str,
-        coordinator_id: str,
-        content: str,
-        *,
-        flow: tuple[str, list[str] | None] | None = None,
-    ) -> str:
-        """Select a coordinator and submit an ordinary turn in the existing chat."""
-        async with self._submission_lock(session_id):
-            session = await asyncio.to_thread(self.ledger.get_session, session_id)
-            await self._validate_goal_session(session)
-            if session.delegation_depth:
-                raise ValueError("Start a flow from the main conversation")
-            if self.is_session_active(session_id) or (await self.queue_state(session_id)).items:
-                raise ValueError("Wait for current work and queued messages to finish")
-            goal = await asyncio.to_thread(self.goals.current, session_id)
-            if goal is not None and goal.status in {"running", "yielded"}:
-                raise ValueError("Pause or finish the current goal before choosing a flow")
-            coordinator = await asyncio.to_thread(self.agents.load, coordinator_id)
-            selection = None
-            if coordinator.metadata.execution is not None:
-                selection = await resolve_agent_execution(
-                    coordinator.metadata.execution, self.providers, self.config
-                )
-            for target in (
-                flow[1]
-                if flow and flow[1] is not None
-                else coordinator.metadata.delegation.allowed_agents
-            ):
-                worker = await asyncio.to_thread(self.agents.load, target)
-                if worker.metadata.execution is not None:
-                    await resolve_agent_execution(
-                        worker.metadata.execution, self.providers, self.config
-                    )
-            events = await asyncio.to_thread(self.ledger.list_events, session_id)
-            after = events[-1].sequence if events else 0
-            if selection is not None:
-                provider, model, effort, window, source = selection
-                await asyncio.to_thread(
-                    self.ledger.update_session_settings,
-                    session_id,
-                    provider=provider,
-                    model=model,
-                    reasoning_effort=effort,
-                    context_window_tokens=window,
-                    context_window_source=source,
-                )
-            await asyncio.to_thread(
-                self.ledger.update_session_agent, session_id, agent_id=coordinator.metadata.id
-            )
-            if session.interaction_mode != "auto":
-                await asyncio.to_thread(self.ledger.update_session_mode, session_id, mode="auto")
-            for event in await asyncio.to_thread(
-                self.ledger.list_events, session_id, after_sequence=after
-            ):
-                await self._publish_durable(event)
-            return await self.start(session_id, content, flow=flow)
-
     async def execute_plan(
         self,
         session_id: str,
@@ -1034,7 +951,6 @@ class RunManager:
         strategy: Literal["keep", "compact"],
         note: str = "",
         agent_id: str | None = None,
-        flow: tuple[str, list[str] | None] | None = None,
     ) -> tuple[PlanState, SessionTaskList, str]:
         async with self._submission_lock(session_id):
             execution_note = note.strip()
@@ -1089,11 +1005,7 @@ class RunManager:
                         coordinator.metadata.execution, self.providers, self.config
                     )
                 # Fail before approval or settings changes if a configured worker is unavailable.
-                for target in (
-                    flow[1]
-                    if flow and flow[1] is not None
-                    else coordinator.metadata.delegation.allowed_agents
-                ):
+                for target in coordinator.metadata.delegation.allowed_agents:
                     worker = await asyncio.to_thread(self.agents.load, target)
                     if worker.metadata.execution is not None:
                         await resolve_agent_execution(
@@ -1148,10 +1060,6 @@ class RunManager:
                         requested.id,
                         effective_execution_note,
                         execution_agent=agent_id,
-                    )
-                if flow is not None:
-                    await self.record_flow_start(
-                        session_id, run_id, flow[0], session.agent_id, flow[1]
                     )
                 self._launch(session_id, user_event, run_id=run_id)
                 return await self.current_plan(session_id), tasks, run_id
@@ -5408,21 +5316,6 @@ class RunManager:
 
     def _delegation_targets(self, session: Session, capsule: AgentCapsule) -> list[str]:
         targets = capsule.metadata.delegation.allowed_agents or [session.agent_id]
-        if session.lineage_kind != "delegation":
-            marker = next(
-                (
-                    event
-                    for event in reversed(self.ledger.list_events(session.id))
-                    if event.type == "flow.started"
-                ),
-                None,
-            )
-            if (
-                marker is not None
-                and marker.payload.get("coordinator") == session.agent_id
-                and marker.payload.get("participants") is not None
-            ):
-                targets = cast(list[str], marker.payload["participants"])
 
         def resolve(target: str) -> str:
             try:
@@ -5818,7 +5711,7 @@ class RunManager:
 
     async def _cancel_children(self, parent_run_id: str) -> None:
         child_run_ids = set(self._children_by_parent.get(parent_run_id, set()))
-        # Stopping a chat stops its current flow's descendants, including followups
+        # Stopping a chat stops its descendants, including followups
         # whose original parent run has already completed.
         parent_events = await asyncio.to_thread(self.ledger.list_run_events, parent_run_id)
         parent_session_id = parent_events[0].session_id if parent_events else None
@@ -5827,14 +5720,7 @@ class RunManager:
             if parent_session_id
             else []
         )
-        boundary = next(
-            (event.sequence for event in reversed(history) if event.type == "flow.started"), 0
-        )
-        requests = {
-            event.id
-            for event in history
-            if event.type == "delegation.requested" and event.sequence >= boundary
-        }
+        requests = {event.id for event in history if event.type == "delegation.requested"}
         for child in await asyncio.to_thread(self.ledger.list_sessions):
             if (
                 child.lineage_kind != "delegation"

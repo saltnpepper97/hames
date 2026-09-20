@@ -1154,8 +1154,9 @@ describe("Hames web shell", () => {
     expect(screen.getByRole("tab", { name: "Chat" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "Events" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Agent: Hames" })).toBeInTheDocument();
-    expect(document.querySelectorAll('[data-icon^="nav."]')).toHaveLength(9);
-    expect(document.querySelector('[data-icon="nav.flows"] svg')).toBeInTheDocument();
+    expect(document.querySelectorAll('[data-icon^="nav."]')).toHaveLength(7);
+    expect(document.querySelector('[data-icon="nav.flows"] svg')).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Automations" })).not.toBeInTheDocument();
     expect(document.querySelector('[data-icon="nav.scars"]')).toHaveAttribute(
       "data-icon-pack",
       "hames-default",

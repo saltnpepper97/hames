@@ -662,14 +662,6 @@ export const runAutomation = (id: string) => request(`/v1/automations/${encodeUR
 export const deleteAutomation = (id: string) => request(`/v1/automations/${encodeURIComponent(id)}`, { method: "DELETE" });
 
 // A flow is a saved recipe for the normal coordinator chat.
-export const listFlows = () => request<{ items: import("../flows/types").FlowItem[] }>("/v1/flows");
-export const saveFlow = (id: string, recipe: import("../flows/types").FlowRecipe) => request(`/v1/flows/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(recipe) });
-export const deleteFlow = (id: string) => request(`/v1/flows/${encodeURIComponent(id)}`, { method: "DELETE" });
-export const startFlow = (id: string, sessionId: string, input: string, usePlan = false) => request<{ run_id: string; session_id: string }>(`/v1/flows/${encodeURIComponent(id)}/run`, { method: "POST", body: JSON.stringify({ session_id: sessionId, input, use_plan: usePlan }) });
 
 export const controlWorker = (sessionId: string, action: "stop" | "return" | "hold") => request<{ accepted: boolean }>(
   `/v1/sessions/${encodeURIComponent(sessionId)}/worker/${action}`, { method: "POST" });
-
-export interface FlowRun { run_id: string; session_id: string; title: string; created_at: string; status: string; }
-export const getFlowRuns = (id: string) => request<FlowRun[]>(`/v1/flows/${encodeURIComponent(id)}/runs`);
-export const getFlowRun = (id: string, runId: string) => request<{ transcripts: { session: Session; events: import("./types").HamesEvent[] }[] }>(`/v1/flows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`);

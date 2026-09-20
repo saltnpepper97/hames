@@ -324,4 +324,4 @@ Custom slash commands: see [configuration and maintenance](docs/commands.md).
 
 Scheduled tasks: see [Automations](docs/automations.md) for setup, recovery, and notifications.
 
-Saved [flow recipes](docs/flows.md) start a coordinator in the current chat. Worker transcripts stay attached to that conversation.
+Select a coordinator with the chat agent picker and describe your task directly. Its configured agents can handle delegated work, with transcripts and worker controls attached to the same conversation.

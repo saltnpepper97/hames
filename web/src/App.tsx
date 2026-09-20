@@ -1,7 +1,5 @@
 import { Navigate, Route, Router } from "@solidjs/router";
 import type { ParentProps } from "solid-js";
-import { FlowProvider } from "./flows/FlowDirectory";
-import { AutomationProvider } from "./automations/Automations";
 import { AgentDirectoryProvider } from "./agents/AgentDirectory";
 import { MemoryDirectoryProvider } from "./memory/MemoryDirectory";
 import { SkillDirectoryProvider } from "./skills/SkillDirectory";
@@ -23,7 +21,6 @@ function WorkspaceRoot(props: ParentProps) {
     <WebPluginProvider registry={registry}>
       <WorkspaceProvider>
         <AgentDirectoryProvider>
-          <FlowProvider><AutomationProvider>
           <MemoryDirectoryProvider>
             <SkillDirectoryProvider>
               <ScarDirectoryProvider>
@@ -33,7 +30,6 @@ function WorkspaceRoot(props: ParentProps) {
               </ScarDirectoryProvider>
             </SkillDirectoryProvider>
           </MemoryDirectoryProvider>
-        </AutomationProvider></FlowProvider>
         </AgentDirectoryProvider>
       </WorkspaceProvider>
     </WebPluginProvider>
