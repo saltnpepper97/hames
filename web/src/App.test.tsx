@@ -724,8 +724,6 @@ function successfulFetch(options: { plugins?: PluginView[]; workspaces?: typeof 
       currentWorkspaces = [created, ...currentWorkspaces];
       return jsonResponse(created, 201);
     }
-    if (path === "/v1/flows") return jsonResponse({ items: [] });
-    if (path.startsWith("/v1/flow-runs")) return jsonResponse([]);
     if (path === "/v1/sessions?has_messages=true&include_titled=true&registered_workspaces_only=true&include_delegated=false") {
       return jsonResponse([
         ...(!options.emptyWorkspace ? [currentSession] : []),

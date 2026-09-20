@@ -232,18 +232,10 @@ resumable needs-attention state, rather than automatically repeating an implemen
 The same execute action resumes it while preserving the approved plan, completed checklist
 items, execution note, and exact failure.
 
-The optional capsules in `contrib/build-review/` implement the initial experiment.
-Install each Markdown capsule as `~/.hames/agents/<id>/AGENT.md` (do not overwrite existing capsules).
-Install `build-review.toml` under `~/.hames/commands/` to opt into the command.
-See [user-defined commands](../commands.md) for maintenance and workspace overrides.
-Adjust the provider IDs to your configured profiles before use. In Web, TUI, or classic
-REPL, plan with Astra in Plan mode, wait for the ready plan, then run `/build-review`
-with an optional execution note. This approves the current plan and selects the
-`build-review` coordinator. There is no implicit approval when the plan is absent.
+Select an execution agent in the normal chat, or define a personal command that selects
+one. See [user-defined commands](../commands.md). No fixed builder/reviewer pipeline is
+required; the selected agent follows its instructions and the approved plan.
 
-The example starts with DeepSeek high → Luna xhigh → Sol medium only for actionable findings →
-final Luna review → human. Clean reviews skip Sol. Architectural blockers stop for the
-human. The coordinator owns the parent checklist and must mark only verified work done.
 The coordinator constructs a small durable dependency graph as it delegates: each child call
 can name a stable `stage_id` and completed `depends_on` stages. Hames records every attempt,
 attaches prerequisite results as evidence, preserves exact child failures, and returns later

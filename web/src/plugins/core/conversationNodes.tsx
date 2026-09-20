@@ -1,4 +1,3 @@
-import { DelegationChatLink } from "../../chat/components/DelegationChatLink";
 import { reasoningDisclosureChoice } from "../../chat/reasoningDisclosure";
 import { For, Show, createMemo, createSignal } from "solid-js";
 import type { JSX } from "solid-js";
@@ -762,7 +761,7 @@ function DelegationNodeView(props: { node: ConversationNode }) {
     <div><span>{agentName()} · {node().status === "completed" ? "Finished" : node().status === "working" ? "Working" : node().status === "stopping" ? "Stopping" : node().status === "cancelled" ? "Cancelled" : node().status}</span>
       <Show when={node().model}><small>{node().model}{node().effort ? ` · ${node().effort}` : ""}</small></Show>
     </div>
-  </div><Show when={node().parentSessionId}><DelegationChatLink node={node()} /></Show></div>;
+  </div></div>;
 }
 
 export const coreConversationNodes = [

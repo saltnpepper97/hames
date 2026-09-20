@@ -10543,7 +10543,7 @@ a {
 }
 .agent-model-selection > .select-field-control { width: 100%; }
 
-/* Scheduled work uses the same sidebar/detail layout as agents. */
+/* Keep the primary tabs on a single row. */
 .sidebar-surface-nav {
   display: flex;
   width: 100%;
@@ -10552,44 +10552,6 @@ a {
   scrollbar-width: thin;
 }
 .sidebar-surface-nav .sidebar-surface-link { flex: 0 0 2.25rem; width: 2.25rem; }
-.automation-sidebar { display: grid; gap: 0.35rem; padding: 0.5rem; }
-.automation-sidebar-item { display: flex; align-items: center; gap: 0.65rem; padding: 0.65rem; border-radius: 0.6rem; color: var(--text); text-decoration: none; min-width: 0; }
-.automation-sidebar-item > .hames-icon { flex: none; color: var(--muted); }
-.automation-sidebar-item > span { display: grid; gap: 0.25rem; min-width: 0; }
-.automation-sidebar-item strong { font-size: 0.8rem; overflow-wrap: anywhere; }
-.automation-sidebar-item small { color: var(--muted); font-size: 0.7rem; }
-.automation-sidebar-item:hover, .automation-sidebar-item.active { background: var(--hover); }
-.automation-page { max-width: 72rem; }
-.automation-actions, .automation-time-options, .automation-weekdays { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
-.automation-editor { padding: 1.25rem; display: grid; gap: 1rem; }
-.automation-editor fieldset { display: grid; border: 0; padding: 0; margin: 0; gap: 0.7rem; }
-.automation-field { display: grid; gap: 0.45rem; font-size: 0.8rem; font-weight: 600; }
-.automation-field textarea { width: 100%; resize: none; min-height: 6rem; padding: 0.75rem; line-height: 1.5; font-weight: 400; }
-.automation-editor p { margin: 0; }
-.automation-hint { color: var(--muted); font-size: 0.8rem; line-height: 1.5; }
-.automation-error { color: var(--danger); font-size: 0.8rem; overflow-wrap: anywhere; }
-.automation-card { margin-top: 1.5rem; padding: 1.25rem; border: 1px solid var(--rule-soft); border-radius: 0.8rem; }
-.automation-card h2 { margin: 0 0 1rem; font-size: 1rem; }
-.automation-card p { color: var(--text-soft); line-height: 1.6; }
-.automation-task-text { white-space: pre-wrap; overflow-wrap: anywhere; }
-.automation-facts { display: grid; grid-template-columns: minmax(7rem,auto) minmax(0,1fr); gap: 0.75rem 1rem; font-size: 0.82rem; }
-.automation-facts dt { color: var(--muted); }
-.automation-facts dd { margin: 0; overflow-wrap: anywhere; }
-.automation-upcoming, .automation-run { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.9rem 0; border-bottom: 1px solid var(--rule-soft); color: var(--text); text-decoration: none; }
-.automation-upcoming:last-child, .automation-run:last-child { border-bottom: 0; }
-.automation-run > div { min-width: 0; display: grid; gap: 0.3rem; }
-.automation-run strong { font-size: 0.85rem; }
-.automation-run p { margin: 0; font-size: 0.8rem; overflow-wrap: anywhere; }
-.automation-run > a { flex: none; font-size: 0.8rem; }
-.automation-status { color: var(--muted); font-size: 0.75rem; text-transform: capitalize; }
-.automation-status.is-completed { color: var(--success); }
-.automation-status.is-failed, .automation-status.is-interrupted { color: var(--danger); }
-.automation-more { position: relative; }
-.automation-more summary { list-style: none; cursor: pointer; padding: 0.5rem; }
-.automation-more > button { position: absolute; right: 0; z-index: 5; background: var(--surface); }
-.automation-notification-note { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem; font-size: 0.8rem; color: var(--muted); }
-.automation-dialog { width: min(42rem, calc(100vw - 2rem)); }
-.automation-time-options button[aria-pressed="true"], .automation-weekdays button[aria-pressed="true"] { background: var(--hover); color: var(--text); border-color: var(--text-soft); }
 
 /* Let sidebar names use their available width and wrap instead of clipping. */
 .workspace-chat-group-toggle { padding-block: 0.4rem; height: auto; }
@@ -10599,47 +10561,12 @@ a {
 .agent-sidebar-copy span { white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
 .sidebar-context-header h2 { min-width: 0; line-height: 1.4; }
 
-.automation-time-options button, .automation-weekdays button { min-height: 2.25rem; padding: 0.45rem 0.8rem; border: 1px solid var(--border); border-radius: 0.5rem; cursor: pointer; }
-.automation-time-options { margin-block: 0.75rem; }
-.agent-chat-layout { --drawer-width: clamp(340px, 35vw, 500px); display: flex; width: 100%; height: 100%; min-height: 0; min-width: 0; overflow: hidden; }
-.agent-chat-layout > .session-chat { flex: 1; min-width: 0; }
-.agent-drawer-shell { width: 0; flex-shrink: 0; overflow: hidden; opacity: 0; transition: width 220ms ease, opacity 180ms ease; }
-.agent-drawer-shell.open { width: var(--drawer-width); opacity: 1; }
-.agent-transcript-drawer { display: flex; flex-direction: column; width: var(--drawer-width); height: 100%; min-height: 0; padding: 0 18px; border-left: 1px solid var(--rule-soft); background: var(--background); transform: translateX(20px); transition: transform 220ms ease; }
-.agent-drawer-shell.open .agent-transcript-drawer { transform: none; }
-.agent-transcript-drawer > header { display: flex; align-items: center; justify-content: space-between; min-height: 58px; font-size: .88rem; }
-.agent-transcript-actions { display: flex; align-items: center; gap: 6px; }
-.agent-chat-layout.drawer-maximized > .session-chat { display: none; }
-.agent-chat-layout.drawer-maximized .agent-drawer-shell.open { width: 100%; }
-.agent-chat-layout.drawer-maximized .agent-transcript-drawer { width: 100%; border-left: 0; }
-.agent-chat-layout.drawer-maximized .transcript-column { max-width: 1000px; margin-inline: auto; }
-.agent-transcript-tabs { display: flex; flex-shrink: 0; gap: 16px; border-bottom: 1px solid var(--rule-soft); overflow-x: auto; }
-.agent-transcript-tabs button { display: flex; align-items: center; gap: 6px; flex-shrink: 0; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font: inherit; font-size: .85rem; padding: 10px 0; cursor: pointer; }
-.agent-transcript-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
-.agent-working-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
-.agent-transcript-drawer .transcript-column { width: 100%; max-width: none; padding: 18px 0 24px; }
-.chat-agents-trigger.ui-button { display: inline-flex; width: 34px; height: 34px; padding: 0; border-radius: 8px; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
-.chat-agents-trigger.ui-button:hover, .chat-agents-trigger.ui-button[aria-expanded="true"] { background: color-mix(in srgb, var(--accent) 23%, transparent); }
-.delegation-transcript-link { border: 0; background: none; padding: 0; font: inherit; color: var(--accent); cursor: pointer; }
-@media (max-width: 820px) {
-  .agent-chat-layout { position: relative; }
-  .agent-drawer-shell { position: absolute; inset: 0; width: 100%; z-index: 25; transform: translateX(100%); pointer-events: none; transition: transform 220ms ease, opacity 180ms ease; }
-  .agent-drawer-shell.open { width: 100%; transform: none; pointer-events: auto; }
-  .agent-transcript-drawer { width: 100%; border: 0; transform: none; }
-}
-@media (prefers-reduced-motion: reduce) { .agent-drawer-shell, .agent-transcript-drawer { transition: none; } }
 
-.worker-composer.composer-dock { position: static; flex-shrink: 0; width: 100%; margin: 0; padding: 10px 0 16px; }
-.worker-composer form { display: flex; align-items: flex-end; gap: 10px; padding: 12px; border: 0; border-radius: 1.05rem; background: var(--surface-soft); box-shadow: 0 1px 4px rgb(0 0 0 / 9%); }
-.worker-composer textarea { flex: 1; width: 100%; min-height: 44px; max-height: 160px; border: 0; padding: 4px; background: transparent; color: var(--text); font: inherit; font-size: .88rem; resize: none; }
-.worker-composer .text-area-control { flex: 1; min-width: 0; }
-.worker-composer .composer-error { margin: 8px 2px 0; font-size: .8rem; }
 
-/* A split chat must respond to its own width, not the browser's width. */
+/* Chat headers respond to the available content width. */
 .session-chat { container: chat-pane / inline-size; }
 .chat-session-actions .agent-picker { flex: 0 1 auto; }
 .chat-session-actions .agent-picker-trigger { max-width: 100%; }
-.chat-session-actions .chat-agents-trigger { flex: none; }
 @container chat-pane (max-width: 680px) {
   .chat-session-bar {
     grid-template-areas: "identity actions" "tabs tabs";
@@ -10658,21 +10585,4 @@ a {
 @container chat-pane (max-width: 420px) {
   .chat-session-status { display: none; }
   .chat-session-actions .agent-picker-trigger { max-width: 7rem; }
-}
-.worker-composer textarea:is(:focus, :focus-visible) { outline: 0; box-shadow: none; border: 0; }
-.worker-composer form:is(:focus, :focus-visible, :focus-within) { outline: 0; box-shadow: 0 1px 4px rgb(0 0 0 / 9%); }
-.agent-transcript-drawer > header { flex-shrink: 0; }
-.worker-composer .composer-round { flex-shrink: 0; }
-.worker-composer textarea { min-width: 0; }
-
-@media (max-width: 820px) {
-  .agent-transcript-actions .ui-button, .agent-transcript-tabs button { min-height: 44px; }
-  .agent-transcript-drawer { padding-inline: 12px; }
-  .agent-transcript-actions .agent-transcript-maximize { display: none; }
-  .agent-transcript-tabs { gap: 20px; scrollbar-width: thin; }
-  .worker-composer.composer-dock { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
-  .worker-composer form { flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 10px; }
-  .worker-composer .text-area-control, .worker-composer form > textarea { flex: 1 0 100%; }
-  .worker-composer textarea { font-size: 16px; max-height: 24dvh; }
-  .worker-composer .composer-round { width: 44px; height: 44px; }
 }

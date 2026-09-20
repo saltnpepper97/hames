@@ -403,18 +403,6 @@ class GoalReportArguments(ToolArguments):
     evidence: list[str] = Field(min_length=1, max_length=16)
 
 
-class AutomationCreateArguments(ToolArguments):
-    title: str = Field(min_length=1, max_length=120)
-    instructions: str = Field(min_length=1, max_length=16000)
-    frequency: Literal["once", "daily", "weekly"]
-    time: str = Field(description="Explicit local HH:MM chosen by the user")
-    timezone: str = Field(description="IANA timezone confirmed by the user, e.g. America/Halifax")
-    weekdays: list[int] = Field(
-        default_factory=lambda: [0], description="Monday=0 through Sunday=6"
-    )
-    date: str = Field(default="", description="YYYY-MM-DD for one-time schedules")
-
-
 class TaskListArguments(ToolArguments):
     include_completed: bool = True
 
@@ -1086,21 +1074,6 @@ class GoalReportTool(ToolBase):
     arguments_type: ClassVar[type[ToolArguments]] = GoalReportArguments
 
 
-class AutomationCreateTool(ToolBase):
-    name = "automation_create"
-    description = (
-        "Create a paused scheduled-task draft for the user to review and enable in Automations. "
-        "Use when the user asks for recurring or scheduled work. "
-        "If they say morning without a time, "
-        "ask_user with 08:00, 09:00, 10:00 choices and custom text; confirm their timezone too. "
-        "Do not guess a time or enable automatically. "
-        "Describe required account access in instructions; "
-        "checking mail does not authorize sending it. Return the review link to the user."
-    )
-    side_effect_class = "session_metadata"
-    arguments_type: ClassVar[type[ToolArguments]] = AutomationCreateArguments
-
-
 class TaskListTool(ToolBase):
     name = "task_list"
     description = "Read the current session checklist and stable task IDs."
@@ -1270,7 +1243,6 @@ class ToolRegistry:
             TerminalStopTool(),
             GoalReportTool(),
             TaskListTool(),
-            AutomationCreateTool(),
             TaskUpdateTool(),
         ]
         if search is not None:

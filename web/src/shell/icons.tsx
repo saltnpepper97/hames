@@ -7,7 +7,6 @@ export const semanticIconNames = [
   "nav.chat",
   "nav.runs",
   "nav.agents",
-  "nav.automations",
   "nav.memory",
   "nav.skills",
   "nav.scars",

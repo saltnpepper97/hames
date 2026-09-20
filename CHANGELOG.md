@@ -8,27 +8,18 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 - Flows recipes, their editor/history pages, `/flow`, and recipe execution APIs.
   Ordinary agent delegation and attached worker transcripts remain. Existing chats
-  and historical events are preserved.
-- The Automations navigation tab and page routes. Existing scheduler data and backend
-  automation support remain unchanged.
+  and historical events are preserved. Obsolete flow templates were removed.
+- All Automation UI, scheduling runtime, APIs, notifications, and the automation creation
+  tool. Historical database records remain inert for upgrade compatibility.
+- The delegated-agent side panel, its top-bar button, transcript links, and private
+  handoff controls. Normal chat, agent switching, and native delegation remain.
 
 ### Fixed
 
 - Sidebar width follows the remaining navigation tabs, removing unused horizontal space.
 
-- Mobile delegated-agent inputs use a full row and touch-sized controls.
-  Hide the redundant maximize action when the worker panel already fills mobile chat.
 
 ### Added
-
-- Worker Stop and explicit Return to coordinator controls. Direct worker messages hold the
-  handoff for private followups; stopping the coordinator cancels descendant work and pauses
-  its queued messages.
-
-- Compact message inputs in worker transcripts, with per-worker drafts and the normal
-  queue and follow-up behavior.
-
-- Maximize and restore controls for the current-run worker transcript drawer.
 
 - Atomic batch edits to one file through `edit_file`: related replacements can share one call
   and one combined diff; a failed replacement leaves the entire file unchanged.
@@ -42,12 +33,8 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 - Provider connections for DeepSeek, Z.ai API and Coding Plan, xAI Grok API, and
   OpenAI API, alongside existing Codex and Grok Build integrations. Web and TUI connection
   controls, automatic connection status, and provider model discovery.
-- Backend scheduled automations with timezone-aware schedules, pause, Run now,
-  run history, and a chat per attempt.
-  Project workspaces are optional for automations. Includes sleep catch-up, overlap prevention,
-  bounded retries, restart reconciliation, and native desktop or browser notifications.
-- Configurable personal and workspace slash commands, with a documented build-review
-  example instead of a setup-specific built-in workflow.
+- Configurable personal and workspace slash commands, with a generic approved-plan execution
+  example.
 - Durable coordinator-built workflow graphs for delegated stages, with dependencies, attempt
   history, automatic evidence handoff, exact child failure details, and child-chat follow-ups.
 - A bounded read-only Git inspection tool for reviewers to inspect status, commits, and diffs
@@ -77,11 +64,11 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 - Refined Web navigation, dark appearance, forms, dialogs, dropdown hover and selection
   feedback, connection labels, status colors, branding, and tab icon.
 - README logo now uses the tab icon’s rounded-square sage background at a smaller size.
-  Updated the overview and quick start for Web and terminal use, highlighting automations,
+  Updated the overview and quick start for Web and terminal use, highlighting agent configuration,
   provider connections, planning, and delegation, with explicit unreleased version guidance.
 - Improved event table layout and resizing, wide Markdown table scrolling, composer
   menus, workspace and agent sidebar labels, and responsive chat layout.
-- Expanded architecture, provider, plugin, command, automation, and workflow documentation.
+- Expanded architecture, provider, plugin, command and delegation documentation.
 - Updated builder and finisher workflow guidance to commit verified work and report
   the actual execution models.
 
@@ -119,7 +106,6 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
   remain valid; the built-in default agent retains its reserved folder. Delegating agents
   now see the current slug in their permitted targets and child results instead of a stale ID.
 
-- Added proper padding to the automation task input and removed its resize handle.
 
 - Long-running conversation context recovery, including active-turn input budget
   exhaustion, context compaction, and provider-specific recovery behavior.
@@ -137,6 +123,4 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 ### Verification
 
 - Expanded Python, Rust, and Web regression coverage for context recovery, providers,
-  plans, delegation, commands, attachments, workspaces, automations, and UI behavior.
-- Exercised automation creation, isolated execution, run history, pause, optional
-  workspaces, and desktop notification availability through runtime and browser checks.
+  plans, delegation, commands, attachments, workspaces and UI behavior.

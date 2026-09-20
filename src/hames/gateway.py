@@ -15,7 +15,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, Literal, cast
+from typing import Annotated, Literal, cast
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, Query, Request
@@ -37,7 +37,6 @@ from hames.agent import (
 )
 from hames.agent_execution import resolve_agent_execution
 from hames.attachments import AttachmentUpload
-from hames.automations import AutomationDefinition, AutomationScheduler
 from hames.blobs import BlobIntegrityError
 from hames.broker import EventBroker
 from hames.config import HamesConfig, ProviderProfileConfig, load_config
@@ -825,7 +824,6 @@ class GatewayState:
 
 
 def create_app(state: GatewayState) -> FastAPI:
-    scheduler = AutomationScheduler(state.runs, f"http://127.0.0.1:{state.config.gateway.port}")
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
@@ -835,11 +833,9 @@ def create_app(state: GatewayState) -> FastAPI:
         await state.runs.recover_approvals()
         await state.runs.recover_queues()
         await state.runs.recover_goals()
-        await scheduler.start()
         try:
             yield
         finally:
-            await scheduler.close()
             await state.runs.close()
 
     app = FastAPI(title="Hames Gateway", version=__version__, lifespan=lifespan)
@@ -2644,72 +2640,6 @@ def create_app(state: GatewayState) -> FastAPI:
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
 
-    @app.get("/v1/automations", dependencies=auth)
-    async def list_automations() -> dict[str, object]:
-        return {
-            "items": await asyncio.to_thread(state.runs.automations.list),
-            "runs": await asyncio.to_thread(state.runs.automations.history),
-            "native_notifications": scheduler.native_available,
-        }
-
-    async def validate_automation(spec: AutomationDefinition) -> AutomationDefinition:
-        if spec.working_directory:
-            workspace = await asyncio.to_thread(
-                lambda: Path(spec.working_directory).expanduser().resolve(strict=True)
-            )
-            if not workspace.is_dir() or state.controls.get_trust(workspace) is None:
-                raise ValueError("Choose a trusted workspace before scheduling work")
-            spec.working_directory = str(workspace)
-        agent = state.agents.load(spec.agent_id)
-        spec.agent_id = agent.metadata.id
-        if not spec.provider or not spec.model:
-            default = agent.metadata.execution
-            spec.provider = default.provider if default else state.config.runtime.default_provider
-            spec.model = default.model if default else state.config.runtime.default_model
-            spec.reasoning_effort = default.reasoning_effort if default else ""
-        if spec.provider not in state.providers:
-            raise ValueError("Connect the selected provider before scheduling work")
-        if not spec.model:
-            models = await asyncio.wait_for(
-                state.providers[spec.provider].list_models(), timeout=15
-            )
-            if not models:
-                raise ValueError("No models are available for this provider")
-            spec.model = models[0].id
-        return spec
-
-    @app.post("/v1/automations", dependencies=auth, status_code=201)
-    async def create_automation(spec: AutomationDefinition) -> dict[str, Any]:
-        try:
-            spec = await validate_automation(spec)
-            return await asyncio.to_thread(state.runs.automations.save, spec)
-        except (ValueError, KeyError, OSError, ProviderError) as exc:
-            raise ApiError(400, "invalid_automation", str(exc)) from exc
-
-    @app.put("/v1/automations/{automation_id}", dependencies=auth)
-    async def update_automation(automation_id: str, spec: AutomationDefinition) -> dict[str, Any]:
-        try:
-            spec = await validate_automation(spec)
-            return await asyncio.to_thread(state.runs.automations.save, spec, automation_id)
-        except (ValueError, KeyError, OSError, ProviderError) as exc:
-            raise ApiError(400, "invalid_automation", str(exc)) from exc
-
-    @app.post("/v1/automations/{automation_id}/run", dependencies=auth)
-    async def run_automation(automation_id: str) -> dict[str, object]:
-        try:
-            job = await asyncio.to_thread(state.runs.automations.enqueue, automation_id)
-            return {"run_id": job}
-        except (ValueError, KeyError) as exc:
-            raise ApiError(409, "automation_busy", str(exc)) from exc
-
-    @app.delete("/v1/automations/{automation_id}", dependencies=auth)
-    async def delete_automation(automation_id: str) -> dict[str, bool]:
-        try:
-            await asyncio.to_thread(state.runs.automations.delete, automation_id)
-            return {"deleted": True}
-        except ValueError as exc:
-            raise ApiError(409, "automation_busy", str(exc)) from exc
-
     @app.get("/v1/usage", dependencies=auth, response_model=UsageProjection)
     async def inspect_pooled_usage() -> UsageProjection:
         usage = await asyncio.to_thread(pooled_usage, state.ledger, days=365)
@@ -3237,14 +3167,6 @@ def create_app(state: GatewayState) -> FastAPI:
             return await state.runs.resume_queue(session_id)
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
-
-    @app.post("/v1/sessions/{session_id}/worker/{action}", dependencies=auth)
-    async def control_worker(session_id: str, action: str) -> dict[str, bool]:
-        try:
-            await state.runs.control_worker(session_id, action)
-            return {"accepted": True}
-        except (KeyError, ValueError) as exc:
-            raise ApiError(409, "worker_control_rejected", str(exc)) from exc
 
     @app.post("/v1/runs/{run_id}/cancel", dependencies=auth)
     async def cancel_run(run_id: str) -> dict[str, bool]:

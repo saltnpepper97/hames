@@ -1,8 +1,6 @@
-import { createCurrentWorkerSessions } from "../delegation/currentWorkers";
-import { AgentTranscriptDrawer } from "../delegation/AgentTranscriptDrawer";
-import type { ConversationNode, DelegationNode } from "./projection";
+import type { ConversationNode } from "./projection";
 import { useAgentDirectory } from "../agents/AgentDirectory";
-import { Show, createEffect, createMemo, createSignal, onMount, onCleanup } from "solid-js";
+import { Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import type { Session } from "../api/types";
 import { TaskPanel, createTaskCardState } from "./components/TaskPanel";
@@ -31,25 +29,6 @@ export function SessionChat(props: SessionChatProps) {
   const directory = useAgentDirectory();
   onMount(() => void directory.ensureLoaded());
   const workerName = (id: string) => directory.agents().find(agent => agent.id === id)?.name ?? id;
-  const [drawerOpen, setDrawerOpen] = createSignal(false);
-  const [drawerMaximized, setDrawerMaximized] = createSignal(false);
-  const [drawerMounted, setDrawerMounted] = createSignal(false);
-  const [selectedAgent, setSelectedAgent] = createSignal("");
-  createEffect(() => {
-    if (drawerOpen()) { setDrawerMounted(true); return; }
-    setDrawerMaximized(false);
-    const timer = setTimeout(() => setDrawerMounted(false), 240);
-    onCleanup(() => clearTimeout(timer));
-  });
-  onMount(() => {
-    const open = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId: string; runId: string; agentId: string }>).detail;
-      if (detail.sessionId !== props.session.id || !workers().some(worker => worker.runId === detail.runId) || !workerSessions().some(session => session.agent_id === detail.agentId)) return;
-      setSelectedAgent(detail.agentId); setDrawerOpen(true);
-    };
-    window.addEventListener("hames:open-worker", open);
-    onCleanup(() => window.removeEventListener("hames:open-worker", open));
-  });
   const [commandResult, setCommandResult] = createSignal<ConversationNode>();
   createEffect(() => { sessionId(); setCommandResult(undefined); });
   const [view, setView] = createSignal<ChatView>("chat");
@@ -70,14 +49,6 @@ export function SessionChat(props: SessionChatProps) {
   const queueRevision = createMemo(() =>
     `${stream.state()}:${stream.events().filter(event => event.type.startsWith("queue.")).at(-1)?.id ?? ""}`,
   );
-  const workers = createMemo(() => projection().nodes.filter((node): node is DelegationNode => node.kind === "delegation" && stream.events().some(event => event.id === node.id && event.session_id === sessionId())));
-  const workerSessions = createCurrentWorkerSessions(sessionId, workers);
-  createEffect(() => {
-    sessionId();
-    setDrawerOpen(false);
-    setDrawerMounted(false);
-    setSelectedAgent("");
-  });
   const plan = createMemo(() => projectReviewPlan(stream.events()));
   const taskCard = createTaskCardState(() => props.session.id);
   const fresh = createMemo(() =>
@@ -105,7 +76,6 @@ export function SessionChat(props: SessionChatProps) {
   };
 
   return (
-    <div class="agent-chat-layout" classList={{ "drawer-maximized": drawerOpen() && drawerMaximized() }}>
     <ChatFrame fresh={fresh() && view() === "chat"}>
       <ChatSessionBar
         session={props.session}
@@ -113,9 +83,6 @@ export function SessionChat(props: SessionChatProps) {
         streamState={stream.state()}
         working={Boolean(projection().activeRunId)}
         workerLabel={projection().activeWorker ? `${workerName(projection().activeWorker!.agentId)} · ${projection().activeWorker!.status === "stopping" ? "Stopping" : "Working"}` : undefined}
-        agentStatus={workerSessions().length ? (projection().activeRunId ? "running" : "completed") : undefined}
-        agentsOpen={drawerOpen()}
-        onAgentsToggle={() => setDrawerOpen(!drawerOpen())}
         onViewChanged={changeView}
         onSessionUpdated={props.onSessionUpdated}
       />
@@ -167,9 +134,5 @@ export function SessionChat(props: SessionChatProps) {
         showStats={!fresh()}
       />
     </ChatFrame>
-    <div class="agent-drawer-shell" classList={{ open: drawerOpen() }} aria-hidden={!drawerOpen()} inert={!drawerOpen()}>
-      <Show when={drawerMounted()}><AgentTranscriptDrawer sessionId={props.session.id} sessions={workerSessions()} maximized={drawerMaximized()} onToggleMaximize={() => setDrawerMaximized(!drawerMaximized())} workers={workers()} selectedAgent={selectedAgent()} onSelect={setSelectedAgent} onClose={() => { setDrawerOpen(false); document.querySelector<HTMLButtonElement>(".chat-agents-trigger")?.focus(); }} /></Show>
-    </div>
-    </div>
   );
 }

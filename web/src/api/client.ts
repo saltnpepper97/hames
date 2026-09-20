@@ -634,34 +634,6 @@ export const executePlan = (sessionId: string) => request<{ run_id: string }>(`/
   method: "POST", body: JSON.stringify({ strategy: "keep" }),
 });
 
-export function getDelegatedSessions(): Promise<Session[]> {
-  return request<Session[]>("/v1/sessions");
-}
 
 export interface UserCommand { name: string; description: string; agent: string; source: string; action: "execute_plan"; }
 export const listUserCommands = (sessionId: string) => request<UserCommand[]>(`/v1/sessions/${encodeURIComponent(sessionId)}/commands`);
-
-export interface AutomationSpec {
-  title: string; instructions: string; working_directory: string; agent_id: string;
-  provider: string; model: string; reasoning_effort: string;
-  frequency: "once" | "daily" | "weekly"; time: string; timezone: string;
-  weekdays: number[]; date: string; enabled: boolean; catch_up: boolean;
-  retries: number; notify: "results" | "failures" | "off";
-}
-export interface Automation extends AutomationSpec { id: string; next_run: string | null; updated_at: string }
-export interface AutomationRun {
-  id: string; automation_id: string; status: string; attempt: number; due_at: string;
-  session_id: string | null; run_id: string | null; message: string; created_at: string; finished_at: string | null;
-}
-export interface AutomationCatalog { items: Automation[]; runs: AutomationRun[]; native_notifications: boolean }
-export const listAutomations = () => request<AutomationCatalog>("/v1/automations");
-export const saveAutomation = (spec: AutomationSpec, id?: string) => request<Automation>(
-  id ? `/v1/automations/${encodeURIComponent(id)}` : "/v1/automations",
-  { method: id ? "PUT" : "POST", body: JSON.stringify(spec) });
-export const runAutomation = (id: string) => request(`/v1/automations/${encodeURIComponent(id)}/run`, { method: "POST" });
-export const deleteAutomation = (id: string) => request(`/v1/automations/${encodeURIComponent(id)}`, { method: "DELETE" });
-
-// A flow is a saved recipe for the normal coordinator chat.
-
-export const controlWorker = (sessionId: string, action: "stop" | "return" | "hold") => request<{ accepted: boolean }>(
-  `/v1/sessions/${encodeURIComponent(sessionId)}/worker/${action}`, { method: "POST" });

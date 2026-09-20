@@ -1,5 +1,3 @@
-import { Button } from "../../components/Button";
-import { Icon } from "../../shell/icons";
 import { Show } from "solid-js";
 import type { Session } from "../../api/types";
 import { Spinner } from "../../components/Spinner";
@@ -14,9 +12,6 @@ interface ChatSessionBarProps {
   streamState: StreamState;
   working: boolean;
   workerLabel?: string;
-  agentStatus?: string;
-  agentsOpen?: boolean;
-  onAgentsToggle?: () => void;
   onViewChanged: (view: ChatView) => void;
   onSessionUpdated: (session: Session) => void;
 }
@@ -50,7 +45,6 @@ export function ChatSessionBar(props: ChatSessionBarProps) {
           disabled={props.working}
           onSessionUpdated={props.onSessionUpdated}
         />
-        <Show when={props.onAgentsToggle && props.agentStatus}><Button variant="bare" class="chat-agents-trigger" aria-label="Delegated agents" title={`Delegated agents · ${props.agentStatus?.replaceAll("_", " ")}`} aria-expanded={props.agentsOpen} aria-controls="chat-agents-panel" onClick={props.onAgentsToggle}><Icon name="nav.agents" size={19} /></Button></Show>
       </div>
     </header>
   );

@@ -1,5 +1,0 @@
-{
-  "name": "Build & review",
-  "coordinator": "build-review",
-  "instructions": "Coordinate the user's task with builder, reviewer, and finisher using your configured delegation instructions. Keep the conversation here. Report progress and the final result in normal prose. Inspect worker reports and evidence before concluding; ask the human only for a real scope or authority decision."
-}

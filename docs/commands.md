@@ -6,19 +6,19 @@ read the same gateway catalog. No command implies a particular provider or model
 ## Maintain your commands
 
 Put one TOML file per command in `~/.hames/commands/`.
-Its filename supplies the slash name: `build-review.toml` becomes `/build-review`.
+Its filename supplies the slash name: `execute-plan.toml` becomes `/execute-plan`.
 
-Your build/review command is:
+For example:
 
 ```toml
-description = "Execute the approved plan with my build/review coordinator"
+description = "Execute the approved plan with Builder"
 action = "execute_plan"
-agent = "build-review"
+agent = "builder"
 ```
 
 - Change the filename to rename the command.
 - Change `description` to update its menu text.
-- Change `agent` to choose a coordinator, using its stable ID or current slug.
+- Change `agent` to choose an agent, using its stable ID or current slug.
 - Delete the file to remove the command.
 - Put a file with the same name in `<workspace>/.hames/commands/` to override it
   for that workspace only. An invalid override reports an error; it never silently
@@ -26,8 +26,8 @@ agent = "build-review"
 - Built-in names such as `plan`, `model`, `help`, and `stop` are reserved.
 
 The first supported action is `execute_plan`. It explicitly approves the current
-ready plan and runs it with the configured coordinator. It accepts an optional
-execution note: `/build-review preserve the public API`. It rejects missing or
+ready plan and runs it with the configured agent. It accepts an optional
+execution note: `/execute-plan preserve the public API`. It rejects missing or
 non-ready plans, missing agents, and active conflicting work. It does not execute
 shell text from the TOML file. User-invoked skills continue to appear as their own
 slash commands; a custom command takes precedence over a skill with the same name.
@@ -36,34 +36,13 @@ Definitions are reread at execution, so edits need no gateway restart. Reopen th
 command menu in TUI, or reload Web, to refresh its suggestions. REPL `/help` lists
 current custom commands. Switching workspace changes the workspace overrides.
 
-## Maintain the build/review workflow
+## Agent configuration
 
-The command only chooses an agent. Edit the coordinator's AGENT.md in
-`~/.hames/agents/build-review/AGENT.md` to change stage order, worker targets,
-review verdicts, or conditions for using the finisher. Keep its
-`delegation.allowed_agents` consistent with the workers it may call.
-
-Change each worker's default model in Agents settings, or its `default_model`
-frontmatter, to change providers/models/effort. Do not put model names in the
-command definition. Agent IDs are stable even when you rename an agent or change its
-model. Keep delegation targets tied to those IDs; do not infer a provider from an
-agent ID such as `qwen-builder`. The optional `contrib/build-review/` example starts
-with `deepseek-builder`, `luna-reviewer`, and `sol-finisher`, but their default models
-are yours to configure.
-
-Builder and finisher instructions require small, coherent commits after relevant
-checks pass, staging only their own work. Explicit task instructions not to commit
-override that default. Reviewers stay read-only. The coordinator checks reported
-commit hashes and remaining changes before declaring completion. Pushing requires
-an explicit user request.
-
-The harness transfers the exact approved plan and execution note automatically. Coordinators
-can also give delegated calls stable `stage_id` and `depends_on` values. Completed dependencies
-are attached as evidence, failed attempts remain available after restart, and invoking the
-command again resumes a needs-attention plan without replacing completed checklist work.
-Coordinator prompts should contain only the stage assignment and necessary reports,
-not a rewritten copy of the plan. Existing active runs keep their loaded agent
-instructions; configuration edits are intended for the next invocation.
+Change the selected agent's instructions and default model in Agents settings. Commands
+select an agent; they do not define a pipeline or model configuration. Agent IDs remain
+stable across renames. The harness supplies the approved plan and execution note directly,
+so you do not need to copy the plan into a new message. Existing active runs retain their
+loaded instructions; edits apply to the next invocation.
 
 ## Continuity and limits
 

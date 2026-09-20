@@ -1,3 +1,0 @@
-description = "Execute the approved plan with my build/review coordinator"
-action = "execute_plan"
-agent = "build-review"

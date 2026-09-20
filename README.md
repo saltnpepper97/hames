@@ -36,10 +36,6 @@ account connections.
 - **Local and cloud models** — connect llama.cpp, Ollama, OpenAI API, Codex,
   DeepSeek, Z.ai API or Coding Plan, Grok API, and Grok Build. Choose provider,
   model, and reasoning effort, with connection controls in Web and TUI.
-- **Scheduled work** — create one-time, daily, or weekday automations with a local
-  time and timezone. Review before enabling, run with or without a project workspace,
-  and get a separate chat per attempt plus desktop notifications. Sleep catch-up
-  avoids building a backlog.
 - **Plan, build, and review** — approve or revise a plan before execution, delegate
   to agents with their own model defaults, and follow implementation and review chats.
 - **Explicit safety modes** — Manual, Auto, and Plan behavior is enforced by the
@@ -109,8 +105,7 @@ hames repl      # Open the classic REPL
 Setup can configure llama.cpp, Ollama, OpenAI, Grok API, Grok Build, or Codex. Hames defaults to a local
 llama.cpp endpoint at <code>http://127.0.0.1:8080</code>; the gateway starts on
 demand and stays available after the client exits. In Web, use **Settings** to
-manage provider connections, **Agents** to configure collaborators, and
-**Automations** to schedule recurring work.
+manage provider connections and **Agents** to configure your agents.
 
 Useful terminal commands:
 
@@ -313,8 +308,7 @@ milestones:
 - [Model evaluations](docs/model-evaluations/)
 - [GitHub repository](https://github.com/saltnpepper97/hames)
 
-See [Unreleased changes](CHANGELOG.md), [automation setup](docs/automations.md),
-and [custom command configuration](docs/commands.md) for current capabilities.
+See [Unreleased changes](CHANGELOG.md) and [custom command configuration](docs/commands.md) for current capabilities.
 
 ## License
 
@@ -322,6 +316,4 @@ Hames is available under the [MIT License](LICENSE).
 
 Custom slash commands: see [configuration and maintenance](docs/commands.md).
 
-Scheduled tasks: see [Automations](docs/automations.md) for setup, recovery, and notifications.
-
-Select a coordinator with the chat agent picker and describe your task directly. Its configured agents can handle delegated work, with transcripts and worker controls attached to the same conversation.
+Select a coordinator with the chat agent picker and describe your task directly. Its configured agents can handle delegated work, with activity and results recorded in the normal conversation transcript.
