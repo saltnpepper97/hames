@@ -10689,3 +10689,50 @@ a {
 .flow-history-events pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .flow-history-runs { max-height: 260px; overflow-y: auto; }
+
+/* Flow surfaces own their spacing; the page stage already supplies outer gutters. */
+.flow-recipe-page { min-width: 0; padding: 0; overflow: visible; }
+.flow-recipe-heading > div { min-width: 0; }
+.flow-recipe-heading h1 { overflow-wrap: anywhere; }
+.flow-recipe-heading > .ui-button { flex-shrink: 0; }
+.flow-recipe-field { min-width: 0; }
+.flow-recipe-field :is(input, select, textarea) { min-width: 0; max-width: 100%; }
+.flow-recipe-field small { overflow-wrap: anywhere; }
+.flow-history-detail { min-width: 0; min-height: 0; }
+.flow-history-detail .transcript-column { padding: 16px 12px 24px; }
+.flow-history-run > a { flex-shrink: 0; }
+.agent-transcript-drawer > header { flex-shrink: 0; }
+.worker-composer .composer-round { flex-shrink: 0; }
+.worker-composer textarea { min-width: 0; }
+
+@media (max-width: 820px) {
+  .page-stage:has(.flow-recipe-page),
+  .app-frame.sidebar-collapsed .page-stage:has(.flow-recipe-page) {
+    padding: 20px 16px calc(24px + env(safe-area-inset-bottom));
+    scrollbar-gutter: auto;
+  }
+  .flow-recipe-heading { gap: 12px; align-items: flex-start; }
+  .flow-recipe-heading h1 { font-size: 1.6rem; line-height: 1.2; margin-block: 8px 0; }
+  .flow-recipe-intro { margin-bottom: 20px; }
+  .flow-recipe-field :is(input, select, textarea) { font-size: 16px; }
+  .flow-team-member { padding: 2px 12px 12px; }
+  .flow-team-member-heading { gap: 8px; }
+  .flow-team .ui-button, .flow-history .ui-button,
+  .agent-transcript-actions .ui-button, .agent-transcript-tabs button { min-height: 44px; }
+  .flow-team-member-heading > .ui-button, .agent-transcript-actions .ui-button { min-width: 44px; }
+  .flow-history-run { flex-wrap: wrap; gap: 8px; }
+  .flow-history-run > button { flex-basis: 100%; padding: 8px 0; }
+  .flow-history-run > a { display: inline-flex; align-items: center; min-height: 44px; }
+  .flow-history-detail { height: 65dvh; max-height: 640px; }
+  .flow-history-tabs { gap: 6px; padding: 8px; }
+  .flow-history-tabs > button { min-height: 44px; }
+  .flow-history-events { padding: 12px 24px; }
+  .agent-transcript-drawer { padding-inline: 12px; }
+  .agent-transcript-actions .agent-transcript-maximize { display: none; }
+  .agent-transcript-tabs { gap: 20px; scrollbar-width: thin; }
+  .worker-composer.composer-dock { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+  .worker-composer form { flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 10px; }
+  .worker-composer .text-area-control, .worker-composer form > textarea { flex: 1 0 100%; }
+  .worker-composer textarea { font-size: 16px; max-height: 24dvh; }
+  .worker-composer .composer-round { width: 44px; height: 44px; }
+}

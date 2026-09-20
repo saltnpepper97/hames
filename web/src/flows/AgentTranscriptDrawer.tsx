@@ -27,7 +27,7 @@ export function AgentTranscriptDrawer(props: { sessionId: string; sessions: Sess
   const latest = () => history().at(-1);
   return <aside class="agent-transcript-drawer" id="chat-flow-panel" aria-label="Agent transcripts" onKeyDown={event => { if (event.key === "Escape") props.onClose(); }}>
     <header><strong>Agents</strong><div class="agent-transcript-actions">
-      <Button variant="bare" aria-label={props.maximized ? "Restore sidebar" : "Maximize agent transcripts"}
+      <Button variant="bare" class="agent-transcript-maximize" aria-label={props.maximized ? "Restore sidebar" : "Maximize agent transcripts"}
         title={props.maximized ? "Restore sidebar" : "Maximize"} aria-pressed={Boolean(props.maximized)}
         onClick={props.onToggleMaximize}><Icon name={props.maximized ? "action.restore" : "action.maximize"} size={18} /></Button>
       <Button variant="bare" aria-label="Close agent transcripts" onClick={props.onClose}><Icon name="action.close" size={18} /></Button></div></header>

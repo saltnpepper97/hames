@@ -4,6 +4,12 @@
 
 Planned version: **v0.2.0**. These changes are in development and have not been released.
 
+### Fixed
+
+- Mobile flow layouts: remove doubled page padding, fit editor fields and history to
+  narrow screens, give worker text inputs a full row, and use touch-sized controls.
+  Hide the redundant maximize action when the worker panel already fills mobile chat.
+
 ### Added
 
 - Flow team editing with per-agent responsibilities and run history containing coordinator
