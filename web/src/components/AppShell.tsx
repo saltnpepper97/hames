@@ -171,9 +171,16 @@ export function AppShell(props: AppShellProps) {
     mobileViewport?.removeEventListener("change", syncResponsiveSidebar);
   });
 
+  const sidebarWidth = createMemo(() => {
+    const tabs = props.registry.surfaces.filter(surface => surface.id !== "settings").length;
+    // Match 2.25rem tabs, .2rem gaps, .75rem side padding, and the outer border.
+    return `min(calc(${tabs * 2.25 + Math.max(0, tabs - 1) * 0.2 + 1.5}rem + 1px), 92vw)`;
+  });
+
   return (
     <div
       class="app-frame"
+      style={{ "--sidebar-width": sidebarWidth() }}
       classList={{
         "sidebar-collapsed": sidebarCollapsed(),
         "sidebar-peeking": sidebarPeeking(),

@@ -14,6 +14,8 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Fixed
 
+- Sidebar width follows the remaining navigation tabs, removing unused horizontal space.
+
 - Mobile delegated-agent inputs use a full row and touch-sized controls.
   Hide the redundant maximize action when the worker panel already fills mobile chat.
 
