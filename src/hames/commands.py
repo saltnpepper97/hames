@@ -14,7 +14,7 @@ RESERVED = set(
 new clear sessions resume queue tasks plan dream compact goal fork connect model provider effort
 reasoning agent mode themes status project gateway events inspect context details
 memory skills scars
-plugins mcp help cancel quit stop heal
+plugins mcp help cancel quit stop heal flow
 """.split()
 )
 

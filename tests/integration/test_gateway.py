@@ -1888,7 +1888,15 @@ async def test_structured_commentary_and_reasoning_keep_their_tool_boundaries(
 
 
 @pytest.mark.asyncio
-async def test_agent_question_pauses_and_resumes_the_same_run(tmp_path: Path) -> None:
+async def test_agent_question_pauses_and_resumes_the_same_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hames.runtime import ActiveClock
+
+    def short_clock(_: float) -> ActiveClock:
+        return ActiveClock(1)
+
+    monkeypatch.setattr("hames.runtime.ActiveClock", short_clock)
     paths = HamesPaths.resolve(root=tmp_path / "home")
     paths.ensure_foundation()
     paths.config_file.write_text("[memory]\nenabled = false\n", encoding="utf-8")
@@ -1919,6 +1927,8 @@ async def test_agent_question_pauses_and_resumes_the_same_run(tmp_path: Path) ->
             events = await _wait_for_event(client, headers, session_id, "question.requested")
             requested = next(event for event in events if event["type"] == "question.requested")
             assert requested["run_id"] == run_id
+            await asyncio.sleep(1.2)
+            assert state.runs.is_session_active(session_id)
             payload = JSON_OBJECT.validate_python(requested["payload"])
             assert payload["options"] == [
                 {
@@ -4203,7 +4213,16 @@ async def test_runtime_manages_memory_from_the_chat_tool_loop(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_manual_mode_offers_a_durable_session_approval(tmp_path: Path) -> None:
+async def test_manual_mode_offers_a_durable_session_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hames.runtime import ActiveClock
+
+    # Human response time must exceed the active budget without expiring the run.
+    def short_clock(_: float) -> ActiveClock:
+        return ActiveClock(1)
+
+    monkeypatch.setattr("hames.runtime.ActiveClock", short_clock)
     paths = HamesPaths.resolve(root=tmp_path / "home")
     fake = FakeProvider(
         [],
@@ -4260,6 +4279,8 @@ async def test_manual_mode_offers_a_durable_session_approval(tmp_path: Path) -> 
             payload = requested["payload"]
             assert isinstance(payload, dict)
             assert payload["allow_session"] is True
+            await asyncio.sleep(1.2)
+            assert state.runs.is_session_active(session_id)
             resolved = await client.post(
                 f"/v1/approvals/{payload['approval_id']}",
                 headers=headers,
@@ -5849,5 +5870,60 @@ async def test_active_turn_recovers_before_compile_and_compacts_repeatedly(tmp_p
             assert "checkpoint two" in fake.requests[4].system
             assert fake.requests[1].metadata["purpose"] == "context_compaction"
             assert fake.requests[3].metadata["purpose"] == "context_compaction"
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("recover", "closed"), [(False, False), (True, False), (True, True)])
+async def test_orphaned_approval_is_cancelled_after_failure_or_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recover: bool, closed: bool
+) -> None:
+    from hames.runtime import RunFailure
+
+    state = GatewayState.create(
+        HamesPaths.resolve(root=tmp_path / "home"), providers={"fake": FakeProvider([])}
+    )
+    session = state.ledger.create_session(
+        working_directory=tmp_path, agent_id="default", provider="fake", model="fixture"
+    )
+    event = state.ledger.append(
+        session_id=session.id,
+        agent_id="default",
+        event_type="user.message",
+        payload={"content": "fixture"},
+    )
+    run_id = "orphan-fixture"
+    approval = state.controls.create_approval(
+        session_id=session.id,
+        run_id=run_id,
+        agent_id="default",
+        working_directory=str(tmp_path),
+        tool_call_id="fixture-call",
+        tool_name="write_file",
+        arguments={"path": "never-written", "content": "fixture"},
+        request_hash="a" * 64,
+        reason="manual mode",
+    )
+
+    async def fail(*args: object) -> None:
+        raise RunFailure("active_time_limit", "fixture failure")
+
+    try:
+        if recover:
+            if closed:
+                state.ledger.close_session(session.id)
+            await state.runs.recover_approvals()
+            await state.runs.recover_approvals()  # Recovery is idempotent.
+        else:
+            monkeypatch.setattr(state.runs, "_execute_run", fail)
+            await state.runs._run(run_id, session.id, event)  # pyright: ignore[reportPrivateUsage]
+        assert state.controls.get_approval(approval.id).status == "cancelled"
+        events = state.ledger.list_events(session.id)
+        resolved = [e for e in events if e.type == "approval.resolved"]
+        assert len(resolved) == (0 if closed else 1)
+        if resolved:
+            assert resolved[0].payload["decision"] == "cancelled"
+        assert not (tmp_path / "never-written").exists()
     finally:
         await state.runs.close()

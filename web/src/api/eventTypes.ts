@@ -1,6 +1,8 @@
 // Keep this registry aligned with src/hames/event_types.py. EventSource has no
 // wildcard listener, so the browser must name each typed SSE event it accepts.
 export const durableEventTypes = `
+flow.created
+flow.updated
 session.opened
 session.closed
 session.forked

@@ -6,6 +6,13 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Added
 
+- Saved flow recipes with a coordinator and plain-language instructions. `/flow <identifier> <task>`
+  starts in the current chat; `--plan` uses the approved-plan execution path. Recipes have an
+  editor, visible identifiers, and confirmed deletion. Workers remain attached to the parent
+  chat, with an optional transcript drawer and tabs for each agent.
+- Atomic batch edits to one file through `edit_file`: related replacements can share one call
+  and one combined diff; a failed replacement leaves the entire file unchanged.
+
 - A SolidJS Web UI served by the local gateway, with live conversations, workspace
   navigation, agent editing, settings, memory, skills, Scar lineage, and plugin management.
 - Chat controls for agent, model, reasoning effort, and mode; attachments, queued
@@ -33,6 +40,11 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Changed
 
+- Consecutive successful edits to the same file appear in one expandable transcript row,
+  preserving individual diffs and boundaries between runs, messages, and other actions.
+- The normal Web chat list excludes delegated worker sessions; delegation cards open their
+  transcripts within the parent conversation.
+
 - Chat composer shows one additional line by default while retaining automatic growth.
 
 - Installation defaults to the latest stable version tag rather than rolling `main`.
@@ -50,6 +62,11 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
   the actual execution models.
 
 ### Fixed
+
+- Waiting for approvals or answers no longer consumes the run's active-time budget.
+  Pending approvals are cancelled when a run ends and reconciled after a gateway restart,
+  preventing permission cards that cannot be answered because their run has expired.
+- Delegation labels use configured agent names rather than internal persistence IDs.
 
 - Preserve the exact approved plan when respawning workers after a failed execution;
   reject plan-based delegation before starting a child if the plan is missing.

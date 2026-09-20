@@ -724,7 +724,9 @@ function successfulFetch(options: { plugins?: PluginView[]; workspaces?: typeof 
       currentWorkspaces = [created, ...currentWorkspaces];
       return jsonResponse(created, 201);
     }
-    if (path === "/v1/sessions?has_messages=true&include_titled=true&registered_workspaces_only=true") {
+    if (path === "/v1/flows") return jsonResponse({ items: [] });
+    if (path.startsWith("/v1/flow-runs")) return jsonResponse([]);
+    if (path === "/v1/sessions?has_messages=true&include_titled=true&registered_workspaces_only=true&include_delegated=false") {
       return jsonResponse([
         ...(!options.emptyWorkspace ? [currentSession] : []),
         ...(forkedSession ? [forkedSession] : []),
@@ -1152,7 +1154,8 @@ describe("Hames web shell", () => {
     expect(screen.getByRole("tab", { name: "Chat" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "Events" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Agent: Hames" })).toBeInTheDocument();
-    expect(document.querySelectorAll('[data-icon^="nav."]')).toHaveLength(8);
+    expect(document.querySelectorAll('[data-icon^="nav."]')).toHaveLength(9);
+    expect(document.querySelector('[data-icon="nav.flows"] svg')).toBeInTheDocument();
     expect(document.querySelector('[data-icon="nav.scars"]')).toHaveAttribute(
       "data-icon-pack",
       "hames-default",
@@ -2167,7 +2170,7 @@ describe("Hames web shell", () => {
     await waitFor(() =>
       expect(
         fetchMock.mock.calls.filter(([input]) =>
-          String(input) === "/v1/sessions?has_messages=true&include_titled=true&registered_workspaces_only=true"
+          String(input) === "/v1/sessions?has_messages=true&include_titled=true&registered_workspaces_only=true&include_delegated=false"
         ),
       ).toHaveLength(2),
     );
@@ -2877,7 +2880,7 @@ describe("Hames web shell", () => {
         messageStarted = true;
         return new Promise<Response>((resolve) => { release = resolve; });
       }
-      if (messageStarted && path === "/v1/sessions?has_messages=true&include_titled=true&registered_workspaces_only=true") {
+      if (messageStarted && path === "/v1/sessions?has_messages=true&include_titled=true&registered_workspaces_only=true&include_delegated=false") {
         return jsonResponse([sessions[0], { ...createdSession, id: "session-new", title: null },
           { ...createdSession, id: "old-untitled", title: null }]);
       }
@@ -2895,7 +2898,7 @@ describe("Hames web shell", () => {
     fireEvent.input(screen.getByRole("textbox", { name: "Message Hames" }), { target: { value: "second draft" } });
     release(jsonResponse({ disposition: "started", run_id: "run-one", queued: null, status: "running", objective: "Inspect the workspace" }, 202));
     await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) =>
-      String(input) === "/v1/sessions?has_messages=true&include_titled=true&registered_workspaces_only=true").length).toBeGreaterThan(1));
+      String(input) === "/v1/sessions?has_messages=true&include_titled=true&registered_workspaces_only=true&include_delegated=false").length).toBeGreaterThan(1));
     expect(window.location.pathname).toBe("/chat/session-new-2");
     expect(screen.getByRole("textbox", { name: "Message Hames" })).toHaveValue("second draft");
     expect(screen.getByRole("link", { name: title })).toBeInTheDocument();
@@ -3008,7 +3011,7 @@ describe("Hames web shell", () => {
         accepted = true;
         return jsonResponse({ dream_id: "dream-only" }, 202);
       }
-      if (accepted && path === "/v1/sessions?has_messages=true&include_titled=true&registered_workspaces_only=true") {
+      if (accepted && path === "/v1/sessions?has_messages=true&include_titled=true&registered_workspaces_only=true&include_delegated=false") {
         return jsonResponse([sessions[0], { ...createdSession, id: "session-new", title: "Dream" }]);
       }
       return baseFetch(input, init);

@@ -323,3 +323,5 @@ Hames is available under the [MIT License](LICENSE).
 Custom slash commands: see [configuration and maintenance](docs/commands.md).
 
 Scheduled tasks: see [Automations](docs/automations.md) for setup, recovery, and notifications.
+
+Saved [flow recipes](docs/flows.md) start a coordinator in the current chat. Worker transcripts stay attached to that conversation.

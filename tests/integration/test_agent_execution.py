@@ -310,3 +310,108 @@ async def test_agent_default_model_can_be_set_overridden_and_cleared(tmp_path: P
             assert state.agents.load("custom").metadata.execution is None
     finally:
         await state.runs.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_plan", [False, True])
+async def test_flow_recipe_uses_native_coordinator_and_attached_workers(
+    tmp_path: Path, use_plan: bool
+) -> None:
+    from hames.flows import FlowRecipe, FlowRecipeStore
+
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text(
+        "[memory]\nenabled=false\n[skills]\nenabled=false\n[evolution]\nenabled=false\n"
+    )
+    coordinator = StageProvider(["builder", "reviewer"])
+    worker = StageProvider()
+    state = GatewayState.create(paths, providers={"parent": coordinator, "worker": worker})
+    try:
+        for identifier, authority, provider in [
+            ("workflow", "standard", "parent"),
+            ("builder", "standard", "worker"),
+            ("reviewer", "read_only", "worker"),
+        ]:
+            delegation = (
+                "  allowed_agents: [builder, reviewer]\n"
+                if identifier == "workflow"
+                else "  allow: false\n"
+            )
+            state.agents.create(
+                source=(
+                    f"---\nid: {identifier}\nname: {identifier}\nauthority: {authority}\n"
+                    f"execution:\n  provider: {provider}\n  model: stage-model\n"
+                    f"  reasoning_effort: xhigh\ndelegation:\n{delegation}---\n"
+                    "Coordinate in normal prose.\n"
+                )
+            )
+        session = state.ledger.create_session(
+            working_directory=tmp_path,
+            agent_id="default",
+            provider="parent",
+            model="planner-model",
+            interaction_mode="plan",
+        )
+        state.controls.grant_trust(tmp_path)
+        state.ledger.append(
+            session_id=session.id,
+            event_type="user.message",
+            payload={"content": "History constraint: preserve existing API"},
+        )
+        if use_plan:
+            state.runs.plans.propose(
+                session,
+                run_id="planning",
+                markdown="# Approved fixture\nInspect source without changes.",
+                causation_id=None,
+            )
+        FlowRecipeStore(paths.root).save(
+            "review",
+            FlowRecipe(
+                name="Review",
+                coordinator="workflow",
+                instructions="Delegate then independently review.",
+            ),
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(state)),
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {state.token}"},
+        ) as client:
+            response = await client.post(
+                "/v1/flows/review/run",
+                json={
+                    "session_id": session.id,
+                    "input": "Inspect this task without commits",
+                    "use_plan": use_plan,
+                },
+            )
+            assert response.status_code == 202, response.text
+            assert response.json()["session_id"] == session.id
+            task = state.runs._tasks.get(response.json()["run_id"])
+            if task:
+                await asyncio.wait_for(asyncio.shield(task), 10)
+            events = state.ledger.list_events(session.id)
+            assert not any(event.type.startswith("flow.") for event in events)
+            assert [
+                e.payload["target_agent_id"] for e in events if e.type == "delegation.requested"
+            ] == ["builder", "reviewer"]
+            assert any(
+                e.type == "assistant.message" and e.payload["content"] == "PASS: checked fixture"
+                for e in events
+            )
+            assert state.ledger.get_session(session.id).agent_id == "workflow"
+            assert state.ledger.get_session(session.id).model == "stage-model"
+            assert "History constraint" in str(coordinator.requests[0].messages)
+            roots = (await client.get("/v1/sessions", params={"include_delegated": False})).json()
+            assert [item["id"] for item in roots] == [session.id]
+            children = [
+                item
+                for item in (await client.get("/v1/sessions")).json()
+                if item["lineage_kind"] == "delegation"
+            ]
+            assert len(children) == 2
+            assert all(item["parent_session_id"] == session.id for item in children)
+    finally:
+        await state.runs.close()

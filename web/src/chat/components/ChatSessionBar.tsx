@@ -1,3 +1,5 @@
+import { Button } from "../../components/Button";
+import { Icon } from "../../shell/icons";
 import { Show } from "solid-js";
 import type { Session } from "../../api/types";
 import { Spinner } from "../../components/Spinner";
@@ -12,6 +14,9 @@ interface ChatSessionBarProps {
   streamState: StreamState;
   working: boolean;
   workerLabel?: string;
+  flowStatus?: string;
+  flowOpen?: boolean;
+  onFlowToggle?: () => void;
   onViewChanged: (view: ChatView) => void;
   onSessionUpdated: (session: Session) => void;
 }
@@ -45,6 +50,7 @@ export function ChatSessionBar(props: ChatSessionBarProps) {
           disabled={props.working}
           onSessionUpdated={props.onSessionUpdated}
         />
+        <Show when={props.onFlowToggle && props.flowStatus && !["completed", "cancelled"].includes(props.flowStatus)}><Button variant="bare" class="chat-flow-trigger" aria-label="Flow agents" title={`Flow agents · ${props.flowStatus?.replaceAll("_", " ")}`} aria-expanded={props.flowOpen} aria-controls="chat-flow-panel" onClick={props.onFlowToggle}><Icon name="nav.flows" size={19} /></Button></Show>
       </div>
     </header>
   );

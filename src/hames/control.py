@@ -180,6 +180,15 @@ class ControlStore:
             ).fetchone()
         return row is not None
 
+    def pending_approval_runs(self) -> list[str]:
+        with self.database.connect() as connection:
+            return [
+                str(row["run_id"])
+                for row in connection.execute(
+                    "SELECT DISTINCT run_id FROM approvals WHERE status = 'pending'"
+                )
+            ]
+
     def cancel_pending_for_run(self, run_id: str) -> list[Approval]:
         with self._lock, self.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")

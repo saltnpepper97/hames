@@ -19,6 +19,7 @@ export const coreSlashCommands: readonly SlashCommand[] = [
   { value: "/stop", detail: "Close background terminals" },
   { value: "/dream", detail: "Reconcile memories, skills and scars now" },
   { value: "/connect", detail: "Connect and manage providers" },
+  { value: "/flow", detail: "Run a saved flow in this chat", argumentHint: "<flow-id> <task> | <flow-id> --plan" },
 ];
 
 export function skillSlashCommands(skills: readonly SkillCatalogEntry[]): SlashCommand[] {

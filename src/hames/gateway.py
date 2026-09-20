@@ -46,6 +46,7 @@ from hames.database import Database
 from hames.environment import RuntimeEnvironmentSnapshot
 from hames.evolution import Scar, ScarScope, ScarSeverity, ScarStatus, ScarStore
 from hames.evolution_runtime import EvolutionManager
+from hames.flows import FlowRecipe, FlowRecipeStore
 from hames.goals import Goal
 from hames.inspection import (
     AgentUsageProjection,
@@ -116,6 +117,12 @@ from hames.workspaces import (
 
 class ApiModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class FlowStartRequest(ApiModel):
+    session_id: str
+    input: str = Field(default="", max_length=16000)
+    use_plan: bool = False
 
 
 class CreateSessionRequest(ApiModel):
@@ -832,6 +839,7 @@ def create_app(state: GatewayState) -> FastAPI:
         await state.search.start()
         await state.mcp.start_enabled()
         await state.plugins.start_enabled()
+        await state.runs.recover_approvals()
         await state.runs.recover_queues()
         await state.runs.recover_goals()
         await scheduler.start()
@@ -1240,6 +1248,7 @@ def create_app(state: GatewayState) -> FastAPI:
 
     @app.get("/v1/sessions", dependencies=auth, response_model=list[Session])
     async def list_sessions(
+        include_delegated: bool = True,
         has_messages: bool | None = None,
         include_titled: bool = False,
         working_directory: str | None = None,
@@ -1252,6 +1261,8 @@ def create_app(state: GatewayState) -> FastAPI:
                 include_titled=include_titled,
                 working_directory=Path(working_directory) if working_directory else None,
             )
+            if not include_delegated:
+                sessions = [session for session in sessions if session.lineage_kind != "delegation"]
             if not registered_workspaces_only:
                 return sessions
             authorized_paths = {
@@ -2593,6 +2604,54 @@ def create_app(state: GatewayState) -> FastAPI:
         result = mutation.rule
         assert isinstance(result, PolicyRule)
         return result
+
+    @app.get("/v1/flows", dependencies=auth)
+    async def list_flows() -> dict[str, object]:
+        return {"items": await asyncio.to_thread(FlowRecipeStore(state.paths.root).list)}
+
+    @app.put("/v1/flows/{identifier}", dependencies=auth)
+    async def save_flow(identifier: str, recipe: FlowRecipe) -> dict[str, str]:
+        try:
+            await asyncio.to_thread(state.agents.load, recipe.coordinator)
+            await asyncio.to_thread(FlowRecipeStore(state.paths.root).save, identifier, recipe)
+            return {"id": identifier}
+        except (ValueError, FileNotFoundError) as exc:
+            raise ApiError(400, "invalid_flow_recipe", str(exc)) from exc
+
+    @app.delete("/v1/flows/{identifier}", dependencies=auth)
+    async def delete_flow(identifier: str) -> dict[str, bool]:
+        try:
+            await asyncio.to_thread(FlowRecipeStore(state.paths.root).delete, identifier)
+            return {"deleted": True}
+        except (ValueError, FileNotFoundError) as exc:
+            raise ApiError(404, "flow_not_found", str(exc)) from exc
+
+    @app.post("/v1/flows/{identifier}/run", dependencies=auth, status_code=202)
+    async def start_flow(identifier: str, request: FlowStartRequest) -> dict[str, str]:
+        try:
+            recipe = await asyncio.to_thread(FlowRecipeStore(state.paths.root).get, identifier)
+            if not request.input.strip() and not request.use_plan:
+                raise ValueError("Tell the coordinator what you want done")
+            instruction = (
+                f"Flow recipe: {recipe.name}\n{recipe.instructions}\n\n"
+                f"User instruction or execution note:\n{request.input}"
+            )
+            if request.use_plan:
+                _, _, run_id = await state.runs.execute_plan(
+                    request.session_id,
+                    strategy="keep",
+                    note=instruction,
+                    agent_id=recipe.coordinator,
+                )
+            else:
+                run_id = await state.runs.start_flow_recipe(
+                    request.session_id, recipe.coordinator, instruction
+                )
+            return {"run_id": run_id, "session_id": request.session_id}
+        except PermissionError as exc:
+            raise ApiError(403, "working_directory_untrusted", str(exc)) from exc
+        except (ValueError, FileNotFoundError, KeyError, ProviderError) as exc:
+            raise ApiError(409, "flow_start_rejected", str(exc)) from exc
 
     @app.get("/v1/sessions/{session_id}/events", dependencies=auth, response_model=list[Event])
     async def list_events(session_id: str, after_sequence: int = 0) -> list[Event]:

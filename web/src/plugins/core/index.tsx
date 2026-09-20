@@ -1,3 +1,4 @@
+import { FlowsPage, FlowSidebar, FlowSidebarAction } from "../../flows/Flows";
 import { AutomationPage, AutomationSidebar, AutomationSidebarAction } from "../../automations/Automations";
 import { useNavigate, useParams } from "@solidjs/router";
 import { Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
@@ -402,6 +403,11 @@ export const coreWebPlugin = {
         action: AgentSidebarAction,
         searchable: true,
       },
+    },
+    {
+      id: "flows", path: "/flows", route: ["/flows", "/flows/:view", "/flows/:view/:id"],
+      label: "Flows", icon: "nav.flows", component: FlowsPage,
+      sidebar: { kind: "component", component: FlowSidebar, action: FlowSidebarAction, searchable: true },
     },
     {
       id: "automations", path: "/automations", route: ["/automations", "/automations/:automationId"],

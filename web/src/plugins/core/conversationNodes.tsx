@@ -754,10 +754,12 @@ function QuestionNode(props: { node: ConversationNode }): JSX.Element {
 }
 
 function DelegationNodeView(props: { node: ConversationNode }) {
+  const directory = useAgentDirectory();
   const node = () => props.node as Extract<ConversationNode, { kind: "delegation" }>;
+  const agentName = () => directory.agents().find(agent => agent.id === node().agentId)?.name ?? node().agentId;
   return <div class="delegation-card"><div class="delegation-handoff" role="status" data-state={node().status}>
     <span class="delegation-handoff-icon"><Show when={node().status === "working"} fallback={node().status === "completed" ? "✓" : "!"}><Spinner size="sm" /></Show></span>
-    <div><span>{node().agentId} · {node().status === "completed" ? "Finished" : node().status === "working" ? "Working" : node().status === "stopping" ? "Stopping" : node().status === "cancelled" ? "Cancelled" : node().status}</span>
+    <div><span>{agentName()} · {node().status === "completed" ? "Finished" : node().status === "working" ? "Working" : node().status === "stopping" ? "Stopping" : node().status === "cancelled" ? "Cancelled" : node().status}</span>
       <Show when={node().model}><small>{node().model}{node().effort ? ` · ${node().effort}` : ""}</small></Show>
     </div>
   </div><Show when={node().parentSessionId}><DelegationChatLink node={node()} /></Show></div>;

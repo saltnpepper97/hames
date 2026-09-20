@@ -1,15 +1,14 @@
-import { render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { expect, it, vi } from "vitest";
 import { DelegationChatLink } from "./DelegationChatLink";
-import { getDelegatedSessions } from "../../api/client";
-vi.mock("../../api/client", () => ({ getDelegatedSessions: vi.fn() }));
-it("links to the matching separate child chat", async () => {
-  vi.mocked(getDelegatedSessions).mockResolvedValue([
-    { id: "wrong", lineage_kind: "delegation", parent_session_id: "parent", fork_event_id: "other" },
-    { id: "child", lineage_kind: "delegation", parent_session_id: "parent", fork_event_id: "request", agent_id: "qwen-builder", working_directory: "/tmp" },
-  ] as Awaited<ReturnType<typeof getDelegatedSessions>>);
-  render(() => <DelegationChatLink node={{ id: "request", kind: "delegation", runId: "run", agentId: "qwen-builder", parentSessionId: "parent", model: "qwen", effort: "", status: "working" }} />);
-  expect(await screen.findByRole("link", { name: "Open chat" })).toHaveAttribute("href", "/chat/child");
-  expect(screen.getByText("Working in a separate chat.")).toBeInTheDocument();
-  expect(screen.queryByRole("button")).not.toBeInTheDocument();
+it("opens the worker transcript inside its parent chat instead of navigating", () => {
+  const listener = vi.fn(); window.addEventListener("hames:open-worker", listener);
+  const { unmount } = render(() => <DelegationChatLink node={{ id: "request", kind: "delegation", runId: "run", agentId: "qwen-builder", parentSessionId: "parent", model: "qwen", effort: "", status: "working" }} />);
+  try {
+    fireEvent.click(screen.getByRole("button", { name: "View transcript" }));
+    expect(listener).toHaveBeenCalledOnce();
+    expect((listener.mock.calls[0]![0] as CustomEvent).detail).toEqual({ sessionId: "parent", agentId: "qwen-builder" });
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(screen.queryByText(/separate chat/)).not.toBeInTheDocument();
+  } finally { unmount(); window.removeEventListener("hames:open-worker", listener); }
 });

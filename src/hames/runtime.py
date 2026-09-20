@@ -239,7 +239,7 @@ class ActiveClock:
 
     @contextmanager
     def pause(self) -> Generator[None]:
-        """Delegated waiting is charged to the worker, not its coordinator."""
+        """Exclude delegated work and human response time from this run's budget."""
         if self._pauses == 0:
             self._paused_at = time.monotonic()
             if self._timeout is not None:
@@ -941,6 +941,54 @@ class RunManager:
         tasks, event = await asyncio.to_thread(self.session_tasks.remove, session, task_id)
         await self._publish_store_events((event,))
         return tasks
+
+    async def start_flow_recipe(self, session_id: str, coordinator_id: str, content: str) -> str:
+        """Select a coordinator and submit an ordinary turn in the existing chat."""
+        async with self._submission_lock(session_id):
+            session = await asyncio.to_thread(self.ledger.get_session, session_id)
+            await self._validate_goal_session(session)
+            if session.delegation_depth:
+                raise ValueError("Start a flow from the main conversation")
+            if self.is_session_active(session_id) or (await self.queue_state(session_id)).items:
+                raise ValueError("Wait for current work and queued messages to finish")
+            goal = await asyncio.to_thread(self.goals.current, session_id)
+            if goal is not None and goal.status in {"running", "yielded"}:
+                raise ValueError("Pause or finish the current goal before choosing a flow")
+            coordinator = await asyncio.to_thread(self.agents.load, coordinator_id)
+            selection = None
+            if coordinator.metadata.execution is not None:
+                selection = await resolve_agent_execution(
+                    coordinator.metadata.execution, self.providers, self.config
+                )
+            for target in coordinator.metadata.delegation.allowed_agents:
+                worker = await asyncio.to_thread(self.agents.load, target)
+                if worker.metadata.execution is not None:
+                    await resolve_agent_execution(
+                        worker.metadata.execution, self.providers, self.config
+                    )
+            events = await asyncio.to_thread(self.ledger.list_events, session_id)
+            after = events[-1].sequence if events else 0
+            if selection is not None:
+                provider, model, effort, window, source = selection
+                await asyncio.to_thread(
+                    self.ledger.update_session_settings,
+                    session_id,
+                    provider=provider,
+                    model=model,
+                    reasoning_effort=effort,
+                    context_window_tokens=window,
+                    context_window_source=source,
+                )
+            await asyncio.to_thread(
+                self.ledger.update_session_agent, session_id, agent_id=coordinator.metadata.id
+            )
+            if session.interaction_mode != "auto":
+                await asyncio.to_thread(self.ledger.update_session_mode, session_id, mode="auto")
+            for event in await asyncio.to_thread(
+                self.ledger.list_events, session_id, after_sequence=after
+            ):
+                await self._publish_durable(event)
+            return await self.start(session_id, content)
 
     async def execute_plan(
         self,
@@ -1928,6 +1976,13 @@ class RunManager:
             task.cancel()
         return True
 
+    async def recover_approvals(self) -> None:
+        """Expire durable prompts whose in-memory run cannot accept an answer."""
+        run_ids = await asyncio.to_thread(self.controls.pending_approval_runs)
+        for run_id in run_ids:
+            if run_id not in self._session_runs.values():
+                await self._cancel_approvals(run_id)
+
     async def resolve_approval(
         self, approval_id: str, *, request_hash: str, decision: str
     ) -> Approval:
@@ -2186,6 +2241,8 @@ class RunManager:
             )
             await self._append_failure(session_id, run_id, error.id, "runtime_error", str(exc), {})
         finally:
+            await self._cancel_approvals(run_id)
+            self._cancel_questions(run_id)
             await self._finalize_plan_execution(session_id, run_id)
             await self._publish_delegation_followup(session_id, run_id)
             self._mark_post_terminal(run_id, session_id)
@@ -4285,15 +4342,16 @@ class RunManager:
                 policy_decided.id,
             )
         if decision.decision is PolicyDecisionKind.REQUIRE_CONFIRMATION:
-            approved = await self._request_approval(
-                run_id,
-                session,
-                invocation,
-                request_hash,
-                decision.reason,
-                policy_decided.id,
-                allow_session=decision.risk == "manual_mode",
-            )
+            with clock.pause():
+                approved = await self._request_approval(
+                    run_id,
+                    session,
+                    invocation,
+                    request_hash,
+                    decision.reason,
+                    policy_decided.id,
+                    allow_session=decision.risk == "manual_mode",
+                )
             if not approved:
                 return await self._persist_tool_result(
                     session,
@@ -4336,9 +4394,10 @@ class RunManager:
             if not isinstance(arguments, AskUserArguments):
                 result = ToolResult(status="failed", summary="invalid ask_user arguments")
             else:
-                result = await self._request_question(
-                    run_id, session, invocation, arguments, started.id
-                )
+                with clock.pause():
+                    result = await self._request_question(
+                        run_id, session, invocation, arguments, started.id
+                    )
             return await self._persist_tool_result(session, run_id, invocation, result, started.id)
         if invocation.name in {"skill_load", "skill_author", "skill_run"}:
             started = await self._append(
@@ -5770,6 +5829,9 @@ class RunManager:
             waiter = self._approval_waiters.get(approval.id)
             if waiter is not None and not waiter.done():
                 waiter.cancel()
+            session = await asyncio.to_thread(self.ledger.get_session, approval.session_id)
+            if session.status != "open":
+                continue
             await self._append(
                 session_id=approval.session_id,
                 run_id=approval.run_id,

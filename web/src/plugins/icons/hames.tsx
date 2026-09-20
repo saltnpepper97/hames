@@ -1,3 +1,4 @@
+import Workflow from "lucide-solid/icons/workflow";
 import brain from "@phosphor-icons/core/regular/brain.svg";
 import robot from "@phosphor-icons/core/regular/robot.svg";
 import {
@@ -85,6 +86,7 @@ export const hamesIconPack = {
     "nav.chat": tablerIcon(IconMessageCircle),
     "nav.runs": tablerIcon(IconGitBranch),
     "nav.agents": phosphorIcon(robot),
+    "nav.flows": (props: IconGlyphProps) => <Workflow size={props.size} strokeWidth={1.7} aria-hidden={props["aria-hidden"]} />,
     "nav.automations": tablerIcon(IconCalendarClock),
     "nav.memory": phosphorIcon(brain),
     "nav.skills": tablerIcon(IconTool),

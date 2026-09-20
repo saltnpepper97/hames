@@ -490,6 +490,8 @@ def _empty_delegation_evidence() -> list[DelegationEvidencePayload]:
 
 
 class DelegationRequestedPayload(EventPayload):
+    flow_run_id: str = ""
+    flow_step_path: str = ""
     provider: str = ""
     model: str = ""
     reasoning_effort: str = ""
@@ -513,6 +515,9 @@ class DelegationPlanPayload(EventPayload):
 
 
 class DelegationTaskCardPayload(EventPayload):
+    agent_instructions: str | None = None
+    flow_run_id: str = ""
+    flow_step_path: str = ""
     approved_plan: DelegationPlanPayload | None = None
     parent_session_id: str
     parent_run_id: str
@@ -534,6 +539,8 @@ class DelegationTaskCardPayload(EventPayload):
 
 
 class DelegationTerminalPayload(EventPayload):
+    flow_run_id: str = ""
+    flow_step_path: str = ""
     child_session_id: str
     child_run_id: str
     target_agent_id: str
@@ -883,7 +890,14 @@ class PluginProposalPayload(EventPayload):
     permissions: list[str] = Field(default_factory=_empty_permissions)
 
 
+class FlowStatePayload(EventPayload):
+    flow_id: str
+    state: dict[str, Any]
+
+
 EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
+    "flow.created": FlowStatePayload,
+    "flow.updated": FlowStatePayload,
     "session.opened": SessionOpenedPayload,
     "session.closed": SessionClosedPayload,
     "session.forked": SessionForkedPayload,

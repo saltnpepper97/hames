@@ -1,5 +1,6 @@
 export type WebCommand =
   | { kind: "compact" }
+  | { kind: "flow"; id: string; input: string; usePlan: boolean }
   | { kind: "custom"; name: string; note: string }
   | { kind: "dream" }
   | { kind: "fork"; at?: string }
@@ -43,6 +44,12 @@ export function parseWebCommand(content: string, customNames: readonly string[] 
   const name = `/${(match[1] ?? "").toLocaleLowerCase()}`;
   const argument = (match[2] ?? "").trim();
   if (customNames.includes(name.slice(1))) return { kind: "custom", name: name.slice(1), note: argument };
+  if (name === "/flow") {
+    const [id = "", ...rest] = argument.split(/\s+/);
+    const input = argument.slice(id.length).trim();
+    const usePlan = rest[0] === "--plan";
+    return { kind: "flow", id, input: usePlan ? input.slice(6).trim() : input, usePlan };
+  }
   if (name === "/dream" && !argument) return { kind: "dream" };
   if (name === "/compact" && !argument) return { kind: "compact" };
   if (name === "/fork") return { kind: "fork", at: argument || undefined };

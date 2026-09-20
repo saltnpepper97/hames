@@ -572,6 +572,7 @@ export async function loadDashboard(selectedWorkspaceId = ""): Promise<Dashboard
     has_messages: "true",
     include_titled: "true",
     registered_workspaces_only: "true",
+    include_delegated: "false",
   });
   const sessions = await request<Session[]>(`/v1/sessions?${parameters.toString()}`);
   return { bootstrap, health, sessions, workspaces, selected_workspace: selectedWorkspace };
@@ -659,3 +660,9 @@ export const saveAutomation = (spec: AutomationSpec, id?: string) => request<Aut
   { method: id ? "PUT" : "POST", body: JSON.stringify(spec) });
 export const runAutomation = (id: string) => request(`/v1/automations/${encodeURIComponent(id)}/run`, { method: "POST" });
 export const deleteAutomation = (id: string) => request(`/v1/automations/${encodeURIComponent(id)}`, { method: "DELETE" });
+
+// A flow is a saved recipe for the normal coordinator chat.
+export const listFlows = () => request<{ items: import("../flows/types").FlowItem[] }>("/v1/flows");
+export const saveFlow = (id: string, recipe: import("../flows/types").FlowRecipe) => request(`/v1/flows/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(recipe) });
+export const deleteFlow = (id: string) => request(`/v1/flows/${encodeURIComponent(id)}`, { method: "DELETE" });
+export const startFlow = (id: string, sessionId: string, input: string, usePlan = false) => request<{ run_id: string; session_id: string }>(`/v1/flows/${encodeURIComponent(id)}/run`, { method: "POST", body: JSON.stringify({ session_id: sessionId, input, use_plan: usePlan }) });
