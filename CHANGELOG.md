@@ -16,6 +16,10 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Fixed
 
+- Switching a chat's agent applies its default provider, model, reasoning effort,
+  and context window even after the conversation has started. Agents without defaults
+  preserve the chat's current model selection.
+
 - Chat agent picker displays current slugs instead of legacy internal IDs.
 
 - Sidebar width follows the remaining navigation tabs, removing unused horizontal space.

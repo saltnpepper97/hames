@@ -247,7 +247,7 @@ they never push without an explicit request. Existing workspace shell policy sti
 The reviewer has runtime read-only authority (no shell) and uses the bounded `vcs_inspect` tool
 for Git status, history, commits, and diffs.
 Selecting an agent with the ordinary picker still preserves session model settings;
-`default_model` applies to new chats, delegation, and explicitly selected plan execution. The legacy `execution` key remains readable. Agent settings can clear the default; delegated work then inherits the parent model. Explicit new-chat model selections override the default. Selecting an agent in an empty chat loads its default; changing the model in the chat afterward overrides it for that chat. Changing saved defaults never rewrites existing chats, and switching agents in an established conversation keeps its current model.
+`default_model` applies to new chats, delegation, and explicitly selected plan execution. The legacy `execution` key remains readable. Agent settings can clear the default; delegated work then inherits the parent model. Explicit new-chat model selections override the default. Selecting an agent loads its default provider, model, reasoning effort, and context window in both new and existing chats. An agent without a default preserves the current selection. Changing the model in the chat afterward overrides it for that chat until another agent with a default is selected. Editing saved defaults does not itself rewrite existing chats.
 
 
 ### Cancelling a delegated worker

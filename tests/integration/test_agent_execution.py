@@ -221,7 +221,10 @@ async def test_invalid_worker_selection_leaves_plan_and_session_unchanged(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_agent_default_model_can_be_set_overridden_and_cleared(tmp_path: Path) -> None:
+@pytest.mark.parametrize("has_history", [False, True])
+async def test_agent_default_model_can_be_set_overridden_and_cleared(
+    tmp_path: Path, has_history: bool
+) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     paths.ensure_foundation()
     paths.config_file.write_text(
@@ -275,11 +278,33 @@ async def test_agent_default_model_can_be_set_overridden_and_cleared(tmp_path: P
             draft = await client.post(
                 "/v1/sessions", json={"working_directory": str(tmp_path), "agent_id": "default"}
             )
+            if has_history:
+                await state.runs._append(
+                    session_id=draft.json()["id"],
+                    event_type="user.message",
+                    payload={"content": "Prepare the plan before switching agents"},
+                )
             switched = await client.put(
                 f"/v1/sessions/{draft.json()['id']}/agent", json={"agent_id": "custom"}
             )
             assert switched.status_code == 200, switched.text
             assert switched.json()["provider"] == "worker"
+            assert switched.json()["model"] == "stage-model"
+            assert switched.json()["reasoning_effort"] == "xhigh"
+            assert switched.json()["context_window_tokens"] == 65536
+            assert switched.json()["context_window_source"] == "provider"
+            retained = await client.put(
+                f"/v1/sessions/{draft.json()['id']}/agent", json={"agent_id": "default"}
+            )
+            assert retained.status_code == 200
+            for key in (
+                "provider",
+                "model",
+                "reasoning_effort",
+                "context_window_tokens",
+                "context_window_source",
+            ):
+                assert retained.json()[key] == switched.json()[key]
             await client.patch(
                 "/v1/agents/custom",
                 json={"default_model": {**selection, "reasoning_effort": "medium"}},

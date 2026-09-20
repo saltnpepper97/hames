@@ -1747,11 +1747,8 @@ def create_app(state: GatewayState) -> FastAPI:
             raise ApiError(409, "session_run_active", "cannot change agent during an active run")
         try:
             capsule = await asyncio.to_thread(state.agents.load, request.agent_id)
-            events = await asyncio.to_thread(state.ledger.list_events, session_id)
             selection = None
-            if capsule.metadata.execution is not None and not any(
-                event.type in {"user.message", "run.started"} for event in events
-            ):
+            if capsule.metadata.execution is not None:
                 selection = await resolve_agent_execution(
                     capsule.metadata.execution, state.providers, state.config
                 )
