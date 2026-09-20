@@ -126,3 +126,14 @@ describe("tool presentation", () => {
     expect(toolTitle("task_update")).toBe("Updated tasks");
   });
 });
+
+it("previews every replacement in a pending batch edit", () => {
+  const diff = diffPresentation(tool({ name: "edit_file", status: "requested", arguments: {
+    path: "plan.md", edits: [
+      { old_text: "one", new_text: "first" },
+      { old_text: "two", new_text: "second" },
+    ],
+  } }));
+  expect(diff).toMatchObject({ path: "plan.md", added: 2, removed: 2 });
+  expect(diff?.rows.map(row => row.text)).toEqual(["plan.md", "one", "first", "two", "second"]);
+});

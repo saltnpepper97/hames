@@ -748,3 +748,51 @@ def test_trust_and_approvals_are_exact_durable_and_one_shot(tmp_path: Path) -> N
     assert controls.has_session_tool_grant(session.id, "write_file")
     assert controls.revoke_trust(project)
     assert controls.get_trust(project) is None
+
+
+@pytest.mark.asyncio
+async def test_batch_edits_are_atomic_and_return_one_combined_diff(tmp_path: Path) -> None:
+    context = tool_context(tmp_path)
+    path = context.project_root / "plan.md"
+    path.write_text("alpha\nbeta\n")
+    edits = {
+        "path": "plan.md",
+        "edits": [
+            {"old_text": "alpha", "new_text": "first"},
+            {"old_text": "beta", "new_text": "second"},
+        ],
+    }
+    result = await EditFileTool().execute(context, EditFileArguments.model_validate(edits))
+    assert result.status == "completed"
+    assert path.read_text() == "first\nsecond\n"
+    assert result.content.count("--- a/plan.md") == 1
+    assert "+first" in result.content and "+second" in result.content
+    failed = await EditFileTool().execute(
+        context,
+        EditFileArguments.model_validate(
+            {
+                "path": "plan.md",
+                "edits": [
+                    {"old_text": "first", "new_text": "changed"},
+                    {"old_text": "missing", "new_text": "no"},
+                ],
+            }
+        ),
+    )
+    assert failed.status == "failed"
+    assert "edit 2" in failed.summary
+    assert path.read_text() == "first\nsecond\n"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"edits": []},
+        {"old_text": "a"},
+        {"new_text": "b"},
+        {"old_text": "a", "new_text": "b", "edits": [{"old_text": "a", "new_text": "c"}]},
+    ],
+)
+def test_edit_forms_are_unambiguous(arguments: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        EditFileArguments.model_validate({"path": "plan.md", **arguments})

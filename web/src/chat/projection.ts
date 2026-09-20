@@ -51,6 +51,7 @@ export type ConversationNode =
   | {
       id: string;
       kind: "tool";
+      runId?: string;
       sessionId: string;
       workingDirectory: string;
       name: string;
@@ -618,6 +619,7 @@ export function projectConversation(
         tool = {
           id: `tool-${id}`,
           kind: "tool",
+          runId: event.run_id ?? undefined,
           sessionId: event.session_id,
           workingDirectory,
           name: text(event.payload, "name") || "Tool",
@@ -641,6 +643,7 @@ export function projectConversation(
         tool = {
           id: `tool-${id}`,
           kind: "tool",
+          runId: event.run_id ?? undefined,
           sessionId: event.session_id,
           workingDirectory,
           name: text(event.payload, "name") || "Tool",

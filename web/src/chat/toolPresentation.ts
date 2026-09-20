@@ -127,16 +127,18 @@ function intendedDiffPresentation(node: ToolConversationNode): DiffPresentation 
     return (value.endsWith("\n") ? value.slice(0, -1) : value).split("\n");
   };
   if (node.name === "edit_file") {
-    const oldText = stringValue(node.arguments?.old_text);
-    const newText = stringValue(node.arguments?.new_text);
-    contentLines(oldText).forEach((text, index) => {
-      rows.push({ kind: "delete", text, oldLine: index + 1 });
-      removed += 1;
-    });
-    contentLines(newText).forEach((text, index) => {
-      rows.push({ kind: "add", text, newLine: index + 1 });
-      added += 1;
-    });
+    const edits = Array.isArray(node.arguments?.edits) ? node.arguments.edits : [node.arguments];
+    for (const edit of edits) {
+      if (!edit || typeof edit !== "object") continue;
+      contentLines(stringValue(edit.old_text)).forEach((text, index) => {
+        rows.push({ kind: "delete", text, oldLine: index + 1 });
+        removed += 1;
+      });
+      contentLines(stringValue(edit.new_text)).forEach((text, index) => {
+        rows.push({ kind: "add", text, newLine: index + 1 });
+        added += 1;
+      });
+    }
   } else if (node.name === "write_file") {
     const content = stringValue(node.arguments?.content);
     contentLines(content).forEach((text, index) => {

@@ -98,10 +98,25 @@ class WriteFileArguments(WorkspaceArguments):
     create_parents: bool = True
 
 
-class EditFileArguments(WorkspaceArguments):
-    path: str
+class TextEdit(ToolArguments):
     old_text: str = Field(min_length=1)
     new_text: str
+
+
+class EditFileArguments(WorkspaceArguments):
+    path: str
+    old_text: str | None = Field(default=None, min_length=1)
+    new_text: str | None = None
+    edits: list[TextEdit] | None = Field(default=None, min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_edit_form(self) -> EditFileArguments:
+        if self.edits is not None:
+            if self.old_text is not None or self.new_text is not None:
+                raise ValueError("use edits or old_text/new_text, not both")
+        elif self.old_text is None or self.new_text is None:
+            raise ValueError("provide edits or both old_text and new_text")
+        return self
 
 
 class ShellArguments(WorkspaceArguments):
@@ -708,7 +723,13 @@ class WriteFileTool(ToolBase):
 
 class EditFileTool(ToolBase):
     name = "edit_file"
-    description = "Atomically replace exactly one literal text occurrence in a UTF-8 file."
+    description = (
+        "Atomically edit a UTF-8 file. Prefer one call with edits=[{old_text,new_text}, ...] "
+        "for related changes to the same file, rather than a separate call per replacement. "
+        "Edits apply in order in memory; each old_text must match exactly once at that step. "
+        "If any edit fails, the file is unchanged. For a single replacement, old_text and "
+        "new_text are also supported."
+    )
     side_effect_class = "write"
     arguments_type: ClassVar[type[ToolArguments]] = EditFileArguments
 
@@ -718,10 +739,16 @@ class EditFileTool(ToolBase):
         try:
             path = context.resolve(args.workspace, args.path, must_exist=True)
             before = await asyncio.to_thread(path.read_text, encoding="utf-8")
-            count = before.count(args.old_text)
-            if count != 1:
-                raise ValueError(f"expected exactly one match; found {count}")
-            after = before.replace(args.old_text, args.new_text, 1)
+            edits = args.edits
+            if edits is None:
+                assert args.old_text is not None and args.new_text is not None
+                edits = [TextEdit(old_text=args.old_text, new_text=args.new_text)]
+            after = before
+            for index, edit in enumerate(edits, 1):
+                count = after.count(edit.old_text)
+                if count != 1:
+                    raise ValueError(f"edit {index}: expected exactly one match; found {count}")
+                after = after.replace(edit.old_text, edit.new_text, 1)
             await asyncio.to_thread(_atomic_write, path, after.encode())
             diff = "".join(
                 difflib.unified_diff(

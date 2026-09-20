@@ -1,3 +1,5 @@
+import { groupFileEdits } from "../editGroups";
+import { ConversationDisclosure } from "../../components/ConversationDisclosure";
 import { ReasoningDisclosureProvider } from "../reasoningDisclosure";
 import { Dynamic } from "solid-js/web";
 import { For, Show, createEffect, createMemo, onCleanup, onMount } from "solid-js";
@@ -17,6 +19,7 @@ interface ConversationViewportProps {
 
 export function ConversationViewport(props: ConversationViewportProps) {
   const plugins = useWebPlugins();
+  const entries = createMemo(() => groupFileEdits(props.nodes));
   const agents = useAgentDirectory();
   let transcript!: HTMLDivElement;
   const storageKey = props.sessionId ? `hames.transcript-position:${props.sessionId}` : undefined;
@@ -143,12 +146,23 @@ export function ConversationViewport(props: ConversationViewportProps) {
       <div class="transcript-column" aria-live="polite">
         <Show when={props.nodes.length > 0}>
           <ReasoningDisclosureProvider nodes={props.nodes}>
-          <For each={props.nodes}>
-            {(node) => {
-              const contribution = plugins.conversationNodes.get(node.kind);
-              return contribution ? (
-                <Dynamic component={contribution.component} node={node} />
-              ) : null;
+          <For each={entries().map(entry => entry.node.id)}>
+            {(id) => {
+              const entry = () => entries().find(entry => entry.node.id === id)!;
+              const contribution = () => plugins.conversationNodes.get(entry().node.kind);
+              return <Show when={contribution()}>{renderer =>
+                <Show when={entry().edits.length > 1} fallback={
+                  <Show when={entry().node} keyed>{node => <Dynamic component={renderer().component} node={node} />}</Show>
+                }>
+                  <ConversationDisclosure class="tool-node edit-group" icon="conversation.tool"
+                    title="Edited" state="success"
+                    summary={<>{String(entry().edits[0]!.arguments?.path)} · {entry().edits.length} edits</>}>
+                    <For each={entry().edits}>{edit =>
+                      <Dynamic component={renderer().component} node={edit} />
+                    }</For>
+                  </ConversationDisclosure>
+                </Show>
+              }</Show>;
             }}
           </For>
           </ReasoningDisclosureProvider>
