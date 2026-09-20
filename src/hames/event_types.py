@@ -890,8 +890,14 @@ class PluginProposalPayload(EventPayload):
     permissions: list[str] = Field(default_factory=_empty_permissions)
 
 
+class DelegationControlPayload(EventPayload):
+    state: Literal["held", "returned", "cancelled"]
+
+
 class FlowStartedPayload(EventPayload):
     recipe_id: str
+    coordinator: str = ""
+    participants: list[str] | None = None
 
 
 class FlowStatePayload(EventPayload):
@@ -901,6 +907,7 @@ class FlowStatePayload(EventPayload):
 
 EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "flow.started": FlowStartedPayload,
+    "delegation.control": DelegationControlPayload,
     "flow.created": FlowStatePayload,
     "flow.updated": FlowStatePayload,
     "session.opened": SessionOpenedPayload,

@@ -1,0 +1,27 @@
+import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { afterEach, expect, it, vi } from "vitest";
+import { FlowsPage } from "./Flows";
+const save = vi.hoisted(() => vi.fn().mockResolvedValue({}));
+vi.mock("@solidjs/router", () => ({ A: (props: any) => <a href={props.href}>{props.children}</a>, useNavigate: () => vi.fn(), useParams: () => ({ view: "new" }) }));
+vi.mock("../api/client", () => ({ saveFlow: save, deleteFlow: vi.fn(), getAgent: vi.fn() }));
+vi.mock("./FlowDirectory", () => ({ useFlows: () => ({ items: () => [], refresh: vi.fn(), loaded: () => true }) }));
+vi.mock("../agents/AgentDirectory", () => ({ useAgentDirectory: () => ({ ensureLoaded: async () => {}, agents: () => [{ id: "oracle", name: "Oracle" }, { id: "worker", name: "Worker" }] }) }));
+vi.mock("../shell/icons", () => ({ Icon: () => <span /> }));
+vi.mock("./FlowHistory", () => ({ FlowHistory: () => null }));
+afterEach(cleanup);
+it("creates a complete flow team and preserves responsibility input while typing", async () => {
+  render(() => <FlowsPage />);
+  fireEvent.input(screen.getByLabelText("Name"), { target: { value: "Research" } });
+  fireEvent.input(screen.getByLabelText(/Identifier/), { target: { value: "research" } });
+  fireEvent.change(screen.getByLabelText(/Coordinator/), { target: { value: "oracle" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add agent" }));
+  fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "worker" } });
+  const input = screen.getByLabelText("Responsibilities");
+  input.focus();
+  fireEvent.input(input, { target: { value: "Find evidence" } });
+  expect(screen.getByLabelText("Responsibilities")).toBe(input);
+  expect(document.activeElement).toBe(input);
+  fireEvent.input(screen.getByLabelText(/How should/), { target: { value: "Research, compare, then report." } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(save).toHaveBeenCalledWith("research", { name: "Research", coordinator: "oracle", instructions: "Research, compare, then report.", participants: [{ agent: "worker", instructions: "Find evidence" }] }));
+});

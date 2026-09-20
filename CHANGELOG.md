@@ -6,6 +6,13 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Added
 
+- Flow team editing with per-agent responsibilities and run history containing coordinator
+  and worker transcripts plus durable events. Team selection is scoped to the flow and does
+  not rewrite reusable agents or expand their tool permissions.
+- Worker Stop and explicit Return to coordinator controls. Direct worker messages hold the
+  handoff for private followups; stopping the coordinator cancels descendant work and pauses
+  its queued messages.
+
 - Compact message inputs in worker transcripts, with per-worker drafts and the normal
   queue and follow-up behavior.
 

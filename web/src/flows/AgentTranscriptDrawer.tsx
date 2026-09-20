@@ -14,6 +14,7 @@ function WorkerTranscript(props: { session: Session; agentName: string; draft: s
   const projection = createMemo(() => withLiveOutput(projectConversation(stream.events(), props.session.working_directory), stream.liveOutput(), props.session.agent_id));
   return <><ConversationViewport sessionId={props.session.id} nodes={projection().nodes} streamState={stream.state()} agentId={props.session.agent_id} />
     <WorkerComposer sessionId={props.session.id} agentName={props.agentName} draft={props.draft} onDraft={props.onDraft}
+      activeRunId={projection().activeRunId} held={[...stream.events()].reverse().find(event => event.type === "delegation.control")?.payload.state === "held"}
       revision={`${stream.state()}:${stream.events().filter(event => event.type.startsWith("queue.")).at(-1)?.id ?? ""}`} /></>;
 }
 export function AgentTranscriptDrawer(props: { sessionId: string; sessions: Session[]; workers: DelegationNode[]; selectedAgent: string; onSelect: (id: string) => void; onClose: () => void; maximized?: boolean; onToggleMaximize?: () => void }) {

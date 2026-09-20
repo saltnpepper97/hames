@@ -11,11 +11,18 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class FlowParticipant(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    agent: str = Field(min_length=1, max_length=80)
+    instructions: str = Field(default="", max_length=8000)
+
+
 class FlowRecipe(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=120)
     coordinator: str = Field(min_length=1, max_length=80)
     instructions: str = Field(default="", max_length=16000)
+    participants: list[FlowParticipant] | None = Field(default=None, max_length=32)
 
 
 class FlowRecipeStore:

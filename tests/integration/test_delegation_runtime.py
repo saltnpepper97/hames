@@ -755,3 +755,105 @@ async def test_child_tool_limit_failure_is_returned_to_parent(tmp_path: Path) ->
         assert builder_stage.latest.status == "completed"
     finally:
         await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_manual_worker_stop_holds_result_until_explicit_return(tmp_path: Path) -> None:
+    provider = DelegationProvider(children=1)
+    state, session_id, run_id = await start_parent(tmp_path, provider)
+    try:
+        parent_task = state.runs._tasks[run_id]
+        await asyncio.wait_for(provider.children_entered.wait(), 3)
+        child_run = next(iter(state.runs._children_by_parent[run_id]))
+        child_id = next(
+            key for key, value in state.runs._session_runs.items() if value == child_run
+        )
+        child_task = state.runs._tasks[child_run]
+        await state.runs.control_worker(child_id, "stop")
+        await asyncio.wait_for(asyncio.shield(child_task), 5)
+        assert not parent_task.done()
+        assert not any(
+            event.type in {"delegation.stopping", "delegation.failed", "delegation.completed"}
+            for event in state.ledger.list_events(session_id)
+        )
+        provider.release.set()
+        followup = await state.runs.start(child_id, "Revise the result privately")
+        await asyncio.wait_for(asyncio.shield(state.runs._tasks[followup]), 5)
+        assert not parent_task.done()
+        assert not any(
+            event.type.startswith("delegation.followup.")
+            for event in state.ledger.list_events(session_id)
+        )
+        await state.runs.control_worker(child_id, "return")
+        await asyncio.wait_for(asyncio.shield(parent_task), 5)
+        returned = [
+            event
+            for event in state.ledger.list_events(session_id)
+            if event.type == "delegation.completed"
+        ]
+        assert len(returned) == 1
+        assert returned[0].payload["child_run_id"] == followup
+        assert child_id not in state.runs._worker_handoffs
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_parent_stop_cancels_private_worker_followup(tmp_path: Path) -> None:
+    provider = DelegationProvider(children=1)
+    state, _session_id, run_id = await start_parent(tmp_path, provider)
+    try:
+        parent_task = state.runs._tasks[run_id]
+        await asyncio.wait_for(provider.children_entered.wait(), 3)
+        child_run = next(iter(state.runs._children_by_parent[run_id]))
+        child_id = next(
+            key for key, value in state.runs._session_runs.items() if value == child_run
+        )
+        child_task = state.runs._tasks[child_run]
+        await state.runs.control_worker(child_id, "stop")
+        await asyncio.wait_for(asyncio.shield(child_task), 5)
+        followup = await state.runs.start(child_id, "Continue privately")
+        for _ in range(100):
+            if provider.entered == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert provider.entered == 2
+        await state.runs.submit(child_id, "Queued work must not restart after Stop")
+        assert await state.runs.cancel(run_id)
+        await asyncio.wait_for(asyncio.shield(parent_task), 5)
+        assert any(
+            event.type == "run.cancelled" for event in state.ledger.list_run_events(followup)
+        )
+        assert (await state.runs.queue_state(child_id)).paused
+        assert not state.runs.is_session_active(child_id)
+        assert child_id not in state.runs._worker_handoffs
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_direct_worker_message_holds_automatic_completion(tmp_path: Path) -> None:
+    provider = DelegationProvider(children=1)
+    state, session_id, run_id = await start_parent(tmp_path, provider)
+    try:
+        parent_task = state.runs._tasks[run_id]
+        await asyncio.wait_for(provider.children_entered.wait(), 3)
+        child_run = next(iter(state.runs._children_by_parent[run_id]))
+        child_id = next(
+            key for key, value in state.runs._session_runs.items() if value == child_run
+        )
+        child_task = state.runs._tasks[child_run]
+        await state.runs.control_worker(child_id, "hold")
+        provider.release.set()
+        await asyncio.wait_for(asyncio.shield(child_task), 5)
+        assert not parent_task.done()
+        assert not any(
+            event.type == "delegation.completed" for event in state.ledger.list_events(session_id)
+        )
+        await state.runs.control_worker(child_id, "return")
+        await asyncio.wait_for(asyncio.shield(parent_task), 5)
+        assert any(
+            event.type == "delegation.completed" for event in state.ledger.list_events(session_id)
+        )
+    finally:
+        await state.runs.close()

@@ -317,7 +317,7 @@ async def test_agent_default_model_can_be_set_overridden_and_cleared(tmp_path: P
 async def test_flow_recipe_uses_native_coordinator_and_attached_workers(
     tmp_path: Path, use_plan: bool
 ) -> None:
-    from hames.flows import FlowRecipe, FlowRecipeStore
+    from hames.flows import FlowParticipant, FlowRecipe, FlowRecipeStore
 
     paths = HamesPaths.resolve(root=tmp_path / "home")
     paths.ensure_foundation()
@@ -334,9 +334,7 @@ async def test_flow_recipe_uses_native_coordinator_and_attached_workers(
             ("reviewer", "read_only", "worker"),
         ]:
             delegation = (
-                "  allowed_agents: [builder, reviewer]\n"
-                if identifier == "workflow"
-                else "  allow: false\n"
+                "  allowed_agents: [default]\n" if identifier == "workflow" else "  allow: false\n"
             )
             state.agents.create(
                 source=(
@@ -372,6 +370,10 @@ async def test_flow_recipe_uses_native_coordinator_and_attached_workers(
                 name="Review",
                 coordinator="workflow",
                 instructions="Delegate then independently review.",
+                participants=[
+                    FlowParticipant(agent="builder", instructions="Implement"),
+                    FlowParticipant(agent="reviewer", instructions="Review independently"),
+                ],
             ),
         )
         async with httpx.AsyncClient(
@@ -404,6 +406,28 @@ async def test_flow_recipe_uses_native_coordinator_and_attached_workers(
             assert any(
                 e.type == "assistant.message" and e.payload["content"] == "PASS: checked fixture"
                 for e in events
+            )
+            history = await client.get("/v1/flows/review/runs")
+            assert history.status_code == 200
+            assert history.json()[0]["run_id"] == response.json()["run_id"]
+            detail = await client.get(f"/v1/flows/review/runs/{response.json()['run_id']}")
+            assert detail.status_code == 200
+            assert len(detail.json()["transcripts"]) == 3
+            assert detail.json()["transcripts"][0]["events"][0]["type"] == "user.message"
+            wrong = await client.get(f"/v1/flows/another/runs/{response.json()['run_id']}")
+            assert wrong.status_code == 404
+            await state.runs._append(
+                session_id=session.id,
+                event_type="user.message",
+                payload={"content": "Next flow instruction"},
+            )
+            await state.runs.record_flow_start(session.id, "next-flow-run", "another")
+            old_detail = (
+                await client.get(f"/v1/flows/review/runs/{response.json()['run_id']}")
+            ).json()
+            assert "Next flow instruction" not in str(old_detail)
+            assert flow_events[0].sequence < next(
+                e.sequence for e in events if e.type == "delegation.requested"
             )
             assert state.ledger.get_session(session.id).agent_id == "workflow"
             assert state.ledger.get_session(session.id).model == "stage-model"

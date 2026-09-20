@@ -1,0 +1,24 @@
+import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { afterEach, expect, it, vi } from "vitest";
+import { FlowHistory } from "./FlowHistory";
+const api = vi.hoisted(() => ({ runs: vi.fn(), detail: vi.fn() }));
+vi.mock("../api/client", () => ({ getFlowRuns: api.runs, getFlowRun: api.detail }));
+vi.mock("@solidjs/router", () => ({ A: (props: any) => <a href={props.href}>{props.children}</a> }));
+vi.mock("../agents/AgentDirectory", () => ({ useAgentDirectory: () => ({ ensureLoaded: async () => {}, agents: () => [] }) }));
+vi.mock("../chat/projection", () => ({ projectConversation: (events: unknown[]) => ({ nodes: events }) }));
+vi.mock("../chat/components/ConversationViewport", () => ({ ConversationViewport: (props: any) => <div>{props.nodes[0]?.content}</div> }));
+afterEach(() => { cleanup(); vi.resetAllMocks(); });
+it("does not show the previous run while another history record loads", async () => {
+  api.runs.mockResolvedValue([{ run_id: "one", title: "First task", session_id: "chat", created_at: "2026-09-20", status: "completed" }, { run_id: "two", title: "Second task", session_id: "chat", created_at: "2026-09-20", status: "completed" }]);
+  const result = (text: string) => ({ transcripts: [{ session: { id: "chat", agent_id: "oracle", working_directory: "/tmp" }, events: [{ content: text }] }] });
+  api.detail.mockResolvedValueOnce(result("Old transcript"));
+  let resolve!: (value: unknown) => void;
+  api.detail.mockReturnValueOnce(new Promise(done => { resolve = done; }));
+  render(() => <FlowHistory identifier="research" />);
+  fireEvent.click(await screen.findByRole("button", { name: /First task/ }));
+  expect(await screen.findByText("Old transcript")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: /Second task/ }));
+  await waitFor(() => expect(screen.queryByText("Old transcript")).not.toBeInTheDocument());
+  resolve(result("New transcript"));
+  expect(await screen.findByText("New transcript")).toBeInTheDocument();
+});

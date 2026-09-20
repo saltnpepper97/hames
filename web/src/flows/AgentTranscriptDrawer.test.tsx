@@ -12,7 +12,7 @@ const sessions = [
   { id: "review-child", parent_session_id: "parent", fork_event_id: "review", lineage_kind: "delegation", agent_id: "reviewer" },
 ] as Session[];
 vi.mock("../chat/components/MessageQueue", () => ({ MessageQueue: () => null }));
-vi.mock("../api/client", () => ({ sendMessage: vi.fn().mockResolvedValue({ disposition: "queued" }) }));
+vi.mock("../api/client", () => ({ controlWorker: vi.fn().mockResolvedValue({ accepted: true }), sendMessage: vi.fn().mockResolvedValue({ disposition: "queued" }) }));
 vi.mock("../chat/sessionStream", () => ({ createSessionStream: (id: () => string) => ({ events: () => [{ id: id(), sequence: 1, session_id: id(), run_id: "run", type: "assistant.message", payload: { content: `Transcript of ${id()}`, status: "completed" } }], state: () => "live", liveOutput: () => undefined }) }));
 vi.mock("../chat/components/ConversationViewport", () => ({ ConversationViewport: (props: { nodes: { content?: string }[] }) => <div><For each={props.nodes}>{node => <p>{node.content}</p>}</For></div> }));
 afterEach(cleanup);

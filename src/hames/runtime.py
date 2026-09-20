@@ -499,6 +499,8 @@ class RunManager:
         self._question_runs: dict[str, _PendingQuestion] = {}
         self._question_answering: set[str] = set()
         self._children_by_parent: dict[str, set[str]] = {}
+        self._worker_handoffs: dict[str, asyncio.Future[str]] = {}
+        self._pending_worker_handoffs: set[str] = set()
         self._active_child_count = 0
         self._child_count_by_parent: dict[str, int] = {}
         self._scratch_base = Path("/tmp/hames/runs")
@@ -589,6 +591,7 @@ class RunManager:
         submission_id: str | None = None,
         run_id: str | None = None,
         attachments: list[dict[str, object]] | None = None,
+        flow: tuple[str, list[str] | None] | None = None,
     ) -> str:
         session = await asyncio.to_thread(self.ledger.get_session, session_id)
         if session.status != "open":
@@ -642,6 +645,9 @@ class RunManager:
                 causation_id=user_event.id,
                 correlation_id=state.current.id if state.current else session_id,
             )
+        if flow is not None:
+            run_id = run_id or new_id()
+            await self.record_flow_start(session_id, run_id, flow[0], session.agent_id, flow[1])
         return self._launch(session_id, user_event, run_id=run_id)
 
     async def submit(
@@ -942,16 +948,34 @@ class RunManager:
         await self._publish_store_events((event,))
         return tasks
 
-    async def record_flow_start(self, session_id: str, run_id: str, recipe_id: str) -> None:
+    async def record_flow_start(
+        self,
+        session_id: str,
+        run_id: str,
+        recipe_id: str,
+        coordinator: str = "",
+        participants: list[str] | None = None,
+    ) -> None:
         await self._append(
             session_id=session_id,
             run_id=run_id,
             event_type="flow.started",
-            payload={"recipe_id": recipe_id},
+            payload={
+                "recipe_id": recipe_id,
+                "coordinator": coordinator,
+                "participants": participants,
+            },
             correlation_id=run_id,
         )
 
-    async def start_flow_recipe(self, session_id: str, coordinator_id: str, content: str) -> str:
+    async def start_flow_recipe(
+        self,
+        session_id: str,
+        coordinator_id: str,
+        content: str,
+        *,
+        flow: tuple[str, list[str] | None] | None = None,
+    ) -> str:
         """Select a coordinator and submit an ordinary turn in the existing chat."""
         async with self._submission_lock(session_id):
             session = await asyncio.to_thread(self.ledger.get_session, session_id)
@@ -969,7 +993,11 @@ class RunManager:
                 selection = await resolve_agent_execution(
                     coordinator.metadata.execution, self.providers, self.config
                 )
-            for target in coordinator.metadata.delegation.allowed_agents:
+            for target in (
+                flow[1]
+                if flow and flow[1] is not None
+                else coordinator.metadata.delegation.allowed_agents
+            ):
                 worker = await asyncio.to_thread(self.agents.load, target)
                 if worker.metadata.execution is not None:
                     await resolve_agent_execution(
@@ -997,7 +1025,7 @@ class RunManager:
                 self.ledger.list_events, session_id, after_sequence=after
             ):
                 await self._publish_durable(event)
-            return await self.start(session_id, content)
+            return await self.start(session_id, content, flow=flow)
 
     async def execute_plan(
         self,
@@ -1006,6 +1034,7 @@ class RunManager:
         strategy: Literal["keep", "compact"],
         note: str = "",
         agent_id: str | None = None,
+        flow: tuple[str, list[str] | None] | None = None,
     ) -> tuple[PlanState, SessionTaskList, str]:
         async with self._submission_lock(session_id):
             execution_note = note.strip()
@@ -1060,7 +1089,11 @@ class RunManager:
                         coordinator.metadata.execution, self.providers, self.config
                     )
                 # Fail before approval or settings changes if a configured worker is unavailable.
-                for target in coordinator.metadata.delegation.allowed_agents:
+                for target in (
+                    flow[1]
+                    if flow and flow[1] is not None
+                    else coordinator.metadata.delegation.allowed_agents
+                ):
                     worker = await asyncio.to_thread(self.agents.load, target)
                     if worker.metadata.execution is not None:
                         await resolve_agent_execution(
@@ -1115,6 +1148,10 @@ class RunManager:
                         requested.id,
                         effective_execution_note,
                         execution_agent=agent_id,
+                    )
+                if flow is not None:
+                    await self.record_flow_start(
+                        session_id, run_id, flow[0], session.agent_id, flow[1]
                     )
                 self._launch(session_id, user_event, run_id=run_id)
                 return await self.current_plan(session_id), tasks, run_id
@@ -1951,6 +1988,69 @@ class RunManager:
         if tasks:
             await asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True)
 
+    async def control_worker(self, session_id: str, action: str) -> None:
+        async with self._submission_lock(session_id):
+            await self._control_worker_locked(session_id, action)
+
+    async def _control_worker_locked(self, session_id: str, action: str) -> None:
+        child = await asyncio.to_thread(self.ledger.get_session, session_id)
+        if child.lineage_kind != "delegation":
+            raise ValueError("Only delegated agents have a coordinator handoff")
+        scope = self._delegation_scope(child)
+        parent_run = str(scope["parent_run_id"])
+        parent_task = self._tasks.get(parent_run)
+        if action in {"stop", "hold"}:
+            active = self._session_runs.get(session_id)
+            task = self._tasks.get(active or "")
+            if action == "stop" and (task is None or task.done()):
+                raise ValueError("This agent is no longer running")
+            if (
+                session_id in self._pending_worker_handoffs
+                and parent_task is not None
+                and not parent_task.done()
+                and not parent_task.cancelling()
+                and session_id not in self._worker_handoffs
+            ):
+                self._worker_handoffs[session_id] = asyncio.get_running_loop().create_future()
+            await self._append(
+                session_id=session_id, event_type="delegation.control", payload={"state": "held"}
+            )
+            if action == "stop" and task is not None:
+                await self.pause_queue(session_id)
+                if not task.cancelling():
+                    task.cancel()
+        elif action == "return":
+            if self.is_session_active(session_id) or (await self.queue_state(session_id)).items:
+                raise ValueError("Stop or finish the agent and clear its queue before returning")
+            events = await asyncio.to_thread(self.ledger.list_events, session_id)
+            control = next(
+                (event for event in reversed(events) if event.type == "delegation.control"), None
+            )
+            if control is None or control.payload.get("state") != "held":
+                raise ValueError("This agent is not waiting for handoff")
+            terminal = next(
+                (
+                    event
+                    for event in reversed(events)
+                    if event.type in {"run.completed", "run.failed", "run.cancelled"}
+                ),
+                None,
+            )
+            if terminal is None or terminal.run_id is None:
+                raise ValueError("The agent has no result to return yet")
+            await self._append(
+                session_id=session_id,
+                event_type="delegation.control",
+                payload={"state": "returned"},
+            )
+            waiter = self._worker_handoffs.get(session_id)
+            if waiter is not None and not waiter.done():
+                waiter.set_result(terminal.run_id)
+            else:
+                await self._publish_delegation_followup(session_id, terminal.run_id)
+        else:
+            raise ValueError("Unknown worker control action")
+
     async def cancel(self, run_id: str) -> bool:
         if run_id not in self._session_runs.values():
             return False
@@ -2566,7 +2666,14 @@ class RunManager:
 
     async def _publish_delegation_followup(self, session_id: str, run_id: str) -> None:
         """Return a later child-chat result to its original parent workflow."""
+        if session_id in self._worker_handoffs:
+            return
         child_events = await asyncio.to_thread(self.ledger.list_events, session_id)
+        control = next(
+            (event for event in reversed(child_events) if event.type == "delegation.control"), None
+        )
+        if control is not None and control.payload.get("state") != "returned":
+            return
         card = next((event for event in child_events if event.type == "delegation.task_card"), None)
         if card is None:
             return
@@ -5301,6 +5408,21 @@ class RunManager:
 
     def _delegation_targets(self, session: Session, capsule: AgentCapsule) -> list[str]:
         targets = capsule.metadata.delegation.allowed_agents or [session.agent_id]
+        if session.lineage_kind != "delegation":
+            marker = next(
+                (
+                    event
+                    for event in reversed(self.ledger.list_events(session.id))
+                    if event.type == "flow.started"
+                ),
+                None,
+            )
+            if (
+                marker is not None
+                and marker.payload.get("coordinator") == session.agent_id
+                and marker.payload.get("participants") is not None
+            ):
+                targets = cast(list[str], marker.payload["participants"])
 
         def resolve(target: str) -> str:
             try:
@@ -5547,9 +5669,11 @@ class RunManager:
             correlation_id=child.id,
         )
         admission = asyncio.create_task(self.start(child.id, arguments.task))
+        self._pending_worker_handoffs.add(child.id)
         try:
             child_run_id = await asyncio.shield(admission)
         except asyncio.CancelledError:
+            self._pending_worker_handoffs.discard(child.id)
             child_run_id = await admission
             self._children_by_parent.setdefault(run_id, set()).add(child_run_id)
             await self._cancel_children(run_id)
@@ -5560,7 +5684,13 @@ class RunManager:
         try:
             if child_task is not None:
                 await self._wait_child_terminal(child.id, child_run_id, child_task)
+            handoff = self._worker_handoffs.get(child.id)
+            self._pending_worker_handoffs.discard(child.id)
+            if handoff is not None:
+                child_run_id = await handoff
+                self._worker_handoffs.pop(child.id, None)
         except asyncio.CancelledError:
+            self._pending_worker_handoffs.discard(child.id)
             await self._cancel_children(run_id)
             await self._append(
                 session_id=session.id,
@@ -5687,7 +5817,45 @@ class RunManager:
                     await asyncio.gather(receive, return_exceptions=True)
 
     async def _cancel_children(self, parent_run_id: str) -> None:
-        child_run_ids = tuple(self._children_by_parent.get(parent_run_id, set()))
+        child_run_ids = set(self._children_by_parent.get(parent_run_id, set()))
+        # Stopping a chat stops its current flow's descendants, including followups
+        # whose original parent run has already completed.
+        parent_events = await asyncio.to_thread(self.ledger.list_run_events, parent_run_id)
+        parent_session_id = parent_events[0].session_id if parent_events else None
+        history = (
+            await asyncio.to_thread(self.ledger.list_events, parent_session_id)
+            if parent_session_id
+            else []
+        )
+        boundary = next(
+            (event.sequence for event in reversed(history) if event.type == "flow.started"), 0
+        )
+        requests = {
+            event.id
+            for event in history
+            if event.type == "delegation.requested" and event.sequence >= boundary
+        }
+        for child in await asyncio.to_thread(self.ledger.list_sessions):
+            if (
+                child.lineage_kind != "delegation"
+                or child.parent_session_id != parent_session_id
+                or child.fork_event_id not in requests
+                or child.status != "open"
+            ):
+                continue
+            await self.pause_queue(child.id)
+            if child.id in self._worker_handoffs:
+                waiter = self._worker_handoffs.pop(child.id)
+                if not waiter.done():
+                    waiter.cancel()
+                await self._append(
+                    session_id=child.id,
+                    event_type="delegation.control",
+                    payload={"state": "cancelled"},
+                )
+            active_run = self._session_runs.get(child.id)
+            if active_run is not None:
+                child_run_ids.add(active_run)
         tasks: list[asyncio.Task[None]] = []
         for child_run_id in child_run_ids:
             task = self._tasks.get(child_run_id)

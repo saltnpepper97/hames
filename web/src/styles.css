@@ -10671,3 +10671,21 @@ a {
 }
 .worker-composer textarea:is(:focus, :focus-visible) { outline: 0; box-shadow: none; border: 0; }
 .worker-composer form:is(:focus, :focus-visible, :focus-within) { outline: 0; box-shadow: 0 1px 4px rgb(0 0 0 / 9%); }
+
+.flow-team, .flow-history { margin: 28px 0; padding-top: 20px; border-top: 1px solid var(--rule); }
+.flow-team > p { color: var(--muted); line-height: 1.6; }
+.flow-team-member { margin: 16px 0; padding: 4px 18px 12px; border-radius: 12px; background: var(--surface-soft); }
+.flow-team-member-heading { display: flex; align-items: center; gap: 20px; }
+.flow-team-member-heading > label { flex: 1; min-width: 0; }
+.flow-history-run { display: flex; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--rule); }
+.flow-history-run > button { flex: 1; min-width: 0; text-align: left; background: transparent; border: 0; color: inherit; cursor: pointer; }
+.flow-history-run strong, .flow-history-run small { display: block; overflow-wrap: anywhere; }
+.flow-history-run small { margin-top: 6px; color: var(--muted); }
+.flow-history-detail { height: 640px; max-height: 75vh; display: flex; flex-direction: column; overflow: hidden; margin-top: 20px; border: 1px solid var(--rule); border-radius: 12px; }
+.flow-history-tabs { display: flex; flex-shrink: 0; gap: 8px; padding: 12px; overflow-x: auto; border-bottom: 1px solid var(--rule); }
+.flow-history-tabs > button { border: 0; border-radius: 8px; padding: 8px 12px; color: inherit; background: var(--surface-soft); white-space: nowrap; cursor: pointer; }
+.flow-history-tabs > button[aria-pressed="true"] { background: var(--accent-soft); }
+.flow-history-events { overflow: auto; padding: 16px 32px; font-size: .8rem; }
+.flow-history-events pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.flow-history-runs { max-height: 260px; overflow-y: auto; }

@@ -3,7 +3,8 @@ import { createSignal } from "solid-js";
 import { afterEach, expect, it, vi } from "vitest";
 import { WorkerComposer } from "./WorkerComposer";
 const send = vi.hoisted(() => vi.fn());
-vi.mock("../api/client", () => ({ sendMessage: send }));
+const control = vi.hoisted(() => vi.fn().mockResolvedValue({ accepted: true }));
+vi.mock("../api/client", () => ({ sendMessage: send, controlWorker: control }));
 vi.mock("../shell/icons", () => ({ Icon: () => <span /> }));
 vi.mock("../chat/components/MessageQueue", () => ({ MessageQueue: () => null }));
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
@@ -21,7 +22,7 @@ it("sends to the selected worker without a success badge and preserves a newer d
   fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
   expect(send).not.toHaveBeenCalled();
   fireEvent.keyDown(input, { key: "Enter" });
-  expect(send).toHaveBeenCalledWith("selected-child", "Keep the existing API");
+  await waitFor(() => expect(send).toHaveBeenCalledWith("selected-child", "Keep the existing API"));
   fireEvent.input(input, { target: { value: "Another clarification" } });
   resolve({ disposition: "queued" });
   await waitFor(() => expect(screen.getByRole("button", { name: "Send to Builder" })).not.toBeDisabled());
@@ -39,4 +40,15 @@ it("clears accepted drafts but keeps failed messages for retry", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Send to Builder" }));
   await waitFor(() => expect(input).toHaveValue(""));
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("stops without discarding the draft and exposes explicit handback", async () => {
+  const [active, setActive] = createSignal<string | undefined>("worker-run");
+  render(() => <WorkerComposer sessionId="child" agentName="Builder" revision="1" activeRunId={active()} held draft="Keep this" onDraft={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "Stop Builder" }));
+  await waitFor(() => expect(control).toHaveBeenCalledWith("child", "stop"));
+  expect(screen.getByRole("textbox")).toHaveValue("Keep this");
+  setActive(undefined);
+  fireEvent.click(screen.getByRole("button", { name: "Return to coordinator" }));
+  await waitFor(() => expect(control).toHaveBeenCalledWith("child", "return"));
 });
