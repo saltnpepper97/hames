@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import time
@@ -297,10 +298,12 @@ class CodexProvider:
         latest_usage: Usage | None = None
         try:
             await connection.open()
+            tool_aliases = _codex_tool_aliases([tool.name for tool in request.tools])
+            original_names = {alias: name for name, alias in tool_aliases.items()}
             dynamic_tools = [
                 {
                     "type": "function",
-                    "name": "hames_spawn_agent" if tool.name == "spawn_agent" else tool.name,
+                    "name": tool_aliases[tool.name],
                     "description": tool.description,
                     "inputSchema": tool.input_schema,
                 }
@@ -381,8 +384,7 @@ class CodexProvider:
                         )
                     call_id = str(params.get("callId", ""))
                     tool_name = str(params.get("tool", ""))
-                    if tool_name == "hames_spawn_agent":
-                        tool_name = "spawn_agent"
+                    tool_name = original_names.get(tool_name, tool_name)
                     arguments = params.get("arguments", {})
                     if not call_id or not tool_name or not isinstance(arguments, dict):
                         raise ProviderError(
@@ -529,14 +531,39 @@ def _codex_isolation_config() -> dict[str, JsonValue]:
     }
 
 
+def _codex_tool_aliases(names: Sequence[str]) -> dict[str, str]:
+    """Keep harness identities intact while avoiding Codex-reserved tool names."""
+    occupied = set(names)
+    aliases: dict[str, str] = {}
+    for name in sorted(occupied):
+        if name != "spawn_agent" and not name.startswith("mcp__"):
+            aliases[name] = name
+            continue
+        preferred = f"hames_{name}"
+        alias = preferred
+        attempt = 0
+        while len(alias) > 64 or alias in occupied:
+            digest = hashlib.sha256(f"{name}:{attempt}".encode()).hexdigest()[:12]
+            alias = f"{preferred[:51]}_{digest}"
+            attempt += 1
+        aliases[name] = alias
+        occupied.add(alias)
+    return aliases
+
+
 def _codex_instructions(request: ModelRequest) -> str:
     workspace = _request_workspace(request)
     mode = request.metadata.get("interaction_mode")
     rendered_mode = mode if isinstance(mode, str) and mode else "auto"
+    delegation_alias = _codex_tool_aliases([tool.name for tool in request.tools]).get(
+        "spawn_agent", "hames_spawn_agent"
+    )
     return (
         "You are the model provider inside Hames. Hames owns the conversation, permissions, "
         "tools, and every side effect. Never use Codex native shell, file, web, or delegation "
-        "tools. Use only the dynamic tools supplied by Hames. Do not load or mention Codex "
+        "tools. Hames-managed MCP tools use provider-safe aliases beginning with hames_mcp__. "
+        "Use the exact names in the supplied tool definitions, including any suffix. "
+        "Use only the dynamic tools supplied by Hames. Do not load or mention Codex "
         "memories, Skills, sessions, project rules, or configuration. The Hames workspace is "
         f"{workspace!r} and the interaction mode is {rendered_mode!r}. Hames dynamic tools may "
         "access the project, disposable scratch, and user-requested paths below their home, "
@@ -547,9 +574,9 @@ def _codex_instructions(request: ModelRequest) -> str:
         "multi-agent mode. When Hames supplies spawn_agent, delegation to its permitted targets "
         "is already authorized within the user's task; do not ask for separate permission "
         "merely to delegate. Native Codex delegation being disabled does not disable this "
-        "Hames tool. Hames exposes delegation here as hames_spawn_agent to avoid a collision "
+        f"Hames tool. Hames exposes delegation here as {delegation_alias} to avoid a collision "
         "with Codex native spawn_agent. Whenever Hames instructions refer to spawn_agent, "
-        "call hames_spawn_agent, never the native collaboration tool. Its returned JSON "
+        f"call {delegation_alias}, never the native collaboration tool. Its returned JSON "
         "content field contains the worker report; read it before deciding a report is missing."
     )
 

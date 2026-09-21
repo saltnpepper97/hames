@@ -16,6 +16,10 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Fixed
 
+- Codex receives safe aliases for Hames MCP tools instead of its reserved `mcp__`
+  names. Calls map back to their original tool identities, with collision handling
+  and length limits applied at the provider boundary.
+
 - Agent identity is independent of names: newly created agents receive opaque UUID
   IDs, while Web/TUI editors require no slug. Name lookups, dispatcher reports, and
   client labels use current registry names; existing IDs and aliases remain valid.

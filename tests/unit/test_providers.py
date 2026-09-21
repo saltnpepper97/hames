@@ -960,6 +960,7 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
                         continue
                     tool_names = [tool["name"] for tool in params["dynamicTools"]]
                     assert "spawn_agent" not in tool_names
+                    assert not any(name.startswith("mcp__") for name in tool_names)
                     config = params.get("config", {})
                     features = config.get("features", {})
                     memories = config.get("memories", {})
@@ -1004,6 +1005,9 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
                         emit_tool(900, "call-worker", "hames_spawn_agent",
                                   {"agent_id": "planner", "task": "Plan"})
                         pending.append("report")
+                    elif "USE MCP" in prompt:
+                        emit_tool(900, "call-mcp", "hames_mcp__playwright__browser_close", {})
+                        pending.append("complete")
                     elif "USE TWO TOOLS" in prompt:
                         emit_tool(900, "call-1", "read_file", {"path": "a.py"})
                         pending.extend(["tool2", "complete"])
@@ -1332,3 +1336,57 @@ async def test_codex_hames_delegation_alias_delivers_full_report(tmp_path: Path)
     assert "FULL PLANNER REPORT" in "".join(event.text for event in events)
     calls = [event.tool_call for event in events if event.tool_call is not None]
     assert calls[0].name == "spawn_agent"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("inline", [True, False])
+async def test_codex_mcp_alias_routes_back_to_original_tool(tmp_path: Path, inline: bool) -> None:
+    from hames.tools import ToolResult
+
+    calls: list[str] = []
+
+    async def handle(name: str, arguments: dict[str, JsonValue], call_id: str) -> ToolResult:
+        calls.append(name)
+        assert arguments == {}
+        assert call_id == "call-mcp"
+        return ToolResult(status="completed", summary="closed")
+
+    provider = CodexProvider(command=(sys.executable, str(_fake_codex_app_server(tmp_path))))
+    request = ModelRequest(
+        model="fixture",
+        system="contract",
+        messages=[ProviderMessage(role="user", content="USE MCP")],
+        tools=[
+            ToolDefinition(
+                name="mcp__playwright__browser_close",
+                description="Close browser",
+                input_schema={"type": "object", "properties": {}},
+            )
+        ],
+        tool_handler=handle if inline else None,
+    )
+    events = [event async for event in provider.stream(request)]
+    assert [event.tool_call.name for event in events if event.tool_call] == [
+        "mcp__playwright__browser_close"
+    ]
+    assert calls == (["mcp__playwright__browser_close"] if inline else [])
+
+
+def test_codex_tool_aliases_are_bounded_unique_and_order_independent() -> None:
+    from hames.providers.codex import _codex_tool_aliases  # pyright: ignore[reportPrivateUsage]
+
+    names = [
+        "mcp__" + "x" * 59,
+        "mcp__server__read",
+        "hames_mcp__server__read",
+        "spawn_agent",
+        "hames_spawn_agent",
+        "read_file",
+    ]
+    aliases = _codex_tool_aliases(names)
+    assert aliases == _codex_tool_aliases(list(reversed(names)))
+    assert len(set(aliases.values())) == len(names)
+    assert all(len(alias) <= 64 and not alias.startswith("mcp__") for alias in aliases.values())
+    assert aliases["read_file"] == "read_file"
+    assert aliases["hames_spawn_agent"] == "hames_spawn_agent"
+    assert aliases["hames_mcp__server__read"] == "hames_mcp__server__read"
