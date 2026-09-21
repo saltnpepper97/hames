@@ -95,3 +95,27 @@ async def test_billing_denial_does_not_expose_response(tmp_path: Path):
         with pytest.raises(ProviderError, match="Grok account usage is unavailable"):
             await provider.account_rate_limits()
         assert provider.cached_account_rate_limits() is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_failure_preserves_last_known_window():
+    class Intermittent(GrokProvider):
+        async def account_rate_limits(self):
+            raise TimeoutError()
+
+    provider = Intermittent()
+    provider._account_usage = _normalize_account_usage(
+        {
+            "config": {
+                "creditUsagePercent": 0,
+                "currentPeriod": {"type": "WEEKLY", "end": "2026-09-27T21:09:43Z"},
+            }
+        }
+    )
+    try:
+        usage = UsageProjection()
+        await _attach_grok_account_usage(usage, provider)
+        assert usage.grok_account_usage == provider.cached_account_rate_limits()
+        assert "last known" in usage.grok_account_usage_error
+    finally:
+        await provider.client.aclose()

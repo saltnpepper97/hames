@@ -674,7 +674,12 @@ async def _attach_grok_account_usage(usage: UsageProjection, provider: Provider 
         usage.grok_account_usage = await asyncio.wait_for(reader(), timeout=5.0)
     except Exception:
         # Never expose upstream billing payloads or block locally recorded totals.
-        usage.grok_account_usage_error = "Grok account usage is unavailable. Try refreshing."
+        usage.grok_account_usage = getattr(provider, "cached_account_rate_limits", lambda: None)()
+        usage.grok_account_usage_error = (
+            "Showing last known Grok usage; refresh failed."
+            if usage.grok_account_usage is not None
+            else "Grok account usage is unavailable. Try refreshing."
+        )
 
 
 @dataclass(slots=True)
@@ -2633,6 +2638,8 @@ def create_app(state: GatewayState) -> FastAPI:
             )
             provider = state.providers.get(session.provider)
             await _attach_codex_account_usage(usage, provider)
+            grok = next((p for p in state.providers.values() if p.adapter == "grok"), None)
+            await _attach_grok_account_usage(usage, grok)
             return usage
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc

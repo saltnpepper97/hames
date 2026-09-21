@@ -199,9 +199,9 @@ export function UsageDashboard() {
   const [updatedAt, setUpdatedAt] = createSignal<Date>();
   let requestId = 0;
 
-  const load = async () => {
+  const load = async (background = false) => {
     const currentRequest = ++requestId;
-    setLoading(true);
+    if (!background) setLoading(true);
     setError("");
     try {
       const next = await getPooledUsage();
@@ -218,7 +218,14 @@ export function UsageDashboard() {
   };
 
   createEffect(() => { void load(); });
-  onCleanup(() => { requestId += 1; });
+  const refresh = () => { void load(true); };
+  const timer = window.setInterval(refresh, 60_000);
+  window.addEventListener("focus", refresh);
+  onCleanup(() => {
+    requestId += 1;
+    window.clearInterval(timer);
+    window.removeEventListener("focus", refresh);
+  });
 
   const account = () => usage()?.account_rate_limits;
   const accountWindows = createMemo(() => {
@@ -294,7 +301,12 @@ export function UsageDashboard() {
                     <Show when={currentUsage().grok_account_usage} fallback={
                       <p>{currentUsage().grok_account_usage_error || "Grok did not provide account limits."}</p>
                     }>
-                      {(account) => <div class="usage-limits"><AccountWindow label={account().label} window={account().window} /></div>}
+                      {(account) => <>
+                        <div class="usage-limits"><AccountWindow label={account().label} window={account().window} /></div>
+                        <Show when={currentUsage().grok_account_usage_error}>
+                          <p>{currentUsage().grok_account_usage_error}</p>
+                        </Show>
+                      </>}
                     </Show>
                   </section>
                 </Show>

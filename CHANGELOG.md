@@ -16,6 +16,11 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Fixed
 
+- Grok usage survives transient refresh failures with an explicit last-known-data
+  notice. Web usage refreshes every minute and on window focus so new reset windows
+  appear without reopening the page. TUI usage now includes Grok percentages and
+  reset countdowns, including zero usage after a reset.
+
 - Auto mode no longer asks for recursive cleanup of explicit project/scratch
   subpaths. Broad deletions and uncertain targets still require confirmation;
   Manual and Plan restrictions remain unchanged.

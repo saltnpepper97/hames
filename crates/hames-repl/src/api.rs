@@ -582,6 +582,12 @@ pub struct UsageProjection {
     pub account_rate_limits: Option<Value>,
     #[serde(default)]
     pub account_rate_limits_error: String,
+    #[serde(default)]
+    pub grok_account_usage: Option<Value>,
+    #[serde(default)]
+    pub grok_account_usage_error: String,
+    #[serde(default)]
+    pub grok_account_configured: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -4624,7 +4624,7 @@ async def test_destructive_shell_waits_for_exact_one_shot_denial(tmp_path: Path)
                         index=0,
                         provider_call_id="danger-1",
                         name="shell",
-                        arguments_delta='{"command":"rm -rf target"}',
+                        arguments_delta='{"command":"rm -rf ../target"}',
                     ),
                 ),
                 StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),

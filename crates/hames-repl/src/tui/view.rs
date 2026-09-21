@@ -5021,15 +5021,19 @@ fn context_gauge(used: u64, window: u64, cells: usize) -> Line<'static> {
 fn rate_limit_line(label: &str, window: &serde_json::Value, cells: usize) -> Line<'static> {
     let used = window
         .get("used")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0)
-        .min(100);
-    let filled = usize::try_from((used * u64::try_from(cells).unwrap_or(0) + 50) / 100)
-        .unwrap_or(0)
-        .min(cells);
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0)
+        .clamp(0.0, 100.0);
+    let filled = ((used * cells as f64 / 100.0).round() as usize).min(cells);
     let reset = window
         .get("reset_at")
-        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| {
+            value.as_u64().or_else(|| {
+                DateTime::parse_from_rfc3339(value.as_str()?)
+                    .ok()
+                    .and_then(|date| u64::try_from(date.timestamp()).ok())
+            })
+        })
         .map(|reset_at| format!(" · {}", reset_label(reset_at)))
         .unwrap_or_default();
     Line::from(vec![
@@ -5040,7 +5044,7 @@ fn rate_limit_line(label: &str, window: &serde_json::Value, cells: usize) -> Lin
             Style::default().fg(RULE_LIGHT),
         ),
         Span::styled(
-            format!("  {used:>3}% used{reset}"),
+            format!("  {used:>3.0}% used{reset}"),
             Style::default().fg(INPUT_LIGHT),
         ),
     ])
@@ -5163,6 +5167,29 @@ fn usage_body(modal: &UsageModal, wide: bool) -> Vec<Line<'static>> {
         )));
     }
     lines.push(Line::from(""));
+    if usage.grok_account_configured {
+        lines.push(usage_section("Grok usage"));
+        if let Some(account) = &usage.grok_account_usage {
+            if let Some(window) = account.get("window") {
+                let label = account
+                    .get("label")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Usage");
+                lines.push(rate_limit_line(
+                    label.trim_end_matches(" limit"),
+                    window,
+                    if wide { 28 } else { 12 },
+                ));
+            }
+        }
+        if !usage.grok_account_usage_error.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", usage.grok_account_usage_error),
+                Style::default().fg(GOLD),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
     lines.push(usage_section("Session totals"));
 
     let mut metrics = vec![
@@ -5265,6 +5292,9 @@ mod tests {
                 "weekly_window": {"used": 60, "remaining": 40, "reset_at": null, "window_minutes": 10080}
             })),
             account_rate_limits_error: String::new(),
+            grok_account_usage: None,
+            grok_account_usage_error: String::new(),
+            grok_account_configured: false,
         }
     }
 
@@ -7436,6 +7466,30 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(offline.contains("[offline]"));
+    }
+
+    #[test]
+    fn usage_view_shows_grok_zero_usage_and_iso_reset_after_rollover() {
+        let mut usage = usage_projection();
+        usage.grok_account_configured = true;
+        usage.grok_account_usage = Some(json!({
+            "label": "Weekly limit",
+            "window": {"used": 0.0, "reset_at": "2099-09-27T21:09:43.145233+00:00"}
+        }));
+        usage.grok_account_usage_error =
+            "Showing last known Grok usage; refresh failed.".to_owned();
+        let lines = usage_body(&UsageModal { usage }, true);
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("GROK USAGE"));
+        assert!(text.contains("0% used"));
+        assert!(text.contains("resets in"));
+        assert!(text.contains("last known Grok usage"));
+        let fractional = line_text(&super::rate_limit_line(
+            "Weekly",
+            &json!({"used": 88.5}),
+            18,
+        ));
+        assert!(fractional.contains("88% used") || fractional.contains("89% used"));
     }
 
     #[test]
