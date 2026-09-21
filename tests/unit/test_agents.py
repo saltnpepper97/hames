@@ -281,13 +281,15 @@ def test_rename_updates_slug_and_resolves_it_without_changing_identity(
     original = registry.create("Builder")
     renamed = registry.update(original.metadata.id, name="Careful Reviewer")
     assert renamed.metadata.id == original.metadata.id
-    assert renamed.path.parent.name == "careful-reviewer"
-    assert not original.path.exists()
+    assert renamed.path == original.path
+    assert original.path.exists()
     assert renamed.metadata.slug == "careful-reviewer"
     assert registry.load("careful-reviewer").metadata.id == original.metadata.id
     assert registry.load("builder").metadata.name == "Careful Reviewer"
     again = registry.update("careful-reviewer", name="Final Reviewer")
     assert again.metadata.slug == "final-reviewer"
+    assert registry.load("careful-reviewer").metadata.id == "builder"
+    assert registry.create("Careful Reviewer").metadata.id != "careful-reviewer"
     assert registry.load("final-reviewer").metadata.id == "builder"
     assert (
         next(agent for agent in registry.list() if agent.id == "builder").slug == "final-reviewer"
@@ -305,3 +307,29 @@ def test_rename_slugs_do_not_steal_other_agent_ids_or_slugs(hames_paths: HamesPa
     assert second.metadata.id != first.metadata.slug
     assert registry.load("reviewer").metadata.id == b.metadata.id
     assert registry.load("reviewer-2").metadata.id == a.metadata.id
+
+
+def test_delegation_references_are_saved_as_stable_ids(hames_paths: HamesPaths) -> None:
+    hames_paths.ensure_foundation()
+    registry = AgentRegistry(hames_paths.agents)
+    registry.create(source="---\nid: worker-id\nname: Builder\n---\nWork.\n")
+    registry.update("worker-id", name="Edward")
+    coordinator = registry.create(
+        source=(
+            "---\nid: coordinator\nname: Coordinator\ndelegation:\n"
+            "  allowed_agents: [edward]\n---\nDelegate.\n"
+        )
+    )
+    assert coordinator.metadata.delegation.allowed_agents == ["worker-id"]
+    source = coordinator.path.read_text().replace("worker-id", "edward")
+    updated = registry.update("coordinator", source=source)
+    assert updated.metadata.delegation.allowed_agents == ["worker-id"]
+    renamed = registry.update("worker-id", name="New Name")
+    # Replacing source cannot erase aliases that an in-flight request may still use.
+    registry.update(
+        "worker-id", source=("---\nid: worker-id\nname: New Name\nslug: new-name\n---\nWork.\n")
+    )
+    assert registry.load("edward").metadata.id == "worker-id"
+    assert renamed.path == registry.load("worker-id").path
+    with pytest.raises(ValueError, match="alias"):
+        registry.create(source="---\nid: impostor\nname: Impostor\naliases: [edward]\n---\nWork.")

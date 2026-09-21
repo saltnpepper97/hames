@@ -3284,7 +3284,7 @@ class RunManager:
                 "user to enable local editing; dispatch the appropriate worker."
             )
         if "spawn_agent" in allowed_tools:
-            targets = self._delegation_target_slugs(session, capsule)
+            targets = self._delegation_target_labels(session, capsule)
             policy_summary += (
                 " You can spawn subagents autonomously whenever useful; no user request to "
                 "delegate is needed. Consider parallel delegation for broad reviews, many files, "
@@ -5245,7 +5245,7 @@ class RunManager:
             else [target for target in targets if target in {resolve(value) for value in inherited}]
         )
 
-    def _delegation_target_slugs(self, session: Session, capsule: AgentCapsule) -> list[str]:
+    def _delegation_target_labels(self, session: Session, capsule: AgentCapsule) -> list[str]:
         slugs: list[str] = []
         for target in self._delegation_targets(session, capsule):
             try:
@@ -5253,7 +5253,7 @@ class RunManager:
             except (FileNotFoundError, ValueError):
                 slugs.append(target)
             else:
-                slugs.append(metadata.slug or metadata.id)
+                slugs.append(f"{metadata.name} (agent_id={metadata.id})")
         return slugs
 
     def _skill_permitted(self, session: Session, capsule: AgentCapsule, slug: str) -> bool:
@@ -5583,7 +5583,8 @@ class RunManager:
             structured_data={
                 "child_session_id": child.id,
                 "child_run_id": child_run_id,
-                "agent_id": target.metadata.slug or target.metadata.id,
+                "agent_id": target.metadata.id,
+                "agent_name": target.metadata.name,
                 "requested_result_format": arguments.requested_result_format,
                 "cancelled": cancelled,
                 "workflow_id": workflow_id if arguments.stage_id else "",

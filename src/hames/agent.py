@@ -13,7 +13,15 @@ from pathlib import Path
 from typing import Literal, Protocol, cast
 
 import yaml
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 
 AGENT_ID = re.compile(r"[a-z][a-z0-9-]{0,62}")
 _NON_SLUG = re.compile(r"[^a-z0-9]+")
@@ -164,6 +172,7 @@ class AgentMetadata(BaseModel):
 
     id: str
     slug: str = ""
+    aliases: list[str] = Field(default_factory=list)
     name: str = Field(min_length=1, max_length=80)
     tools: AgentTools = Field(default_factory=AgentTools)
     skills: AgentSkills = Field(default_factory=AgentSkills)
@@ -184,6 +193,13 @@ class AgentMetadata(BaseModel):
         if value:
             _validate_id(value)
         return value
+
+    @field_validator("aliases")
+    @classmethod
+    def valid_aliases(cls, values: list[str]) -> list[str]:
+        for value in values:
+            _validate_id(value)
+        return list(dict.fromkeys(values))
 
     @field_validator("id")
     @classmethod
@@ -214,6 +230,7 @@ class AgentSummary:
     content_hash: str
     avatar: AgentAvatar | None
     slug: str = ""
+    aliases: tuple[str, ...] = ()
 
 
 class AgentRegistry:
@@ -232,11 +249,15 @@ class AgentRegistry:
                 if candidate.parent.name.startswith("."):
                     continue
                 metadata = load_agent(candidate).metadata
-                if agent_id in {metadata.slug, metadata.id}:
+                if agent_id in {metadata.slug, metadata.id, *metadata.aliases}:
                     path = candidate
                     break
         capsule = load_agent(path)
-        if path.parent.name not in {capsule.metadata.id, capsule.metadata.slug}:
+        if path.parent.name not in {
+            capsule.metadata.id,
+            capsule.metadata.slug,
+            *capsule.metadata.aliases,
+        }:
             raise ValueError(f"{capsule.path}: frontmatter id or slug does not match its directory")
         return capsule
 
@@ -260,6 +281,7 @@ class AgentRegistry:
                     path=path,
                     content_hash=capsule.content_hash,
                     avatar=capsule.metadata.avatar,
+                    aliases=tuple(capsule.metadata.aliases),
                 )
             )
         return values
@@ -293,6 +315,7 @@ class AgentRegistry:
         delegation = DelegationPolicy()
         avatar = None
         execution = None
+        aliases: list[str] = []
         if source is not None:
             metadata_raw, body = _split_agent_markdown(source)
             if "id" in metadata_raw and metadata_raw["id"] is not None:
@@ -304,6 +327,9 @@ class AgentRegistry:
             tools = AgentTools.model_validate(metadata_raw.get("tools") or {})
             skills = AgentSkills.model_validate(metadata_raw.get("skills") or {})
             delegation = DelegationPolicy.model_validate(metadata_raw.get("delegation") or {})
+            aliases = AgentMetadata.valid_aliases(
+                TypeAdapter(list[str]).validate_python(metadata_raw.get("aliases") or [])
+            )
             if metadata_raw.get("avatar") is not None:
                 avatar = AgentAvatar.model_validate(metadata_raw["avatar"])
             selection = metadata_raw.get("default_model", metadata_raw.get("execution"))
@@ -312,6 +338,7 @@ class AgentRegistry:
             extra = set(metadata_raw) - {
                 "id",
                 "slug",
+                "aliases",
                 "name",
                 "authority",
                 "tools",
@@ -332,9 +359,17 @@ class AgentRegistry:
             name=name or source_name,
             agent_id=source_id,
             taken=self.taken_ids()
-            | {value for agent in self.list() for value in (agent.id, agent.slug) if value},
+            | {
+                value
+                for agent in self.list()
+                for value in (agent.id, agent.slug, *agent.aliases)
+                if value
+            },
         )
         path = self.path_for(agent_id)
+        taken = {value for agent in self.list() for value in (agent.id, agent.slug, *agent.aliases)}
+        if taken.intersection(aliases):
+            raise ValueError("agent alias is already in use")
         if path.exists():
             raise FileExistsError(path)
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -345,6 +380,9 @@ class AgentRegistry:
             "name": display,
             "authority": chosen_authority,
         }
+        if aliases:
+            payload["aliases"] = aliases
+        delegation = self._canonical_delegation(delegation)
         if tools.allow or tools.deny:
             payload["tools"] = tools.model_dump(mode="json", exclude_defaults=True)
         if skills.allow or skills.deny or skills.pin:
@@ -439,7 +477,7 @@ class AgentRegistry:
                 value
                 for agent in self.list()
                 if agent.id != agent_id
-                for value in (agent.id, agent.slug or agent.id)
+                for value in (agent.id, agent.slug or agent.id, *agent.aliases)
             }
             slug, _ = allocate_agent_identity(
                 name=candidate.metadata.name, agent_id=None, taken=taken
@@ -450,19 +488,43 @@ class AgentRegistry:
             candidate = _load_agent_source(raw, current.path)
         if candidate.metadata.id != agent_id:
             raise ValueError("agent ID cannot be changed")
-        if candidate.metadata.slug:
-            for agent in self.list():
-                if agent.id != agent_id and candidate.metadata.slug in {agent.id, agent.slug}:
-                    raise ValueError("agent slug is already in use")
-        destination = self.root / (
-            "default" if agent_id == "default" else candidate.metadata.slug or agent_id
+        aliases = list(
+            dict.fromkeys(
+                [
+                    *current.metadata.aliases,
+                    *candidate.metadata.aliases,
+                    current.metadata.slug or agent_id,
+                    current.path.parent.name,
+                ]
+            )
         )
-        if destination != current.path.parent and destination.exists():
-            raise ValueError("agent folder is already in use")
+        aliases = [alias for alias in aliases if alias not in {agent_id, candidate.metadata.slug}]
+        for agent in self.list():
+            if agent.id != agent_id and {candidate.metadata.slug, *aliases}.intersection(
+                {agent.id, agent.slug, *agent.aliases}
+            ):
+                raise ValueError("agent slug or alias is already in use")
+        metadata_raw, body = _split_agent_markdown(raw)
+        if aliases:
+            metadata_raw["aliases"] = aliases
+        policy = self._canonical_delegation(candidate.metadata.delegation)
+        if "delegation" in metadata_raw:
+            metadata_raw["delegation"] = policy.model_dump(mode="json", exclude_defaults=True)
+        raw = f"---\n{yaml.safe_dump(metadata_raw, sort_keys=False)}---\n{body}\n"
+        _load_agent_source(raw, current.path)
         _atomic_replace(current.path, raw)
-        if destination != current.path.parent:
-            current.path.parent.rename(destination)
         return self.load(agent_id)
+
+    def _canonical_delegation(self, policy: DelegationPolicy) -> DelegationPolicy:
+        targets: list[str] = []
+        for target in policy.allowed_agents:
+            try:
+                target = self.load(target).metadata.id
+            except FileNotFoundError:
+                pass  # Allow definitions that refer to agents created later.
+            if target not in targets:
+                targets.append(target)
+        return policy.model_copy(update={"allowed_agents": targets})
 
 
 def load_agent(path: Path) -> AgentCapsule:

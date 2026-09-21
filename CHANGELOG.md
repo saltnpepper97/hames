@@ -16,6 +16,10 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Fixed
 
+- Renaming an agent preserves its definition path and historical lookup aliases.
+  Delegation references and worker results use immutable IDs, with current names
+  included for readability, so in-flight handoffs survive renames.
+
 - Worker chats appear in the Web sidebar again, with named transcripts linked from
   delegation activity as soon as the worker session is created.
 - Long question choices wrap inside their cards instead of overflowing.

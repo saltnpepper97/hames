@@ -109,6 +109,9 @@ async def start_parent(
                     and (event.tool_call.provider_call_id or "").startswith("child-")
                 ):
                     arguments = json.loads(event.tool_call.arguments_delta)
+                    if renamed:
+                        # Rename while the parent is streaming with the old target in context.
+                        state.agents.update("worker", name="Edward")
                     arguments["agent_id"] = "builder" if renamed else "worker"
                     event = event.model_copy(
                         update={
@@ -570,21 +573,21 @@ async def test_renamed_worker_slug_runs_with_stable_id(tmp_path: Path) -> None:
         requested = next(e for e in events if e.type == "delegation.requested")
         assert requested.payload["target_agent_id"] == "worker"
         assert any(e.type == "delegation.completed" for e in events)
-        assert state.agents.load("worker").path.parent.name == "builder"
+        assert state.agents.load("worker").path.parent.name == "worker"
         parent_requests = [
             request
             for request in provider.requests
             if next(message.content for message in request.messages if message.role == "user")
             == "Review these files"
         ]
-        assert "permitted targets: builder." in parent_requests[0].system
+        assert "permitted targets: Builder (agent_id=worker)." in parent_requests[0].system
         assert "permitted targets: worker." not in parent_requests[0].system
         tool_result = next(
             message
             for message in parent_requests[-1].messages
             if message.role == "tool" and message.tool_name == "spawn_agent"
         )
-        assert json.loads(tool_result.content)["structured_data"]["agent_id"] == "builder"
+        assert json.loads(tool_result.content)["structured_data"]["agent_id"] == "worker"
     finally:
         provider.release.set()
         await state.runs.close()
