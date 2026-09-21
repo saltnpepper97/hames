@@ -16,6 +16,20 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Fixed
 
+- Auto mode no longer asks for recursive cleanup of explicit project/scratch
+  subpaths. Broad deletions and uncertain targets still require confirmation;
+  Manual and Plan restrictions remain unchanged.
+
+- Current agent identity and delegation availability are explicit in model context,
+  preventing previous assistant workflow reports from defining a newly selected agent's role.
+  Delegation rejections explain how to continue authorized work directly.
+- Sidebar chat title scrolling stops when the pointer leaves. Clicking a chat no
+  longer keeps hover actions visible; keyboard navigation still exposes the controls.
+
+- Agent/provider switching and plan execution can replay chats with interrupted tool
+  calls from ended runs. Missing results are explicitly marked unavailable in model
+  context, preserving recorded results and the original transcript.
+
 - Switching a chat's agent applies its default provider, model, reasoning effort,
   and context window even after the conversation has started. Agents without defaults
   preserve the chat's current model selection.

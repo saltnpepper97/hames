@@ -1929,13 +1929,13 @@ a {
 }
 
 .conversation-item-row:hover .conversation-action,
-.conversation-item-row:focus-within .conversation-action,
+.conversation-item-row:has(:focus-visible) .conversation-action,
 .conversation-action.pending {
   opacity: 1;
 }
 
 .conversation-item-row:hover .conversation-item,
-.conversation-item-row:focus-within .conversation-item {
+.conversation-item-row:has(:focus-visible) .conversation-item {
   padding-right: 4.15rem;
 }
 
@@ -1978,13 +1978,11 @@ a {
   white-space: nowrap;
 }
 
-.conversation-item-row:hover .conversation-title[data-overflow],
-.conversation-item-row:focus-within .conversation-title[data-overflow] {
+.conversation-item-row:hover .conversation-title[data-overflow] {
   text-overflow: clip;
 }
 
-.conversation-item-row:hover .conversation-title[data-overflow] .conversation-title-text,
-.conversation-item-row:focus-within .conversation-title[data-overflow] .conversation-title-text {
+.conversation-item-row:hover .conversation-title[data-overflow] .conversation-title-text {
   animation: conversation-title-pan var(--conversation-title-duration) ease-in-out 450ms infinite;
 }
 

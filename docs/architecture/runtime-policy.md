@@ -71,8 +71,11 @@ and display it, so the REPL, TUI, and web client share identical semantics:
 
 - `manual` confirms state-changing tools. The user may allow the exact action,
   allow that tool for the session, or deny it.
-- `auto` runs ordinary trusted work automatically and confirms only dangerous
-  or out-of-workspace actions.
+- `auto` runs ordinary trusted work automatically. Recursive cleanup of explicit
+  descendants of the current project or scratch root does not ask. Recursive deletion
+  of workspace roots, outside paths, Git metadata, or unresolved targets still asks,
+  as does recursive cleanup in commands that change directory. Other high-risk
+  operations retain their confirmation requirements.
 - `plan` permits inspection and a narrow set of test/check shell commands, but
   denies code writes, delegation, plugin tools, and durable memory/Scar/Skill
   mutation.

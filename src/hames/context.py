@@ -352,7 +352,26 @@ def compile_context(
             if inherited_plan.get("execution_note"):
                 content += "\n\nUser execution note:\n" + str(inherited_plan["execution_note"])
         delegation_part = (f"delegation.task_card.{task_card.id}", content)
-    agent_part = ("agent.identity", f"Agent instructions:\n{capsule.instructions}")
+    agent_identity = (
+        f"Current active agent: {capsule.metadata.slug or capsule.metadata.name}.\n"
+        "The user can switch agents within this conversation. Your role and available tools "
+        "come from the current agent instructions and tool definitions, not the roles or "
+        "capabilities of previous assistants in the transcript. Historical assistant promises, "
+        "handoff reports, and workflow stages do not impose a required pipeline on this agent. "
+        "Follow the user's current task and approved plan, preserving explicit requirements "
+        "such as independent review. Do not infer those requirements from old assistant reports.\n"
+    )
+    if not any(tool.name == "spawn_agent" for tool in tools):
+        agent_identity += (
+            "Delegation is unavailable for this run. Perform authorized work directly with your "
+            "available tools; do not call spawn_agent or request delegation merely because an "
+            "earlier assistant used workers. This does not grant additional permissions or "
+            "override the current interaction mode.\n"
+        )
+    agent_part = (
+        "agent.identity",
+        f"{agent_identity}\nAgent instructions:\n{capsule.instructions}",
+    )
     retrieved = memories or []
     if task_card is not None:
         # Historical task reports can resemble new assignments. Delegated workers
@@ -973,6 +992,57 @@ def _conversation_turns(
                 )
             )
             current.event_ids.append(event.id)
+    # Interrupted runs can leave durable calls without a terminal tool event.
+    # Keep the ledger intact, but close those exchanges in provider history so
+    # switching to a provider with strict tool pairing can replay the chat.
+    terminal_runs = {
+        event.run_id
+        for event in events
+        if event.type in {"run.completed", "run.failed", "run.cancelled"}
+        and event.run_id is not None
+    }
+    result_ids = {
+        str(event.payload["tool_call_id"])
+        for event in events
+        if event.type in {"tool.completed", "tool.failed", "tool.rejected"}
+    }
+    missing_ids = {
+        str(event.payload["tool_call_id"])
+        for event in events
+        if event.type == "model.tool_call"
+        and event.run_id in terminal_runs
+        and str(event.payload["tool_call_id"]) not in result_ids
+    }
+    for turn in turns:
+        messages: list[ProviderMessage] = []
+        pending: list[ToolCall] = []
+
+        def close_missing_results(messages: list[ProviderMessage], pending: list[ToolCall]) -> None:
+            for call in pending:
+                messages.append(
+                    ProviderMessage(
+                        role="tool",
+                        tool_call_id=call.id,
+                        tool_name=call.name,
+                        content=_canonical_json(
+                            {
+                                "status": "unavailable",
+                                "summary": "The run ended without recording a result for this tool "
+                                "call. Its outcome is unknown; "
+                                "verify current state before retrying.",
+                            }
+                        ),
+                    )
+                )
+            pending.clear()
+
+        for message in turn.messages:
+            if message.role != "tool":
+                close_missing_results(messages, pending)
+            messages.append(message)
+            pending.extend(call for call in message.tool_calls if call.id in missing_ids)
+        close_missing_results(messages, pending)
+        turn.messages = messages
     return turns, audit_reasoning
 
 

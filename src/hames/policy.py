@@ -149,7 +149,15 @@ class PolicyGate:
         if allowed_tools is not None and tool_name not in allowed_tools:
             return PolicyDecision(
                 PolicyDecisionKind.DENY,
-                "the active agent is not allowed to use this tool",
+                (
+                    "Delegation is unavailable for the active agent. Continue authorized work "
+                    "directly using the available tools and current agent instructions. Earlier "
+                    "assistant workflow reports do not require spawning workers. If the user "
+                    "explicitly requires independent review, preserve that requirement and report "
+                    "the specific limitation without abandoning other authorized work."
+                    if tool_name == "spawn_agent"
+                    else "the active agent is not allowed to use this tool"
+                ),
                 "agent_scope",
             )
         if interaction_mode == "plan" and (
@@ -286,7 +294,14 @@ class PolicyGate:
             for pattern, reason in _DENIED_SHELL:
                 if pattern.search(arguments.command):
                     return PolicyDecision(PolicyDecisionKind.DENY, reason, "prohibited")
-            shell_risk = _shell_command_risk(arguments.command)
+            shell_risk = _shell_command_risk(
+                arguments.command,
+                cleanup_root=(
+                    context.root_for(arguments.workspace)
+                    if interaction_mode == "auto" and arguments.workspace in {"project", "scratch"}
+                    else None
+                ),
+            )
             if shell_risk is not None:
                 return shell_risk
             if interaction_mode == "manual":
@@ -330,8 +345,15 @@ class PolicyGate:
         return PolicyDecision(PolicyDecisionKind.ALLOW, "allowed by trusted-root policy")
 
 
-def _shell_command_risk(command: str) -> PolicyDecision | None:
-    for words in _shell_command_words(command):
+def _shell_command_risk(command: str, *, cleanup_root: Path | None = None) -> PolicyDecision | None:
+    commands = _shell_command_words(command)
+    # Relative targets are only meaningful while the shell stays in its initial
+    # directory. Avoid interpreting scripts, expansions, or directory changes.
+    if re.search(r"\b(?:bash|sh|zsh)\s", command) or any(
+        Path(words[0]).name in {"cd", "pushd", "popd"} for words in commands
+    ):
+        cleanup_root = None
+    for words in commands:
         executable = Path(words[0]).name.lower()
         arguments = words[1:]
         if _controls_live_compositor(executable, arguments):
@@ -357,6 +379,8 @@ def _shell_command_risk(command: str) -> PolicyDecision | None:
             or re.fullmatch(r"-[A-Za-z]*r[A-Za-z]*", argument, re.I) is not None
             for argument in arguments
         ):
+            if cleanup_root is not None and _workspace_cleanup(arguments, cleanup_root):
+                continue
             return PolicyDecision(
                 PolicyDecisionKind.REQUIRE_CONFIRMATION, "recursive deletion", "high"
             )
@@ -373,6 +397,36 @@ def _shell_command_risk(command: str) -> PolicyDecision | None:
                 PolicyDecisionKind.REQUIRE_CONFIRMATION, "broad permission change", "high"
             )
     return None
+
+
+def _workspace_cleanup(arguments: list[str], root: Path) -> bool:
+    root = root.resolve()
+    targets: list[str] = []
+    options = True
+    for argument in arguments:
+        if options and argument == "--":
+            options = False
+        elif options and argument.startswith("-"):
+            if argument not in {"--recursive", "--force", "--verbose"} and not re.fullmatch(
+                r"-[rfvIRi]+", argument
+            ):
+                return False
+        else:
+            targets.append(argument)
+    if not targets:
+        return False
+    for target in targets:
+        if not target or any(character in target for character in "$`*?[]{}~<>\\"):
+            return False
+        path = Path(target)
+        path = (path if path.is_absolute() else root / path).resolve()
+        if path == root or not path.is_relative_to(root):
+            return False
+        if any(part in {".git", ".hames", ".codex", *_SECRET_DIRECTORIES} for part in path.parts):
+            return False
+        if path.name in _SECRET_NAMES or path.name.startswith(".env."):
+            return False
+    return True
 
 
 def _controls_live_compositor(executable: str, arguments: list[str]) -> bool:

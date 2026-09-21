@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -335,7 +336,7 @@ def test_policy_classifies_safe_dangerous_and_protected_actions(tmp_path: Path) 
     )
     assert (
         gate.decide("shell", ShellArguments(command="rm -rf target"), context).decision
-        is PolicyDecisionKind.REQUIRE_CONFIRMATION
+        is PolicyDecisionKind.ALLOW
     )
     assert (
         gate.decide("shell", ShellArguments(command="cat ~/.hames/config.toml"), context).decision
@@ -796,3 +797,42 @@ async def test_batch_edits_are_atomic_and_return_one_combined_diff(tmp_path: Pat
 def test_edit_forms_are_unambiguous(arguments: dict[str, object]) -> None:
     with pytest.raises(ValueError):
         EditFileArguments.model_validate({"path": "plan.md", **arguments})
+
+
+@pytest.mark.parametrize("workspace", ["project", "scratch"])
+def test_auto_allows_scoped_cleanup_but_keeps_broad_deletion_confirmation(
+    tmp_path: Path, workspace: Literal["project", "scratch"]
+) -> None:
+    context = tool_context(tmp_path)
+    gate = PolicyGate(tmp_path / "hames-home")
+    root = context.root_for(workspace)
+    for command in ("rm -rf examples", "rm -r -- build/cache test-output", f"rm -rf {root}/output"):
+        assert (
+            gate.decide(
+                "shell", ShellArguments(command=command, workspace=workspace), context
+            ).decision
+            is PolicyDecisionKind.ALLOW
+        )
+    for command in (
+        "rm -rf .",
+        "rm -rf ../",
+        "rm -rf /tmp",
+        'rm -rf "$TMP"',
+        "rm -rf *",
+        "rm -rf .git",
+        "cd /tmp && rm -rf examples",
+        "rm -rf examples && sudo true",
+    ):
+        assert (
+            gate.decide(
+                "shell", ShellArguments(command=command, workspace=workspace), context
+            ).decision
+            is PolicyDecisionKind.REQUIRE_CONFIRMATION
+        )
+    (root / "outside").symlink_to(tmp_path, target_is_directory=True)
+    assert (
+        gate.decide(
+            "shell", ShellArguments(command="rm -rf outside/data", workspace=workspace), context
+        ).decision
+        is PolicyDecisionKind.REQUIRE_CONFIRMATION
+    )

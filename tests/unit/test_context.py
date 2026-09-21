@@ -823,3 +823,99 @@ def test_active_checkpoints_preserve_request_and_pending_tool_batch(
     )
     assert next_candidates == []
     assert checkpoint.payload["cutoff_sequence"] < completed[-1].sequence
+
+
+@pytest.mark.parametrize("terminal", [None, "run.cancelled", "run.failed", "run.completed"])
+def test_ended_run_missing_tool_results_are_closed_for_provider_replay(
+    hames_paths: HamesPaths, tmp_path: Path, terminal: str | None
+) -> None:
+    ledger, session, capsule = _fixture(hames_paths, tmp_path)
+    ledger.append(session_id=session.id, event_type="user.message", payload={"content": "Work"})
+    for call_id in ("finished", "interrupted"):
+        ledger.append(
+            session_id=session.id,
+            run_id="old-run",
+            event_type="model.tool_call",
+            causation_id="request",
+            payload={
+                "index": 0,
+                "provider_call_id": None,
+                "tool_call_id": call_id,
+                "name": "shell",
+                "arguments": {},
+                "status": "requested",
+            },
+        )
+    ledger.append(
+        session_id=session.id,
+        run_id="old-run",
+        event_type="tool.completed",
+        payload={
+            "tool_call_id": "finished",
+            "name": "shell",
+            "status": "completed",
+            "content": "actual result",
+            "summary": "Tool completed",
+        },
+    )
+    events = ledger.replay(session.id)
+    if terminal:
+        # Only the event type/run identity affects reconstruction.
+        events.append(events[-1].model_copy(update={"type": terminal, "payload": {}}))
+    ledger.append(
+        session_id=session.id, event_type="user.message", payload={"content": "Execute plan"}
+    )
+    events.append(ledger.replay(session.id)[-1])
+    compiled = compile_context(
+        session, events, capsule, _tools(), "safe reads", ContextConfig(), run_id="new-run"
+    )
+    messages = compiled.messages[:-1]
+    assert messages[2].tool_call_id == "finished"
+    assert "actual result" in messages[2].content
+    if terminal:
+        assert messages[3].tool_call_id == "interrupted"
+        assert '"status":"unavailable"' in messages[3].content
+        assert "outcome is unknown" in messages[3].content
+        assert len(messages) == 4
+    else:
+        assert len(messages) == 3  # Never invent a result for a still-active call.
+    assert compiled.messages[-1].content == "Execute plan"
+    assert not any(event.type == "tool.failed" for event in ledger.replay(session.id))
+
+
+@pytest.mark.parametrize("delegation_available", [False, True])
+def test_active_agent_identity_does_not_inherit_previous_assistant_workflow(
+    hames_paths: HamesPaths, tmp_path: Path, delegation_available: bool
+) -> None:
+    ledger, session, capsule = _fixture(hames_paths, tmp_path)
+    ledger.append(
+        session_id=session.id, event_type="user.message", payload={"content": "Implement"}
+    )
+    ledger.append(
+        session_id=session.id,
+        event_type="assistant.message",
+        payload={
+            "content": "I must dispatch builder, reviewer, and finisher.",
+            "status": "completed",
+        },
+    )
+    tools = _tools()
+    if delegation_available:
+        tools.append(ToolDefinition(name="spawn_agent", description="Delegate", input_schema={}))
+    compiled = compile_context(
+        session,
+        ledger.replay(session.id),
+        capsule,
+        tools,
+        "safe reads",
+        ContextConfig(),
+        run_id="new-run",
+    )
+    assert (
+        f"Current active agent: {capsule.metadata.slug or capsule.metadata.name}."
+        in compiled.system
+    )
+    assert "do not impose a required pipeline" in compiled.system
+    assert "preserving explicit requirements" in compiled.system
+    assert ("Delegation is unavailable for this run" in compiled.system) is not delegation_available
+    assert any("must dispatch" in message.content for message in compiled.messages)
