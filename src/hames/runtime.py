@@ -20,6 +20,7 @@ from hames.agent import (
     AgentCapsule,
     AgentRegistry,
     apply_agent_skill_policy,
+    direct_tools,
     permitted_tools,
     skill_permitted,
 )
@@ -3240,11 +3241,12 @@ class RunManager:
             # The runtime rejects goal reports outside the current autonomous step. Do not
             # advertise an unusable tool to ordinary or foreground model turns.
             allowed_tools = frozenset(allowed_tools - {"goal_report"})
-        definitions = self.tools.definitions(allowed_tools)
+        visible_tools = direct_tools(capsule, allowed_tools)
+        definitions = self.tools.definitions(visible_tools)
         if self.plugin_manager is not None:
-            definitions = [*definitions, *self.plugin_manager.definitions(allowed_tools)]
+            definitions = [*definitions, *self.plugin_manager.definitions(visible_tools)]
         if self.mcp is not None:
-            definitions = [*definitions, *self.mcp.definitions(allowed_tools)]
+            definitions = [*definitions, *self.mcp.definitions(visible_tools)]
         plugin_sources: list[PluginContextItem] = []
         if self.plugin_manager is not None:
             query = ""
@@ -3274,6 +3276,13 @@ class RunManager:
         policy_summary = f"{POLICY_SUMMARY} {MODE_POLICY_SUMMARIES[interaction_mode]}"
         if healing_run:
             policy_summary = f"{policy_summary} {HEALING_POLICY_SUMMARY}"
+        if capsule.metadata.delegation.coordinator_only:
+            policy_summary += (
+                " This agent is coordinator-only. Inspect and coordinate locally, but delegate "
+                "implementation, shell commands, and file changes to permitted workers. "
+                "Workers retain their configured execution tools and models. Do not ask the "
+                "user to enable local editing; dispatch the appropriate worker."
+            )
         if "spawn_agent" in allowed_tools:
             targets = self._delegation_target_slugs(session, capsule)
             policy_summary += (
@@ -4221,7 +4230,7 @@ class RunManager:
             invocation.name,
             arguments,
             context,
-            allowed_tools=allowed_tools,
+            allowed_tools=direct_tools(capsule, allowed_tools),
             declarative_rules=active_policy_rules,
             interaction_mode=forced_interaction_mode or current_session.interaction_mode,
             session_tool_granted=session_tool_granted,
@@ -4247,11 +4256,18 @@ class RunManager:
             correlation_id=run_id,
         )
         if decision.decision is PolicyDecisionKind.DENY:
+            reason = decision.reason
+            if (
+                capsule.metadata.delegation.coordinator_only
+                and invocation.name in allowed_tools
+                and invocation.name not in direct_tools(capsule, allowed_tools)
+            ):
+                reason = "This agent is coordinator-only. Delegate this work to a permitted worker."
             return await self._persist_tool_result(
                 session,
                 run_id,
                 invocation,
-                ToolResult(status="rejected", summary=decision.reason),
+                ToolResult(status="rejected", summary=reason),
                 policy_decided.id,
             )
         if (

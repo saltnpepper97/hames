@@ -27,3 +27,16 @@ it("shows one collapsed row, preserves its expansion, and updates live tool stat
   setNodes([{ ...base, status: "failed" }]);
   expect(getByText("first diff failed")).toBeInTheDocument();
 });
+
+it("keeps the original output of grouped reads expandable", () => {
+  const base: EditNode = { id: "read-a", kind: "tool", name: "read_file", status: "completed", runId: "read-run", sessionId: "s", workingDirectory: "/p", arguments: { path: "main.rs" }, content: "first section" };
+  const nodes: EditNode[] = [base, { ...base, id: "read-b", name: "shell", arguments: { command: "sed -n '50,100p' main.rs" }, content: "second section" }];
+  const { container, getByText } = render(() => <ConversationViewport nodes={nodes} streamState="live" agentId="default" />);
+  const group = container.querySelector<HTMLDetailsElement>(".edit-group")!;
+  expect(group.querySelector("summary")?.textContent).toContain("main.rs · 2 reads");
+  expect(group.open).toBe(false);
+  fireEvent.click(group.querySelector("summary")!);
+  expect(group.open).toBe(true);
+  expect(getByText("first section completed")).toBeInTheDocument();
+  expect(getByText("second section completed")).toBeInTheDocument();
+});

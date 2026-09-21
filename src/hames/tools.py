@@ -580,6 +580,9 @@ class ReadFileTool(ToolBase):
     description = (
         "Read a UTF-8 text file from the project, confirmed user home, or disposable scratch "
         "workspace. Use workspace home or a ~/ path for files under the user home."
+        " Read adjacent needed sections in one bounded range instead of repeatedly reading "
+        "small consecutive ranges from the same file. Batch independent inspections when their "
+        "inputs are already known; wait for results when the next read depends on them."
     )
     arguments_type: ClassVar[type[ToolArguments]] = ReadFileArguments
 

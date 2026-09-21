@@ -79,6 +79,13 @@ state.
 
 ## Tools vs Skills vs plugins
 
+Agents may set `delegation.coordinator_only: true` alongside `delegation.allow: true`.
+This limits their own exposed and executable tools to inspection, interaction,
+task tracking, and delegation. Worker capabilities are still bounded by the parent's
+original tool policy and the worker's policy; the local coordinator restriction is
+not inherited as a blanket ban on worker edits. This does not define workflow
+stages or change the selected chat agent. Each worker uses its configured model.
+
 | | Tools | Skills | Plugins |
 |---|---|---|---|
 | What | Physical capability (`shell`, `write_file`, later plugin tool names) | Procedure/knowledge for a kind of work | New capabilities added to the harness |

@@ -151,13 +151,15 @@ export function ConversationViewport(props: ConversationViewportProps) {
               const entry = () => entries().find(entry => entry.node.id === id)!;
               const contribution = () => plugins.conversationNodes.get(entry().node.kind);
               return <Show when={contribution()}>{renderer =>
-                <Show when={entry().edits.length > 1} fallback={
+                <Show when={entry().edits.length > 1 || entry().reads.length > 1} fallback={
                   <Show when={entry().node} keyed>{node => <Dynamic component={renderer().component} node={node} />}</Show>
                 }>
                   <ConversationDisclosure class="tool-node edit-group" icon="conversation.tool"
-                    title="Edited" state="success"
-                    summary={<>{String(entry().edits[0]!.arguments?.path)} · {entry().edits.length} edits</>}>
-                    <For each={entry().edits}>{edit =>
+                    title={entry().reads.length ? "Read" : "Edited"} state="success"
+                    summary={entry().reads.length
+                      ? <>{entry().readPath} · {entry().reads.length} reads</>
+                      : <>{String(entry().edits[0]!.arguments?.path)} · {entry().edits.length} edits</>}>
+                    <For each={entry().reads.length ? entry().reads : entry().edits}>{edit =>
                       <Dynamic component={renderer().component} node={edit} />
                     }</For>
                   </ConversationDisclosure>

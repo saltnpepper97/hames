@@ -16,6 +16,14 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Fixed
 
+- Optional `delegation.coordinator_only` enforces a coordinating agent's local
+  read/dispatch scope while preserving workers' configured execution tools and models.
+  Direct mutation attempts are rejected with instructions to delegate.
+
+- Consecutive successful reads of the same file share one expandable Web transcript
+  entry, including simple sed, cat, head, and tail commands. Individual commands and
+  outputs remain available. Read guidance favors one bounded read for adjacent sections.
+
 - Grok usage survives transient refresh failures with an explicit last-known-data
   notice. Web usage refreshes every minute and on window focus so new reset windows
   appear without reopening the page. TUI usage now includes Grok percentages and

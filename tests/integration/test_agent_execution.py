@@ -62,12 +62,14 @@ class StageProvider(FakeProvider):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("coordinator_only", [False, True])
 @pytest.mark.parametrize("finish", [False, True])
 @pytest.mark.parametrize("unfinished", [False, True])
 async def test_plan_workflow_routes_models_efforts_and_reviewer_authority(
     tmp_path: Path,
     finish: bool,
     unfinished: bool,
+    coordinator_only: bool,
 ) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     paths.ensure_foundation()
@@ -88,7 +90,8 @@ async def test_plan_workflow_routes_models_efforts_and_reviewer_authority(
             profile = "parent" if agent_id == "workflow" else "worker"
             authority = "read_only" if agent_id == "reviewer" else "standard"
             delegation = (
-                "  allow: true\n  allowed_agents: [builder, reviewer, finisher]\n"
+                f"  allow: true\n  coordinator_only: {str(coordinator_only).lower()}\n"
+                "  allowed_agents: [builder, reviewer, finisher]\n"
                 if agent_id == "workflow"
                 else "  allow: false\n"
             )
@@ -135,6 +138,16 @@ async def test_plan_workflow_routes_models_efforts_and_reviewer_authority(
         task = state.runs._tasks.get(run_id)
         if task is not None:
             await asyncio.wait_for(asyncio.shield(task), 10)
+        for request in coordinator.requests:
+            names = {tool.name for tool in request.tools}
+            assert ("edit_file" in names) is not coordinator_only
+            assert "spawn_agent" in names
+        builder_requests = [
+            r for r in worker.requests if any(t.name == "edit_file" for t in r.tools)
+        ]
+        assert builder_requests, (
+            "worker must retain editing tools even for a coordinator-only parent"
+        )
         events = state.ledger.list_events(session.id)
         completed = [e for e in events if e.type == "delegation.completed"]
         requested = [e for e in events if e.type == "delegation.requested"]
@@ -333,5 +346,63 @@ async def test_agent_default_model_can_be_set_overridden_and_cleared(
             )
             assert bad.status_code == 400
             assert state.agents.load("custom").metadata.execution is None
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_coordinator_only_rejects_direct_file_mutation(tmp_path: Path) -> None:
+    provider = FakeProvider(
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="forbidden",
+                        name="write_file",
+                        arguments_delta=json.dumps(
+                            {"path": "should-not-exist.txt", "content": "bad"}
+                        ),
+                    ),
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="I must delegate the edit."),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
+    )
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text(
+        "[memory]\nenabled=false\n[skills]\nenabled=false\n[evolution]\nenabled=false\n"
+    )
+    state = GatewayState.create(paths, providers={"fake": provider})
+    try:
+        state.agents.create(
+            source=(
+                "---\nid: coordinator\nname: coordinator\ndelegation:\n"
+                "  allow: true\n  coordinator_only: true\n---\nCoordinate tasks."
+            )
+        )
+        session = state.ledger.create_session(
+            working_directory=tmp_path, agent_id="coordinator", provider="fake", model="fixture"
+        )
+        state.controls.grant_trust(tmp_path)
+        run_id = await state.runs.start(session.id, "Do the work")
+        task = state.runs._tasks.get(run_id)
+        if task is not None:
+            await asyncio.wait_for(asyncio.shield(task), 10)
+        assert not (tmp_path / "should-not-exist.txt").exists()
+        results = [
+            event for event in state.ledger.list_events(session.id) if event.type == "tool.rejected"
+        ]
+        assert len(results) == 1
+        assert "coordinator-only" in results[0].payload["summary"]
     finally:
         await state.runs.close()

@@ -88,6 +88,7 @@ class DelegationPolicy(BaseModel):
 
     allow: bool = True
     allowed_agents: list[str] = Field(default_factory=list)
+    coordinator_only: bool = False
 
     @field_validator("allowed_agents")
     @classmethod
@@ -100,6 +101,8 @@ class DelegationPolicy(BaseModel):
 
     @model_validator(mode="after")
     def targets_need_permission(self) -> DelegationPolicy:
+        if self.coordinator_only and not self.allow:
+            raise ValueError("coordinator_only requires delegation.allow: true")
         if not self.allow and self.allowed_agents:
             raise ValueError("delegation allowed_agents requires delegation.allow: true")
         return self
@@ -586,6 +589,13 @@ def permitted_tools(capsule: AgentCapsule, available: set[str]) -> frozenset[str
     permitted.difference_update(capsule.metadata.tools.deny)
     permitted.update(interaction_tools.difference(capsule.metadata.tools.deny))
     return frozenset(permitted)
+
+
+def direct_tools(capsule: AgentCapsule, allowed: frozenset[str]) -> frozenset[str]:
+    """Limit a coordinator's own tools without stripping worker capabilities."""
+    if capsule.metadata.delegation.coordinator_only:
+        return allowed.intersection(READ_ONLY_TOOLS | {"task_update", "goal_report"})
+    return allowed
 
 
 class _SkillEntry(Protocol):

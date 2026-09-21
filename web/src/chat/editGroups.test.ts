@@ -20,3 +20,19 @@ describe("file edit grouping", () => {
     expect(groupFileEdits(nodes)).toHaveLength(nodes.length);
   });
 });
+
+it("groups adjacent native and sed reads of the same file without losing output", () => {
+  const a = edit("a", { name: "read_file", content: "one", arguments: { path: "src/main.rs" } });
+  const b = edit("b", { name: "shell", content: "two", arguments: { command: "sed -n '20,60p' src/main.rs" } });
+  const entries = groupFileEdits([a, b]);
+  expect(entries).toHaveLength(1);
+  expect(entries[0]!.reads).toEqual([a, b]);
+  expect(entries[0]!.readPath).toBe("src/main.rs");
+});
+it("does not group failed reads, mutations, compound commands, or other runs", () => {
+  const commands = ["sed -n '1,20p' file", "sed -i 's/a/b/' file", "cat file > other", "cat file && rm other"];
+  const nodes = commands.map((command, i) => edit(String(i), { name: "shell", arguments: { command } }));
+  expect(groupFileEdits(nodes)).toHaveLength(4);
+  const read = edit("read", { name: "read_file", arguments: { path: "file" } });
+  expect(groupFileEdits([read, { ...read, id: "failed", status: "failed" }, { ...read, id: "new", runId: "new" }])).toHaveLength(3);
+});
