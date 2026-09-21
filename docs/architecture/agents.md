@@ -28,17 +28,14 @@ hames agent create --from ./AGENT.md
 
 The id is derived from the display name at create time, then frozen.
 
-| Request | Id | Name |
-|---|---|---|
-| `--name Researcher` | `researcher` | `Researcher` |
-| `--name "Code Reviewer"` | `code-reviewer` | `Code Reviewer` |
-| `--name Researcher` when `researcher` exists | `researcher-2` | `Researcher` |
-| no name | `hames-1` | `hames-1` |
-| `--from` with frontmatter `id` / `name` | honor `id` if present, else slug `name` | honor `name` if present, else the id |
+New agents receive an opaque `agent-<UUID>` identifier, independently of their name.
+Unnamed agents get a readable `hames-N` display name. An imported capsule with an
+explicit `id` retains it for portability and compatibility. IDs never change when
+names change. The built-in `default` agent retains its reserved identity.
 
-Slug: lowercase `[a-z][a-z0-9-]{0,62}`, spaces and punctuation become `-`. Empty
-slugs fall back to `hames-N`. Changing the name updates the slug while preserving the
-capsule directory and stable ID. Previous slugs remain lookup aliases.
+No slug is required. Names are resolved through the registry; ambiguous duplicate
+names require a unique ID. Existing slugs and historical names remain compatibility
+aliases for in-flight work. Renaming preserves both the ID and capsule directory.
 
 A new capsule is immediately useful: every tool the surrounding policy already
 allows, Skills discoverable through the catalog (not all loaded), default
@@ -73,7 +70,7 @@ avatar and routes directly to the selected capsule's breakdown. The bare Agents
 route selects the first real capsule instead of inserting an overview step. The
 main surface edits the display name, instruction body, tool allow/deny sets,
 skill allow/deny sets, pinned skills, and avatar through structured gateway
-updates. The stable id is visible but immutable, and every save still atomically
+updates. The stable ID is internal and immutable, and every save still atomically
 rewrites the existing `AGENT.md` rather than introducing browser-owned agent
 state.
 
@@ -267,19 +264,24 @@ not automatically restart or re-delegate the cancelled work. Repeated Stop
 requests do not interrupt cancellation cleanup. Stopping a parent still cancels
 its child runs.
 
-### Names, slugs, and stable identity
+### Names and stable identity
 
-Renaming an agent allocates a unique name-based slug and updates its Web URL.
-The slug is stored separately in AGENT.md; the capsule directory stays in place.
-The immutable `id` identifies sessions, memory scope, and delegation permissions.
-Lookups accept the stable ID, current slug, and retained `aliases` from earlier
-renames. Historical aliases remain reserved so another agent cannot capture an
-in-flight handoff. Existing capsules without a slug resolve by ID.
+Web and terminal creation ask for a display name, not a slug or identifier. The
+registry assigns the opaque ID. Web routes, sessions, memory scope, and saved
+delegation permissions use immutable IDs; display surfaces resolve current names.
+The API retains the optional legacy `slug` field for existing clients and capsules.
 
-Saved delegation allowlists canonicalize known targets to their immutable IDs.
-Model-facing target descriptions include current display names and explicit
-`agent_id` values; worker results return the immutable ID and current name.
-Unknown references are preserved to support agents defined later.
+Old names and slugs stay reserved as aliases, so another agent cannot capture an
+in-flight handoff. Name resolution fails explicitly for duplicates; callers can
+use the permanent ID to disambiguate. Existing IDs are preserved to keep historical
+sessions and permissions valid, without rewriting the event ledger.
+
+Model-facing permitted targets and worker reports use current names. The dispatcher
+accepts those references and resolves them to IDs before checking permissions or
+creating a child. After a rename, an old reference still resolves to the same agent,
+and the returned report identifies it by its current name. There are no hardcoded
+role-to-agent mappings in the harness. Saved allowlists canonicalize known targets;
+unknown references are preserved to support agents defined later.
 
 The default-model editor discovers models automatically after Web authentication;
 Refresh forces a new discovery and does not change the saved default.

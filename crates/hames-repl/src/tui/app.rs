@@ -782,15 +782,13 @@ pub enum AgentEditorPage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AgentEditField {
     Name,
-    Slug,
     Instructions,
 }
 
 impl AgentEditField {
     pub fn next(self) -> Self {
         match self {
-            Self::Name => Self::Slug,
-            Self::Slug => Self::Instructions,
+            Self::Name => Self::Instructions,
             Self::Instructions => Self::Name,
         }
     }
@@ -798,8 +796,7 @@ impl AgentEditField {
     pub fn previous(self) -> Self {
         match self {
             Self::Name => Self::Instructions,
-            Self::Slug => Self::Name,
-            Self::Instructions => Self::Slug,
+            Self::Instructions => Self::Name,
         }
     }
 }
@@ -818,9 +815,7 @@ pub struct AgentEditor {
     pub page: AgentEditorPage,
     pub field: AgentEditField,
     pub name: Composer,
-    pub slug: Composer,
     pub instructions: Composer,
-    pub slug_manual: bool,
     pub tools: Vec<AgentChoice>,
     pub skills: Vec<AgentChoice>,
     pub skill_pins: Vec<String>,
@@ -834,9 +829,7 @@ impl AgentEditor {
             page: AgentEditorPage::Identity,
             field: AgentEditField::Name,
             name: Composer::default(),
-            slug: Composer::default(),
             instructions: Composer::default(),
-            slug_manual: false,
             tools: tools
                 .into_iter()
                 .map(|tool| AgentChoice {
@@ -890,9 +883,7 @@ impl AgentEditor {
         let mut editor = Self::new(tools, skills);
         editor.editing_agent_id = Some(agent_id.clone());
         editor.name.insert_text(name);
-        editor.slug.insert_text(&agent_id);
         editor.instructions.insert_text(instructions);
-        editor.slug_manual = true;
         for choice in &mut editor.tools {
             choice.selected = access_selected(&choice.id, tools_allow, tools_deny);
         }
@@ -910,17 +901,8 @@ impl AgentEditor {
     pub fn active_text_mut(&mut self) -> &mut Composer {
         match self.field {
             AgentEditField::Name => &mut self.name,
-            AgentEditField::Slug => &mut self.slug,
             AgentEditField::Instructions => &mut self.instructions,
         }
-    }
-
-    pub fn sync_slug(&mut self) {
-        if self.slug_manual || self.is_editing() {
-            return;
-        }
-        self.slug.clear();
-        self.slug.insert_text(&agent_slug(&self.name.text()));
     }
 
     pub fn access_len(&self) -> usize {
@@ -955,7 +937,7 @@ impl AgentEditor {
         self.field = if self.is_editing() {
             match self.field {
                 AgentEditField::Name => AgentEditField::Instructions,
-                AgentEditField::Slug | AgentEditField::Instructions => AgentEditField::Name,
+                AgentEditField::Instructions => AgentEditField::Name,
             }
         } else if backwards {
             self.field.previous()
@@ -968,28 +950,6 @@ impl AgentEditor {
 fn access_selected(id: &str, allow: &[String], deny: &[String]) -> bool {
     !deny.iter().any(|value| value == id)
         && (allow.is_empty() || allow.iter().any(|value| value == id))
-}
-
-fn agent_slug(value: &str) -> String {
-    let mut slug = String::new();
-    let mut separator = false;
-    for character in value.to_lowercase().chars() {
-        if character.is_ascii_alphanumeric() {
-            if separator && !slug.is_empty() && slug.len() < 63 {
-                slug.push('-');
-            }
-            separator = false;
-            if slug.len() < 63 {
-                slug.push(character);
-            }
-        } else {
-            separator = true;
-        }
-    }
-    while slug.ends_with('-') {
-        slug.pop();
-    }
-    slug
 }
 
 impl ScarEditor {
@@ -1532,22 +1492,11 @@ impl App {
         let initial_effort = session.reasoning_effort.clone();
         let workspace_name = session.working_directory.clone();
         let agent_name = if session.agent_id == "default" {
-            "Hames".to_owned()
+            "Hames"
         } else {
-            session
-                .agent_id
-                .split('-')
-                .filter(|part| !part.is_empty())
-                .map(|part| {
-                    let mut characters = part.chars();
-                    characters
-                        .next()
-                        .map(|first| first.to_uppercase().collect::<String>() + characters.as_str())
-                        .unwrap_or_default()
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
+            "Agent"
+        }
+        .to_owned();
         let mut app = Self {
             session,
             agent_name,
@@ -3324,7 +3273,12 @@ impl App {
                 }
             }
             "delegation.requested" => {
-                let label = string(&event.payload, "target_agent_id");
+                let label = event
+                    .payload
+                    .get("target_agent_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Agent")
+                    .to_owned();
                 let detail = ["provider", "model", "reasoning_effort"]
                     .iter()
                     .map(|key| string(&event.payload, key))
@@ -4923,7 +4877,7 @@ mod tests {
             "delegation.requested",
             "run",
             json!({
-                "target_agent_id": "luna-reviewer", "provider": "codex",
+                "target_agent_id": "luna-reviewer", "target_agent_name": "Reviewer", "provider": "codex",
                 "model": "luna", "reasoning_effort": "xhigh"
             }),
         );
@@ -4941,19 +4895,19 @@ mod tests {
         completed.causation_id = Some(request.id);
         app.ingest_durable(completed, false);
         assert!(app.delegated_activity.is_empty());
-        assert!(app.transcript.iter().any(|item| matches!(item, TranscriptItem::Status {text, ..} if text.contains("luna-reviewer · Finished"))));
+        assert!(app.transcript.iter().any(|item| matches!(item, TranscriptItem::Status {text, ..} if text.contains("Reviewer · Finished"))));
         app.ingest_durable(
             event(
                 4,
                 "delegation.requested",
                 "run",
-                json!({"target_agent_id": "sol-finisher"}),
+                json!({"target_agent_id": "sol-finisher", "target_agent_name": "Finisher"}),
             ),
             true,
         );
         app.ingest_durable(event(5, "run.cancelled", "run", json!({})), true);
         assert!(app.delegated_activity.is_empty());
-        assert!(app.transcript.iter().any(|item| matches!(item, TranscriptItem::Status {text, error: true} if text.contains("sol-finisher · Interrupted"))));
+        assert!(app.transcript.iter().any(|item| matches!(item, TranscriptItem::Status {text, error: true} if text.contains("Finisher · Interrupted"))));
     }
 
     #[test]

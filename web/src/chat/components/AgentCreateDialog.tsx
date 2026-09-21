@@ -13,27 +13,13 @@ interface AgentCreateDialogProps {
   submitLabel?: string;
 }
 
-const agentIdPattern = /^[a-z][a-z0-9-]{0,62}$/;
-
-function slugFromName(name: string): string {
-  const slug = name
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 63)
-    .replace(/-+$/g, "");
-  return /^[a-z]/.test(slug) ? slug : `agent${slug ? `-${slug}` : ""}`.slice(0, 63);
-}
-
 function agentSource(
-  id: string,
   name: string,
   authority: AgentAuthority,
   instructions: string,
   defaultModel: AgentDetail["default_model"],
 ): string {
-  const metadata = JSON.stringify({ id, name: name.trim(), authority, ...(defaultModel ? { default_model: defaultModel } : {}) }, null, 2);
+  const metadata = JSON.stringify({ name: name.trim(), authority, ...(defaultModel ? { default_model: defaultModel } : {}) }, null, 2);
   return `---\n${metadata}\n---\n${instructions.trim()}\n`;
 }
 
@@ -76,27 +62,17 @@ export function AgentCreateDialog(props: AgentCreateDialogProps) {
   const [step, setStep] = createSignal<"details" | "model">("details");
   const [defaultModel, setDefaultModel] = createSignal<AgentDetail["default_model"]>(null);
   const [name, setName] = createSignal("");
-  const [slug, setSlug] = createSignal("");
-  const [slugEdited, setSlugEdited] = createSignal(false);
   const [authority, setAuthority] = createSignal<AgentAuthority>("standard");
   const [instructions, setInstructions] = createSignal("");
   const [submitted, setSubmitted] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [error, setError] = createSignal("");
   const nameError = createMemo(() => submitted() && !name().trim() ? "Enter a display name." : "");
-  const slugError = createMemo(() => {
-    if (!submitted()) return "";
-    if (!slug().trim()) return "Enter an agent slug.";
-    return agentIdPattern.test(slug())
-      ? ""
-      : "Use a lowercase letter first, then letters, numbers, or hyphens.";
-  });
-
   const submit = async (event: SubmitEvent) => {
     event.preventDefault();
     setSubmitted(true);
     setError("");
-    if (!name().trim() || !agentIdPattern.test(slug())) return;
+    if (!name().trim()) return;
     if (saving()) return;
     if (step() === "details") { setStep("model"); return; }
     setSaving(true);
@@ -104,7 +80,7 @@ export function AgentCreateDialog(props: AgentCreateDialogProps) {
       const created = await createAgent({
         name: name().trim(),
         authority: authority(),
-        source: agentSource(slug(), name(), authority(), instructions(), defaultModel()),
+        source: agentSource(name(), authority(), instructions(), defaultModel()),
       });
       await props.onCreated(created);
     } catch (caught) {
@@ -146,19 +122,6 @@ export function AgentCreateDialog(props: AgentCreateDialogProps) {
             onInput={(event) => {
               const next = event.currentTarget.value;
               setName(next);
-              if (!slugEdited()) setSlug(slugFromName(next));
-            }}
-          />
-          <TextField
-            label="Agent slug"
-            value={slug()}
-            maxlength={63}
-            error={slugError()}
-            helper="Used to identify this agent; editable later"
-            placeholder="careful-reviewer"
-            onInput={(event) => {
-              setSlugEdited(true);
-              setSlug(event.currentTarget.value.toLowerCase());
             }}
           />
         </div>

@@ -152,7 +152,10 @@ class VcsInspectArguments(ToolArguments):
 
 
 class SpawnAgentArguments(ToolArguments):
-    agent_id: str = ""
+    agent_id: str = Field(
+        default="",
+        description="Current agent name or an internal ID; use the permitted target reference.",
+    )
     task: str = Field(min_length=1)
     evidence_event_ids: list[str] = Field(default_factory=list, max_length=8)
     stage_id: str = Field(default="", pattern=r"^[a-z][a-z0-9-]{0,62}$|^$")

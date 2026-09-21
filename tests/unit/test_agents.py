@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
@@ -22,27 +23,32 @@ def test_registry_creates_valid_portable_capsules(hames_paths: HamesPaths) -> No
     hames_paths.ensure_foundation()
     registry = AgentRegistry(hames_paths.agents)
     coder = registry.create("Coder")
-    assert coder.metadata.id == "coder"
+    assert UUID(coder.metadata.id.removeprefix("agent-")).version == 4
+    assert coder.metadata.slug == ""
+    assert registry.load("Coder").metadata.id == coder.metadata.id
     assert coder.metadata.name == "Coder"
     assert coder.metadata.authority == "standard"
-    assert coder.path == hames_paths.agents / "coder" / "AGENT.md"
+    assert coder.path == hames_paths.agents / coder.metadata.id / "AGENT.md"
     assert coder.path.stat().st_mode & 0o777 == 0o600
-    assert [item.id for item in registry.list()] == ["coder", "default"]
+    assert {item.id for item in registry.list()} == {coder.metadata.id, "default"}
 
 
-def test_create_slugs_name_and_allocates_unnamed_ids(hames_paths: HamesPaths) -> None:
+def test_create_allocates_opaque_ids_independently_of_names(hames_paths: HamesPaths) -> None:
     hames_paths.ensure_foundation()
     registry = AgentRegistry(hames_paths.agents)
     first = registry.create()
     second = registry.create()
-    assert first.metadata.id == "hames-1"
     assert first.metadata.name == "hames-1"
-    assert second.metadata.id == "hames-2"
+    assert first.metadata.name == "hames-1"
+    assert second.metadata.name == "hames-2"
     reviewer = registry.create("Code Reviewer")
-    assert reviewer.metadata.id == "code-reviewer"
+    assert reviewer.metadata.id.startswith("agent-")
     assert reviewer.metadata.name == "Code Reviewer"
     duplicate = registry.create("Code Reviewer")
-    assert duplicate.metadata.id == "code-reviewer-2"
+    assert duplicate.metadata.id != reviewer.metadata.id
+    with pytest.raises(ValueError, match="Ambiguous"):
+        registry.load("Code Reviewer")
+    assert registry.reference(reviewer.metadata.id) == reviewer.metadata.id
     assert duplicate.metadata.name == "Code Reviewer"
 
 
@@ -50,11 +56,12 @@ def test_create_from_source_honors_frontmatter_id(hames_paths: HamesPaths) -> No
     hames_paths.ensure_foundation()
     registry = AgentRegistry(hames_paths.agents)
     source = (
-        "---\nid: reviewer\nname: Code Reviewer\nauthority: read_only\n"
+        "---\nid: reviewer\nslug: careful-reviewer\nname: Code Reviewer\nauthority: read_only\n"
         "tools:\n  deny: [write_file, edit_file]\n---\nReview the diff.\n"
     )
     capsule = registry.create(source=source)
     assert capsule.metadata.id == "reviewer"
+    assert registry.load("careful-reviewer").metadata.id == "reviewer"
     assert capsule.metadata.name == "Code Reviewer"
     assert capsule.metadata.authority == "read_only"
     assert capsule.metadata.tools.deny == ["write_file", "edit_file"]
@@ -273,40 +280,35 @@ def test_skill_allow_list_is_a_reduction(tmp_path: Path) -> None:
         load_agent(path)
 
 
-def test_rename_updates_slug_and_resolves_it_without_changing_identity(
-    hames_paths: HamesPaths,
-) -> None:
+def test_rename_preserves_opaque_identity_and_old_references(hames_paths: HamesPaths) -> None:
     hames_paths.ensure_foundation()
     registry = AgentRegistry(hames_paths.agents)
     original = registry.create("Builder")
     renamed = registry.update(original.metadata.id, name="Careful Reviewer")
     assert renamed.metadata.id == original.metadata.id
     assert renamed.path == original.path
-    assert original.path.exists()
-    assert renamed.metadata.slug == "careful-reviewer"
-    assert registry.load("careful-reviewer").metadata.id == original.metadata.id
+    assert renamed.metadata.slug == ""
+    assert registry.load("Careful Reviewer").metadata.id == original.metadata.id
     assert registry.load("builder").metadata.name == "Careful Reviewer"
-    again = registry.update("careful-reviewer", name="Final Reviewer")
-    assert again.metadata.slug == "final-reviewer"
-    assert registry.load("careful-reviewer").metadata.id == "builder"
-    assert registry.create("Careful Reviewer").metadata.id != "careful-reviewer"
-    assert registry.load("final-reviewer").metadata.id == "builder"
-    assert (
-        next(agent for agent in registry.list() if agent.id == "builder").slug == "final-reviewer"
-    )
+    again = registry.update("Careful Reviewer", name="Final Reviewer")
+    assert again.metadata.slug == ""
+    assert registry.load("Careful Reviewer").metadata.id == original.metadata.id
+    assert registry.load("final-reviewer").metadata.id == original.metadata.id
+    assert registry.reference(original.metadata.id) == "Final Reviewer"
+    with pytest.raises(ValueError, match="historical alias"):
+        registry.create("Careful Reviewer")
 
 
-def test_rename_slugs_do_not_steal_other_agent_ids_or_slugs(hames_paths: HamesPaths) -> None:
+def test_duplicate_names_never_retarget_an_id(hames_paths: HamesPaths) -> None:
     hames_paths.ensure_foundation()
     registry = AgentRegistry(hames_paths.agents)
-    a = registry.create("Builder")
-    b = registry.create("Reviewer")
-    first = registry.update(a.metadata.id, name="Reviewer")
-    assert first.metadata.slug == "reviewer-2"
-    second = registry.create("Reviewer 2")
-    assert second.metadata.id != first.metadata.slug
-    assert registry.load("reviewer").metadata.id == b.metadata.id
-    assert registry.load("reviewer-2").metadata.id == a.metadata.id
+    first = registry.create("Builder")
+    second = registry.create("Reviewer")
+    registry.update(first.metadata.id, name="Reviewer")
+    assert registry.load(first.metadata.id).metadata.id == first.metadata.id
+    assert registry.load(second.metadata.id).metadata.id == second.metadata.id
+    with pytest.raises(ValueError, match="Ambiguous"):
+        registry.load("Reviewer")
 
 
 def test_delegation_references_are_saved_as_stable_ids(hames_paths: HamesPaths) -> None:
@@ -333,3 +335,15 @@ def test_delegation_references_are_saved_as_stable_ids(hames_paths: HamesPaths) 
     assert renamed.path == registry.load("worker-id").path
     with pytest.raises(ValueError, match="alias"):
         registry.create(source="---\nid: impostor\nname: Impostor\naliases: [edward]\n---\nWork.")
+
+
+def test_unicode_names_resolve_and_remain_aliases_after_rename(hames_paths: HamesPaths) -> None:
+    hames_paths.ensure_foundation()
+    registry = AgentRegistry(hames_paths.agents)
+    worker = registry.create("研究員")
+    assert registry.reference(worker.metadata.id) == "研究員"
+    registry.update(worker.metadata.id, name="Research")
+    assert registry.load("研究員").metadata.id == worker.metadata.id
+    other = registry.create("Other")
+    with pytest.raises(ValueError, match="historical alias"):
+        registry.update(other.metadata.id, name="研究員")

@@ -175,6 +175,6 @@ async def test_high_risk_shell_is_denied_not_confirmed(
         tmp_path, hames_paths, permissions=frozenset({"broker:process_run_scoped"})
     )
     with pytest.raises(PermissionError, match="recursive deletion"):
-        await broker.call("process.run_scoped", {"command": "rm -rf target"})
+        await broker.call("process.run_scoped", {"command": "rm -rf ../target"})
     decided = [event for event in ledger.list_events(session.id) if event.type == "policy.decided"]
     assert decided[-1].payload["decision"] == "require_confirmation"

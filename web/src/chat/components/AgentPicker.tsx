@@ -124,7 +124,7 @@ export function AgentPicker(props: AgentPickerProps) {
                   />
                   <span>
                     <strong>{agent.name}</strong>
-                    <small>{agent.slug || agent.id}</small>
+                    <small>{agent.authority === "read_only" ? "Read only" : "Standard authority"}</small>
                   </span>
                   <Show when={agent.id === props.session.agent_id}>
                     <Icon name="action.selected" size={15} />

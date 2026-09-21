@@ -28,7 +28,7 @@ import { Icon } from "../shell/icons";
 interface AgentDetailPageProps {
   agentId: string;
   ready?: boolean;
-  onRenamed?: (slug: string) => void;
+  onRenamed?: (id: string) => void;
   workingDirectory: string;
   onDeleted?: (agentId: string) => void;
 }
@@ -122,6 +122,7 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
         effectiveSelection(allSkillSlugs, nextAgent.skills_allow, nextAgent.skills_deny),
       );
       setPinnedSkills(new Set(nextAgent.skills_pin));
+      if (nextAgent.id !== props.agentId) props.onRenamed?.(nextAgent.id);
     } catch (caught) {
       if (generation === requestGeneration) {
         setError(caught instanceof Error ? caught.message : "Unable to load this agent");
@@ -185,7 +186,7 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
       setName(updated.name);
       setInstructions(updated.instructions);
       setSaved(true);
-      if (updated.slug && updated.slug !== props.agentId) props.onRenamed?.(updated.slug);
+      if (updated.id !== props.agentId) props.onRenamed?.(updated.id);
     } catch (caught) {
       setSaveError(caught instanceof Error ? caught.message : "Unable to save this agent");
     } finally {
@@ -242,7 +243,7 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
               <div>
                 <span class="eyebrow">Agent</span>
                 <h1 id="agent-detail-title">{current.name}</h1>
-                <p>{current.slug || current.id} · {current.authority === "read_only" ? "Read only" : "Standard authority"}</p>
+                <p>{current.authority === "read_only" ? "Read only" : "Standard authority"}</p>
               </div>
             </div>
             <div class="agent-save-bar">
@@ -268,10 +269,9 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
           </header>
 
           <div class="agent-settings-stack">
-            <SettingsSection title="Identity" description="The slug follows the display name when you save. Existing chats and history stay linked.">
+            <SettingsSection title="Identity" description="Names can change. Existing chats, permissions, and ongoing work stay linked.">
               <div class="agent-field-grid">
                 <TextField label="Display name" value={name()} maxlength={80} error={nameError()} onInput={(event) => { setName(event.currentTarget.value); setSaved(false); }} />
-                <TextField label="Agent slug" value={current.slug || current.id} disabled helper="Updated automatically when you rename this agent" />
               </div>
             </SettingsSection>
 

@@ -3415,7 +3415,7 @@ def _public_profile(state: GatewayState, profile_id: str, provider: Provider) ->
 def _agent_public(agent: AgentSummary) -> AgentPublic:
     return AgentPublic(
         id=agent.id,
-        slug=agent.slug or agent.id,
+        slug=agent.slug,
         name=agent.name,
         authority=agent.authority,
         path=str(agent.path),
@@ -3429,7 +3429,7 @@ def _agent_detail(capsule: AgentCapsule) -> AgentDetail:
         **_agent_public(
             AgentSummary(
                 id=capsule.metadata.id,
-                slug=capsule.metadata.slug or capsule.metadata.id,
+                slug=capsule.metadata.slug,
                 name=capsule.metadata.name,
                 authority=capsule.metadata.authority,
                 path=capsule.path,

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol, cast
+from uuid import uuid4
 
 import yaml
 from pydantic import (
@@ -198,7 +199,8 @@ class AgentMetadata(BaseModel):
     @classmethod
     def valid_aliases(cls, values: list[str]) -> list[str]:
         for value in values:
-            _validate_id(value)
+            if not value.strip() or len(value) > 80 or any(ord(char) < 32 for char in value):
+                raise ValueError("invalid agent alias")
         return list(dict.fromkeys(values))
 
     @field_validator("id")
@@ -243,23 +245,55 @@ class AgentRegistry:
         return self.root / agent_id / "AGENT.md"
 
     def load(self, agent_id: str) -> AgentCapsule:
-        path = self.path_for(agent_id)
-        if not path.is_file() and self.root.exists():
+        # Only validated identifiers become paths. Names are resolved from metadata.
+        path = self.path_for(agent_id) if AGENT_ID.fullmatch(agent_id) else None
+        if path is not None and path.is_file():
+            capsule = load_agent(path)
+        else:
+            matches: list[AgentCapsule] = []
+            normalized = slugify_agent_name(agent_id)
             for candidate in self.root.glob("*/AGENT.md"):
                 if candidate.parent.name.startswith("."):
                     continue
-                metadata = load_agent(candidate).metadata
-                if agent_id in {metadata.slug, metadata.id, *metadata.aliases}:
-                    path = candidate
+                item = load_agent(candidate)
+                metadata = item.metadata
+                if agent_id == metadata.id:
+                    matches = [item]
                     break
-        capsule = load_agent(path)
-        if path.parent.name not in {
+                references = {
+                    metadata.slug,
+                    *metadata.aliases,
+                    metadata.name.casefold(),
+                    slugify_agent_name(metadata.name),
+                } - {""}
+                if agent_id.casefold() in {value.casefold() for value in references} or (
+                    normalized and normalized in references
+                ):
+                    matches.append(item)
+            if not matches:
+                raise FileNotFoundError(f"Unknown agent: {agent_id}")
+            if len(matches) > 1:
+                raise ValueError(f"Ambiguous agent name: {agent_id}; use its unique ID")
+            capsule = matches[0]
+        if capsule.path.parent.name not in {
             capsule.metadata.id,
             capsule.metadata.slug,
             *capsule.metadata.aliases,
         }:
-            raise ValueError(f"{capsule.path}: frontmatter id or slug does not match its directory")
+            raise ValueError(
+                f"{capsule.path}: frontmatter id or alias does not match its directory"
+            )
         return capsule
+
+    def reference(self, agent_id: str) -> str:
+        """Readable tool reference, with ID disambiguation only for duplicate names."""
+        metadata = self.load(agent_id).metadata
+        try:
+            if self.load(metadata.name).metadata.id == metadata.id:
+                return metadata.name
+        except ValueError:
+            pass
+        return metadata.id
 
     def list(self) -> list[AgentSummary]:
         if not self.root.exists():
@@ -275,7 +309,7 @@ class AgentRegistry:
             values.append(
                 AgentSummary(
                     id=capsule.metadata.id,
-                    slug=capsule.metadata.slug or capsule.metadata.id,
+                    slug=capsule.metadata.slug,
                     name=capsule.metadata.name,
                     authority=capsule.metadata.authority,
                     path=path,
@@ -307,6 +341,7 @@ class AgentRegistry:
         if name is not None and not name.strip():
             name = None
         source_id = None
+        source_slug = ""
         source_name = None
         source_authority = None
         body = ""
@@ -320,6 +355,8 @@ class AgentRegistry:
             metadata_raw, body = _split_agent_markdown(source)
             if "id" in metadata_raw and metadata_raw["id"] is not None:
                 source_id = str(metadata_raw["id"])
+            if metadata_raw.get("slug"):
+                source_slug = AgentMetadata.valid_slug(str(metadata_raw["slug"]))
             if "name" in metadata_raw and metadata_raw["name"] is not None:
                 source_name = str(metadata_raw["name"])
             if "authority" in metadata_raw and metadata_raw["authority"] is not None:
@@ -355,31 +392,45 @@ class AgentRegistry:
         chosen_authority = source_authority or authority
         if chosen_authority not in {"standard", "read_only"}:
             raise ValueError("authority must be standard or read_only")
-        agent_id, display = allocate_agent_identity(
+        existing = self.list()
+        taken = self.taken_ids() | {
+            value
+            for agent in existing
+            for value in (
+                agent.id,
+                agent.slug,
+                agent.name,
+                *agent.aliases,
+                slugify_agent_name(agent.name),
+            )
+            if value
+        }
+        _, display = allocate_agent_identity(
             name=name or source_name,
             agent_id=source_id,
-            taken=self.taken_ids()
-            | {
-                value
-                for agent in self.list()
-                for value in (agent.id, agent.slug, *agent.aliases)
-                if value
-            },
+            taken=taken,
         )
+        agent_id = source_id or f"agent-{uuid4().hex}"
+        while agent_id in taken:
+            agent_id = f"agent-{uuid4().hex}"
+        historical = {alias.casefold() for agent in existing for alias in agent.aliases}
+        if display.casefold() in historical or slugify_agent_name(display) in historical:
+            raise ValueError("agent name is reserved by a historical alias")
         path = self.path_for(agent_id)
-        taken = {value for agent in self.list() for value in (agent.id, agent.slug, *agent.aliases)}
-        if taken.intersection(aliases):
-            raise ValueError("agent alias is already in use")
+        if {value.casefold() for value in taken if value}.intersection(
+            {value.casefold() for value in [source_slug, *aliases] if value}
+        ):
+            raise ValueError("agent slug or alias is already in use")
         if path.exists():
             raise FileExistsError(path)
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=False)
-        path.parent.chmod(0o700)
         instructions = body.strip() or DEFAULT_INSTRUCTIONS.format(name=display)
         payload: dict[str, object] = {
             "id": agent_id,
             "name": display,
             "authority": chosen_authority,
         }
+        if source_slug:
+            payload["slug"] = source_slug
         if aliases:
             payload["aliases"] = aliases
         delegation = self._canonical_delegation(delegation)
@@ -395,6 +446,8 @@ class AgentRegistry:
             payload["default_model"] = execution.model_dump(mode="json")
         raw = f"---\n{yaml.safe_dump(payload, sort_keys=False)}---\n{instructions}\n"
         AgentMetadata.model_validate(payload)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=False)
+        path.parent.chmod(0o700)
         descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(raw)
@@ -470,9 +523,7 @@ class AgentRegistry:
             raw = f"---\n{yaml.safe_dump(metadata_raw, sort_keys=False)}---\n{body}\n"
 
         candidate = _load_agent_source(raw, current.path)
-        if candidate.metadata.name != current.metadata.name or (
-            name is not None and not current.metadata.slug
-        ):
+        if current.metadata.slug and candidate.metadata.name != current.metadata.name:
             taken = {
                 value
                 for agent in self.list()
@@ -494,16 +545,32 @@ class AgentRegistry:
                     *current.metadata.aliases,
                     *candidate.metadata.aliases,
                     current.metadata.slug or agent_id,
+                    current.metadata.name
+                    if current.metadata.name != candidate.metadata.name
+                    else "",
+                    slugify_agent_name(current.metadata.name)
+                    if current.metadata.name != candidate.metadata.name
+                    else "",
                     current.path.parent.name,
                 ]
             )
         )
-        aliases = [alias for alias in aliases if alias not in {agent_id, candidate.metadata.slug}]
+        aliases = [
+            alias for alias in aliases if alias and alias not in {agent_id, candidate.metadata.slug}
+        ]
         for agent in self.list():
-            if agent.id != agent_id and {candidate.metadata.slug, *aliases}.intersection(
-                {agent.id, agent.slug, *agent.aliases}
-            ):
+            if agent.id == agent_id:
+                continue
+            reserved = {value.casefold() for value in (agent.id, agent.slug, *agent.aliases)} - {""}
+            if {
+                value.casefold() for value in (candidate.metadata.slug, *aliases) if value
+            }.intersection(reserved):
                 raise ValueError("agent slug or alias is already in use")
+            if candidate.metadata.name != current.metadata.name and {
+                candidate.metadata.name.casefold(),
+                slugify_agent_name(candidate.metadata.name),
+            }.intersection({alias.casefold() for alias in agent.aliases}):
+                raise ValueError("agent name is reserved by a historical alias")
         metadata_raw, body = _split_agent_markdown(raw)
         if aliases:
             metadata_raw["aliases"] = aliases

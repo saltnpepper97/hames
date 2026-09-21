@@ -57,10 +57,10 @@ export function AgentSidebar() {
                 onDelete={async () => {
                   await retireAgent(agent.id);
                   directory.remove(agent.id);
-                  if (location.pathname === `/agents/${encodeURIComponent(agent.slug || agent.id)}`) navigate("/agents", { replace: true });
+                  if (location.pathname === `/agents/${encodeURIComponent(agent.id)}`) navigate("/agents", { replace: true });
                 }}>
                 <A
-                  href={`/agents/${encodeURIComponent(agent.slug || agent.id)}`}
+                  href={`/agents/${encodeURIComponent(agent.id)}`}
                   class="agent-sidebar-item"
                   activeClass="active"
                   end
@@ -72,7 +72,7 @@ export function AgentSidebar() {
                   />
                   <span class="agent-sidebar-copy">
                     <strong>{agent.name}</strong>
-                    <span>{agent.slug || agent.id} · {authorityLabel(agent.authority)}</span>
+                    <span>{authorityLabel(agent.authority)}</span>
                   </span>
                 </A>
               </DeletableSidebarRow>
@@ -93,7 +93,7 @@ export function AgentSidebarAction() {
   const openCreatedAgent = (agent: AgentDetail) => {
     directory.update(agent);
     setCreating(false);
-    navigate(`/agents/${encodeURIComponent(agent.slug || agent.id)}`);
+    navigate(`/agents/${encodeURIComponent(agent.id)}`);
   };
 
   return (

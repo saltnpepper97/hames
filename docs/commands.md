@@ -18,7 +18,7 @@ agent = "builder"
 
 - Change the filename to rename the command.
 - Change `description` to update its menu text.
-- Change `agent` to choose an agent, using its stable ID or current slug.
+- Change `agent` to choose an agent, using its name, stable ID, or a legacy slug.
 - Delete the file to remove the command.
 - Put a file with the same name in `<workspace>/.hames/commands/` to override it
   for that workspace only. An invalid override reports an error; it never silently

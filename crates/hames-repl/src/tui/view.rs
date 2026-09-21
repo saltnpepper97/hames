@@ -2778,7 +2778,7 @@ fn render_modal(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             let mut lines = vec![
                 detail_line("Session", &app.session.id),
                 detail_line("Workspace", &compact_home(&app.session.working_directory)),
-                detail_line("Agent", &app.session.agent_id),
+                detail_line("Agent", &app.agent_name),
                 detail_line(
                     "Model",
                     &format!("{} / {}", app.session.provider, app.session.model),
@@ -3431,7 +3431,7 @@ fn agent_editor_body(editor: &AgentEditor) -> Vec<Line<'static>> {
 
 fn agent_identity_body(editor: &AgentEditor) -> Vec<Line<'static>> {
     let mode_hint = if editor.is_editing() {
-        "  1 / 2 · id is permanent; name, instructions, and access are customizable"
+        "  1 / 2 · name, instructions, and access are customizable"
     } else {
         "  1 / 2 · AGENT.md is stored as portable Markdown"
     };
@@ -3447,15 +3447,6 @@ fn agent_identity_body(editor: &AgentEditor) -> Vec<Line<'static>> {
         "Name",
         &editor.name,
         editor.field == AgentEditField::Name,
-        1,
-        false,
-    );
-    lines.push(Line::from(""));
-    push_agent_editor_field(
-        &mut lines,
-        "Slug",
-        &editor.slug,
-        editor.field == AgentEditField::Slug,
         1,
         false,
     );

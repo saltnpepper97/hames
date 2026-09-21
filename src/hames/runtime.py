@@ -3294,9 +3294,9 @@ class RunManager:
                 "constraints, file ownership, and expected result. Children share the workspace; "
                 "avoid conflicting edits. Submit independent spawn_agent calls together to run "
                 "them in parallel. Inspect child results, resolve conflicts and integrate evidence "
-                "before reporting completion. Omit agent_id to use yourself; permitted targets: "
-                + ", ".join(targets)
-                + "."
+                "before reporting completion. Use current agent names in prose. Internal IDs are "
+                "routing keys, not names or models. Omit agent_id to use yourself; "
+                "permitted targets: " + ", ".join(targets) + "."
             )
         if session.lineage_kind == "delegation":
             policy_summary += (
@@ -5246,15 +5246,17 @@ class RunManager:
         )
 
     def _delegation_target_labels(self, session: Session, capsule: AgentCapsule) -> list[str]:
-        slugs: list[str] = []
+        labels: list[str] = []
         for target in self._delegation_targets(session, capsule):
             try:
                 metadata = self.agents.load(target).metadata
             except (FileNotFoundError, ValueError):
-                slugs.append(target)
+                labels.append(target)
             else:
-                slugs.append(f"{metadata.name} (agent_id={metadata.id})")
-        return slugs
+                labels.append(
+                    f"{metadata.name} (agent_id={json.dumps(self.agents.reference(target))})"
+                )
+        return labels
 
     def _skill_permitted(self, session: Session, capsule: AgentCapsule, slug: str) -> bool:
         scope = self._delegation_scope(session)
@@ -5575,6 +5577,10 @@ class RunManager:
             correlation_id=run_id,
         )
         result_limit = self.config.tools.model_result_char_limit
+        try:
+            target = self.agents.load(target.metadata.id)
+        except (FileNotFoundError, ValueError):
+            pass  # A retired worker still owes its parent the completed report.
         return ToolResult(
             status=status,
             summary=summary,
@@ -5583,7 +5589,6 @@ class RunManager:
             structured_data={
                 "child_session_id": child.id,
                 "child_run_id": child_run_id,
-                "agent_id": target.metadata.id,
                 "agent_name": target.metadata.name,
                 "requested_result_format": arguments.requested_result_format,
                 "cancelled": cancelled,

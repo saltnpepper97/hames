@@ -606,7 +606,7 @@ async fn run_agent_command(action: AgentAction) -> Result<()> {
                 print_json(&agents)
             } else {
                 for agent in agents {
-                    println!("{:<20} {:<10} {}", agent.id, agent.authority, agent.name);
+                    println!("{:<30} {}", agent.name, agent.authority);
                 }
                 Ok(())
             }
@@ -644,7 +644,7 @@ async fn run_agent_command(action: AgentAction) -> Result<()> {
             if json {
                 print_json(&agent)
             } else {
-                println!("created agent {} ({})", agent.agent.id, agent.agent.name);
+                println!("created agent {}", agent.agent.name);
                 Ok(())
             }
         }
@@ -675,7 +675,7 @@ async fn run_agent_command(action: AgentAction) -> Result<()> {
             if json {
                 print_json(&agent)
             } else {
-                println!("updated agent {} ({})", agent.agent.id, agent.agent.name);
+                println!("updated agent {}", agent.agent.name);
                 Ok(())
             }
         }
@@ -684,7 +684,7 @@ async fn run_agent_command(action: AgentAction) -> Result<()> {
             if json {
                 print_json(&agent)
             } else {
-                println!("{} is valid", agent.agent.id);
+                println!("{} is valid", agent.agent.name);
                 Ok(())
             }
         }

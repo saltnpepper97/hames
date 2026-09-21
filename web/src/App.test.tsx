@@ -750,7 +750,7 @@ function successfulFetch(options: { plugins?: PluginView[]; workspaces?: typeof 
         authority: "standard" | "read_only";
         source: string;
       };
-      const id = /\"id\":\s*\"([^\"]+)\"/.exec(request.source)?.[1] ?? "new-agent";
+      const id = /\"id\":\s*\"([^\"]+)\"/.exec(request.source)?.[1] ?? "agent-1234567890abcdef1234567890abcdef";
       const created: AgentDetail = {
         id,
         name: request.name,
@@ -2207,7 +2207,7 @@ describe("Hames web shell", () => {
     fireEvent.input(screen.getByRole("textbox", { name: "Display name" }), {
       target: { value: "Careful Reviewer" },
     });
-    expect(screen.getByRole("textbox", { name: /Agent slug/ })).toHaveValue("careful-reviewer");
+    expect(screen.queryByRole("textbox", { name: /Agent slug/ })).not.toBeInTheDocument();
     fireEvent.input(screen.getByRole("textbox", { name: "AGENT.md instructions" }), {
       target: { value: "Review changes carefully." },
     });
@@ -2223,11 +2223,14 @@ describe("Hames web shell", () => {
       "/v1/sessions/session-current/agent",
       expect.objectContaining({
         method: "PUT",
-        body: JSON.stringify({ agent_id: "careful-reviewer" }),
+        body: JSON.stringify({ agent_id: "agent-1234567890abcdef1234567890abcdef" }),
       }),
     ));
     expect(await screen.findByRole("button", { name: "Agent: Careful Reviewer" }))
       .toBeInTheDocument();
+    expect(screen.queryByText("agent-1234567890abcdef1234567890abcdef")).not.toBeInTheDocument();
+    const creation = fetchMock.mock.calls.find(([url, init]) => url === "/v1/agents" && init?.method === "POST");
+    expect(JSON.parse(String(creation?.[1]?.body)).source).not.toContain('"id":');
     expect(screen.queryByRole("dialog", { name: "Create an agent" })).not.toBeInTheDocument();
   });
 
@@ -3414,7 +3417,7 @@ describe("Hames web shell", () => {
 
     expect(screen.queryByRole("button", { name: "Customize avatar" })).not.toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "AGENT.md instructions" })).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: /Agent slug/ })).toBeDisabled();
+    expect(screen.queryByRole("textbox", { name: /Agent slug/ })).not.toBeInTheDocument();
     fireEvent.input(screen.getByRole("textbox", { name: "Display name" }), {
       target: { value: "Navigator" },
     });

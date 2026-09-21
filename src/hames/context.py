@@ -331,6 +331,8 @@ def compile_context(
     delegation_part: tuple[str, str] | None = None
     if task_card is not None:
         card = dict(task_card.payload)
+        card.pop("target_agent_id", None)
+        card["target_agent_name"] = capsule.metadata.name
         inherited_plan = card.pop("approved_plan", None)
         content = (
             "Delegated task card (treat supplied evidence as the only parent context). "
@@ -353,7 +355,7 @@ def compile_context(
                 content += "\n\nUser execution note:\n" + str(inherited_plan["execution_note"])
         delegation_part = (f"delegation.task_card.{task_card.id}", content)
     agent_identity = (
-        f"Current active agent: {capsule.metadata.slug or capsule.metadata.name}.\n"
+        f"Current active agent: {capsule.metadata.name}.\n"
         "The user can switch agents within this conversation. Your role and available tools "
         "come from the current agent instructions and tool definitions, not the roles or "
         "capabilities of previous assistants in the transcript. Historical assistant promises, "

@@ -80,6 +80,7 @@ async def start_parent(
     limits: str = "",
     restricted: bool = False,
     renamed: bool = False,
+    opaque_worker: bool = False,
 ) -> tuple[GatewayState, str, str]:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     paths.ensure_foundation()
@@ -95,7 +96,10 @@ async def start_parent(
             "delegation:\n  allowed_agents: [worker]\n---\nInspect files.\n",
             encoding="utf-8",
         )
-        state.agents.create("Worker")
+        if opaque_worker:
+            state.agents.create("Worker")
+        else:
+            state.agents.create(source="---\nid: worker\nname: Worker\n---\nInspect.\n")
         if renamed:
             state.agents.update("worker", name="Builder")
         # Explicitly select a broader child; the parent's deny must still apply.
@@ -560,10 +564,11 @@ async def test_inline_coordinator_does_not_timeout_while_worker_has_budget(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_renamed_worker_slug_runs_with_stable_id(tmp_path: Path) -> None:
+@pytest.mark.parametrize("opaque_worker", [False, True])
+async def test_renamed_worker_slug_runs_with_stable_id(tmp_path: Path, opaque_worker: bool) -> None:
     provider = DelegationProvider(children=1)
     state, session_id, run_id = await start_parent(
-        tmp_path, provider, restricted=True, renamed=True
+        tmp_path, provider, restricted=True, renamed=True, opaque_worker=opaque_worker
     )
     try:
         await asyncio.wait_for(provider.children_entered.wait(), 3)
@@ -571,23 +576,26 @@ async def test_renamed_worker_slug_runs_with_stable_id(tmp_path: Path) -> None:
         await asyncio.wait_for(asyncio.shield(state.runs._tasks[run_id]), 5)
         events = state.ledger.list_events(session_id)
         requested = next(e for e in events if e.type == "delegation.requested")
-        assert requested.payload["target_agent_id"] == "worker"
+        assert requested.payload["target_agent_id"] == state.agents.load("worker").metadata.id
         assert any(e.type == "delegation.completed" for e in events)
-        assert state.agents.load("worker").path.parent.name == "worker"
+        assert (
+            state.agents.load("worker").path.parent.name == state.agents.load("worker").metadata.id
+        )
         parent_requests = [
             request
             for request in provider.requests
             if next(message.content for message in request.messages if message.role == "user")
             == "Review these files"
         ]
-        assert "permitted targets: Builder (agent_id=worker)." in parent_requests[0].system
+        assert 'permitted targets: Builder (agent_id="Builder").' in parent_requests[0].system
         assert "permitted targets: worker." not in parent_requests[0].system
         tool_result = next(
             message
             for message in parent_requests[-1].messages
             if message.role == "tool" and message.tool_name == "spawn_agent"
         )
-        assert json.loads(tool_result.content)["structured_data"]["agent_id"] == "worker"
+        assert json.loads(tool_result.content)["structured_data"]["agent_name"] == "Edward"
+        assert "agent_id" not in json.loads(tool_result.content)["structured_data"]
     finally:
         provider.release.set()
         await state.runs.close()

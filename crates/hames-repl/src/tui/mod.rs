@@ -130,7 +130,14 @@ pub async fn run() -> Result<()> {
                     && message.session_id == app.session.id
                 {
                     match message.payload {
-                        StreamPayload::Envelope(envelope) => {
+                        StreamPayload::Envelope(mut envelope) => {
+                            if let Some(event) = envelope.event.as_mut()
+                                && event.event_type == "delegation.requested"
+                                && let Some(id) = event.payload.get("target_agent_id").and_then(serde_json::Value::as_str)
+                                && let Ok(agent) = client.agent(id).await
+                            {
+                                event.payload["target_agent_name"] = serde_json::Value::String(agent.agent.name);
+                            }
                             let changed_agent = envelope.event.as_ref().and_then(|event| {
                                 (event.event_type == "session.agent.changed")
                                     .then(|| {
@@ -403,9 +410,9 @@ async fn refresh_agents_sheet(client: &GatewayClient, app: &mut App) -> Result<(
         .into_iter()
         .map(|agent| MenuOption {
             detail: if agent.id == app.session.agent_id {
-                format!("{} · current · {}", agent.authority, agent.id)
+                format!("{} · current", agent.authority)
             } else {
-                format!("{} · {}", agent.authority, agent.id)
+                agent.authority.clone()
             },
             label: agent.name,
             action: MenuAction::SetAgent(agent.id),
@@ -430,7 +437,7 @@ async fn refresh_agents_sheet(client: &GatewayClient, app: &mut App) -> Result<(
 
 async fn load_app(client: &GatewayClient, session: Session) -> Result<App> {
     let agent_id = session.agent_id.clone();
-    let (events, trust, queue, goals, plan, tasks, skills, terminals) = tokio::try_join!(
+    let (mut events, trust, queue, goals, plan, tasks, skills, terminals) = tokio::try_join!(
         client.history(&session.id),
         client.trust_status(&session.id),
         client.queue_state(&session.id),
@@ -441,6 +448,19 @@ async fn load_app(client: &GatewayClient, session: Session) -> Result<App> {
         client.background_terminals(&session.id)
     )?;
     let agent = client.agent(&agent_id).await.ok();
+    if let Ok(agents) = client.agents().await {
+        for event in &mut events {
+            if event.event_type == "delegation.requested"
+                && let Some(id) = event
+                    .payload
+                    .get("target_agent_id")
+                    .and_then(serde_json::Value::as_str)
+                && let Some(agent) = agents.iter().find(|agent| agent.id == id)
+            {
+                event.payload["target_agent_name"] = serde_json::Value::String(agent.name.clone());
+            }
+        }
+    }
     let mut app = App::new(session, events, trust.trusted);
     let (workspace_name, git_ref) = workspace_identity(&app.session.working_directory);
     app.workspace_name = workspace_name;
@@ -568,11 +588,6 @@ fn handle_terminal_event(app: &mut App, event: Event) -> Option<Effect> {
             } else if let Some(Modal::AgentEdit(editor)) = &mut app.modal {
                 if editor.page == AgentEditorPage::Identity {
                     editor.active_text_mut().insert_text(&value);
-                    if editor.field == AgentEditField::Name {
-                        editor.sync_slug();
-                    } else if editor.field == AgentEditField::Slug {
-                        editor.slug_manual = true;
-                    }
                 }
             } else if app.modal.is_none() {
                 app.composer.insert_paste(value);
@@ -1308,13 +1323,6 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                     _ => None,
                 }
             } else {
-                let name_field = editor.field == AgentEditField::Name;
-                let slug_field = editor.field == AgentEditField::Slug;
-                let text_edited = matches!(key.code, KeyCode::Backspace | KeyCode::Delete)
-                    || matches!(key.code, KeyCode::Char(_))
-                        && !key
-                            .modifiers
-                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
                 match key.code {
                     KeyCode::Left | KeyCode::Right
                         if key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -1363,11 +1371,6 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Option<Effect> {
                         editor.active_text_mut().insert_text(&value.to_string());
                     }
                     _ => return None,
-                }
-                if slug_field && text_edited {
-                    editor.slug_manual = true;
-                } else if name_field && text_edited {
-                    editor.sync_slug();
                 }
                 None
             }
@@ -3665,28 +3668,12 @@ fn terminal_tab_title(app: &App, frame: usize) -> String {
 
 fn agent_source(editor: &AgentEditor) -> std::result::Result<String, String> {
     let name = editor.name.text().trim().to_owned();
-    let slug = editor.slug.text().trim().to_owned();
     if name.is_empty() || name.chars().count() > 80 {
         return Err("Agent name must be between 1 and 80 characters".to_owned());
     }
-    let valid_slug = slug.len() <= 63
-        && slug
-            .chars()
-            .next()
-            .is_some_and(|character| character.is_ascii_lowercase())
-        && slug.chars().all(|character| {
-            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
-        });
-    if !valid_slug {
-        return Err(
-            "Slug must start with a-z and contain only lowercase letters, digits, or -".to_owned(),
-        );
-    }
-
     let tools = agent_access_update(&editor.tools, &[]);
     let skills = agent_access_update(&editor.skills, &editor.skill_pins);
     let metadata = serde_json::json!({
-        "id": slug,
         "name": name,
         "authority": "standard",
         "tools": tools,
@@ -4709,12 +4696,12 @@ mod tests {
             )],
         );
         editor.name.insert_text("Code Reviewer");
-        editor.sync_slug();
         editor.instructions.insert_text("# Role\nReview carefully.");
         editor.tools[1].selected = false;
 
         let source = agent_source(&editor).unwrap();
-        assert!(source.contains("\"id\": \"code-reviewer\""));
+        assert!(!source.contains("\"id\":"));
+        assert!(source.contains("\"name\": \"Code Reviewer\""));
         assert!(source.contains("\"allow\": [\n      \"read_file\""));
         assert!(source.contains("\"deny\": [\n      \"write_file\""));
         assert!(source.ends_with("# Role\nReview carefully.\n"));
@@ -4724,12 +4711,10 @@ mod tests {
     fn agent_editor_uses_tabs_for_fields_arrows_for_text_and_ctrl_arrows_for_pages() {
         let mut editor = AgentEditor::new(vec!["read_file".to_owned()], Vec::new());
         editor.name.insert_text("Reviewer");
-        editor.sync_slug();
         editor.instructions.insert_text("one\ntwo\nthree");
         let mut app = App::new(session(), Vec::new(), true);
         app.modal = Some(Modal::AgentEdit(editor));
 
-        assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)).is_none());
         assert!(handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)).is_none());
         assert!(matches!(
             &app.modal,
@@ -4774,7 +4759,7 @@ mod tests {
                 &mut app,
                 KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)
             ),
-            Some(Effect::CreateAgent(source)) if source.contains("\"id\": \"reviewer\"")
+            Some(Effect::CreateAgent(source)) if source.contains("\"name\": \"Reviewer\"")
         ));
     }
 
@@ -4804,7 +4789,7 @@ mod tests {
             &app.modal,
             Some(Modal::AgentEdit(editor))
                 if editor.page == crate::tui::app::AgentEditorPage::Identity
-                    && editor.slug.text() == "default"
+                    && editor.editing_agent_id.as_deref() == Some("default")
         ));
         assert!(
             handle_key(

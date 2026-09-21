@@ -16,9 +16,14 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Fixed
 
+- Agent identity is independent of names: newly created agents receive opaque UUID
+  IDs, while Web/TUI editors require no slug. Name lookups, dispatcher reports, and
+  client labels use current registry names; existing IDs and aliases remain valid.
+  Web agent routes stay stable across renames.
+
 - Renaming an agent preserves its definition path and historical lookup aliases.
-  Delegation references and worker results use immutable IDs, with current names
-  included for readability, so in-flight handoffs survive renames.
+  Saved delegation references use immutable IDs and displayed identities resolve
+  current names, so in-flight handoffs survive renames.
 
 - Worker chats appear in the Web sidebar again, with named transcripts linked from
   delegation activity as soon as the worker session is created.

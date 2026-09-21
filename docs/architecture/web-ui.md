@@ -209,7 +209,7 @@ the full path as hover text when the compact header truncates it.
 The selected session agent is changed through the gateway rather than stored in
 browser state. The chat-bar picker reads the shared live agent directory, shows
 the capsule avatars, and prevents changes during an active run. Its contained
-creation dialog writes a real `AGENT.md` capsule with a permanent slug,
+creation dialog writes a real `AGENT.md` capsule with a generated immutable ID,
 authority, and optional Markdown instructions, then assigns that capsule to the
 current chat.
 
@@ -244,7 +244,7 @@ agents. Its plugin-supplied contextual sidebar shows each capsule's animated
 avatar and identity; the selected capsule's reusable settings editor occupies
 the main surface without an intermediate overview. The editor changes the
 display name, `AGENT.md` instructions, tool access, skill access, and pinned
-skills. The slug is shown but remains immutable. A shared agent-directory
+skills. Internal IDs stay out of identity labels; no slug field is required. A shared agent-directory
 component keeps sidebar identity current after a save. A workspace-aware
 capability endpoint supplies real tools and visible skills; saving uses the
 registry's atomic structured update and preserves `AGENT.md` as the source of
