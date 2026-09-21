@@ -17,6 +17,7 @@ from hames.providers import (
     ToolCall,
     ToolDefinition,
 )
+from hames.providers.base import JsonValue
 from hames.providers.codex import CodexProvider
 from hames.providers.grok import GrokProvider
 from hames.providers.llama_cpp import LlamaCppProvider
@@ -917,6 +918,14 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
                                       {"path": "b.py", "content": "b"})
                         elif action == "complete":
                             emit_completed()
+                        elif action == "report":
+                            result = message["result"]
+                            report = json.loads(result["contentItems"][0]["text"])["content"]
+                            assert result["success"] and report == "FULL PLANNER REPORT"
+                            print(json.dumps({"method": "item/agentMessage/delta", "params": {
+                                "delta": report, "itemId": "report", "threadId": "thread-1",
+                                "turnId": "turn-1"}}), flush=True)
+                            emit_completed()
                     continue
                 if request_id is None:
                     continue
@@ -949,6 +958,8 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
                         print(json.dumps({"id": request_id, "error": {
                             "code": -1, "message": "dynamic tools missing"}}), flush=True)
                         continue
+                    tool_names = [tool["name"] for tool in params["dynamicTools"]]
+                    assert "spawn_agent" not in tool_names
                     config = params.get("config", {})
                     features = config.get("features", {})
                     memories = config.get("memories", {})
@@ -961,6 +972,8 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
                         and memories.get("generate_memories") is False
                         and memories.get("use_memories") is False
                         and "Never infer that Hames is read-only"
+                            in params.get("developerInstructions", "")
+                        and "do not ask for separate permission"
                             in params.get("developerInstructions", "")
                     )
                     if not isolated:
@@ -986,7 +999,12 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
                     result = {"turn": {"id": "turn-1"}}
                     print(json.dumps({"id": request_id, "result": result}), flush=True)
                     prompt = params["input"][0]["text"]
-                    if "USE TWO TOOLS" in prompt:
+                    if "USE DELEGATION" in prompt:
+                        assert "hames_spawn_agent" in tool_names
+                        emit_tool(900, "call-worker", "hames_spawn_agent",
+                                  {"agent_id": "planner", "task": "Plan"})
+                        pending.append("report")
+                    elif "USE TWO TOOLS" in prompt:
                         emit_tool(900, "call-1", "read_file", {"path": "a.py"})
                         pending.extend(["tool2", "complete"])
                     elif "QUIET TURN" in prompt:
@@ -1283,3 +1301,34 @@ async def test_codex_answers_dynamic_tools_on_the_same_turn(tmp_path: Path) -> N
     assert events[2].tool_call is not None
     assert events[2].tool_call.index == 1
     assert events[-1].finish_reason == "stop"
+
+
+@pytest.mark.asyncio
+async def test_codex_hames_delegation_alias_delivers_full_report(tmp_path: Path) -> None:
+    from hames.tools import ToolResult
+
+    provider = CodexProvider(command=(sys.executable, str(_fake_codex_app_server(tmp_path))))
+
+    async def handle(name: str, arguments: dict[str, JsonValue], call_id: str) -> ToolResult:
+        assert name == "spawn_agent"
+        assert arguments["agent_id"] == "planner"
+        assert call_id == "call-worker"
+        return ToolResult(
+            status="completed", summary="child completed", content="FULL PLANNER REPORT"
+        )
+
+    request = ModelRequest(
+        model="fixture",
+        system="contract",
+        messages=[ProviderMessage(role="user", content="USE DELEGATION")],
+        tools=[
+            ToolDefinition(
+                name="spawn_agent", description="Delegate", input_schema={"type": "object"}
+            )
+        ],
+        tool_handler=handle,
+    )
+    events = [event async for event in provider.stream(request)]
+    assert "FULL PLANNER REPORT" in "".join(event.text for event in events)
+    calls = [event.tool_call for event in events if event.tool_call is not None]
+    assert calls[0].name == "spawn_agent"

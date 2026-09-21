@@ -506,6 +506,11 @@ class DelegationRequestedPayload(EventPayload):
     attempt: int = 0
 
 
+class DelegationStartedPayload(EventPayload):
+    child_session_id: str
+    target_agent_id: str
+
+
 class DelegationPlanPayload(EventPayload):
     plan_id: str
     session_id: str
@@ -990,6 +995,7 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "terminal.failed": TerminalFinishedPayload,
     "terminal.stopped": TerminalFinishedPayload,
     "delegation.requested": DelegationRequestedPayload,
+    "delegation.started": DelegationStartedPayload,
     "delegation.task_card": DelegationTaskCardPayload,
     "delegation.completed": DelegationTerminalPayload,
     "delegation.failed": DelegationTerminalPayload,

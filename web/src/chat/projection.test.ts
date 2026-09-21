@@ -449,3 +449,13 @@ it("shows a stopping child until cancellation is confirmed without ending the pa
   expect(done.nodes.find(n => n.kind === "delegation")).toMatchObject({status: "cancelled"});
   expect(done.activeRunId).toBe(start.run_id);
 });
+
+it("exposes a worker transcript while delegation is still running", () => {
+  const requested = event(1, "delegation.requested", { target_agent_id: "builder" });
+  const started = { ...event(2, "delegation.started", { child_session_id: "worker-chat" }), causation_id: requested.id };
+  const result = projectConversation([requested, started]);
+  expect(result.nodes.find(n => n.kind === "delegation")).toMatchObject({ childSessionId: "worker-chat", status: "working" });
+  const completed = { ...event(3, "delegation.completed", { child_session_id: "worker-chat", status: "completed" }), causation_id: requested.id };
+  expect(projectConversation([requested, completed]).nodes.find(n => n.kind === "delegation"))
+    .toMatchObject({ childSessionId: "worker-chat", status: "completed" });
+});

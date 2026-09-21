@@ -572,7 +572,7 @@ export async function loadDashboard(selectedWorkspaceId = ""): Promise<Dashboard
     has_messages: "true",
     include_titled: "true",
     registered_workspaces_only: "true",
-    include_delegated: "false",
+    include_delegated: "true",
   });
   const sessions = await request<Session[]>(`/v1/sessions?${parameters.toString()}`);
   return { bootstrap, health, sessions, workspaces, selected_workspace: selectedWorkspace };

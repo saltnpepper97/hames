@@ -1,7 +1,7 @@
 import type { HamesEvent, MessageAttachment } from "../api/types";
 
 export type DelegationNode = {
-  id: string; kind: "delegation"; runId: string; agentId: string; parentSessionId?: string;
+  id: string; kind: "delegation"; runId: string; agentId: string; parentSessionId?: string; childSessionId?: string;
   model: string; effort: string; status: string;
 };
 
@@ -431,6 +431,7 @@ export function projectConversation(
       continue;
     }
     if ([
+      "delegation.started",
       "delegation.completed",
       "delegation.failed",
       "delegation.followup.completed",
@@ -438,7 +439,10 @@ export function projectConversation(
       "delegation.stopping",
     ].includes(event.type)) {
       const node = delegations.get(event.causation_id || "");
-      if (node) node.status = text(event.payload, "status") || (event.type.endsWith("completed") ? "completed" : "failed");
+      if (node) {
+        node.childSessionId = text(event.payload, "child_session_id") || node.childSessionId;
+        if (event.type !== "delegation.started") node.status = text(event.payload, "status") || (event.type.endsWith("completed") ? "completed" : "failed");
+      }
       continue;
     }
 

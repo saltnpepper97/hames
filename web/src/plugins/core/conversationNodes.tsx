@@ -1,3 +1,4 @@
+import { A } from "@solidjs/router";
 import { reasoningDisclosureChoice } from "../../chat/reasoningDisclosure";
 import { For, Show, createMemo, createSignal } from "solid-js";
 import type { JSX } from "solid-js";
@@ -759,6 +760,7 @@ function DelegationNodeView(props: { node: ConversationNode }) {
   return <div class="delegation-card"><div class="delegation-handoff" role="status" data-state={node().status}>
     <span class="delegation-handoff-icon"><Show when={node().status === "working"} fallback={node().status === "completed" ? "✓" : "!"}><Spinner size="sm" /></Show></span>
     <div><span>{agentName()} · {node().status === "completed" ? "Finished" : node().status === "working" ? "Working" : node().status === "stopping" ? "Stopping" : node().status === "cancelled" ? "Cancelled" : node().status}</span>
+      <Show when={node().childSessionId}><A class="delegation-transcript-link" href={`/chat/${encodeURIComponent(node().childSessionId!)}`}>Open transcript</A></Show>
       <Show when={node().model}><small>{node().model}{node().effort ? ` · ${node().effort}` : ""}</small></Show>
     </div>
   </div></div>;

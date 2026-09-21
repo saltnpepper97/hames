@@ -149,6 +149,12 @@ async def test_plan_workflow_routes_models_efforts_and_reviewer_authority(
             "worker must retain editing tools even for a coordinator-only parent"
         )
         events = state.ledger.list_events(session.id)
+        started = [e for e in events if e.type == "delegation.started"]
+        assert len(started) == len(stages)
+        for event in started:
+            child = state.ledger.get_session(event.payload["child_session_id"])
+            assert child.parent_session_id == session.id
+            assert event.causation_id is not None
         completed = [e for e in events if e.type == "delegation.completed"]
         requested = [e for e in events if e.type == "delegation.requested"]
         assert [e.payload["target_agent_id"] for e in requested] == stages

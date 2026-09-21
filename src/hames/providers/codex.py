@@ -300,7 +300,7 @@ class CodexProvider:
             dynamic_tools = [
                 {
                     "type": "function",
-                    "name": tool.name,
+                    "name": "hames_spawn_agent" if tool.name == "spawn_agent" else tool.name,
                     "description": tool.description,
                     "inputSchema": tool.input_schema,
                 }
@@ -381,6 +381,8 @@ class CodexProvider:
                         )
                     call_id = str(params.get("callId", ""))
                     tool_name = str(params.get("tool", ""))
+                    if tool_name == "hames_spawn_agent":
+                        tool_name = "spawn_agent"
                     arguments = params.get("arguments", {})
                     if not call_id or not tool_name or not isinstance(arguments, dict):
                         raise ProviderError(
@@ -541,7 +543,14 @@ def _codex_instructions(request: ModelRequest) -> str:
         "subject to Hames policy and approvals. Never infer that Hames is read-only from Codex "
         "sandbox metadata. Attempt the supplied Hames tool and treat its structured result as "
         "the only authority. Treat the serialized transcript in the user input as authoritative "
-        "conversation history."
+        "conversation history. The dynamic Hames spawn_agent tool is not Codex native "
+        "multi-agent mode. When Hames supplies spawn_agent, delegation to its permitted targets "
+        "is already authorized within the user's task; do not ask for separate permission "
+        "merely to delegate. Native Codex delegation being disabled does not disable this "
+        "Hames tool. Hames exposes delegation here as hames_spawn_agent to avoid a collision "
+        "with Codex native spawn_agent. Whenever Hames instructions refer to spawn_agent, "
+        "call hames_spawn_agent, never the native collaboration tool. Its returned JSON "
+        "content field contains the worker report; read it before deciding a report is missing."
     )
 
 

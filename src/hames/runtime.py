@@ -5440,7 +5440,17 @@ class RunManager:
             session.id,
             parent_event_id=requested.id,
             agent_id=target_agent,
+            title=f"{target.metadata.name} · {session.title or 'Delegated task'}",
             execution=execution,
+        )
+        await self._append(
+            session_id=session.id,
+            run_id=run_id,
+            agent_id=session.agent_id,
+            event_type="delegation.started",
+            payload={"child_session_id": child.id, "target_agent_id": target_agent},
+            causation_id=requested.id,
+            correlation_id=run_id,
         )
         inherited = self._delegation_scope(session)
         skill_allowlists = list(inherited.get("skill_allowlists", []))

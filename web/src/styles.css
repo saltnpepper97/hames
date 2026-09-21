@@ -3508,13 +3508,22 @@ a {
 
 .question-options {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   margin-top: 0.9rem;
   gap: 0.45rem;
 }
 
 .question-options button {
   display: flex;
-  align-items: baseline;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+  align-items: flex-start;
   padding: 0.65rem 0.75rem;
   border: 1px solid var(--rule-soft);
   border-radius: 0.45rem;
@@ -10584,3 +10593,8 @@ a {
   .chat-session-status { display: none; }
   .chat-session-actions .agent-picker-trigger { max-width: 7rem; }
 }
+
+.decision-card, .decision-card > header, .question-options button > * { min-width: 0; max-width: 100%; }
+.decision-card h2 { overflow-wrap: anywhere; }
+.decision-actions, .custom-answer { flex-wrap: wrap; }
+.delegation-transcript-link { display: block; margin-top: .25rem; font-size: .78rem; }

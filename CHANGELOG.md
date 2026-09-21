@@ -16,6 +16,14 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Fixed
 
+- Worker chats appear in the Web sidebar again, with named transcripts linked from
+  delegation activity as soon as the worker session is created.
+- Long question choices wrap inside their cards instead of overflowing.
+- Embedded Codex instructions distinguish authorized Hames delegation from disabled
+  native Codex delegation, avoiding redundant permission requests for worker handoffs.
+- Codex exposes the Hames dispatcher as `hames_spawn_agent` to avoid collision with
+  native `spawn_agent`; worker reports remain intact in the dynamic tool response.
+
 - Optional `delegation.coordinator_only` enforces a coordinating agent's local
   read/dispatch scope while preserving workers' configured execution tools and models.
   Direct mutation attempts are rejected with instructions to delegate.
