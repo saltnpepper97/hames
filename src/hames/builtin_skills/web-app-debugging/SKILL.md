@@ -64,9 +64,9 @@ Use this loop:
      never a broad `killall`/`pkill` that may affect the user.
 
 3. Exercise the real behavior.
-   - Prefer existing browser tests and project tooling. When available, Playwright is the preferred
-     general browser automation choice; use an already configured or installed version rather than
-     silently adding it. An available browser-control capability is also suitable.
+   - Prefer existing browser tests and project tooling. Use an already configured or installed
+     browser automation runner rather than silently adding one. An available browser-control
+     capability is also suitable.
    - Navigate to the affected route and reproduce the actual user path: click, type, scroll,
      navigate, complete and submit forms, and open dialogs or menus as the task requires.
    - Use realistic state and data without modifying production services. Cover success and the
@@ -79,7 +79,7 @@ Use this loop:
      response status, DOM state, and the accessibility tree when it clarifies names, roles, focus,
      or hidden content.
    - Capture focused screenshots of the changed state. For intermittent or sequence-dependent
-     failures, retain a Playwright trace or video when available and proportionate.
+     failures, retain a browser trace or video when available and proportionate.
    - Distinguish application failures from unavailable test infrastructure. Never translate a
      missing browser, inaccessible service, or unsupported model capability into a passing result.
 
@@ -95,7 +95,7 @@ Use this loop:
 
 - Required: repository inspection, a controlled server lifecycle, a reachable-page check, and
   empirical exercise of the affected flow.
-- Preferred: the project's own scripts and Playwright/browser tooling already present.
+- Preferred: the project's own scripts and browser tooling already present.
 - Fallback: another existing browser runner or a documented manual verification handoff. Static
   source inspection alone is not a visual or behavioral test.
 - Load `visual-verification` as a companion for visible changes. For Tauri or Electron on Linux,

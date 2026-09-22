@@ -5,7 +5,7 @@
 Read the nearest project instructions and README, then inspect the actual package:
 
 - JS/TS: `package.json` scripts and `packageManager`, lockfile, workspace boundaries, Vite/framework
-  configuration, and any Playwright configuration. Use the declared script from its package cwd.
+  configuration, and any browser-test configuration. Use the declared script from its package cwd.
 - Rust/native: Cargo workspace, documented executable and feature flags, desktop/service launchers.
   Confirm whether the expected program is a built artifact, installed binary, or wrapper.
 - Python: project entry points, virtual environment, service unit, configured port, and health route.
@@ -13,7 +13,7 @@ Read the nearest project instructions and README, then inspect the actual packag
   shell too when the defect involves native dragging, dialogs, decorations, or Wayland.
 
 Use existing installed tools. A package runner may download missing packages; verify availability
-before invoking it. Do not add Playwright, a browser, or an X server silently as a routine fallback.
+before invoking it. Do not add browser automation packages, a browser, or an X server silently as a routine fallback.
 
 Reuse a healthy target only when its project, served artifact, and state are known. Otherwise use
 an unused loopback port and a task-owned process, retaining stdout/stderr and its process handle.

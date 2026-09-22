@@ -6,6 +6,10 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Removed
 
+- Playwright-specific MCP approval handling and built-in guidance preferences.
+  Browser automation is no longer integrated internally; generic external MCP
+  support remains available.
+
 - Deferred the experimental built-in browser: removed its chat panel, gateway APIs,
   agent tool, prototype, obsolete implementation plans, and Python Playwright
   dependency. Existing external browser MCP
@@ -28,8 +32,6 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 - Dynamic plans, checklists, delegated assignments, and worker state no longer consume
   the fixed-instruction category allowance. The overall model input budget remains
   enforced, and worker reports now use the intended bounded prompt representation.
-- Listing tabs through the official Playwright MCP is recognized as read-only;
-  tab mutations retain the normal approval policy.
 
 - Codex receives safe aliases for Hames MCP tools instead of its reserved `mcp__`
   names. Calls map back to their original tool identities, with collision handling

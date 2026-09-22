@@ -4283,7 +4283,7 @@ class RunManager:
             session_tool_granted=session_tool_granted,
             user_requested_memory_maintenance=user_requested_memory_maintenance,
             mcp_read_only=(
-                self.mcp.tool_is_read_only(invocation.name, invocation.arguments)
+                self.mcp.tool_is_read_only(invocation.name)
                 if self.mcp is not None and self.mcp.is_tool(invocation.name)
                 else None
             ),

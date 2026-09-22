@@ -1006,7 +1006,7 @@ def _fake_codex_app_server(tmp_path: Path) -> Path:
                                   {"agent_id": "planner", "task": "Plan"})
                         pending.append("report")
                     elif "USE MCP" in prompt:
-                        emit_tool(900, "call-mcp", "hames_mcp__playwright__browser_close", {})
+                        emit_tool(900, "call-mcp", "hames_mcp__fixture__close", {})
                         pending.append("complete")
                     elif "USE TWO TOOLS" in prompt:
                         emit_tool(900, "call-1", "read_file", {"path": "a.py"})
@@ -1358,7 +1358,7 @@ async def test_codex_mcp_alias_routes_back_to_original_tool(tmp_path: Path, inli
         messages=[ProviderMessage(role="user", content="USE MCP")],
         tools=[
             ToolDefinition(
-                name="mcp__playwright__browser_close",
+                name="mcp__fixture__close",
                 description="Close browser",
                 input_schema={"type": "object", "properties": {}},
             )
@@ -1367,9 +1367,9 @@ async def test_codex_mcp_alias_routes_back_to_original_tool(tmp_path: Path, inli
     )
     events = [event async for event in provider.stream(request)]
     assert [event.tool_call.name for event in events if event.tool_call] == [
-        "mcp__playwright__browser_close"
+        "mcp__fixture__close"
     ]
-    assert calls == (["mcp__playwright__browser_close"] if inline else [])
+    assert calls == (["mcp__fixture__close"] if inline else [])
 
 
 def test_codex_tool_aliases_are_bounded_unique_and_order_independent() -> None:
