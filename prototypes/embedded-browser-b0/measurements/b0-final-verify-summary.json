@@ -1,0 +1,23 @@
+{
+  "label": "b0-final-verify",
+  "generatedAt": "2026-09-21T23:47:02.801Z",
+  "candidates": [
+    {
+      "candidate": "frame-stream",
+      "hardPass": true,
+      "failed": [],
+      "stepsOk": 18,
+      "stepsTotal": 18,
+      "report": "b0-final-verify-frame-stream.json"
+    },
+    {
+      "candidate": "remote-view",
+      "hardPass": true,
+      "failed": [],
+      "stepsOk": 18,
+      "stepsTotal": 18,
+      "report": "b0-final-verify-remote-view.json"
+    }
+  ],
+  "allPass": true
+}

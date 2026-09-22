@@ -1,0 +1,23 @@
+{
+  "label": "reviewer-b0",
+  "generatedAt": "2026-09-22T00:17:14.327Z",
+  "candidates": [
+    {
+      "candidate": "frame-stream",
+      "hardPass": true,
+      "failed": [],
+      "stepsOk": 18,
+      "stepsTotal": 18,
+      "report": "reviewer-b0-frame-stream.json"
+    },
+    {
+      "candidate": "remote-view",
+      "hardPass": true,
+      "failed": [],
+      "stepsOk": 18,
+      "stepsTotal": 18,
+      "report": "reviewer-b0-remote-view.json"
+    }
+  ],
+  "allPass": true
+}

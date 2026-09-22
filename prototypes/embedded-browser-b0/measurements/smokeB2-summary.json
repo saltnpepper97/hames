@@ -1,0 +1,22 @@
+{
+  "label": "smokeB2",
+  "generatedAt": "2026-09-21T23:10:47.076Z",
+  "candidates": [
+    {
+      "candidate": "remote-view",
+      "stepsOk": 3,
+      "stepsTotal": 4,
+      "failed": [
+        "pointer-move-canvas"
+      ],
+      "latencyP50Ms": 116,
+      "latencyP95Ms": 116,
+      "contentPsnrDb": null,
+      "activeCpuPercentOfOneCore": 45.43,
+      "idleCpuPercentOfOneCore": null,
+      "activeBandwidthKbits": 6934,
+      "idleBandwidthKbits": null,
+      "activeBytesPerFrame": 126746.3
+    }
+  ]
+}

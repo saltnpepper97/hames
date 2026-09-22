@@ -1,0 +1,54 @@
+{
+  "label": "b0-pass2",
+  "generatedAt": "2026-09-21T23:17:32.985Z",
+  "candidates": [
+    {
+      "candidate": "frame-stream",
+      "stepsOk": 18,
+      "stepsTotal": 18,
+      "failed": [],
+      "latencyP50Ms": 32,
+      "latencyP95Ms": 81,
+      "contentPsnrDb": 34.69,
+      "activeCpuPercentOfOneCore": 15.42,
+      "idleCpuPercentOfOneCore": 0.7,
+      "activeBandwidthKbits": 3031.7,
+      "idleBandwidthKbits": 0,
+      "activeBytesPerFrame": 85108.2,
+      "idleFramesPerSecond": 0,
+      "activeFramesPerSecond": 4.45,
+      "capturedFramesPerSecond": null,
+      "connectMs": 26,
+      "firstFrameMs": 10
+    },
+    {
+      "candidate": "remote-view",
+      "stepsOk": 9,
+      "stepsTotal": 18,
+      "failed": [
+        "viewer-scroll",
+        "viewer-internal-link",
+        "viewer-back-to-index",
+        "viewer-external-link",
+        "viewer-failing-request",
+        "agent-action-visible",
+        "agent-marker-visible",
+        "identity-agreement",
+        "viewer-disconnect-reconnect"
+      ],
+      "latencyP50Ms": 110,
+      "latencyP95Ms": 110,
+      "contentPsnrDb": 7.32,
+      "activeCpuPercentOfOneCore": 20.56,
+      "idleCpuPercentOfOneCore": 45.43,
+      "activeBandwidthKbits": 17901.2,
+      "idleBandwidthKbits": 25559.3,
+      "activeBytesPerFrame": 122738.7,
+      "idleFramesPerSecond": 23.98,
+      "activeFramesPerSecond": 18.23,
+      "capturedFramesPerSecond": 28.55,
+      "connectMs": 22,
+      "firstFrameMs": 141
+    }
+  ]
+}

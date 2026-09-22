@@ -1,0 +1,1433 @@
+{
+  "schema": 1,
+  "label": "reviewer-b0",
+  "candidate": "frame-stream",
+  "generatedAt": "2026-09-22T00:16:39.408Z",
+  "startedAt": "2026-09-22T00:16:07.999Z",
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "versions": {
+    "node": "v26.9.0",
+    "platform": "linux x64",
+    "kernel": "7.2.6-arch2-1",
+    "playwright": "1.61.1",
+    "ws": "^8.18.3",
+    "chromiumPackage": "Chromium 153.0.8010.52 Arch Linux",
+    "ffmpeg": "ffmpeg version n9.0.1 Copyright (c) 2000-2026 the FFmpeg developers",
+    "xdotool": "xdotool version 4.20260303.1",
+    "xvfb": {
+      "binary": "/home/dustin/projects/personal/active/hames/prototypes/embedded-browser-b0/vendor/usr/bin/Xvfb",
+      "fromPath": null,
+      "package": {
+        "name": "xorg-server-xvfb",
+        "version": "21.1.24-1",
+        "file": "xorg-server-xvfb-21.1.24-1-x86_64.pkg.tar.zst",
+        "url": "https://geo.mirror.pkgbuild.com/extra/os/x86_64/xorg-server-xvfb-21.1.24-1-x86_64.pkg.tar.zst"
+      }
+    }
+  },
+  "candidateInfo": {
+    "candidate": "frame-stream",
+    "browserVersion": "149.0.7827.55",
+    "executablePath": "/home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome",
+    "headless": true,
+    "display": null,
+    "profileDir": null,
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "chromeHeight": 0,
+    "contentOrigin": {
+      "x": 0,
+      "y": 0
+    },
+    "frameSize": {
+      "width": 1280,
+      "height": 800
+    },
+    "targetId": "526DB7EF7F6D32D95D39B9BC09655827",
+    "url": "http://127.0.0.1:40575/index.html?session=frame-stream-mubxben4",
+    "title": "Hames B0 Fixture",
+    "transport": {
+      "url": "http://127.0.0.1:42929/viewer.html",
+      "wsUrl": "ws://127.0.0.1:42929/ws",
+      "port": 42929
+    }
+  },
+  "startup": {
+    "connectMs": 27,
+    "firstFrameMs": 10,
+    "viewerUrl": "http://127.0.0.1:42929/viewer.html"
+  },
+  "fixtureContract": {
+    "checks": {
+      "topLevelDocument": true,
+      "noIframes": true,
+      "identityNonceLooksUnique": true,
+      "identityFieldsFilled": true,
+      "displayUrlMatchesLocation": true,
+      "displayTitleMatchesDocument": true,
+      "formWithTextInput": true,
+      "countersPresent": true,
+      "keyboardFeedbackPresent": true,
+      "pointerCanvasPresent": true,
+      "internalLinkSameOrigin": true,
+      "externalLinkCrossOrigin": true,
+      "externalLinkNotPlaceholder": true,
+      "scrollAreaScrollable": true,
+      "scrollAreaHasRows": true,
+      "documentScrollable": true,
+      "failingRequestShown": true,
+      "fixtureStateFunctionExposed": true,
+      "originMarkerPresent": true
+    },
+    "observed": {
+      "identity": {
+        "page-nonce": "e12afd34-15fb-4edb-bb9c-b81a358e659b",
+        "url-display": "http://127.0.0.1:40575/index.html?session=frame-stream-mubxben4",
+        "title-display": "Hames B0 Fixture",
+        "session-id": "frame-stream-mubxben4",
+        "generation": "1",
+        "viewport-size": "1280x800",
+        "uptime": "0",
+        "load-ts": "2026-09-22T00:16:07.663Z"
+      },
+      "counters": {
+        "probe-count": "0",
+        "submit-count": "0",
+        "key-count": "0",
+        "shortcut-count": "0",
+        "scroll-area-y": "0",
+        "doc-scroll-y": "0",
+        "scroll-events": "0",
+        "fail-count": "1"
+      },
+      "internalHref": "http://127.0.0.1:40575/second.html",
+      "externalHref": "http://127.0.0.1:33091/third.html",
+      "scrollRows": 60,
+      "failStatus": "on load: HTTP 500 (deliberate failure)",
+      "bodyClass": "probe-a"
+    }
+  },
+  "isolation": {
+    "checks": {
+      "loopbackOnly": {
+        "ok": true,
+        "urls": {
+          "viewer": "http://127.0.0.1:42929/viewer.html",
+          "ws": "ws://127.0.0.1:42929/ws",
+          "control": "http://127.0.0.1:40867",
+          "fixture": "http://127.0.0.1:40575",
+          "externalOrigin": "http://127.0.0.1:33091/third.html"
+        }
+      },
+      "throwawayProfile": {
+        "ok": true,
+        "userDataDir": "/tmp/playwright_chromiumdev_profile-QnXqSB",
+        "reportedProfileDir": null,
+        "personalProfilesNotUsed": [
+          "/home/dustin/.config/chromium",
+          "/home/dustin/.config/google-chrome",
+          "/home/dustin/.config/google-chrome-for-testing"
+        ],
+        "browserPid": 3925601
+      },
+      "throwawayStateRoots": {
+        "ok": true,
+        "runDir": "/home/dustin/projects/personal/active/hames/prototypes/embedded-browser-b0/.run/frame-stream-3IqbrY",
+        "hamesHome": "/home/dustin/projects/personal/active/hames/prototypes/embedded-browser-b0/.run/frame-stream-3IqbrY/hames-home",
+        "isolatedTempRoots": [
+          "/tmp/b0-uH0BbJ"
+        ]
+      },
+      "noWaylandForBrowser": {
+        "ok": true,
+        "waylandDisplay": null,
+        "display": null,
+        "browserEnvCleared": true,
+        "browserEnvKeyCount": 1,
+        "ozonePlatform": "headless",
+        "headlessArg": true,
+        "cmdlineHasWayland": false,
+        "expectedDisplay": null,
+        "siblingEnv": [
+          {
+            "pid": 3925587,
+            "cmd": "/usr/bin/node",
+            "wayland": "wayland-1",
+            "display": ":0",
+            "keyCount": 32
+          }
+        ],
+        "waylandLeak": false,
+        "note": "Chromium cleared its environ after launch; Wayland/display evidence is taken from the server, Xvfb, ffmpeg, and xdotool processes plus the browser command line",
+        "browserPid": 3925601
+      },
+      "isolatedDisplayNotLive": {
+        "ok": true,
+        "display": null,
+        "expectedDisplay": null,
+        "parentDisplay": ":0",
+        "ozonePlatform": "headless",
+        "headless": true,
+        "note": "headless Chromium; the server process has no DISPLAY"
+      },
+      "noHamesProcessStarted": {
+        "ok": true,
+        "processCount": 9,
+        "suspicious": [],
+        "note": "the harness's own process tree contains only node, chromium and (remote-view) Xvfb/ffmpeg/xdotool; no Hames gateway or service process is started or signalled",
+        "binaries": [
+          "/usr/bin/node",
+          "/home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome"
+        ],
+        "processes": [
+          "3925587 /usr/bin/node /home/dustin/projects/personal/active/hames/prototypes/embedded-browser-b0/tools/serve.mjs --candidate fra",
+          "3925601 /home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --disable-field-trial-config --disable-background-",
+          "3925608 /home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --type=zygote --no-zygote-sandbox --no-sandbox --h",
+          "3925609 /home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --type=zygote --no-sandbox --headless --crashpad-h",
+          "3925633 /home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --type=utility --utility-sub-type=network.mojom.Ne",
+          "3925630 /home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --type=gpu-process --no-sandbox --disable-dev-shm-",
+          "3925635 /home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --type=utility --utility-sub-type=storage.mojom.St",
+          "3925698 /home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --type=renderer --crashpad-handler-pid=3925603 --e",
+          "3925699 /home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --type=renderer --crashpad-handler-pid=3925603 --e"
+        ]
+      },
+      "sameOriginIsolationForPages": {
+        "ok": true,
+        "note": "the fixture page and the viewer page run on different loopback origins/ports; the viewer holds no CDP or gateway credential",
+        "viewerOrigin": "http://127.0.0.1:42929",
+        "fixtureOrigin": "http://127.0.0.1:40575"
+      }
+    },
+    "browser": {
+      "pid": 3925601,
+      "cmd": "/home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --disable-field-trial-config --disable-background-networking --disable-background-timer-th"
+    },
+    "userDataDir": "/tmp/playwright_chromiumdev_profile-QnXqSB",
+    "runDir": "/home/dustin/projects/personal/active/hames/prototypes/embedded-browser-b0/.run/frame-stream-3IqbrY",
+    "versionsReport": {
+      "node": "v26.9.0",
+      "platform": "linux x64",
+      "kernel": "7.2.6-arch2-1",
+      "playwright": "1.61.1",
+      "ws": "^8.18.3",
+      "chromiumPackage": "Chromium 153.0.8010.52 Arch Linux",
+      "ffmpeg": "ffmpeg version n9.0.1 Copyright (c) 2000-2026 the FFmpeg developers",
+      "xdotool": "xdotool version 4.20260303.1",
+      "xvfb": {
+        "binary": "/home/dustin/projects/personal/active/hames/prototypes/embedded-browser-b0/vendor/usr/bin/Xvfb",
+        "fromPath": null,
+        "package": {
+          "name": "xorg-server-xvfb",
+          "version": "21.1.24-1",
+          "file": "xorg-server-xvfb-21.1.24-1-x86_64.pkg.tar.zst",
+          "url": "https://geo.mirror.pkgbuild.com/extra/os/x86_64/xorg-server-xvfb-21.1.24-1-x86_64.pkg.tar.zst"
+        }
+      }
+    }
+  },
+  "criteria": [
+    {
+      "id": "fixture-contract",
+      "title": "Disposable fixture exposes identity, form, counters, scrolling, keyboard, canvas, two-origin links, and a failing request",
+      "ok": true,
+      "evidence": {
+        "checks": {
+          "topLevelDocument": true,
+          "noIframes": true,
+          "identityNonceLooksUnique": true,
+          "identityFieldsFilled": true,
+          "displayUrlMatchesLocation": true,
+          "displayTitleMatchesDocument": true,
+          "formWithTextInput": true,
+          "countersPresent": true,
+          "keyboardFeedbackPresent": true,
+          "pointerCanvasPresent": true,
+          "internalLinkSameOrigin": true,
+          "externalLinkCrossOrigin": true,
+          "externalLinkNotPlaceholder": true,
+          "scrollAreaScrollable": true,
+          "scrollAreaHasRows": true,
+          "documentScrollable": true,
+          "failingRequestShown": true,
+          "fixtureStateFunctionExposed": true,
+          "originMarkerPresent": true
+        },
+        "observed": {
+          "identity": {
+            "page-nonce": "e12afd34-15fb-4edb-bb9c-b81a358e659b",
+            "url-display": "http://127.0.0.1:40575/index.html?session=frame-stream-mubxben4",
+            "title-display": "Hames B0 Fixture",
+            "session-id": "frame-stream-mubxben4",
+            "generation": "1",
+            "viewport-size": "1280x800",
+            "uptime": "0",
+            "load-ts": "2026-09-22T00:16:07.663Z"
+          },
+          "counters": {
+            "probe-count": "0",
+            "submit-count": "0",
+            "key-count": "0",
+            "shortcut-count": "0",
+            "scroll-area-y": "0",
+            "doc-scroll-y": "0",
+            "scroll-events": "0",
+            "fail-count": "1"
+          },
+          "internalHref": "http://127.0.0.1:40575/second.html",
+          "externalHref": "http://127.0.0.1:33091/third.html",
+          "scrollRows": 60,
+          "failStatus": "on load: HTTP 500 (deliberate failure)",
+          "bodyClass": "probe-a"
+        }
+      }
+    },
+    {
+      "id": "failing-request-is-real",
+      "title": "The deliberate failure is an HTTP 500 from the fixture, not a simulated label",
+      "ok": true,
+      "evidence": {
+        "failStatus": "manual request: HTTP 500 (deliberate failure)",
+        "counts": {
+          "failOnce": 4,
+          "fail": 1
+        },
+        "externalOriginRequests": 4
+      }
+    },
+    {
+      "id": "one-dedicated-page",
+      "title": "One dedicated Playwright page, no iframes, no extra page targets",
+      "ok": true,
+      "evidence": {
+        "url": "http://127.0.0.1:40575/index.html?session=frame-stream-mubxben4",
+        "title": "Hames B0 Fixture",
+        "targetId": "526DB7EF7F6D32D95D39B9BC09655827",
+        "contextPageCount": 1,
+        "pageTargetCount": 1,
+        "iframes": 0,
+        "topLevel": true
+      }
+    },
+    {
+      "id": "manual-input-visible-to-agent",
+      "title": "Typing and form submission through the viewer are visible to the Playwright adapter",
+      "ok": true,
+      "evidence": {
+        "typing": {
+          "typed": "viewer typed 123",
+          "fieldValue": "viewer typed 123",
+          "keyEvents": 16,
+          "lastKey": "3"
+        },
+        "submit": {
+          "submitStatus": "ok 200",
+          "submitCount": 1,
+          "lastSubmitted": "viewer typed 123",
+          "url": "http://127.0.0.1:40575/index.html?session=frame-stream-mubxben4"
+        }
+      }
+    },
+    {
+      "id": "agent-action-visible-to-viewer",
+      "title": "A Playwright action (click and DOM write) is visible in the streamed pixels",
+      "ok": true,
+      "evidence": {
+        "click": {
+          "probeBefore": "a",
+          "probeAfter": "b",
+          "visibleAfterMs": 77,
+          "frameSeq": 48
+        },
+        "marker": {
+          "token": "AGENT-MARKER-QV980UC7",
+          "markerInDom": "AGENT-MARKER-QV980UC7",
+          "domChanged": true,
+          "region": {
+            "x": 658,
+            "y": 390,
+            "width": 594,
+            "height": 19,
+            "contentOrigin": {
+              "x": 0,
+              "y": 0
+            },
+            "pageRect": {
+              "left": 662,
+              "top": 392,
+              "width": 586,
+              "height": 15,
+              "centerX": 955,
+              "centerY": 400,
+              "viewportWidth": 1280,
+              "viewportHeight": 800
+            },
+            "frameSize": {
+              "width": 1280,
+              "height": 800
+            }
+          },
+          "regionBaseline": [
+            244.97046979865772,
+            243.97046979865772,
+            247.9234899328859
+          ],
+          "visibleAfterMs": 23,
+          "frameSeq": 51,
+          "usedSnapshotFallback": false,
+          "waitError": null,
+          "fallback": null
+        }
+      }
+    },
+    {
+      "id": "identity-and-url-agreement",
+      "title": "URL, title, nonce, and field values agree, and the streamed pixels match the agent's own render",
+      "ok": true,
+      "evidence": {
+        "domPath": {
+          "url": "http://127.0.0.1:40575/index.html",
+          "title": "Hames B0 Fixture",
+          "nonce": "7fd6efd5-f345-4c01-966f-ed66011c6898",
+          "fieldValue": "",
+          "submitCount": 0,
+          "probeState": "b"
+        },
+        "pixelPath": {
+          "screenshot": "/home/dustin/projects/personal/active/hames/prototypes/embedded-browser-b0/measurements/frames/reviewer-b0-frame-stream/identity-agreement-reference.png",
+          "frame": "/home/dustin/projects/personal/active/hames/prototypes/embedded-browser-b0/measurements/frames/reviewer-b0-frame-stream/identity-agreement-frame.png",
+          "contentPsnrDb": 35.08,
+          "bestOffsetPsnr": {
+            "offset": {
+              "x": -3,
+              "y": -3
+            },
+            "psnrDb": 35.08
+          },
+          "regionPsnrDb": {
+            "nonce": {
+              "selector": "#page-nonce",
+              "rect": {
+                "left": 244,
+                "top": 64,
+                "width": 303,
+                "height": 16,
+                "centerX": 396,
+                "centerY": 72,
+                "viewportWidth": 1280,
+                "viewportHeight": 800
+              },
+              "psnrDb": 30.44,
+              "grayPsnrDb": 30.6,
+              "inkIoU": 0.956,
+              "inkOffset": {
+                "x": 0,
+                "y": 0
+              }
+            },
+            "url": {
+              "selector": "#url-display",
+              "rect": {
+                "left": 244,
+                "top": 82,
+                "width": 278,
+                "height": 16,
+                "centerX": 383,
+                "centerY": 90,
+                "viewportWidth": 1280,
+                "viewportHeight": 800
+              },
+              "psnrDb": 30.41,
+              "grayPsnrDb": 30.56,
+              "inkIoU": 0.954,
+              "inkOffset": {
+                "x": 0,
+                "y": 0
+              }
+            },
+            "fieldValue": {
+              "selector": "#field-value",
+              "rect": {
+                "left": 874,
+                "top": 364,
+                "width": 59,
+                "height": 16,
+                "centerX": 904,
+                "centerY": 372,
+                "viewportWidth": 1280,
+                "viewportHeight": 800
+              },
+              "psnrDb": 31.6,
+              "grayPsnrDb": 31.76,
+              "inkIoU": 0.979,
+              "inkOffset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          "probeBackgroundMean": [
+            24,
+            178,
+            154
+          ],
+          "expectedProbeColor": [
+            24,
+            179,
+            154
+          ],
+          "probeBackgroundDelta": 1
+        }
+      }
+    },
+    {
+      "id": "reconnect-preserves-page",
+      "title": "Viewer disconnect and reconnect keeps the same page, target, URL, and running document",
+      "ok": true,
+      "evidence": {
+        "heartbeatAtDisconnect": 11,
+        "heartbeatAfterReconnect": 14,
+        "heartbeatDuringGap": 14,
+        "nonceBefore": "7fd6efd5-f345-4c01-966f-ed66011c6898",
+        "nonceAfterReconnect": "7fd6efd5-f345-4c01-966f-ed66011c6898",
+        "urlDuringGap": "http://127.0.0.1:40575/index.html",
+        "urlAfterReconnect": "http://127.0.0.1:40575/index.html",
+        "pageClosed": false,
+        "targetIdStable": true,
+        "reconnectSnapshotSeq": 1,
+        "reconnectedHelloFrameSize": {
+          "width": 1280,
+          "height": 800
+        },
+        "viewerDisconnectedIndependentOfBrowser": true
+      }
+    },
+    {
+      "id": "idle-does-not-reset-page",
+      "title": "Page survives an idle interval: same nonce, advancing heartbeat, never reset to about:blank",
+      "ok": true,
+      "evidence": {
+        "idle": {
+          "idleMs": 10000,
+          "heartbeatBefore": 14,
+          "heartbeatAfter": 24,
+          "framesDuringIdle": 15,
+          "bytesDuringIdle": 773793,
+          "nonceStable": true,
+          "idleChurn": {
+            "msApart": 464,
+            "changedSamples": 91,
+            "sampled": 256000,
+            "changedFraction": 0.00036,
+            "boundingBox": {
+              "x": 248,
+              "y": 168,
+              "width": 16,
+              "height": 40
+            },
+            "step": 2,
+            "tolerance": 8
+          }
+        },
+        "urlAtStart": "http://127.0.0.1:40575/index.html?session=frame-stream-mubxben4",
+        "urlAtEnd": "http://127.0.0.1:40575/index.html",
+        "pageClosed": false,
+        "targetStable": true
+      }
+    },
+    {
+      "id": "all-supported-interactions",
+      "title": "Every interaction in the shared script succeeded (pointer, typing, keys, shortcut, canvas, scroll, both links, failing request)",
+      "ok": true,
+      "evidence": {
+        "failedSteps": [],
+        "steps": [
+          {
+            "id": "connect",
+            "ok": true,
+            "ms": 4
+          },
+          {
+            "id": "pointer-move-canvas",
+            "ok": true,
+            "ms": 383
+          },
+          {
+            "id": "pointer-click-probe",
+            "ok": true,
+            "ms": 582
+          },
+          {
+            "id": "viewer-typing",
+            "ok": true,
+            "ms": 723
+          },
+          {
+            "id": "viewer-submit",
+            "ok": true,
+            "ms": 607
+          },
+          {
+            "id": "viewer-key-probe",
+            "ok": true,
+            "ms": 115
+          },
+          {
+            "id": "viewer-shortcut",
+            "ok": true,
+            "ms": 6
+          },
+          {
+            "id": "viewer-canvas-drag",
+            "ok": true,
+            "ms": 497
+          },
+          {
+            "id": "viewer-scroll",
+            "ok": true,
+            "ms": 900
+          },
+          {
+            "id": "viewer-internal-link",
+            "ok": true,
+            "ms": 606
+          },
+          {
+            "id": "viewer-back-to-index",
+            "ok": true,
+            "ms": 603
+          },
+          {
+            "id": "viewer-external-link",
+            "ok": true,
+            "ms": 1206
+          },
+          {
+            "id": "viewer-failing-request",
+            "ok": true,
+            "ms": 605
+          },
+          {
+            "id": "agent-action-visible",
+            "ok": true,
+            "ms": 199
+          },
+          {
+            "id": "agent-marker-visible",
+            "ok": true,
+            "ms": 930
+          },
+          {
+            "id": "identity-agreement",
+            "ok": true,
+            "ms": 9725
+          },
+          {
+            "id": "viewer-disconnect-reconnect",
+            "ok": true,
+            "ms": 3034
+          },
+          {
+            "id": "idle",
+            "ok": true,
+            "ms": 10541
+          }
+        ]
+      }
+    },
+    {
+      "id": "isolation",
+      "title": "No personal browser, no live display, throwaway profile/home/ports, loopback only, no Hames process touched",
+      "ok": true,
+      "evidence": {
+        "checks": {
+          "loopbackOnly": {
+            "ok": true,
+            "urls": {
+              "viewer": "http://127.0.0.1:42929/viewer.html",
+              "ws": "ws://127.0.0.1:42929/ws",
+              "control": "http://127.0.0.1:40867",
+              "fixture": "http://127.0.0.1:40575",
+              "externalOrigin": "http://127.0.0.1:33091/third.html"
+            }
+          },
+          "throwawayProfile": {
+            "ok": true,
+            "userDataDir": "/tmp/playwright_chromiumdev_profile-QnXqSB",
+            "reportedProfileDir": null,
+            "personalProfilesNotUsed": [
+              "/home/dustin/.config/chromium",
+              "/home/dustin/.config/google-chrome",
+              "/home/dustin/.config/google-chrome-for-testing"
+            ],
+            "browserPid": 3925601
+          },
+          "throwawayStateRoots": {
+            "ok": true,
+            "runDir": "/home/dustin/projects/personal/active/hames/prototypes/embedded-browser-b0/.run/frame-stream-3IqbrY",
+            "hamesHome": "/home/dustin/projects/personal/active/hames/prototypes/embedded-browser-b0/.run/frame-stream-3IqbrY/hames-home",
+            "isolatedTempRoots": [
+              "/tmp/b0-uH0BbJ"
+            ]
+          },
+          "noWaylandForBrowser": {
+            "ok": true,
+            "waylandDisplay": null,
+            "display": null,
+            "browserEnvCleared": true,
+            "browserEnvKeyCount": 1,
+            "ozonePlatform": "headless",
+            "headlessArg": true,
+            "cmdlineHasWayland": false,
+            "expectedDisplay": null,
+            "siblingEnv": [
+              {
+                "pid": 3925587,
+                "cmd": "/usr/bin/node",
+                "wayland": "wayland-1",
+                "display": ":0",
+                "keyCount": 32
+              }
+            ],
+            "waylandLeak": false,
+            "note": "Chromium cleared its environ after launch; Wayland/display evidence is taken from the server, Xvfb, ffmpeg, and xdotool processes plus the browser command line",
+            "browserPid": 3925601
+          },
+          "isolatedDisplayNotLive": {
+            "ok": true,
+            "display": null,
+            "expectedDisplay": null,
+            "parentDisplay": ":0",
+            "ozonePlatform": "headless",
+            "headless": true,
+            "note": "headless Chromium; the server process has no DISPLAY"
+          },
+          "noHamesProcessStarted": {
+            "ok": true,
+            "processCount": 9,
+            "suspicious": [],
+            "note": "the harness's own process tree contains only node, chromium and (remote-view) Xvfb/ffmpeg/xdotool; no Hames gateway or service process is started or signalled",
+            "binaries": [
+              "/usr/bin/node",
+              "/home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome"
+            ],
+            "processes": [
+              "3925587 /usr/bin/node /home/dustin/projects/personal/active/hames/prototypes/embedded-browser-b0/tools/serve.mjs --candidate fra",
+              "3925601 /home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --disable-field-trial-config --disable-background-",
+              "3925608 /home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --type=zygote --no-zygote-sandbox --no-sandbox --h",
+              "3925609 /home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --type=zygote --no-sandbox --headless --crashpad-h",
+              "3925633 /home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --type=utility --utility-sub-type=network.mojom.Ne",
+              "3925630 /home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --type=gpu-process --no-sandbox --disable-dev-shm-",
+              "3925635 /home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --type=utility --utility-sub-type=storage.mojom.St",
+              "3925698 /home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --type=renderer --crashpad-handler-pid=3925603 --e",
+              "3925699 /home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --type=renderer --crashpad-handler-pid=3925603 --e"
+            ]
+          },
+          "sameOriginIsolationForPages": {
+            "ok": true,
+            "note": "the fixture page and the viewer page run on different loopback origins/ports; the viewer holds no CDP or gateway credential",
+            "viewerOrigin": "http://127.0.0.1:42929",
+            "fixtureOrigin": "http://127.0.0.1:40575"
+          }
+        },
+        "browser": {
+          "pid": 3925601,
+          "cmd": "/home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --disable-field-trial-config --disable-background-networking --disable-background-timer-th"
+        },
+        "userDataDir": "/tmp/playwright_chromiumdev_profile-QnXqSB",
+        "runDir": "/home/dustin/projects/personal/active/hames/prototypes/embedded-browser-b0/.run/frame-stream-3IqbrY",
+        "versionsReport": {
+          "node": "v26.9.0",
+          "platform": "linux x64",
+          "kernel": "7.2.6-arch2-1",
+          "playwright": "1.61.1",
+          "ws": "^8.18.3",
+          "chromiumPackage": "Chromium 153.0.8010.52 Arch Linux",
+          "ffmpeg": "ffmpeg version n9.0.1 Copyright (c) 2000-2026 the FFmpeg developers",
+          "xdotool": "xdotool version 4.20260303.1",
+          "xvfb": {
+            "binary": "/home/dustin/projects/personal/active/hames/prototypes/embedded-browser-b0/vendor/usr/bin/Xvfb",
+            "fromPath": null,
+            "package": {
+              "name": "xorg-server-xvfb",
+              "version": "21.1.24-1",
+              "file": "xorg-server-xvfb-21.1.24-1-x86_64.pkg.tar.zst",
+              "url": "https://geo.mirror.pkgbuild.com/extra/os/x86_64/xorg-server-xvfb-21.1.24-1-x86_64.pkg.tar.zst"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "steps": [
+    {
+      "id": "connect",
+      "title": "Viewer connects and receives the shared page stream",
+      "phase": "active",
+      "ok": true,
+      "ms": 4,
+      "evidence": {
+        "hello": {
+          "candidate": "frame-stream",
+          "frameSize": {
+            "width": 1280,
+            "height": 800
+          },
+          "pageOrigin": {
+            "x": 0,
+            "y": 0
+          },
+          "protocol": "b0-jpeg-frames"
+        },
+        "firstFrame": {
+          "seq": 1,
+          "bytes": 80655,
+          "snapshot": true,
+          "width": 1280,
+          "height": 800
+        },
+        "pageIdentity": {
+          "url": "http://127.0.0.1:40575/index.html?session=frame-stream-mubxben4",
+          "title": "Hames B0 Fixture",
+          "targetId": "526DB7EF7F6D32D95D39B9BC09655827",
+          "contextPageCount": 1,
+          "pageTargetCount": 1,
+          "iframes": 0,
+          "topLevel": true
+        }
+      }
+    },
+    {
+      "id": "pointer-move-canvas",
+      "title": "Viewer pointer movement reaches the page (canvas hover feedback)",
+      "phase": "active",
+      "ok": true,
+      "ms": 383,
+      "evidence": {
+        "before": "-",
+        "after": "40,40",
+        "expected": "40,40",
+        "deltaPx": 0
+      }
+    },
+    {
+      "id": "pointer-click-probe",
+      "title": "Viewer click toggles the latency probe (pointer path)",
+      "phase": "active",
+      "ok": true,
+      "ms": 582,
+      "evidence": {
+        "probeBefore": "a",
+        "probeAfter": "b",
+        "latency": {
+          "label": "pointer-click-probe",
+          "latencyMs": 31,
+          "frameSeq": 8,
+          "baseline": [
+            193.036453125,
+            170.533015625,
+            215.191671875
+          ],
+          "changed": [
+            171.055328125,
+            205.228390625,
+            203.0255
+          ]
+        }
+      }
+    },
+    {
+      "id": "viewer-typing",
+      "title": "Viewer typing reaches the form field",
+      "phase": "active",
+      "ok": true,
+      "ms": 723,
+      "evidence": {
+        "typed": "viewer typed 123",
+        "fieldValue": "viewer typed 123",
+        "keyEvents": 16,
+        "lastKey": "3"
+      }
+    },
+    {
+      "id": "viewer-submit",
+      "title": "Viewer submits the form and the same page shows the result",
+      "phase": "active",
+      "ok": true,
+      "ms": 607,
+      "evidence": {
+        "submitStatus": "ok 200",
+        "submitCount": 1,
+        "lastSubmitted": "viewer typed 123",
+        "url": "http://127.0.0.1:40575/index.html?session=frame-stream-mubxben4"
+      }
+    },
+    {
+      "id": "viewer-key-probe",
+      "title": "Viewer keystroke toggles the latency probe (keyboard path)",
+      "phase": "active",
+      "ok": true,
+      "ms": 115,
+      "evidence": {
+        "latency": {
+          "label": "keyboard-key-probe",
+          "latencyMs": 16,
+          "frameSeq": 19,
+          "baseline": [
+            169.9853125,
+            204.55540625,
+            202.221203125
+          ],
+          "changed": [
+            192.02171875,
+            169.43009375,
+            214.574375
+          ]
+        },
+        "probeAfter": "a"
+      }
+    },
+    {
+      "id": "viewer-shortcut",
+      "title": "Viewer keyboard shortcut reaches the page",
+      "phase": "active",
+      "ok": true,
+      "ms": 6,
+      "evidence": {
+        "shortcutBefore": 0,
+        "shortcutAfter": 1,
+        "lastKey": "Ctrl+Shift+K"
+      }
+    },
+    {
+      "id": "viewer-canvas-drag",
+      "title": "Viewer drag paints on the page canvas",
+      "phase": "active",
+      "ok": true,
+      "ms": 497,
+      "evidence": {
+        "canvasCountBefore": 0,
+        "canvasCountAfter": 4
+      }
+    },
+    {
+      "id": "viewer-scroll",
+      "title": "Viewer wheel scrolls inner content and the document",
+      "phase": "active",
+      "ok": true,
+      "ms": 900,
+      "evidence": {
+        "innerScrollBefore": 0,
+        "innerScrollAfter": 240,
+        "documentScrollAfter": 1023,
+        "scrollEvents": 7
+      }
+    },
+    {
+      "id": "viewer-internal-link",
+      "title": "Viewer click follows an internal link in the same tab and page",
+      "phase": "active",
+      "ok": true,
+      "ms": 606,
+      "evidence": {
+        "urlBefore": "http://127.0.0.1:40575/index.html?session=frame-stream-mubxben4",
+        "urlAfter": "http://127.0.0.1:40575/second.html",
+        "targetIdBefore": "526DB7EF7F6D32D95D39B9BC09655827",
+        "targetIdAfter": "526DB7EF7F6D32D95D39B9BC09655827",
+        "generationBefore": 1,
+        "generationAfter": 2,
+        "contextPageCount": 1
+      }
+    },
+    {
+      "id": "viewer-back-to-index",
+      "title": "Viewer returns to the fixture index",
+      "phase": "active",
+      "ok": true,
+      "ms": 603,
+      "evidence": {
+        "url": "http://127.0.0.1:40575/index.html",
+        "generation": 3,
+        "lastFrameSeq": 1
+      }
+    },
+    {
+      "id": "viewer-external-link",
+      "title": "Viewer follows an external-style link on a second origin and returns",
+      "phase": "active",
+      "ok": true,
+      "ms": 1206,
+      "evidence": {
+        "crossOriginUrl": "http://127.0.0.1:33091/third.html",
+        "crossOriginOrigin": "http://127.0.0.1:33091",
+        "mainOrigin": "http://127.0.0.1:40575",
+        "urlAfterReturn": "http://127.0.0.1:40575/index.html"
+      }
+    },
+    {
+      "id": "viewer-failing-request",
+      "title": "Viewer triggers the deliberately failing request",
+      "phase": "active",
+      "ok": true,
+      "ms": 605,
+      "evidence": {
+        "failStatus": "manual request: HTTP 500 (deliberate failure)",
+        "failCount": 2,
+        "fixtureRequestStats": {
+          "submitCount": 1,
+          "failCount": 1,
+          "failOnceCount": 4,
+          "lastSubmitQ": "viewer typed 123",
+          "lastSubmitAt": 1790036170157
+        }
+      }
+    },
+    {
+      "id": "agent-action-visible",
+      "title": "Playwright acts on the page and the viewer sees it",
+      "phase": "active",
+      "ok": true,
+      "ms": 199,
+      "evidence": {
+        "probeBefore": "a",
+        "probeAfter": "b",
+        "visibleAfterMs": 77,
+        "frameSeq": 48
+      }
+    },
+    {
+      "id": "agent-marker-visible",
+      "title": "Playwright's DOM change appears in the streamed pixels",
+      "phase": "active",
+      "ok": true,
+      "ms": 930,
+      "evidence": {
+        "token": "AGENT-MARKER-QV980UC7",
+        "markerInDom": "AGENT-MARKER-QV980UC7",
+        "domChanged": true,
+        "region": {
+          "x": 658,
+          "y": 390,
+          "width": 594,
+          "height": 19,
+          "contentOrigin": {
+            "x": 0,
+            "y": 0
+          },
+          "pageRect": {
+            "left": 662,
+            "top": 392,
+            "width": 586,
+            "height": 15,
+            "centerX": 955,
+            "centerY": 400,
+            "viewportWidth": 1280,
+            "viewportHeight": 800
+          },
+          "frameSize": {
+            "width": 1280,
+            "height": 800
+          }
+        },
+        "regionBaseline": [
+          244.97046979865772,
+          243.97046979865772,
+          247.9234899328859
+        ],
+        "visibleAfterMs": 23,
+        "frameSeq": 51,
+        "usedSnapshotFallback": false,
+        "waitError": null,
+        "fallback": null
+      }
+    },
+    {
+      "id": "identity-agreement",
+      "title": "URL, title, nonce, and form values agree between the two paths",
+      "phase": "active",
+      "ok": true,
+      "ms": 9725,
+      "evidence": {
+        "domPath": {
+          "url": "http://127.0.0.1:40575/index.html",
+          "title": "Hames B0 Fixture",
+          "nonce": "7fd6efd5-f345-4c01-966f-ed66011c6898",
+          "fieldValue": "",
+          "submitCount": 0,
+          "probeState": "b"
+        },
+        "pixelPath": {
+          "screenshot": "/home/dustin/projects/personal/active/hames/prototypes/embedded-browser-b0/measurements/frames/reviewer-b0-frame-stream/identity-agreement-reference.png",
+          "frame": "/home/dustin/projects/personal/active/hames/prototypes/embedded-browser-b0/measurements/frames/reviewer-b0-frame-stream/identity-agreement-frame.png",
+          "contentPsnrDb": 35.08,
+          "bestOffsetPsnr": {
+            "offset": {
+              "x": -3,
+              "y": -3
+            },
+            "psnrDb": 35.08
+          },
+          "regionPsnrDb": {
+            "nonce": {
+              "selector": "#page-nonce",
+              "rect": {
+                "left": 244,
+                "top": 64,
+                "width": 303,
+                "height": 16,
+                "centerX": 396,
+                "centerY": 72,
+                "viewportWidth": 1280,
+                "viewportHeight": 800
+              },
+              "psnrDb": 30.44,
+              "grayPsnrDb": 30.6,
+              "inkIoU": 0.956,
+              "inkOffset": {
+                "x": 0,
+                "y": 0
+              }
+            },
+            "url": {
+              "selector": "#url-display",
+              "rect": {
+                "left": 244,
+                "top": 82,
+                "width": 278,
+                "height": 16,
+                "centerX": 383,
+                "centerY": 90,
+                "viewportWidth": 1280,
+                "viewportHeight": 800
+              },
+              "psnrDb": 30.41,
+              "grayPsnrDb": 30.56,
+              "inkIoU": 0.954,
+              "inkOffset": {
+                "x": 0,
+                "y": 0
+              }
+            },
+            "fieldValue": {
+              "selector": "#field-value",
+              "rect": {
+                "left": 874,
+                "top": 364,
+                "width": 59,
+                "height": 16,
+                "centerX": 904,
+                "centerY": 372,
+                "viewportWidth": 1280,
+                "viewportHeight": 800
+              },
+              "psnrDb": 31.6,
+              "grayPsnrDb": 31.76,
+              "inkIoU": 0.979,
+              "inkOffset": {
+                "x": 0,
+                "y": 0
+              }
+            }
+          },
+          "probeBackgroundMean": [
+            24,
+            178,
+            154
+          ],
+          "expectedProbeColor": [
+            24,
+            179,
+            154
+          ],
+          "probeBackgroundDelta": 1
+        }
+      }
+    },
+    {
+      "id": "viewer-disconnect-reconnect",
+      "title": "Viewer disconnects and reconnects with the page preserved",
+      "phase": "active",
+      "ok": true,
+      "ms": 3034,
+      "evidence": {
+        "heartbeatAtDisconnect": 11,
+        "heartbeatAfterReconnect": 14,
+        "heartbeatDuringGap": 14,
+        "nonceBefore": "7fd6efd5-f345-4c01-966f-ed66011c6898",
+        "nonceAfterReconnect": "7fd6efd5-f345-4c01-966f-ed66011c6898",
+        "urlDuringGap": "http://127.0.0.1:40575/index.html",
+        "urlAfterReconnect": "http://127.0.0.1:40575/index.html",
+        "pageClosed": false,
+        "targetIdStable": true,
+        "reconnectSnapshotSeq": 1,
+        "reconnectedHelloFrameSize": {
+          "width": 1280,
+          "height": 800
+        },
+        "viewerDisconnectedIndependentOfBrowser": true
+      }
+    },
+    {
+      "id": "idle",
+      "title": "Idle interval with the page untouched",
+      "phase": "idle",
+      "ok": true,
+      "ms": 10541,
+      "evidence": {
+        "idleMs": 10000,
+        "heartbeatBefore": 14,
+        "heartbeatAfter": 24,
+        "framesDuringIdle": 15,
+        "bytesDuringIdle": 773793,
+        "nonceStable": true,
+        "idleChurn": {
+          "msApart": 464,
+          "changedSamples": 91,
+          "sampled": 256000,
+          "changedFraction": 0.00036,
+          "boundingBox": {
+            "x": 248,
+            "y": 168,
+            "width": 16,
+            "height": 40
+          },
+          "step": 2,
+          "tolerance": 8
+        }
+      }
+    }
+  ],
+  "stepDigest": [
+    {
+      "id": "connect",
+      "ok": true,
+      "ms": 4
+    },
+    {
+      "id": "pointer-move-canvas",
+      "ok": true,
+      "ms": 383
+    },
+    {
+      "id": "pointer-click-probe",
+      "ok": true,
+      "ms": 582
+    },
+    {
+      "id": "viewer-typing",
+      "ok": true,
+      "ms": 723
+    },
+    {
+      "id": "viewer-submit",
+      "ok": true,
+      "ms": 607
+    },
+    {
+      "id": "viewer-key-probe",
+      "ok": true,
+      "ms": 115
+    },
+    {
+      "id": "viewer-shortcut",
+      "ok": true,
+      "ms": 6
+    },
+    {
+      "id": "viewer-canvas-drag",
+      "ok": true,
+      "ms": 497
+    },
+    {
+      "id": "viewer-scroll",
+      "ok": true,
+      "ms": 900
+    },
+    {
+      "id": "viewer-internal-link",
+      "ok": true,
+      "ms": 606
+    },
+    {
+      "id": "viewer-back-to-index",
+      "ok": true,
+      "ms": 603
+    },
+    {
+      "id": "viewer-external-link",
+      "ok": true,
+      "ms": 1206
+    },
+    {
+      "id": "viewer-failing-request",
+      "ok": true,
+      "ms": 605
+    },
+    {
+      "id": "agent-action-visible",
+      "ok": true,
+      "ms": 199
+    },
+    {
+      "id": "agent-marker-visible",
+      "ok": true,
+      "ms": 930
+    },
+    {
+      "id": "identity-agreement",
+      "ok": true,
+      "ms": 9725
+    },
+    {
+      "id": "viewer-disconnect-reconnect",
+      "ok": true,
+      "ms": 3034
+    },
+    {
+      "id": "idle",
+      "ok": true,
+      "ms": 10541
+    }
+  ],
+  "framesAtEnd": {
+    "candidate": {
+      "events": 78,
+      "sent": 83,
+      "bytes": 6737228,
+      "snapshots": 5,
+      "ackErrors": 0,
+      "width": 1280,
+      "height": 800,
+      "lastFrameAt": 1790036199232,
+      "intervals": [
+        8,
+        32,
+        377,
+        15,
+        252,
+        197,
+        52,
+        68,
+        414,
+        153,
+        14,
+        16,
+        87,
+        411,
+        37,
+        48,
+        17,
+        181,
+        71,
+        15,
+        219,
+        142,
+        7,
+        48,
+        25,
+        60,
+        363,
+        18,
+        131,
+        386,
+        401,
+        29,
+        24,
+        545,
+        56,
+        146,
+        398,
+        53,
+        563,
+        45,
+        6,
+        139,
+        414,
+        27,
+        7,
+        218,
+        46,
+        89,
+        823,
+        5,
+        101,
+        115,
+        8,
+        46,
+        7,
+        653,
+        1000,
+        1000,
+        1000,
+        999,
+        1000,
+        1003,
+        1000,
+        997,
+        9,
+        371,
+        999,
+        1001,
+        1002,
+        999,
+        999,
+        999,
+        1001,
+        1000,
+        1000,
+        1,
+        349,
+        7
+      ]
+    },
+    "capture": null,
+    "transport": {
+      "framesSent": 83,
+      "frameBytes": 6737228,
+      "stateMessages": 30,
+      "connects": 2,
+      "disconnects": 1,
+      "inputs": 41,
+      "lastFrameTs": 1790036199232,
+      "startedAt": 1790036167489
+    },
+    "clients": 1
+  },
+  "fixtureStats": {
+    "state": {
+      "submitCount": 1,
+      "failCount": 1,
+      "failOnceCount": 4,
+      "lastSubmitQ": "viewer typed 123",
+      "lastSubmitAt": 1790036170157
+    },
+    "counts": {
+      "GET /index.html": 3,
+      "GET /style.css": 4,
+      "GET /fixture.js": 4,
+      "GET /api/fail-once": 4,
+      "GET /favicon.ico": 1,
+      "POST /api/submit": 1,
+      "GET /second.html": 1,
+      "GET /api/fail": 1,
+      "GET /api/stats": 2
+    },
+    "externalCounts": {
+      "GET /third.html": 1,
+      "GET /style.css": 1,
+      "GET /fixture.js": 1,
+      "GET /favicon.ico": 1
+    },
+    "requestCount": 21,
+    "externalRequestCount": 4
+  },
+  "cleanup": {
+    "code": 0,
+    "signal": null
+  },
+  "hardPass": true
+}

@@ -1,0 +1,23 @@
+{
+  "name": "hames-embedded-browser-b0-prototype",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "B0 feasibility prototype: one shared Chromium page with an interactive live view. Compares a CDP frame-stream transport against an isolated virtual-display remote view.",
+  "scripts": {
+    "browsers": "node tools/fetch-browsers.mjs",
+    "fetch:xvfb": "node tools/fetch-xvfb.mjs",
+    "serve": "node tools/serve.mjs",
+    "measure": "node tools/measure.mjs",
+    "verify": "node tools/verify.mjs",
+    "compare": "node tools/compare.mjs",
+    "endurance": "node tools/endurance.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.61.1",
+    "ws": "^8.18.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

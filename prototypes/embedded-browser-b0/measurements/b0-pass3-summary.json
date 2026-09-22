@@ -1,0 +1,49 @@
+{
+  "label": "b0-pass3",
+  "generatedAt": "2026-09-21T23:31:31.288Z",
+  "candidates": [
+    {
+      "candidate": "frame-stream",
+      "stepsOk": 17,
+      "stepsTotal": 18,
+      "failed": [
+        "identity-agreement"
+      ],
+      "latencyP50Ms": 18,
+      "latencyP95Ms": 78,
+      "contentPsnrDb": 35.08,
+      "activeCpuPercentOfOneCore": 15.81,
+      "idleCpuPercentOfOneCore": 0.05,
+      "activeBandwidthKbits": 3249.2,
+      "idleBandwidthKbits": 10.8,
+      "activeBytesPerFrame": 81601.1,
+      "idleFramesPerSecond": 0.02,
+      "activeFramesPerSecond": 4.98,
+      "capturedFramesPerSecond": null,
+      "connectMs": 27,
+      "firstFrameMs": 0
+    },
+    {
+      "candidate": "remote-view",
+      "stepsOk": 16,
+      "stepsTotal": 18,
+      "failed": [
+        "agent-marker-visible",
+        "identity-agreement"
+      ],
+      "latencyP50Ms": 99,
+      "latencyP95Ms": 154,
+      "contentPsnrDb": 41.53,
+      "activeCpuPercentOfOneCore": 13.78,
+      "idleCpuPercentOfOneCore": 34.13,
+      "activeBandwidthKbits": 2867.6,
+      "idleBandwidthKbits": 1269.5,
+      "activeBytesPerFrame": 130616.8,
+      "idleFramesPerSecond": 1.37,
+      "activeFramesPerSecond": 2.74,
+      "capturedFramesPerSecond": 25.98,
+      "connectMs": 22,
+      "firstFrameMs": 145
+    }
+  ]
+}

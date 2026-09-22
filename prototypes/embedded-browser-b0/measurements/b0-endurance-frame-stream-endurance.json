@@ -1,0 +1,449 @@
+{
+  "schema": 1,
+  "label": "b0-endurance",
+  "candidate": "frame-stream",
+  "generatedAt": "2026-09-22T00:07:51.498Z",
+  "requestedMinutes": 10,
+  "checkpointSeconds": 60,
+  "actualMs": 600063,
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "versions": {
+    "node": "v26.9.0",
+    "platform": "linux x64",
+    "kernel": "7.2.6-arch2-1",
+    "playwright": "1.61.1",
+    "ws": "^8.18.3",
+    "chromiumPackage": "Chromium 153.0.8010.52 Arch Linux",
+    "ffmpeg": "ffmpeg version n9.0.1 Copyright (c) 2000-2026 the FFmpeg developers",
+    "xdotool": "xdotool version 4.20260303.1",
+    "xvfb": {
+      "binary": "/home/dustin/projects/personal/active/hames/prototypes/embedded-browser-b0/vendor/usr/bin/Xvfb",
+      "fromPath": null,
+      "package": {
+        "name": "xorg-server-xvfb",
+        "version": "21.1.24-1",
+        "file": "xorg-server-xvfb-21.1.24-1-x86_64.pkg.tar.zst",
+        "url": "https://geo.mirror.pkgbuild.com/extra/os/x86_64/xorg-server-xvfb-21.1.24-1-x86_64.pkg.tar.zst"
+      }
+    }
+  },
+  "candidateInfo": {
+    "candidate": "frame-stream",
+    "browserVersion": "149.0.7827.55",
+    "executablePath": "/home/dustin/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome",
+    "headless": true,
+    "display": null,
+    "profileDir": null,
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "chromeHeight": 0,
+    "contentOrigin": {
+      "x": 0,
+      "y": 0
+    },
+    "frameSize": {
+      "width": 1280,
+      "height": 800
+    },
+    "targetId": "3F1A9BB53FD1974BD50209B1B486F0BE",
+    "url": "http://127.0.0.1:33817/index.html?session=frame-stream-mubwnwku",
+    "title": "Hames B0 Fixture",
+    "transport": {
+      "url": "http://127.0.0.1:41461/viewer.html",
+      "wsUrl": "ws://127.0.0.1:41461/ws",
+      "port": 41461
+    }
+  },
+  "start": {
+    "url": "http://127.0.0.1:33817/index.html?session=frame-stream-mubwnwku",
+    "targetId": "3F1A9BB53FD1974BD50209B1B486F0BE",
+    "nonce": "82515c31-26fa-480d-a733-67a67a4ef98f",
+    "heartbeat": 0,
+    "browserPid": 3835035
+  },
+  "end": {
+    "url": "http://127.0.0.1:33817/index.html?session=frame-stream-mubwnwku",
+    "targetId": "3F1A9BB53FD1974BD50209B1B486F0BE",
+    "nonce": "82515c31-26fa-480d-a733-67a67a4ef98f",
+    "heartbeat": 600,
+    "pageClosed": false,
+    "contextPageCount": 1
+  },
+  "viewerReconnects": 1,
+  "checkpoints": [
+    {
+      "index": 1,
+      "at": "2026-09-21T23:58:44.761Z",
+      "elapsedMs": 53326,
+      "url": "http://127.0.0.1:33817/index.html?session=frame-stream-mubwnwku",
+      "title": "Hames B0 Fixture",
+      "targetId": "3F1A9BB53FD1974BD50209B1B486F0BE",
+      "pageClosed": false,
+      "contextPageCount": 1,
+      "nonce": "82515c31-26fa-480d-a733-67a67a4ef98f",
+      "heartbeat": 53,
+      "browserPid": 3835035,
+      "browserRssMb": 1073.3,
+      "stackCpuPercentOfOneCore": 3.02,
+      "processCount": 10,
+      "viewerFrames": 64,
+      "viewerBytes": 5051909,
+      "viewerMaxGapMs": 1002,
+      "viewerCurrentGapMs": 565,
+      "burst": {
+        "keyboardTogglesProbe": true,
+        "pointerTogglesProbe": true,
+        "wheelScrolls": true,
+        "agentActionVisibleInPixels": true
+      },
+      "visibleAfterMs": 88,
+      "scroll": {
+        "areaBefore": 0,
+        "areaAfter": 200
+      }
+    },
+    {
+      "index": 2,
+      "at": "2026-09-21T23:59:37.893Z",
+      "elapsedMs": 106458,
+      "url": "http://127.0.0.1:33817/index.html?session=frame-stream-mubwnwku",
+      "title": "Hames B0 Fixture",
+      "targetId": "3F1A9BB53FD1974BD50209B1B486F0BE",
+      "pageClosed": false,
+      "contextPageCount": 1,
+      "nonce": "82515c31-26fa-480d-a733-67a67a4ef98f",
+      "heartbeat": 106,
+      "browserPid": 3835035,
+      "browserRssMb": 1074.5,
+      "stackCpuPercentOfOneCore": 1,
+      "processCount": 10,
+      "viewerFrames": 71,
+      "viewerBytes": 5595913,
+      "viewerMaxGapMs": 1002,
+      "viewerCurrentGapMs": 52208,
+      "burst": {
+        "keyboardTogglesProbe": true,
+        "pointerTogglesProbe": true,
+        "wheelScrolls": true
+      },
+      "visibleAfterMs": null,
+      "scroll": {
+        "areaBefore": 200,
+        "areaAfter": 0
+      }
+    },
+    {
+      "index": 3,
+      "at": "2026-09-22T00:00:31.029Z",
+      "elapsedMs": 159594,
+      "url": "http://127.0.0.1:33817/index.html?session=frame-stream-mubwnwku",
+      "title": "Hames B0 Fixture",
+      "targetId": "3F1A9BB53FD1974BD50209B1B486F0BE",
+      "pageClosed": false,
+      "contextPageCount": 1,
+      "nonce": "82515c31-26fa-480d-a733-67a67a4ef98f",
+      "heartbeat": 159,
+      "browserPid": 3835035,
+      "browserRssMb": 1077.3,
+      "stackCpuPercentOfOneCore": 1.15,
+      "processCount": 10,
+      "viewerFrames": 79,
+      "viewerBytes": 6215289,
+      "viewerMaxGapMs": 52233,
+      "viewerCurrentGapMs": 52227,
+      "burst": {
+        "keyboardTogglesProbe": true,
+        "pointerTogglesProbe": true,
+        "wheelScrolls": true
+      },
+      "visibleAfterMs": null,
+      "scroll": {
+        "areaBefore": 0,
+        "areaAfter": 200
+      }
+    },
+    {
+      "index": 4,
+      "at": "2026-09-22T00:01:24.161Z",
+      "elapsedMs": 212726,
+      "url": "http://127.0.0.1:33817/index.html?session=frame-stream-mubwnwku",
+      "title": "Hames B0 Fixture",
+      "targetId": "3F1A9BB53FD1974BD50209B1B486F0BE",
+      "pageClosed": false,
+      "contextPageCount": 1,
+      "nonce": "82515c31-26fa-480d-a733-67a67a4ef98f",
+      "heartbeat": 212,
+      "browserPid": 3835035,
+      "browserRssMb": 1082.2,
+      "stackCpuPercentOfOneCore": 1.02,
+      "processCount": 10,
+      "viewerFrames": 87,
+      "viewerBytes": 6835041,
+      "viewerMaxGapMs": 52251,
+      "viewerCurrentGapMs": 52214,
+      "burst": {
+        "keyboardTogglesProbe": true,
+        "pointerTogglesProbe": true,
+        "wheelScrolls": true
+      },
+      "visibleAfterMs": null,
+      "scroll": {
+        "areaBefore": 200,
+        "areaAfter": 0
+      }
+    },
+    {
+      "index": 5,
+      "at": "2026-09-22T00:02:20.117Z",
+      "elapsedMs": 268682,
+      "url": "http://127.0.0.1:33817/index.html?session=frame-stream-mubwnwku",
+      "title": "Hames B0 Fixture",
+      "targetId": "3F1A9BB53FD1974BD50209B1B486F0BE",
+      "pageClosed": false,
+      "contextPageCount": 1,
+      "nonce": "82515c31-26fa-480d-a733-67a67a4ef98f",
+      "heartbeat": 268,
+      "browserPid": 3835035,
+      "browserRssMb": 1078.4,
+      "stackCpuPercentOfOneCore": 1.23,
+      "processCount": 10,
+      "viewerFrames": 95,
+      "viewerBytes": 7455436,
+      "viewerMaxGapMs": 52251,
+      "viewerCurrentGapMs": 52033,
+      "burst": {
+        "keyboardTogglesProbe": true,
+        "pointerTogglesProbe": true,
+        "wheelScrolls": true
+      },
+      "visibleAfterMs": null,
+      "scroll": {
+        "areaBefore": 0,
+        "areaAfter": 200
+      }
+    },
+    {
+      "index": 6,
+      "at": "2026-09-22T00:03:13.251Z",
+      "elapsedMs": 321816,
+      "url": "http://127.0.0.1:33817/index.html?session=frame-stream-mubwnwku",
+      "title": "Hames B0 Fixture",
+      "targetId": "3F1A9BB53FD1974BD50209B1B486F0BE",
+      "pageClosed": false,
+      "contextPageCount": 1,
+      "nonce": "82515c31-26fa-480d-a733-67a67a4ef98f",
+      "heartbeat": 322,
+      "browserPid": 3835035,
+      "browserRssMb": 1085.3,
+      "stackCpuPercentOfOneCore": 1.07,
+      "processCount": 10,
+      "viewerFrames": 103,
+      "viewerBytes": 8075631,
+      "viewerMaxGapMs": 52251,
+      "viewerCurrentGapMs": 52208,
+      "burst": {
+        "keyboardTogglesProbe": true,
+        "pointerTogglesProbe": true,
+        "wheelScrolls": true
+      },
+      "visibleAfterMs": null,
+      "scroll": {
+        "areaBefore": 200,
+        "areaAfter": 0
+      }
+    },
+    {
+      "index": 7,
+      "at": "2026-09-22T00:04:06.379Z",
+      "elapsedMs": 374944,
+      "url": "http://127.0.0.1:33817/index.html?session=frame-stream-mubwnwku",
+      "title": "Hames B0 Fixture",
+      "targetId": "3F1A9BB53FD1974BD50209B1B486F0BE",
+      "pageClosed": false,
+      "contextPageCount": 1,
+      "nonce": "82515c31-26fa-480d-a733-67a67a4ef98f",
+      "heartbeat": 375,
+      "browserPid": 3835035,
+      "browserRssMb": 1087.3,
+      "stackCpuPercentOfOneCore": 1.02,
+      "processCount": 10,
+      "viewerFrames": 110,
+      "viewerBytes": 8615223,
+      "viewerMaxGapMs": 52251,
+      "viewerCurrentGapMs": 52205,
+      "burst": {
+        "keyboardTogglesProbe": true,
+        "pointerTogglesProbe": true,
+        "wheelScrolls": true
+      },
+      "visibleAfterMs": null,
+      "scroll": {
+        "areaBefore": 0,
+        "areaAfter": 200
+      }
+    },
+    {
+      "index": 8,
+      "at": "2026-09-22T00:04:59.501Z",
+      "elapsedMs": 428066,
+      "url": "http://127.0.0.1:33817/index.html?session=frame-stream-mubwnwku",
+      "title": "Hames B0 Fixture",
+      "targetId": "3F1A9BB53FD1974BD50209B1B486F0BE",
+      "pageClosed": false,
+      "contextPageCount": 1,
+      "nonce": "82515c31-26fa-480d-a733-67a67a4ef98f",
+      "heartbeat": 428,
+      "browserPid": 3835035,
+      "browserRssMb": 1092,
+      "stackCpuPercentOfOneCore": 0.88,
+      "processCount": 10,
+      "viewerFrames": 118,
+      "viewerBytes": 9230127,
+      "viewerMaxGapMs": 52251,
+      "viewerCurrentGapMs": 52212,
+      "burst": {
+        "keyboardTogglesProbe": true,
+        "pointerTogglesProbe": true,
+        "wheelScrolls": true
+      },
+      "visibleAfterMs": null,
+      "scroll": {
+        "areaBefore": 200,
+        "areaAfter": 0
+      }
+    },
+    {
+      "index": 9,
+      "at": "2026-09-22T00:05:52.623Z",
+      "elapsedMs": 481188,
+      "url": "http://127.0.0.1:33817/index.html?session=frame-stream-mubwnwku",
+      "title": "Hames B0 Fixture",
+      "targetId": "3F1A9BB53FD1974BD50209B1B486F0BE",
+      "pageClosed": false,
+      "contextPageCount": 1,
+      "nonce": "82515c31-26fa-480d-a733-67a67a4ef98f",
+      "heartbeat": 481,
+      "browserPid": 3835035,
+      "browserRssMb": 1092.9,
+      "stackCpuPercentOfOneCore": 1.05,
+      "processCount": 10,
+      "viewerFrames": 126,
+      "viewerBytes": 9844348,
+      "viewerMaxGapMs": 52251,
+      "viewerCurrentGapMs": 52202,
+      "burst": {
+        "keyboardTogglesProbe": true,
+        "pointerTogglesProbe": true,
+        "wheelScrolls": true
+      },
+      "visibleAfterMs": null,
+      "scroll": {
+        "areaBefore": 0,
+        "areaAfter": 200
+      }
+    },
+    {
+      "index": 10,
+      "at": "2026-09-22T00:06:45.543Z",
+      "elapsedMs": 534108,
+      "url": "http://127.0.0.1:33817/index.html?session=frame-stream-mubwnwku",
+      "title": "Hames B0 Fixture",
+      "targetId": "3F1A9BB53FD1974BD50209B1B486F0BE",
+      "pageClosed": false,
+      "contextPageCount": 1,
+      "nonce": "82515c31-26fa-480d-a733-67a67a4ef98f",
+      "heartbeat": 534,
+      "browserPid": 3835035,
+      "browserRssMb": 1094.9,
+      "stackCpuPercentOfOneCore": 0.94,
+      "processCount": 10,
+      "viewerFrames": 134,
+      "viewerBytes": 10459406,
+      "viewerMaxGapMs": 52251,
+      "viewerCurrentGapMs": 52009,
+      "burst": {
+        "keyboardTogglesProbe": true,
+        "pointerTogglesProbe": true,
+        "wheelScrolls": true
+      },
+      "visibleAfterMs": null,
+      "scroll": {
+        "areaBefore": 200,
+        "areaAfter": 0
+      }
+    },
+    {
+      "index": 11,
+      "at": "2026-09-22T00:07:38.670Z",
+      "elapsedMs": 587235,
+      "url": "http://127.0.0.1:33817/index.html?session=frame-stream-mubwnwku",
+      "title": "Hames B0 Fixture",
+      "targetId": "3F1A9BB53FD1974BD50209B1B486F0BE",
+      "pageClosed": false,
+      "contextPageCount": 1,
+      "nonce": "82515c31-26fa-480d-a733-67a67a4ef98f",
+      "heartbeat": 587,
+      "browserPid": 3835035,
+      "browserRssMb": 1100.3,
+      "stackCpuPercentOfOneCore": 1.04,
+      "processCount": 10,
+      "viewerFrames": 142,
+      "viewerBytes": 11073749,
+      "viewerMaxGapMs": 52251,
+      "viewerCurrentGapMs": 52203,
+      "burst": {
+        "keyboardTogglesProbe": true,
+        "pointerTogglesProbe": true,
+        "wheelScrolls": true
+      },
+      "visibleAfterMs": null,
+      "scroll": {
+        "areaBefore": 0,
+        "areaAfter": 200
+      }
+    },
+    {
+      "index": 12,
+      "at": "2026-09-22T00:07:51.467Z",
+      "elapsedMs": 600032,
+      "url": "http://127.0.0.1:33817/index.html?session=frame-stream-mubwnwku",
+      "title": "Hames B0 Fixture",
+      "targetId": "3F1A9BB53FD1974BD50209B1B486F0BE",
+      "pageClosed": false,
+      "contextPageCount": 1,
+      "nonce": "82515c31-26fa-480d-a733-67a67a4ef98f",
+      "heartbeat": 600,
+      "browserPid": 3835035,
+      "browserRssMb": 1113.8,
+      "stackCpuPercentOfOneCore": 4.61,
+      "processCount": 10,
+      "viewerFrames": 162,
+      "viewerBytes": 12658190,
+      "viewerMaxGapMs": 52251,
+      "viewerCurrentGapMs": 270,
+      "burst": {
+        "keyboardTogglesProbe": true,
+        "pointerTogglesProbe": true,
+        "wheelScrolls": true,
+        "agentActionVisibleInPixels": true
+      },
+      "visibleAfterMs": 49,
+      "scroll": {
+        "areaBefore": 200,
+        "areaAfter": 0
+      }
+    }
+  ],
+  "memoryDriftMb": 40.5,
+  "failures": [],
+  "pass": true,
+  "cleanup": {
+    "code": 0,
+    "signal": null
+  }
+}

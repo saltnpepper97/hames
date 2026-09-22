@@ -99,6 +99,13 @@ Directories are created lazily and user files are never silently overwritten.
 | [M10](M10-WEB-CONTROL.md) | The [Ratatui slice](M10-TUI.md) presents the proven gateway behavior; the embedded web foundation is live and its chat/management vertical slices remain. |
 | [M11](M11-HARDENING-RELEASE.md) | Security, recovery, packaging, documentation, and release gates produce v0.1.0. |
 
+## Additional feature plans
+
+- [Embedded browser](EMBEDDED-BROWSER.md): proposed staged plan for a shared,
+  interactive Playwright browser in a chat Browser tab, from feasibility prototype
+  through local web testing, recovery, and release acceptance. No implementation
+  milestones are complete.
+
 ## Mandatory execution rule
 
 Read [AGENT-INSTRUCTIONS.md](AGENT-INSTRUCTIONS.md) before implementation. Commit

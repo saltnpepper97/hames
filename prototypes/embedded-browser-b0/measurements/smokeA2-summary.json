@@ -1,0 +1,22 @@
+{
+  "label": "smokeA2",
+  "generatedAt": "2026-09-21T23:08:08.983Z",
+  "candidates": [
+    {
+      "candidate": "frame-stream",
+      "stepsOk": 17,
+      "stepsTotal": 18,
+      "failed": [
+        "identity-agreement"
+      ],
+      "latencyP50Ms": 16,
+      "latencyP95Ms": 17,
+      "contentPsnrDb": null,
+      "activeCpuPercentOfOneCore": 16.56,
+      "idleCpuPercentOfOneCore": 1.59,
+      "activeBandwidthKbits": 3436.7,
+      "idleBandwidthKbits": 0,
+      "activeBytesPerFrame": 84180.5
+    }
+  ]
+}
