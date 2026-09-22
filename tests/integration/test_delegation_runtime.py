@@ -17,6 +17,7 @@ from hames.gateway import GatewayState, create_app
 from hames.paths import HamesPaths
 from hames.providers import ModelRequest, StreamEvent, StreamEventKind, ToolCallDelta
 from hames.providers.fake import FakeProvider
+from hames.tools import AgentControlArguments
 from hames.workflows import project_workflow
 
 
@@ -245,7 +246,7 @@ async def test_child_limits_reject_excess_parallel_admissions(tmp_path: Path, li
 
 
 @pytest.mark.asyncio
-async def test_parent_cancellation_cancels_parallel_children(tmp_path: Path) -> None:
+async def test_parent_cancellation_preserves_parallel_children(tmp_path: Path) -> None:
     provider = DelegationProvider()
     state, session_id, run_id = await start_parent(tmp_path, provider)
     try:
@@ -254,13 +255,29 @@ async def test_parent_cancellation_cancels_parallel_children(tmp_path: Path) -> 
         children = tuple(state.runs._children_by_parent[run_id])
         assert await state.runs.cancel(run_id)
         await asyncio.wait_for(asyncio.shield(task), 5)
-        assert provider.cancelled == 2
-        assert state.runs._active_child_count == 0
+        assert provider.cancelled == 0
+        assert state.runs._active_child_count == 2
         for child_run in children:
-            assert any(
+            assert not any(
                 event.type == "run.cancelled" for event in state.ledger.list_run_events(child_run)
             )
-        assert any(event.type == "run.cancelled" for event in state.ledger.list_events(session_id))
+        cancelled = next(
+            event for event in state.ledger.list_run_events(run_id) if event.type == "run.cancelled"
+        )
+        assert cancelled.payload["children_preserved"] is True
+        provider.release.set()
+        await asyncio.wait_for(asyncio.gather(*tuple(state.runs._delegation_tasks)), 5)
+        assert state.runs._active_child_count == 0
+        assert (
+            len(
+                [
+                    e
+                    for e in state.ledger.list_events(session_id)
+                    if e.type == "delegation.completed"
+                ]
+            )
+            == 2
+        )
     finally:
         await state.runs.close()
 
@@ -765,4 +782,203 @@ async def test_child_tool_limit_failure_is_returned_to_parent(tmp_path: Path) ->
         assert builder_stage is not None
         assert builder_stage.latest.status == "completed"
     finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_delegated_work_with_disabled_active_time_cutoff(
+    tmp_path: Path, cancel: bool
+) -> None:
+    provider = DelegationProvider(children=1)
+    state, _session_id, run_id = await start_parent(
+        tmp_path, provider, limits="max_active_seconds_per_run = 0"
+    )
+    try:
+        parent_task = state.runs._tasks[run_id]
+        await asyncio.wait_for(provider.children_entered.wait(), 5)
+        child_run = next(iter(state.runs._children_by_parent[run_id]))
+        for current_run in [run_id, child_run]:
+            started = next(
+                e for e in state.ledger.list_run_events(current_run) if e.type == "run.started"
+            )
+            assert started.payload["max_active_seconds"] == 0
+        if cancel:
+            assert await state.runs.cancel(run_id)
+        else:
+            provider.release.set()
+        await asyncio.wait_for(asyncio.shield(parent_task), 5)
+        provider.release.set()
+        await asyncio.wait_for(asyncio.gather(*tuple(state.runs._delegation_tasks)), 5)
+        for current_run in [run_id, child_run]:
+            events = state.ledger.list_run_events(current_run)
+            terminal = "run.cancelled" if cancel and current_run == run_id else "run.completed"
+            assert any(e.type == terminal for e in events)
+            assert not any(e.type == "run.failed" for e in events)
+    finally:
+        provider.release.set()
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("queued", [False, True])
+async def test_steering_lead_preserves_workers_and_late_results(
+    tmp_path: Path, queued: bool
+) -> None:
+    provider = DelegationProvider()
+    state, session_id, run_id = await start_parent(tmp_path, provider)
+    try:
+        parent = state.runs._tasks[run_id]
+        await asyncio.wait_for(provider.children_entered.wait(), 5)
+        result = await state.runs.submit(session_id, "Focus on tests", send_now=not queued)
+        if queued:
+            assert result.queued is not None
+            await state.runs.send_queued_now(session_id, result.queued.id)
+        await asyncio.wait_for(asyncio.shield(parent), 5)
+        assert provider.cancelled == 0
+        assert state.runs._active_child_count == 2
+        provider.release.set()
+        await asyncio.wait_for(asyncio.gather(*tuple(state.runs._delegation_tasks)), 5)
+        # Late worker results belong to the original tool exchange, even after steer.
+        session = state.ledger.get_session(session_id)
+        context = compile_context(
+            session,
+            state.ledger.replay(session_id),
+            state.agents.load(session.agent_id),
+            [],
+            "policy",
+            ContextConfig(),
+            run_id="next",
+        )
+        pending: set[str] = set()
+        for message in context.messages:
+            if message.role == "user":
+                assert not pending
+            pending.update(call.id for call in message.tool_calls)
+            if message.role == "tool":
+                assert message.tool_call_id in pending
+                pending.remove(message.tool_call_id)
+        assert not pending
+        events = state.ledger.list_events(session_id)
+        assert len([e for e in events if e.type == "delegation.completed"]) == 2
+        assert not any(e.type == "delegation.failed" for e in events)
+    finally:
+        provider.release.set()
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_steering_worker_keeps_parent_waiting_for_replacement(tmp_path: Path) -> None:
+    provider = DelegationProvider(children=1)
+    state, session_id, run_id = await start_parent(tmp_path, provider)
+    try:
+        parent = state.runs._tasks[run_id]
+        await asyncio.wait_for(provider.children_entered.wait(), 5)
+        child_run = next(iter(state.runs._children_by_parent[run_id]))
+        child_session = next(e.session_id for e in state.ledger.list_run_events(child_run))
+        child_task = state.runs._tasks[child_run]
+        await state.runs.submit(child_session, "Also verify tests", send_now=True)
+        await asyncio.wait_for(asyncio.shield(child_task), 5)
+        assert not parent.done()
+        assert not any(e.type == "delegation.failed" for e in state.ledger.list_events(session_id))
+        provider.release.set()
+        await asyncio.wait_for(asyncio.shield(parent), 5)
+        done = next(
+            e for e in state.ledger.list_events(session_id) if e.type == "delegation.completed"
+        )
+        assert done.payload["child_run_id"] != child_run
+        assert done.payload["child_session_id"] == child_session
+        assert not any(
+            e.type == "delegation.stopping" for e in state.ledger.list_events(session_id)
+        )
+    finally:
+        provider.release.set()
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_explicit_worker_control_is_scoped_and_requires_user_instruction(
+    tmp_path: Path,
+) -> None:
+    provider = DelegationProvider()
+    state, session_id, run_id = await start_parent(tmp_path, provider)
+    try:
+        parent = state.runs._tasks[run_id]
+        await asyncio.wait_for(provider.children_entered.wait(), 5)
+        session = state.ledger.get_session(session_id)
+        workers = await state.runs._worker_sessions(session_id)
+        assert len(workers) == 2
+        rejected = await state.runs._control_workers(
+            session,
+            run_id,
+            AgentControlArguments(
+                action="stop", child_session_id=workers[0].id, user_instruction="Stop Default"
+            ),
+        )
+        assert rejected.status == "rejected"
+        assert provider.cancelled == 0
+        invalid = await state.runs._control_workers(
+            session, run_id, AgentControlArguments(action="wait", child_session_id=session_id)
+        )
+        assert invalid.status == "rejected"
+        for text in [
+            "Do not stop Default",
+            "If needed stop Default",
+            "Stop all workers except Default",
+            "Stop some unrelated agent",
+        ]:
+            state.ledger.append(
+                session_id=session_id,
+                run_id=run_id,
+                event_type="user.message",
+                payload={"content": text},
+            )
+            rejected = await state.runs._control_workers(
+                session,
+                run_id,
+                AgentControlArguments(
+                    action="stop", child_session_id=workers[0].id, user_instruction=text
+                ),
+            )
+            assert rejected.status == "rejected"
+            assert provider.cancelled == 0
+        state.ledger.append(
+            session_id=session_id,
+            run_id=run_id,
+            event_type="user.message",
+            payload={"content": "Stop Default"},
+        )
+        stopped = await state.runs._control_workers(
+            session,
+            run_id,
+            AgentControlArguments(
+                action="stop", child_session_id=workers[0].id, user_instruction="Stop Default"
+            ),
+        )
+        assert stopped.status == "completed"
+        first_task = state.runs._tasks.get(state.runs._session_runs.get(workers[0].id, ""))
+        if first_task is not None:
+            await asyncio.wait_for(asyncio.shield(first_task), 5)
+        assert provider.cancelled == 1
+        assert state.runs.is_session_active(workers[1].id)
+        assert not parent.done()
+        state.ledger.append(
+            session_id=session_id,
+            run_id=run_id,
+            event_type="user.message",
+            payload={"content": "Stop all workers"},
+        )
+        stopped = await state.runs._control_workers(
+            session,
+            run_id,
+            AgentControlArguments(
+                action="stop", all_workers=True, user_instruction="Stop all workers"
+            ),
+        )
+        assert stopped.status == "completed"
+        await asyncio.wait_for(asyncio.shield(parent), 5)
+        assert provider.cancelled == 2
+        assert any(e.type == "run.completed" for e in state.ledger.list_run_events(run_id))
+    finally:
+        provider.release.set()
         await state.runs.close()

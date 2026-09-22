@@ -47,3 +47,36 @@ async def test_upstream_timeout_is_not_an_active_budget_failure() -> None:
 
     with pytest.raises(TimeoutError, match="provider connection"):
         await ActiveClock(10).measure(upstream())
+
+
+@pytest.mark.asyncio
+async def test_zero_disables_active_deadline_across_work_and_pauses() -> None:
+    clock = ActiveClock(0, elapsed=3600)
+
+    async def work() -> None:
+        assert clock._timeout is not None  # pyright: ignore[reportPrivateUsage]
+        assert clock._timeout.when() is None  # pyright: ignore[reportPrivateUsage]
+        with clock.pause():
+            await asyncio.sleep(0)
+        assert clock._timeout.when() is None  # pyright: ignore[reportPrivateUsage]
+        await clock.measure(asyncio.sleep(0.01))
+
+    await clock.measure(work())
+    await clock.measure(asyncio.sleep(0.01))
+    assert clock.elapsed > 3600
+    assert clock.remaining == float("inf")
+
+
+@pytest.mark.asyncio
+async def test_unlimited_clock_still_allows_cancellation() -> None:
+    entered = asyncio.Event()
+
+    async def work() -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(ActiveClock(0).measure(work()))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task

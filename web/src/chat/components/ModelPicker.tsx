@@ -38,6 +38,8 @@ function providerLabel(profile: ProviderProfile): string {
   if (profile.adapter === "ollama") return "Ollama";
   if (profile.adapter === "openai") return "OpenAI API";
   if (profile.adapter === "xai") return "Grok API";
+  if (profile.adapter === "mimo") return "Xiaomi MiMo API";
+  if (profile.adapter === "mimo_token_plan") return "Xiaomi MiMo Token Plan";
   if (profile.adapter === "deepseek") return "DeepSeek API";
   if (profile.adapter === "zai") return "Z.ai API";
   if (profile.adapter === "zai_coding") return "Z.ai Coding Plan";
@@ -48,7 +50,7 @@ function providerLabel(profile: ProviderProfile): string {
 
 function shouldProbe(profile: ProviderProfile, sessionProvider: string): boolean {
   if (profile.id === sessionProvider) return true;
-  if (["openai", "xai", "grok", "codex", "deepseek", "zai", "zai_coding"].includes(profile.adapter)) return true;
+  if (["openai", "xai", "grok", "codex", "deepseek", "zai", "zai_coding", "mimo", "mimo_token_plan"].includes(profile.adapter)) return true;
   return Boolean(profile.configured_model.trim());
 }
 

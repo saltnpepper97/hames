@@ -9,6 +9,7 @@ from hames.paths import HamesPaths
 from hames.providers import ProviderError, ProviderModel
 from hames.providers.deepseek import DeepSeekProvider
 from hames.providers.fake import FakeProvider
+from hames.providers.mimo import MimoProvider, MimoTokenPlanProvider
 from hames.providers.openai import OpenAIProvider
 from hames.providers.registry import configured_providers
 from hames.providers.xai import XaiProvider
@@ -17,6 +18,8 @@ from hames.providers.xai import XaiProvider
 @pytest.mark.parametrize(
     ("profile_id", "provider_class", "env_name", "model_id"),
     [
+        ("mimo", MimoProvider, "MIMO_API_KEY", "mimo-v2.6-pro"),
+        ("mimo_token_plan", MimoTokenPlanProvider, "MIMO_TOKEN_PLAN_API_KEY", "mimo-v2.6-flash"),
         ("deepseek", DeepSeekProvider, "DEEPSEEK_API_KEY", "deepseek-flash"),
         ("openai", OpenAIProvider, "OPENAI_API_KEY", "gpt-4.1"),
         ("xai", XaiProvider, "XAI_API_KEY", "grok-4"),

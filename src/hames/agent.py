@@ -31,6 +31,7 @@ READ_ONLY_TOOLS = frozenset(
     {
         "ask_user",
         "spawn_agent",
+        "agent_control",
         "read_file",
         "list_dir",
         "vcs_inspect",

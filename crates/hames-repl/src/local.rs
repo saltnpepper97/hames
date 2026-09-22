@@ -30,10 +30,12 @@ pub enum ProviderBackend {
     DeepSeek,
     Zai,
     ZaiCoding,
+    Mimo,
+    MimoTokenPlan,
     Codex,
 }
 
-const PROVIDER_BACKENDS: [ProviderBackend; 9] = [
+const PROVIDER_BACKENDS: [ProviderBackend; 11] = [
     ProviderBackend::LlamaCpp,
     ProviderBackend::Ollama,
     ProviderBackend::OpenAi,
@@ -42,6 +44,8 @@ const PROVIDER_BACKENDS: [ProviderBackend; 9] = [
     ProviderBackend::DeepSeek,
     ProviderBackend::Zai,
     ProviderBackend::ZaiCoding,
+    ProviderBackend::Mimo,
+    ProviderBackend::MimoTokenPlan,
     ProviderBackend::Codex,
 ];
 
@@ -56,6 +60,8 @@ impl ProviderBackend {
             Self::DeepSeek => "deepseek",
             Self::Zai => "zai",
             Self::ZaiCoding => "zai_coding",
+            Self::Mimo => "mimo",
+            Self::MimoTokenPlan => "mimo_token_plan",
             Self::Codex => "codex",
         }
     }
@@ -70,6 +76,8 @@ impl ProviderBackend {
             Self::DeepSeek => "DeepSeek API",
             Self::Zai => "Z.ai API",
             Self::ZaiCoding => "Z.ai Coding Plan",
+            Self::Mimo => "Xiaomi MiMo API",
+            Self::MimoTokenPlan => "Xiaomi MiMo Token Plan",
             Self::Codex => "Codex / ChatGPT subscription",
         }
     }
@@ -416,7 +424,11 @@ pub fn run_setup(
     for provider in wizard.providers {
         configure_provider(paths, provider)?;
         match provider {
-            ProviderBackend::DeepSeek | ProviderBackend::Zai | ProviderBackend::ZaiCoding => {
+            ProviderBackend::DeepSeek
+            | ProviderBackend::Zai
+            | ProviderBackend::ZaiCoding
+            | ProviderBackend::Mimo
+            | ProviderBackend::MimoTokenPlan => {
                 connect_api_key(paths, provider, interactive)?;
             }
             ProviderBackend::OpenAi if env::var_os("OPENAI_API_KEY").is_none() => {
@@ -625,7 +637,9 @@ fn provider_index(provider: ProviderBackend) -> usize {
         ProviderBackend::DeepSeek => 5,
         ProviderBackend::Zai => 6,
         ProviderBackend::ZaiCoding => 7,
-        ProviderBackend::Codex => 8,
+        ProviderBackend::Mimo => 8,
+        ProviderBackend::MimoTokenPlan => 9,
+        ProviderBackend::Codex => 10,
     }
 }
 
@@ -759,7 +773,9 @@ fn render_provider_setup(
                     ProviderBackend::OpenAi
                     | ProviderBackend::Xai
                     | ProviderBackend::DeepSeek
-                    | ProviderBackend::Zai => "API key",
+                    | ProviderBackend::Zai
+                    | ProviderBackend::Mimo => "API key",
+                    ProviderBackend::MimoTokenPlan => "Token Plan API key",
                     ProviderBackend::ZaiCoding => "Coding Plan API key",
                     ProviderBackend::Grok => "grok login",
                     ProviderBackend::Codex => "ChatGPT subscription",
@@ -870,6 +886,10 @@ fn configure_provider(paths: &LocalPaths, provider: ProviderBackend) -> Result<(
         ProviderBackend::OpenAi => ("openai", "https://api.openai.com/v1"),
         ProviderBackend::Xai => ("xai", "https://api.x.ai/v1"),
         ProviderBackend::Grok => ("grok", "https://cli-chat-proxy.grok.com/v1"),
+        ProviderBackend::Mimo => ("mimo", "https://api.xiaomimimo.com/v1"),
+        ProviderBackend::MimoTokenPlan => {
+            ("mimo_token_plan", "https://token-plan-cn.xiaomimimo.com/v1")
+        }
         ProviderBackend::DeepSeek => ("deepseek", "https://api.deepseek.com"),
         ProviderBackend::Zai => ("zai", "https://api.z.ai/api/paas/v4"),
         ProviderBackend::ZaiCoding => ("zai_coding", "https://api.z.ai/api/coding/paas/v4"),
@@ -925,14 +945,28 @@ fn configure_provider(paths: &LocalPaths, provider: ProviderBackend) -> Result<(
     }
     if matches!(
         provider,
-        ProviderBackend::DeepSeek | ProviderBackend::Zai | ProviderBackend::ZaiCoding
+        ProviderBackend::DeepSeek
+            | ProviderBackend::Zai
+            | ProviderBackend::ZaiCoding
+            | ProviderBackend::Mimo
+            | ProviderBackend::MimoTokenPlan
     ) {
-        let variable = if provider == ProviderBackend::DeepSeek {
+        let mimo = matches!(
+            provider,
+            ProviderBackend::Mimo | ProviderBackend::MimoTokenPlan
+        );
+        let variable = if provider == ProviderBackend::Mimo {
+            "MIMO_API_KEY"
+        } else if provider == ProviderBackend::MimoTokenPlan {
+            "MIMO_TOKEN_PLAN_API_KEY"
+        } else if provider == ProviderBackend::DeepSeek {
             "DEEPSEEK_API_KEY"
         } else {
             "ZAI_API_KEY"
         };
-        let model = if provider == ProviderBackend::DeepSeek {
+        let model = if mimo {
+            "mimo-v2.6-pro"
+        } else if provider == ProviderBackend::DeepSeek {
             "deepseek-flash"
         } else {
             "glm-5.3"
@@ -955,7 +989,7 @@ fn configure_provider(paths: &LocalPaths, provider: ProviderBackend) -> Result<(
             .or_insert_with(|| toml::Value::String(model.to_owned()));
         profile
             .entry("reasoning_effort")
-            .or_insert_with(|| toml::Value::String("high".to_owned()));
+            .or_insert_with(|| toml::Value::String(if mimo { "on" } else { "high" }.to_owned()));
         profile
             .entry("timeout_seconds")
             .or_insert(toml::Value::Float(600.0));
@@ -963,10 +997,14 @@ fn configure_provider(paths: &LocalPaths, provider: ProviderBackend) -> Result<(
             .entry("supported_reasoning_efforts")
             .or_insert_with(|| {
                 toml::Value::Array(
-                    ["low", "high", "max"]
-                        .into_iter()
-                        .map(|value| toml::Value::String(value.to_owned()))
-                        .collect(),
+                    (if mimo {
+                        vec!["on"]
+                    } else {
+                        vec!["low", "high", "max"]
+                    })
+                    .into_iter()
+                    .map(|value| toml::Value::String(value.to_owned()))
+                    .collect(),
                 )
             });
     }
@@ -997,7 +1035,12 @@ fn connect_api_key(paths: &LocalPaths, provider: ProviderBackend, interactive: b
         );
         return Ok(());
     }
-    let console = if provider == ProviderBackend::DeepSeek {
+    let console = if matches!(
+        provider,
+        ProviderBackend::Mimo | ProviderBackend::MimoTokenPlan
+    ) {
+        "https://platform.xiaomimimo.com/"
+    } else if provider == ProviderBackend::DeepSeek {
         "https://platform.deepseek.com/api_keys"
     } else {
         "https://z.ai/manage-apikey/apikey-list"
@@ -1007,6 +1050,9 @@ fn connect_api_key(paths: &LocalPaths, provider: ProviderBackend, interactive: b
         "  Saved locally in {} with owner-only permissions.",
         path.display()
     );
+    if provider == ProviderBackend::MimoTokenPlan {
+        println!("  Uses the Token Plan endpoint; enter your dedicated Token Plan key.");
+    }
     if provider == ProviderBackend::ZaiCoding {
         println!("  Uses the Coding Plan endpoint; no fallback to pay-as-you-go billing.");
     }
@@ -1305,6 +1351,8 @@ mod tests {
             ProviderBackend::DeepSeek,
             ProviderBackend::Zai,
             ProviderBackend::ZaiCoding,
+            ProviderBackend::Mimo,
+            ProviderBackend::MimoTokenPlan,
         ] {
             configure_provider(&paths, provider).unwrap();
         }
@@ -1317,6 +1365,31 @@ mod tests {
             config["providers"]["zai_coding"]["base_url"].as_str(),
             Some("https://api.z.ai/api/coding/paas/v4")
         );
+        assert_eq!(
+            config["providers"]["mimo"]["api_key_env"].as_str(),
+            Some("MIMO_API_KEY")
+        );
+        assert_eq!(
+            config["providers"]["mimo_token_plan"]["api_key_env"].as_str(),
+            Some("MIMO_TOKEN_PLAN_API_KEY")
+        );
+        assert_eq!(
+            config["providers"]["mimo_token_plan"]["base_url"].as_str(),
+            Some("https://token-plan-cn.xiaomimimo.com/v1")
+        );
+        assert_eq!(
+            config["providers"]["mimo"]["reasoning_effort"].as_str(),
+            Some("on")
+        );
+        assert_eq!(
+            config["providers"]["mimo"]["supported_reasoning_efforts"]
+                .as_array()
+                .unwrap(),
+            &vec![toml::Value::String("on".to_owned())]
+        );
+        for (index, provider) in super::PROVIDER_BACKENDS.iter().enumerate() {
+            assert_eq!(super::provider_index(*provider), index);
+        }
         let key_file = std::path::PathBuf::from(
             config["providers"]["deepseek"]["api_key_file"]
                 .as_str()

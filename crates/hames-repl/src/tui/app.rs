@@ -2634,7 +2634,12 @@ impl App {
         if matches!(
             event.event_type.as_str(),
             "run.completed" | "run.failed" | "run.cancelled"
-        ) {
+        ) && event
+            .payload
+            .get("children_preserved")
+            .and_then(Value::as_bool)
+            != Some(true)
+        {
             self.delegated_activity.retain(|worker| {
                 if worker.run_id != run_id {
                     return true;
@@ -4867,6 +4872,39 @@ mod tests {
         assert_eq!(app.composer.text(), "first");
         assert!(app.handle_composer_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL,)));
         assert!(app.composer.is_empty());
+    }
+
+    #[test]
+    fn stopped_lead_keeps_worker_activity_until_worker_finishes() {
+        let mut app = App::new(session(), Vec::new(), true);
+        let request = event(
+            2,
+            "delegation.requested",
+            "lead",
+            json!({"target_agent_id": "builder", "target_agent_name": "Builder"}),
+        );
+        app.ingest_durable(event(1, "run.started", "lead", json!({})), false);
+        app.ingest_durable(request.clone(), false);
+        app.ingest_durable(
+            event(
+                3,
+                "run.cancelled",
+                "lead",
+                json!({"children_preserved": true, "reason": "stopped"}),
+            ),
+            true,
+        );
+        assert_eq!(app.delegated_activity.len(), 1);
+        assert!(app.active_run.is_none());
+        let mut completed = event(
+            4,
+            "delegation.completed",
+            "lead",
+            json!({"status": "completed"}),
+        );
+        completed.causation_id = Some(request.id);
+        app.ingest_durable(completed, true);
+        assert!(app.delegated_activity.is_empty());
     }
 
     #[test]

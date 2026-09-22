@@ -26,7 +26,12 @@ class RuntimeConfig(StrictModel):
     default_interaction_mode: Literal["manual", "auto", "plan"] = "auto"
     max_model_turns_per_user_message: int = Field(default=100, ge=1)
     max_tool_calls_per_run: int = Field(default=99, ge=1)
-    max_active_seconds_per_run: float = Field(default=1800.0, gt=0)
+    max_active_seconds_per_run: float = Field(
+        default=1800.0,
+        ge=0,
+        allow_inf_nan=False,
+        description="Active work budget per run in seconds; 0 disables the time cutoff.",
+    )
     max_delegation_depth: int = Field(default=1, ge=0, le=2)
     max_concurrent_child_runs: int = Field(default=4, ge=1, le=16)
     max_child_runs_per_parent_run: int = Field(default=4, ge=1, le=16)
@@ -176,6 +181,8 @@ class ProviderProfileConfig(StrictModel):
             "deepseek",
             "zai",
             "zai_coding",
+            "mimo",
+            "mimo_token_plan",
         }:
             raise ValueError(f"unknown provider adapter: {value}")
         return value
@@ -199,9 +206,12 @@ class ProviderProfileConfig(StrictModel):
             "deepseek",
             "zai",
             "zai_coding",
+            "mimo",
+            "mimo_token_plan",
         }:
             raise ValueError(
-                "api_key_file is supported by openai, xai, deepseek, zai and zai_coding"
+                "api_key_file is supported by openai, xai, deepseek, zai, zai_coding, "
+                "mimo and mimo_token_plan"
             )
         if self.adapter == "codex":
             if self.base_url != "app-server://codex":
@@ -225,6 +235,10 @@ class ProviderProfileConfig(StrictModel):
             self.api_key_env = "DEEPSEEK_API_KEY"
         if self.adapter in {"zai", "zai_coding"} and not self.api_key_env:
             self.api_key_env = "ZAI_API_KEY"
+        if self.adapter in {"mimo", "mimo_token_plan"} and not self.api_key_env:
+            self.api_key_env = (
+                "MIMO_API_KEY" if self.adapter == "mimo" else "MIMO_TOKEN_PLAN_API_KEY"
+            )
         return self
 
     @field_validator("supported_reasoning_efforts")
@@ -366,7 +380,15 @@ def load_config(
             raise ValueError("connections.json must contain provider profiles")
         for profile_id, profile in cast(dict[str, object], managed).items():
             validated = ProviderProfileConfig.model_validate(profile)
-            if validated.adapter not in {"openai", "xai", "deepseek", "zai", "zai_coding"}:
+            if validated.adapter not in {
+                "openai",
+                "xai",
+                "deepseek",
+                "zai",
+                "zai_coding",
+                "mimo",
+                "mimo_token_plan",
+            }:
                 raise ValueError("unsupported managed connection")
             source["providers"][profile_id] = validated.model_dump()
     merged = _deep_merge(source, _environment_overrides(env))

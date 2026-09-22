@@ -293,3 +293,12 @@ def test_doctor_and_cli_json(
     assert main(["doctor", "--json"]) == 0
     output = json.loads(capsys.readouterr().out)
     assert output["hames_home"] == str(hames_paths.root)
+
+
+def test_active_time_cutoff_can_be_disabled(hames_paths: HamesPaths) -> None:
+    config = load_config(hames_paths, environ={"HAMES_RUNTIME__MAX_ACTIVE_SECONDS_PER_RUN": "0"})
+    assert config.runtime.max_active_seconds_per_run == 0
+    assert RuntimeConfig().max_active_seconds_per_run == 1800
+    for invalid in [-1, float("inf"), float("nan")]:
+        with pytest.raises(ValueError):
+            RuntimeConfig(max_active_seconds_per_run=invalid)

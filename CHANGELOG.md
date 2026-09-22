@@ -6,6 +6,11 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Removed
 
+- Deferred the experimental built-in browser: removed its chat panel, gateway APIs,
+  agent tool, prototype, obsolete implementation plans, and Python Playwright
+  dependency. Existing external browser MCP
+  connections and historical browser events remain compatible.
+
 - Flows recipes, their editor/history pages, `/flow`, and recipe execution APIs.
   Ordinary agent delegation and attached worker transcripts remain. Existing chats
   and historical events are preserved. Obsolete flow templates were removed.
@@ -15,6 +20,16 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
   handoff controls. Normal chat, agent switching, and native delegation remain.
 
 ### Fixed
+
+- Stopping or steering a lead leaves its workers running. A stopped worker reports
+  upward without stopping siblings; steering a worker keeps its original assignment
+  attached to the lead until the replacement turn finishes. Late worker results
+  remain paired with their original tool calls.
+- Dynamic plans, checklists, delegated assignments, and worker state no longer consume
+  the fixed-instruction category allowance. The overall model input budget remains
+  enforced, and worker reports now use the intended bounded prompt representation.
+- Listing tabs through the official Playwright MCP is recognized as read-only;
+  tab mutations retain the normal approval policy.
 
 - Codex receives safe aliases for Hames MCP tools instead of its reserved `mcp__`
   names. Calls map back to their original tool identities, with collision handling
@@ -75,6 +90,13 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Added
 
+- Xiaomi MiMo API and Token Plan connections across Web, TUI, and CLI, with model
+  discovery, context-window metadata, tool calls, and model-specific thinking controls.
+- `agent_control` for inspecting and waiting on existing workers. Stopping workers
+  through this tool requires an explicit instruction from the current user turn.
+- `runtime.max_active_seconds_per_run = 0` disables the active-work timeout for
+  long-running leads and workers; other execution limits remain in effect.
+
 - Atomic batch edits to one file through `edit_file`: related replacements can share one call
   and one combined diff; a failed replacement leaves the entire file unchanged.
 
@@ -107,8 +129,8 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 - Consecutive successful edits to the same file appear in one expandable transcript row,
   preserving individual diffs and boundaries between runs, messages, and other actions.
-- The normal Web chat list excludes delegated worker sessions; delegation cards open their
-  transcripts within the parent conversation.
+- Delegated worker chats remain accessible from the Web sidebar and delegation
+  activity, including while work is still in progress.
 
 - Chat composer shows one additional line by default while retaining automatic growth.
 

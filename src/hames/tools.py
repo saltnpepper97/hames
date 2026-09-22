@@ -151,6 +151,30 @@ class VcsInspectArguments(ToolArguments):
         return self
 
 
+class AgentControlArguments(ToolArguments):
+    action: Literal["list", "wait", "stop"] = "list"
+    child_session_id: str = ""
+    all_workers: bool = False
+    wait_seconds: float = Field(default=30, ge=1, le=60)
+    user_instruction: str = Field(
+        default="",
+        max_length=4000,
+        description="For stop only: copy the entire current user message explicitly requesting "
+        "to stop this worker "
+        "or team. Never infer it from Stop/Steer of another agent.",
+    )
+
+    @model_validator(mode="after")
+    def valid_target(self) -> AgentControlArguments:
+        if self.action != "list" and not self.child_session_id and not self.all_workers:
+            raise ValueError("select a child_session_id or all_workers")
+        if self.child_session_id and self.all_workers:
+            raise ValueError("select one worker or all_workers, not both")
+        if self.action == "stop" and not self.user_instruction.strip():
+            raise ValueError("stopping workers requires an explicit user instruction")
+        return self
+
+
 class SpawnAgentArguments(ToolArguments):
     agent_id: str = Field(
         default="",
@@ -936,6 +960,21 @@ class VcsInspectTool(ToolBase):
             return _failure(self.name, exc, started)
 
 
+class AgentControlTool(ToolBase):
+    name = "agent_control"
+    description = (
+        "List, wait for, or stop existing delegated workers in this chat's team. "
+        "Use list to get child_session_id values and results; wait preserves workers. "
+        "Stop only when the user explicitly instructs you to stop the selected worker(s), "
+        "copying the entire current user message into user_instruction. "
+        "Stopping or steering you does not "
+        "authorize stopping anyone else. Never restart a user-stopped worker automatically. "
+        "Use all_workers only for an explicit whole-team stop request."
+    )
+    side_effect_class = "delegation"
+    arguments_type: ClassVar[type[ToolArguments]] = AgentControlArguments
+
+
 class SpawnAgentTool(ToolBase):
     name = "spawn_agent"
     description = (
@@ -1233,6 +1272,7 @@ class ToolRegistry:
             ShellTool(),
             VcsInspectTool(),
             SpawnAgentTool(),
+            AgentControlTool(),
             SkillLoadTool(),
             SkillAuthorTool(),
             SkillRunTool(),

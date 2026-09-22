@@ -370,8 +370,24 @@ class McpManager:
             name in handle.exposed_tools for handle in self._handles.values()
         )
 
-    def tool_is_read_only(self, name: str) -> bool:
+    def tool_is_read_only(self, name: str, arguments: dict[str, JsonValue] | None = None) -> bool:
         handle, native = self._resolve_tool(name)
+        # Upstream combines read-only listing and tab mutations in one tool.
+        # Recognize only the official local Playwright package and list operation;
+        # never grant a tool by its exposed name alone.
+        official_playwright = handle.spec.transport == "stdio" and any(
+            value == "@playwright/mcp"
+            or value.startswith("@playwright/mcp@")
+            or value.endswith("/node_modules/@playwright/mcp/cli.js")
+            for value in handle.spec.args
+        )
+        if (
+            official_playwright
+            and native == "browser_tabs"
+            and arguments is not None
+            and arguments.get("action") == "list"
+        ):
+            return True
         annotations = handle.tools[native].annotations
         return bool(
             annotations is not None

@@ -413,7 +413,7 @@ export function projectConversation(
     ) {
       activeRuns.delete(event.run_id);
       for (const node of delegations.values()) {
-        if (node.runId === event.run_id && node.status === "working") {
+        if (node.runId === event.run_id && node.status === "working" && event.payload.children_preserved !== true) {
           node.status = event.type === "run.cancelled" ? "cancelled" : "interrupted";
         }
       }

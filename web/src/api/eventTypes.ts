@@ -79,11 +79,13 @@ question.answered
 trust.granted
 trust.revoked
 runtime.error
+browser.changed
 runtime.notice
 terminal.started
 terminal.completed
 terminal.failed
 terminal.stopped
+delegation.started
 delegation.requested
 delegation.task_card
 delegation.completed

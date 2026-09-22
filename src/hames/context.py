@@ -185,6 +185,7 @@ def compile_context(
     config: ContextConfig,
     *,
     run_id: str,
+    worker_context: str = "",
     memories: list[RetrievedMemory] | None = None,
     skill_catalog: list[SkillSummary] | None = None,
     loaded_skills: list[SkillVersion] | None = None,
@@ -391,6 +392,11 @@ def compile_context(
     )
     compaction_tokens = _estimate_text(compaction_summary) if compaction_summary else 0
     stable_tokens = sum(_estimate_text(content) for _, content in stable_parts)
+    # Durable task state grows during execution and belongs to the overall model
+    # budget, not the category cap for the fixed harness instructions.
+    _require_category("stable instructions", stable_tokens, config.stable_instruction_limit_tokens)
+    if worker_context:
+        stable_tokens += _estimate_text(worker_context)
     if goal_part is not None:
         stable_tokens += _estimate_text(goal_part[1])
     if plan_part is not None:
@@ -430,7 +436,6 @@ def compile_context(
     )
     catalog_tokens = _estimate_text(catalog_content) if catalog_content else 0
     loaded_tokens = _estimate_text(loaded_content) if loaded_content else 0
-    _require_category("stable instructions", stable_tokens, config.stable_instruction_limit_tokens)
     _require_category("agent identity", agent_tokens, config.agent_identity_limit_tokens)
     _require_category("tool schemas", tool_tokens, config.tool_schema_limit_tokens)
     _require_category("retrieved memory", memory_tokens, config.retrieved_context_limit_tokens)
@@ -442,6 +447,8 @@ def compile_context(
     omitted: list[SourceDecision] = []
     for priority, (source_id, content) in enumerate(stable_parts, start=100):
         selected.append(_source(source_id, "instruction", content, priority))
+    if worker_context:
+        selected.append(_source("runtime.workers", "instruction", worker_context, 179))
     if goal_part is not None and active_goal is not None:
         goal_source = _source(goal_part[0], "goal", goal_part[1], 180)
         goal_source.event_ids = [
@@ -648,6 +655,8 @@ def compile_context(
         selected.append(_turn_source(turn, selected=True))
     messages = [message for turn in selected_turns for message in turn.messages]
     system_parts = [content for _, content in stable_parts]
+    if worker_context:
+        system_parts.append(worker_context)
     if goal_part is not None:
         system_parts.append(goal_part[1])
     if plan_part is not None:
@@ -902,6 +911,7 @@ def _conversation_turns(
     current: _Turn | None = None
     reasoning_by_request: dict[str, tuple[str, Event]] = {}
     assistants_by_request: dict[str, ProviderMessage] = {}
+    tool_owners: dict[str, tuple[_Turn, ProviderMessage]] = {}
     audit_reasoning: list[SourceDecision] = []
 
     for event in events:
@@ -973,6 +983,7 @@ def _conversation_turns(
                     arguments=dict(event.payload.get("arguments", {})),
                 )
             )
+            tool_owners[str(event.payload["tool_call_id"])] = (current, assistant)
             current.event_ids.append(event.id)
         elif event.type == "model.provider_state" and event.causation_id and current is not None:
             assistant = assistants_by_request.get(event.causation_id)
@@ -985,15 +996,25 @@ def _conversation_turns(
         elif (
             event.type in {"tool.completed", "tool.failed", "tool.rejected"} and current is not None
         ):
-            current.messages.append(
-                ProviderMessage(
-                    role="tool",
-                    content=_tool_result_content(event),
-                    tool_call_id=str(event.payload["tool_call_id"]),
-                    tool_name=str(event.payload["name"]),
-                )
+            message = ProviderMessage(
+                role="tool",
+                content=_tool_result_content(event),
+                tool_call_id=str(event.payload["tool_call_id"]),
+                tool_name=str(event.payload["name"]),
             )
-            current.event_ids.append(event.id)
+            owner = tool_owners.get(str(event.payload["tool_call_id"]))
+            if owner is not None and owner[0] is not current:
+                # Detached workers may report after another user turn began.
+                # Their result still closes the original assistant's tool call.
+                turn, assistant = owner
+                position = next(i for i, item in enumerate(turn.messages) if item is assistant) + 1
+                while position < len(turn.messages) and turn.messages[position].role == "tool":
+                    position += 1
+                turn.messages.insert(position, message)
+                turn.event_ids.append(event.id)
+            else:
+                current.messages.append(message)
+                current.event_ids.append(event.id)
     # Interrupted runs can leave durable calls without a terminal tool event.
     # Keep the ledger intact, but close those exchanges in provider history so
     # switching to a provider with strict tool pairing can replay the chat.

@@ -16,6 +16,12 @@ from fastapi import FastAPI, Request
 from hames.config import ProviderProfileConfig
 from hames.providers import ProviderError, ProviderModel
 from hames.providers.deepseek import DeepSeekProvider
+from hames.providers.mimo import (
+    MIMO_API_URL,
+    MIMO_TOKEN_PLAN_URL,
+    MimoProvider,
+    MimoTokenPlanProvider,
+)
 from hames.providers.openai import OpenAIProvider
 from hames.providers.scheduled import ScheduledProvider
 from hames.providers.xai import XaiProvider
@@ -25,6 +31,22 @@ if TYPE_CHECKING:
     from hames.gateway import GatewayState
 
 PRESETS = {
+    "mimo": (
+        "Xiaomi MiMo (API)",
+        MimoProvider,
+        MIMO_API_URL,
+        "MIMO_API_KEY",
+        "mimo-v2.6-pro",
+        "https://platform.xiaomimimo.com/",
+    ),
+    "mimo_token_plan": (
+        "Xiaomi MiMo Token Plan",
+        MimoTokenPlanProvider,
+        MIMO_TOKEN_PLAN_URL,
+        "MIMO_TOKEN_PLAN_API_KEY",
+        "mimo-v2.6-pro",
+        "https://platform.xiaomimimo.com/",
+    ),
     "openai": (
         "OpenAI (API)",
         OpenAIProvider,
@@ -239,8 +261,14 @@ def install_connections(app: FastAPI, state: GatewayState, auth: list[Any]) -> N
                 model=default_model
                 if any(model.id == default_model for model in models)
                 else models[0].id,
-                reasoning_effort="" if profile_id in {"openai", "xai"} else "high",
-                supported_reasoning_efforts=[]
+                reasoning_effort="on"
+                if profile_id.startswith("mimo")
+                else ""
+                if profile_id in {"openai", "xai"}
+                else "high",
+                supported_reasoning_efforts=["on"]
+                if profile_id.startswith("mimo")
+                else []
                 if profile_id in {"openai", "xai"}
                 else ["low", "high", "max"],
                 timeout_seconds=600,

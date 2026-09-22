@@ -143,6 +143,7 @@ export function Connections(props: { ready?: boolean } = {}) {
           footer={<><Button variant="quiet" disabled={!!busy()} onClick={close}>Cancel</Button><Button variant="primary" loading={!!busy()} disabled={!key().trim()} onClick={() => act(connection().id, () => connectProvider(connection().id, key().trim()), true)}>Connect</Button></>}>
           <div class="connection-form">
             <p>Enter your API key. Hames saves it privately on this computer.</p>
+            <Show when={connection().id === "mimo_token_plan"}><p>Use your dedicated Token Plan key. This connection uses the Token Plan endpoint.</p></Show>
             <Show when={connection().id === "zai_coding"}><p>Uses your Coding Plan endpoint. Your plan must allow access from this tool.</p></Show>
             <a href={connection().key_url} target="_blank" rel="noopener noreferrer">Get an API key ↗</a>
             <TextField label="API key" id="provider-api-key" type="password" autocomplete="off" spellcheck={false} value={key()} disabled={!!busy()} onInput={(event) => setKey(event.currentTarget.value)} onKeyDown={(event) => { if (event.key === "Enter" && key().trim()) void act(connection().id, () => connectProvider(connection().id, key().trim()), true); }} />

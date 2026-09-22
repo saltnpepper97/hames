@@ -8,6 +8,7 @@ from hames.providers.codex import CodexProvider
 from hames.providers.deepseek import DeepSeekProvider
 from hames.providers.grok import GrokProvider
 from hames.providers.llama_cpp import LlamaCppProvider
+from hames.providers.mimo import MimoProvider, MimoTokenPlanProvider
 from hames.providers.ollama import OllamaProvider
 from hames.providers.openai import OpenAIProvider
 from hames.providers.xai import XaiProvider
@@ -60,9 +61,11 @@ def configured_providers(config: HamesConfig) -> dict[str, Provider]:
                 default_model=profile.model,
                 supported_reasoning_efforts=profile.supported_reasoning_efforts,
             )
-        elif profile.adapter in {"deepseek", "zai", "zai_coding"}:
+        elif profile.adapter in {"deepseek", "zai", "zai_coding", "mimo", "mimo_token_plan"}:
             provider_class = {
                 "deepseek": DeepSeekProvider,
+                "mimo": MimoProvider,
+                "mimo_token_plan": MimoTokenPlanProvider,
                 "zai": ZaiProvider,
                 "zai_coding": ZaiCodingProvider,
             }[profile.adapter]

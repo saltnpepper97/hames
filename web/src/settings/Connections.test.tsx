@@ -27,6 +27,20 @@ describe("Connections", () => {
     fireEvent.click(screen.getByRole("button", { name: "Replace key" }));
     expect(screen.getByLabelText("API key")).toHaveValue("");
   });
+  it.each(["mimo", "mimo_token_plan"])("connects %s using the hidden key flow", async (id) => {
+    const mimo = { ...row, id, name: id === "mimo" ? "Xiaomi MiMo (API)" : "Xiaomi MiMo Token Plan", key_url: "https://platform.xiaomimimo.com/" };
+    api.listConnections.mockResolvedValue([mimo]);
+    api.connectProvider.mockResolvedValue([{ ...mimo, status: "connected", models: ["mimo-v2.6-pro"], model_source: "discovered", can_disconnect: true, configured: true, source: "saved" }]);
+    render(() => <IconProvider pack={hamesIconPack}><Connections /></IconProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+    if (id === "mimo_token_plan") expect(screen.getByText(/dedicated Token Plan key/)).toBeInTheDocument();
+    expect(screen.getByLabelText("API key")).toHaveAttribute("type", "password");
+    fireEvent.input(screen.getByLabelText("API key"), { target: { value: "fixture-mimo-key" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Connect" }).at(-1)!);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(api.connectProvider).toHaveBeenCalledWith(id, "fixture-mimo-key");
+    expect(screen.getByText("mimo-v2.6-pro")).toBeInTheDocument();
+  });
   it("keeps a rejected key unconnected and allows correction", async () => {
     api.connectProvider.mockRejectedValue(new Error("Could not verify this key."));
     render(() => <IconProvider pack={hamesIconPack}><Connections /></IconProvider>);

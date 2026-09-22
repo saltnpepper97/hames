@@ -430,6 +430,17 @@ describe("delegated worker activity", () => {
     expect(cancelled.activeWorker).toBeUndefined();
     expect(cancelled.nodes.find(n => n.kind === "delegation")).toMatchObject({status: "cancelled"});
   });
+  it("keeps workers visible when their lead stops or is steered", () => {
+    for (const reason of ["stopped", "steered"]) {
+      const stopped = event(7, "run.cancelled", { reason, children_preserved: true });
+      const result = projectConversation([start, qwen, stopped]);
+      expect(result.activeWorker).toMatchObject({ agentId: "qwen-builder", status: "working" });
+      expect(result.activeRunId).toBeUndefined();
+      const finished = projectConversation([start, qwen, stopped, done]);
+      expect(finished.activeWorker).toBeUndefined();
+      expect(finished.nodes.find(n => n.kind === "delegation")).toMatchObject({ status: "completed" });
+    }
+  });
   it("does not invent model details for older events", () => {
     const result = projectConversation([start, event(2, "delegation.requested", {target_agent_id: "old-agent"})]);
     expect(result.activeWorker).toMatchObject({agentId: "old-agent", model: "", effort: ""});

@@ -1,4 +1,4 @@
-"""Streaming Chat Completions transport for DeepSeek and Z.ai."""
+"""Streaming Chat Completions transport for compatible cloud providers."""
 
 from __future__ import annotations
 
@@ -192,7 +192,9 @@ class ChatCompletionsProvider(OpenAIProvider):
                             value = delta.get(key)
                             if isinstance(value, str) and value:
                                 yield StreamEvent(kind=kind, text=value)
-                        calls = delta.get("tool_calls", [])
+                        calls = delta.get("tool_calls")
+                        if calls is None:
+                            calls = []
                         if not isinstance(calls, list):
                             raise ProviderError(
                                 "malformed_provider_event", "tool_calls must be an array"

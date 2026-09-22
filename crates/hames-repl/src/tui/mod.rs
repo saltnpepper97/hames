@@ -3772,6 +3772,8 @@ fn provider_menu_label(profile: &crate::api::ProviderProfile) -> String {
         "ollama" => "Ollama".to_owned(),
         "openai" => "OpenAI API".to_owned(),
         "xai" => "Grok API".to_owned(),
+        "mimo" => "Xiaomi MiMo API".to_owned(),
+        "mimo_token_plan" => "Xiaomi MiMo Token Plan".to_owned(),
         "deepseek" => "DeepSeek API".to_owned(),
         "zai" => "Z.ai API".to_owned(),
         "zai_coding" => "Z.ai Coding Plan".to_owned(),

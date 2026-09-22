@@ -34,7 +34,7 @@ account connections.
   event inspection, and memory, skills, and plugin management; a Ratatui TUI and classic
   REPL share the same gateway and durable sessions.
 - **Local and cloud models** — connect llama.cpp, Ollama, OpenAI API, Codex,
-  DeepSeek, Z.ai API or Coding Plan, Grok API, and Grok Build. Choose provider,
+  DeepSeek, Z.ai API or Coding Plan, Xiaomi MiMo API or Token Plan, Grok API, and Grok Build. Choose provider,
   model, and reasoning effort, with connection controls in Web and TUI.
 - **Plan, build, and review** — approve or revise a plan before execution, delegate
   to agents with their own model defaults, and follow implementation and review chats.
@@ -215,7 +215,7 @@ source variable name, never its secret value. See
 
 ## Configuration
 
-For DeepSeek, Z.ai API, and Z.ai Coding Plan setup, see [cloud provider connections](docs/cloud-providers.md).
+For DeepSeek, Z.ai, and Xiaomi MiMo API/subscription setup, see [cloud provider connections](docs/cloud-providers.md).
 
 State is private by default under <code>~/.hames</code>. A minimal
 <code>~/.hames/config.toml</code> looks like:
@@ -317,3 +317,36 @@ Hames is available under the [MIT License](LICENSE).
 Custom slash commands: see [configuration and maintenance](docs/commands.md).
 
 Select a coordinator with the chat agent picker and describe your task directly. Its configured agents can handle delegated work, with activity and results recorded in the normal conversation transcript.
+
+### Long-running agent work
+
+Each run defaults to a 30-minute active-work budget. This includes model and
+foreground tool execution; waiting for delegated workers or human input does
+not use the coordinator's budget. Every worker has its own budget.
+
+For long builds and team workflows, set the following in `~/.hames/config.toml`
+under the existing `[runtime]` section, then restart the gateway once it is idle:
+
+```toml
+[runtime]
+max_active_seconds_per_run = 0
+```
+
+Zero disables the active-time cutoff for both coordinators and workers. Positive
+values retain a cutoff in seconds. Model-turn and tool-call limits, individual
+tool/provider timeouts, and user cancellation still apply. Running tasks keep
+the budget they started with; this setting takes effect after gateway reload.
+
+### Steering and stopping a team
+
+Stop affects only the selected agent. Its existing workers continue running and
+return their results to the parent chat. Stopping a worker reports the
+interruption to its parent without stopping siblings or automatically restarting
+the worker. Steer replaces only that agent's current turn; if a worker is
+steered, its parent waits for the replacement turn's result.
+
+The `agent_control` tool lets a lead inspect and wait for existing assignments.
+Stopping a named worker or the whole team requires an explicit user instruction;
+the lead must quote that instruction from its current user turn. Stop/Steer on
+the lead itself never authorizes a team stop. Gateway shutdown still ends all
+running work.

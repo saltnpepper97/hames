@@ -15,6 +15,7 @@ from hames.providers.base import (
     ToolCall,
 )
 from hames.providers.deepseek import DeepSeekProvider
+from hames.providers.mimo import MimoProvider, MimoTokenPlanProvider
 from hames.providers.registry import configured_providers
 from hames.providers.zai import ZAI_CODING_URL, ZaiCodingProvider, ZaiProvider
 
@@ -25,16 +26,24 @@ def sse(*chunks: dict[str, object], done: bool = True) -> httpx.Response:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider_type", [DeepSeekProvider, ZaiProvider, ZaiCodingProvider])
+@pytest.mark.parametrize(
+    "provider_type",
+    [DeepSeekProvider, ZaiProvider, ZaiCodingProvider, MimoProvider, MimoTokenPlanProvider],
+)
 async def test_stream_tool_fragments_reasoning_and_final_usage(
-    provider_type: type[DeepSeekProvider] | type[ZaiProvider],
+    provider_type: type[DeepSeekProvider] | type[ZaiProvider] | type[MimoProvider],
 ) -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         return sse(
-            {"id": "req-1", "choices": [{"index": 0, "delta": {"reasoning_content": " step "}}]},
+            {
+                "id": "req-1",
+                "choices": [
+                    {"index": 0, "delta": {"reasoning_content": " step ", "tool_calls": None}}
+                ],
+            },
             {
                 "choices": [
                     {
@@ -75,13 +84,23 @@ async def test_stream_tool_fragments_reasoning_and_final_usage(
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         provider = provider_type(
-            client=client, environ={"DEEPSEEK_API_KEY": "secret", "ZAI_API_KEY": "secret"}
+            client=client,
+            environ={
+                "DEEPSEEK_API_KEY": "secret",
+                "ZAI_API_KEY": "secret",
+                "MIMO_API_KEY": "secret",
+                "MIMO_TOKEN_PLAN_API_KEY": "secret",
+            },
         )
         events = [
             event
             async for event in provider.stream(
                 ModelRequest(
-                    model="glm-5.3" if provider_type != DeepSeekProvider else "deepseek-flash",
+                    model="mimo-v2.6-pro"
+                    if issubclass(provider_type, MimoProvider)
+                    else "glm-5.3"
+                    if provider_type != DeepSeekProvider
+                    else "deepseek-flash",
                     system="instructions",
                     messages=[ProviderMessage(role="user", content="inspect")],
                     reasoning_effort="high",
@@ -107,7 +126,7 @@ async def test_stream_tool_fragments_reasoning_and_final_usage(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider_type", [DeepSeekProvider, ZaiProvider])
 async def test_body_preserves_assistant_reasoning_and_tool_pair(
-    provider_type: type[DeepSeekProvider] | type[ZaiProvider],
+    provider_type: type[DeepSeekProvider] | type[ZaiProvider] | type[MimoProvider],
 ) -> None:
     async with httpx.AsyncClient() as client:
         provider = provider_type(client=client)

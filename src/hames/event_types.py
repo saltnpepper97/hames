@@ -322,6 +322,11 @@ class RunStartedPayload(EventPayload):
     max_active_seconds: float
 
 
+class RunCancelledPayload(EventPayload):
+    reason: Literal["stopped", "steered"] = "stopped"
+    children_preserved: bool = False
+
+
 class RunCompletedPayload(EventPayload):
     model_turns: int
     tool_calls: int
@@ -910,6 +915,12 @@ class FlowStatePayload(EventPayload):
     state: dict[str, Any]
 
 
+class BrowserChangedPayload(EventPayload):
+    """Legacy event retained for replay after removal of the browser experiment."""
+
+    action: str
+
+
 EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "flow.started": FlowStartedPayload,
     "delegation.control": DelegationControlPayload,
@@ -974,7 +985,7 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "run.continuation.requested": RunContinuationPayload,
     "run.completed": RunCompletedPayload,
     "run.failed": FailurePayload,
-    "run.cancelled": EmptyPayload,
+    "run.cancelled": RunCancelledPayload,
     "tool.requested": ToolRequestedPayload,
     "tool.started": ToolStartedPayload,
     "tool.completed": ToolResultPayload,
@@ -990,6 +1001,7 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "trust.revoked": TrustPayload,
     "runtime.error": FailurePayload,
     "runtime.notice": RuntimeNoticePayload,
+    "browser.changed": BrowserChangedPayload,
     "terminal.started": TerminalStartedPayload,
     "terminal.completed": TerminalFinishedPayload,
     "terminal.failed": TerminalFinishedPayload,

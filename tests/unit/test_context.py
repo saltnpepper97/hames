@@ -919,3 +919,77 @@ def test_active_agent_identity_does_not_inherit_previous_assistant_workflow(
     assert "preserving explicit requirements" in compiled.system
     assert ("Delegation is unavailable for this run" in compiled.system) is not delegation_available
     assert any("must dispatch" in message.content for message in compiled.messages)
+
+
+@pytest.mark.parametrize("window_tokens", [32768, 131072])
+def test_large_delegated_assignment_uses_model_budget(
+    hames_paths: HamesPaths, tmp_path: Path, window_tokens: int
+) -> None:
+    ledger, session, capsule = _fixture(hames_paths, tmp_path)
+    session = session.model_copy(update={"context_window_tokens": window_tokens})
+    assignment = "Keep this exact authorized requirement. " * 3500
+    ledger.append(
+        session_id=session.id,
+        event_type="delegation.task_card",
+        payload={
+            "task": assignment,
+            "target_agent_id": session.agent_id,
+            "parent_session_id": "parent",
+            "parent_run_id": "parent-run",
+            "parent_event_id": "parent-event",
+            "delegation_depth": 1,
+        },
+    )
+    config = ContextConfig(fallback_window_tokens=window_tokens)
+    if window_tokens == 32768:
+        with pytest.raises(ContextBudgetError, match="model input budget"):
+            compile_context(
+                session,
+                ledger.replay(session.id),
+                capsule,
+                _tools(),
+                "safe reads",
+                config,
+                run_id="child-run",
+            )
+    else:
+        compiled = compile_context(
+            session,
+            ledger.replay(session.id),
+            capsule,
+            _tools(),
+            "safe reads",
+            config,
+            run_id="child-run",
+        )
+        assert assignment in compiled.system
+
+
+def test_worker_state_does_not_consume_stable_instruction_allowance(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger, session, capsule = _fixture(hames_paths, tmp_path)
+    session = session.model_copy(update={"context_window_tokens": 131072})
+    worker_context = "Worker report data. " * 2000
+    compiled = compile_context(
+        session,
+        ledger.replay(session.id),
+        capsule,
+        _tools(),
+        "safe reads",
+        ContextConfig(),
+        run_id="lead-run",
+        worker_context=worker_context,
+    )
+    assert worker_context in compiled.system
+    assert any(s.source_id == "runtime.workers" for s in compiled.manifest.selected_sources)
+    with pytest.raises(ContextBudgetError, match="stable instructions"):
+        compile_context(
+            session,
+            ledger.replay(session.id),
+            capsule,
+            _tools(),
+            worker_context,
+            ContextConfig(),
+            run_id="lead-run",
+        )
