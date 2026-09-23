@@ -135,6 +135,45 @@ it("jumps once after sending while reading history, then leaves later output alo
   expect(top).toBe(1400);
 });
 
+it("smoothly scrolls to the submitted message once without following later output", async () => {
+  const [nodes, setNodes] = createSignal<ConversationNode[]>([{ id: "old", kind: "user", content: "Earlier" }]);
+  const [sendJump, setSendJump] = createSignal<{ sequence: number; submissionId?: string }>({ sequence: 0 });
+  let resized!: () => void;
+  vi.stubGlobal("ResizeObserver", class { constructor(cb: () => void) { resized = cb; } observe() {} disconnect() {} });
+  vi.stubGlobal("matchMedia", () => ({ matches: false }));
+  const { container, unmount } = render(() => <ConversationViewport
+    nodes={nodes()} streamState="live" agentId="default" sendJump={sendJump()}
+  />);
+  const scroll = container.querySelector<HTMLElement>(".transcript-scroll")!;
+  let height = 1200;
+  let top = 150;
+  const scrollTo = vi.fn(({ top: target }: ScrollToOptions) => { top = Math.min(target!, height - 400); });
+  Object.defineProperties(scroll, {
+    scrollHeight: { get: () => height }, clientHeight: { get: () => 400 },
+    scrollTop: { get: () => top, set: value => { top = Math.min(value, height - 400); } },
+    scrollTo: { value: scrollTo },
+  });
+  setSendJump({ sequence: 1, submissionId: "new-submission" });
+  await Promise.resolve();
+  expect(scrollTo).not.toHaveBeenCalled();
+  setNodes([...nodes(), { id: "sent", kind: "user", submissionId: "new-submission", content: "Sent" }]);
+  await Promise.resolve();
+  expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 1200, behavior: "smooth" });
+  fireEvent.scroll(scroll);
+  fireEvent(scroll, new Event("scrollend"));
+  height = 1500;
+  // Browser scroll anchoring may move the scroll box to the new bottom.
+  top = 1100;
+  fireEvent.scroll(scroll);
+  setNodes([...nodes(), { id: "reply", kind: "assistant", content: "Reply" }]);
+  await Promise.resolve();
+  height = 1800;
+  resized();
+  expect(top).toBe(1100);
+  expect(scrollTo).toHaveBeenCalledTimes(1);
+  unmount();
+});
+
 it("restores each chat's reading position through replay and keeps new output from moving it", async () => {
   sessionStorage.setItem("hames.transcript-position:reading", JSON.stringify({ top: 900, follow: false }));
   const [nodes, setNodes] = createSignal<ConversationNode[]>([]);

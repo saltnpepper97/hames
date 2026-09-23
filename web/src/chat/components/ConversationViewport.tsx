@@ -40,7 +40,23 @@ export function ConversationViewport(props: ConversationViewportProps) {
   let pointerHeld = false;
   let expectedTop: number | undefined;
   let handledSendJump = props.sendJump?.sequence ?? 0;
+  let followPausedAfterSend = false;
+  let sendScrolling = false;
+  let sendScrollTimer: number | undefined;
+  const cancelSendScroll = () => {
+    sendScrolling = false;
+    if (sendScrollTimer !== undefined) window.clearTimeout(sendScrollTimer);
+    sendScrollTimer = undefined;
+  };
+  const finishSendScroll = () => {
+    if (!sendScrolling) return;
+    cancelSendScroll();
+    expectedTop = transcript.scrollTop;
+    savePosition();
+  };
   const pauseFollow = () => {
+    cancelSendScroll();
+    followPausedAfterSend = false;
     restoringTop = undefined;
     stickToBottom = false;
     expectedTop = undefined;
@@ -79,10 +95,12 @@ export function ConversationViewport(props: ConversationViewportProps) {
     window.addEventListener("pagehide", savePosition);
     window.addEventListener("pointerup", release);
     window.addEventListener("pointercancel", release);
+    transcript.addEventListener("scrollend", finishSendScroll);
     onCleanup(() => {
       window.removeEventListener("pagehide", savePosition);
       window.removeEventListener("pointerup", release);
       window.removeEventListener("pointercancel", release);
+      transcript.removeEventListener("scrollend", finishSendScroll);
     });
     if (typeof ResizeObserver === "undefined") return;
     // Restore history or follow the bottom as replay and layout settle.
@@ -91,6 +109,7 @@ export function ConversationViewport(props: ConversationViewportProps) {
   });
   onCleanup(() => {
     disposed = true;
+    cancelSendScroll();
     resizeObserver?.disconnect();
   });
 
@@ -121,9 +140,18 @@ export function ConversationViewport(props: ConversationViewportProps) {
       // A send makes one deliberate jump. Later output must not keep pulling
       // the reader down unless they choose to resume following themselves.
       stickToBottom = false;
-      transcript.scrollTop = transcript.scrollHeight;
-      expectedTop = transcript.scrollTop;
-      savePosition();
+      followPausedAfterSend = true;
+      expectedTop = undefined;
+      if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches || !transcript.scrollTo) {
+        transcript.scrollTop = transcript.scrollHeight;
+        expectedTop = transcript.scrollTop;
+        savePosition();
+      } else {
+        sendScrolling = true;
+        transcript.scrollTo({ top: transcript.scrollHeight, behavior: "smooth" });
+        // scrollend is not available in every embedded browser.
+        sendScrollTimer = window.setTimeout(finishSendScroll, 800);
+      }
     });
   });
 
@@ -134,6 +162,10 @@ export function ConversationViewport(props: ConversationViewportProps) {
       ref={transcript}
       onWheel={(event) => {
         if (event.deltaY < 0) { pauseFollow(); return; }
+        if (event.deltaY > 0) {
+          cancelSendScroll();
+          followPausedAfterSend = false;
+        }
         if (event.deltaY > 0 && atBottom() && !selectingText()) {
           restoringTop = undefined;
           stickToBottom = true;
@@ -149,16 +181,23 @@ export function ConversationViewport(props: ConversationViewportProps) {
         if (["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) {
           pauseFollow();
         } else if (event.key === "End" || (atBottom() && ["ArrowDown", "PageDown", " "].includes(event.key))) {
+          followPausedAfterSend = false;
           restoringTop = undefined;
           stickToBottom = true;
           queueMicrotask(followBottom);
         }
       }}
       onScroll={() => {
+        if (sendScrolling) return;
         if (expectedTop !== undefined && Math.abs(transcript.scrollTop - expectedTop) < 1) return;
         if (!transcript.clientHeight || (storageKey && !props.nodes.length)) return;
         restoringTop = undefined;
         expectedTop = undefined;
+        if (followPausedAfterSend) {
+          stickToBottom = false;
+          savePosition();
+          return;
+        }
         stickToBottom = !pointerHeld && !selectingText() && atBottom();
         savePosition();
       }}

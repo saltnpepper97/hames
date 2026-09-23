@@ -25,8 +25,8 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Fixed
 
-- Sending a message from a scrolled-up Web chat now jumps to that submitted message
-  once it appears. Stopping a run before any model output returns its message
+- Sending a message from a scrolled-up Web chat now scrolls smoothly to that
+  submitted message once it appears. Stopping a run before any model output returns its message
   and attachments to the composer, removes it from the transcript, and excludes
   it from future model context.
 
