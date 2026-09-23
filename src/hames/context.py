@@ -913,9 +913,17 @@ def _conversation_turns(
     assistants_by_request: dict[str, ProviderMessage] = {}
     tool_owners: dict[str, tuple[_Turn, ProviderMessage]] = {}
     audit_reasoning: list[SourceDecision] = []
+    retracted_message_ids = {
+        str(event.payload["retracted_message_id"])
+        for event in events
+        if event.type == "run.cancelled" and event.payload.get("retracted_message_id")
+    }
 
     for event in events:
         if event.type in {"user.message", "goal.step.started"}:
+            if event.id in retracted_message_ids:
+                current = None
+                continue
             current = _Turn(source_id=f"conversation.turn.{event.id}")
             attachments, attached_text = hydrate_message_attachments(
                 event.payload.get("attachments", []), blobs

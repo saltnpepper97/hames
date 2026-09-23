@@ -27,6 +27,24 @@ function event(
 }
 
 describe("conversation projection", () => {
+  it("removes a stopped pre-response message while keeping later messages and ordinary cancellations", () => {
+    const first = event(1, "user.message", { content: "Take this back" });
+    const context = event(2, "context.compiled", contextPayload);
+    const retracted = event(3, "run.cancelled", { reason: "stopped", retracted_message_id: first.id });
+    const later = event(4, "user.message", { content: "Keep this" }, "run-two");
+    expect(projectConversation([first, context, retracted, later]).nodes.map(node => node.id)).toEqual([later.id]);
+    const ordinary = event(5, "run.cancelled", { reason: "stopped", retracted_message_id: null }, "run-two");
+    expect(projectConversation([later, ordinary]).nodes.map(node => node.kind)).toEqual(["user", "notice"]);
+  });
+
+  it("carries a submitted message's ID into the transcript for a one-time scroll jump", () => {
+    const submitted = event(1, "user.message", {
+      content: "Jump here", submission_id: "submission-one",
+    }, null);
+    expect(projectConversation([submitted]).nodes[0]).toMatchObject({
+      kind: "user", submissionId: "submission-one", content: "Jump here",
+    });
+  });
   const contextSource = {
     source_id: "agent.default.instructions", source_type: "agent",
     content_hash: "instructions-v1", selected_tokens: 100, truncation: "none",

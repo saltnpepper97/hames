@@ -15,6 +15,7 @@ interface ConversationViewportProps {
   streamState: StreamState;
   fresh?: boolean;
   agentId: string;
+  sendJump?: { sequence: number; submissionId?: string };
 }
 
 export function ConversationViewport(props: ConversationViewportProps) {
@@ -38,6 +39,7 @@ export function ConversationViewport(props: ConversationViewportProps) {
   let disposed = false;
   let pointerHeld = false;
   let expectedTop: number | undefined;
+  let handledSendJump = props.sendJump?.sequence ?? 0;
   const pauseFollow = () => {
     restoringTop = undefined;
     stickToBottom = false;
@@ -105,6 +107,24 @@ export function ConversationViewport(props: ConversationViewportProps) {
     contentRevision();
     // Streaming must never revoke the reader's decision to inspect history.
     queueMicrotask(followBottom);
+  });
+  createEffect(() => {
+    const request = props.sendJump;
+    if (!request || request.sequence <= handledSendJump) return;
+    if (request.submissionId && !props.nodes.some(node =>
+      node.kind === "user" && node.submissionId === request.submissionId
+    )) return;
+    handledSendJump = request.sequence;
+    queueMicrotask(() => {
+      if (disposed || !transcript || props.sendJump?.sequence !== request.sequence) return;
+      restoringTop = undefined;
+      // A send makes one deliberate jump. Later output must not keep pulling
+      // the reader down unless they choose to resume following themselves.
+      stickToBottom = false;
+      transcript.scrollTop = transcript.scrollHeight;
+      expectedTop = transcript.scrollTop;
+      savePosition();
+    });
   });
 
   return (

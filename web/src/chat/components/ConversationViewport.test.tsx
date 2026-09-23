@@ -98,6 +98,43 @@ it("does not run pending auto-follow after leaving the chat", async () => {
   expect(top).toBe(600);
 });
 
+it("jumps once after sending while reading history, then leaves later output alone", async () => {
+  const [nodes, setNodes] = createSignal<ConversationNode[]>([{ id: "old", kind: "user", content: "Earlier" }]);
+  const [sendJump, setSendJump] = createSignal<{ sequence: number; submissionId?: string }>({ sequence: 0 });
+  let resized!: () => void;
+  vi.stubGlobal("ResizeObserver", class { constructor(cb: () => void) { resized = cb; } observe() {} disconnect() {} });
+  const { container } = render(() => <ConversationViewport nodes={nodes()} streamState="live" agentId="default" sendJump={sendJump()} />);
+  const scroll = container.querySelector<HTMLElement>(".transcript-scroll")!;
+  let height = 1200;
+  let top = 0;
+  Object.defineProperties(scroll, {
+    scrollHeight: { get: () => height }, clientHeight: { get: () => 400 },
+    scrollTop: { get: () => top, set: value => { top = Math.max(0, Math.min(value, height - 400)); } },
+  });
+  await Promise.resolve();
+  scroll.scrollTop = 250;
+  fireEvent.scroll(scroll);
+  setSendJump({ sequence: 1, submissionId: "submission-one" });
+  await Promise.resolve();
+  expect(top).toBe(250);
+  setNodes([...nodes(), { id: "sent", kind: "user", submissionId: "submission-one", content: "Sent" }]);
+  await Promise.resolve();
+  expect(top).toBe(800);
+  height = 1500;
+  setNodes([...nodes(), { id: "reply", kind: "assistant", content: "Reply", live: true }]);
+  await Promise.resolve();
+  resized();
+  expect(top).toBe(800);
+  scroll.scrollTop = 300;
+  fireEvent.scroll(scroll);
+  height = 1800;
+  resized();
+  expect(top).toBe(300);
+  setSendJump({ sequence: 2 });
+  await Promise.resolve();
+  expect(top).toBe(1400);
+});
+
 it("restores each chat's reading position through replay and keeps new output from moving it", async () => {
   sessionStorage.setItem("hames.transcript-position:reading", JSON.stringify({ top: 900, follow: false }));
   const [nodes, setNodes] = createSignal<ConversationNode[]>([]);

@@ -43,6 +43,7 @@ export type ConversationNode =
       id: string;
       kind: "user" | "assistant" | "reasoning";
       content: string;
+      submissionId?: string;
       live?: boolean;
       agentId?: string;
       sessionId?: string;
@@ -403,6 +404,14 @@ export function projectConversation(
   const maintenance = new Map<string, MaintenanceNode>();
   const activeRuns = new Set<string>();
   const promptContexts = new Map<string, string>();
+  const retractedMessageIds = new Set(events.flatMap(event =>
+    event.type === "run.cancelled" && typeof event.payload.retracted_message_id === "string"
+      ? [event.payload.retracted_message_id] : [],
+  ));
+  const retractedRunIds = new Set(events.flatMap(event =>
+    event.type === "run.cancelled" && event.run_id && event.payload.retracted_message_id
+      ? [event.run_id] : [],
+  ));
   let tasks: SessionTaskProjection = { title: "Tasks", revision: 0, items: [], updatedAt: "" };
 
   for (const event of events) {
@@ -564,10 +573,11 @@ export function projectConversation(
     }
 
     if (event.type === "user.message") {
-      if (text(event.payload, "purpose") !== "plan_execution") {
+      if (text(event.payload, "purpose") !== "plan_execution" && !retractedMessageIds.has(event.id)) {
         nodes.push({
           id: event.id,
           kind: "user",
+          submissionId: text(event.payload, "submission_id") || undefined,
           content: text(event.payload, "content"),
           sessionId: event.session_id,
           attachments: messageAttachments(event.payload.attachments),
@@ -576,6 +586,7 @@ export function projectConversation(
       continue;
     }
     if (event.type === "context.compiled") {
+      if (event.run_id && retractedRunIds.has(event.run_id)) continue;
       const scope = JSON.stringify([event.session_id, event.agent_id, event.payload.agent_id]);
       const key = promptContextKey(event.payload);
       if (promptContexts.get(scope) === key) continue;
@@ -744,7 +755,9 @@ export function projectConversation(
       continue;
     }
     if (event.type === "run.cancelled") {
-      nodes.push({ id: event.id, kind: "notice", tone: "neutral", content: "Run cancelled." });
+      if (!event.payload.retracted_message_id) {
+        nodes.push({ id: event.id, kind: "notice", tone: "neutral", content: "Run cancelled." });
+      }
     }
   }
 

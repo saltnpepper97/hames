@@ -12,7 +12,7 @@ import {
   executePlan,
   trustSession,
 } from "../../api/client";
-import type { MessageAttachmentUpload, Session, SkillCatalogEntry } from "../../api/types";
+import type { HamesEvent, MessageAttachmentUpload, Session, SkillCatalogEntry } from "../../api/types";
 import { Button } from "../../components/Button";
 import { Lightbox } from "../../components/Lightbox";
 import type { LightboxItem } from "../../components/Lightbox";
@@ -33,10 +33,12 @@ import { SlashCommandMenu } from "./SlashCommandMenu";
 
 interface MessageComposerProps {
   session: Session;
+  events: readonly HamesEvent[];
   activeRunId?: string;
   queueRevision?: string;
   hidden?: boolean;
   onSessionChanged: () => void;
+  onMessageSent?: (submissionId?: string) => void;
   onCommandResult?: (message: string) => void;
   onSessionUpdated: (session: Session) => void;
   onSessionOpened: (session: Session) => void;
@@ -131,6 +133,8 @@ export function MessageComposer(props: MessageComposerProps) {
   const workspace = useWorkspace();
   let draftSessionId = props.session.id;
   let submissionGeneration = 0;
+  let requestedCancelRunId: string | undefined;
+  let lastSubmitted: { runId: string; files: File[] } | undefined;
   let disposed = false;
   onCleanup(() => { disposed = true; });
   const [draft, setDraft] = createSignal(readStoredDraft(draftSessionId));
@@ -256,6 +260,36 @@ export function MessageComposer(props: MessageComposerProps) {
     setSubmissionNote("");
     setDraft(readStoredDraft(sessionId));
     setDismissedSlashDraft("");
+    requestedCancelRunId = undefined;
+    lastSubmitted = undefined;
+  });
+
+  createEffect(() => {
+    const events = props.events;
+    const runId = requestedCancelRunId;
+    if (!runId) return;
+    const cancelled = events.find(event => event.type === "run.cancelled" && event.run_id === runId);
+    if (!cancelled) return;
+    requestedCancelRunId = undefined;
+    const messageId = cancelled.payload.retracted_message_id;
+    if (typeof messageId !== "string") return;
+    const message = events.find(event => event.id === messageId && event.type === "user.message");
+    if (!message || message.session_id !== props.session.id) return;
+    const content = typeof message.payload.content === "string" ? message.payload.content : "";
+    setDraft(current => current ? `${content}\n\n${current}` : content);
+    storeDraft(props.session.id, draft());
+    if (lastSubmitted?.runId === runId && lastSubmitted.files.length) {
+      const files = lastSubmitted.files;
+      void Promise.all(files.map(async file => ({
+        file,
+        previewUrl: file.type.startsWith("image/") ? await fileDataUrl(file) : undefined,
+      }))).then(restored => {
+        if (!disposed && props.session.id === message.session_id) {
+          setAttachments(current => [...restored, ...current]);
+        }
+      });
+    }
+    queueMicrotask(() => textarea?.focus());
   });
 
   createEffect(() => {
@@ -403,6 +437,7 @@ export function MessageComposer(props: MessageComposerProps) {
       return;
     }
     const sourceSession = props.session;
+    const submittedFiles = attachments().map(item => item.file);
     let command = parseWebCommand(content);
     if (!command && content.trim().startsWith("/")) {
       try {
@@ -440,17 +475,27 @@ export function MessageComposer(props: MessageComposerProps) {
     setSubmissionNote("");
     if (provisional) props.onSessionUpdated({ ...sourceSession, title: provisional });
     try {
+      let submittedRunId: string | undefined;
+      let submittedId: string | undefined;
       const outcome = command
         ? await executeWebCommand(command, sourceSession.id)
         : await (feedbackFor
           ? sendPlanFeedback(sourceSession.id, content)
-          : sendMessage(sourceSession.id, content, await encodedAttachments())).then(accepted => ({
-          note: accepted.disposition === "queued" ? "Message queued" : "",
-          openedSession: undefined,
-        }));
+          : sendMessage(sourceSession.id, content, await encodedAttachments())).then(accepted => {
+          submittedRunId = accepted.run_id ?? undefined;
+          submittedId = accepted.run_id ? accepted.submission_id : undefined;
+          return {
+            note: accepted.disposition === "queued" ? "Message queued" : "",
+            openedSession: undefined,
+          };
+        });
       // Clear only the submitted text, never a newer draft or another session's composer.
       if (readStoredDraft(sourceSession.id).trim() === content) storeDraft(sourceSession.id, "");
       if (isCurrent()) {
+        if (!command && !outcome.openedSession) {
+          if (submittedRunId) lastSubmitted = { runId: submittedRunId, files: submittedFiles };
+          props.onMessageSent?.(submittedId);
+        }
         if (feedbackFor) setFeedbackSubmitted(feedbackFor);
         if (draft().trim() === content) {
           setDraft("");
@@ -494,11 +539,13 @@ export function MessageComposer(props: MessageComposerProps) {
 
   const cancel = async () => {
     if (!props.activeRunId || cancelling()) return;
+    requestedCancelRunId = props.activeRunId;
     setCancelling(true);
     setComposerError("");
     try {
       await cancelRun(props.activeRunId);
     } catch (error) {
+      requestedCancelRunId = undefined;
       setComposerError(errorMessage(error));
     } finally {
       setCancelling(false);

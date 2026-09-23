@@ -99,6 +99,31 @@ def test_runtime_environment_replaces_duplicate_workspace_context(
     assert environment.observed_at.isoformat() not in compiled.system
 
 
+def test_retracted_pre_response_message_is_not_sent_to_next_model(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    ledger, session, capsule = _fixture(hames_paths, tmp_path)
+    retracted = ledger.append(
+        session_id=session.id, run_id="old-run", event_type="user.message",
+        payload={"content": "Cancel this before response"},
+    )
+    ledger.append(
+        session_id=session.id, run_id="old-run", event_type="run.cancelled",
+        payload={"reason": "stopped", "retracted_message_id": retracted.id},
+    )
+    ledger.append(
+        session_id=session.id, run_id="new-run", event_type="user.message",
+        payload={"content": "Use this instead"},
+    )
+    compiled = compile_context(
+        session, ledger.replay(session.id), capsule, _tools(), "safe reads",
+        ContextConfig(), run_id="new-run",
+    )
+    assert [message.content for message in compiled.messages if message.role == "user"] == [
+        "Use this instead"
+    ]
+
+
 def test_context_is_deterministic_and_omits_completed_reasoning(
     hames_paths: HamesPaths, tmp_path: Path
 ) -> None:

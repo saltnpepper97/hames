@@ -325,6 +325,7 @@ class RunStartedPayload(EventPayload):
 class RunCancelledPayload(EventPayload):
     reason: Literal["stopped", "steered"] = "stopped"
     children_preserved: bool = False
+    retracted_message_id: str | None = None
 
 
 class RunCompletedPayload(EventPayload):

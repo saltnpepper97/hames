@@ -30,6 +30,7 @@ export function SessionChat(props: SessionChatProps) {
   onMount(() => void directory.ensureLoaded());
   const workerName = (id: string) => directory.agents().find(agent => agent.id === id)?.name ?? id;
   const [commandResult, setCommandResult] = createSignal<ConversationNode>();
+  const [sendJump, setSendJump] = createSignal<{ sequence: number; submissionId?: string }>({ sequence: 0 });
   createEffect(() => { sessionId(); setCommandResult(undefined); });
   const [view, setView] = createSignal<ChatView>("chat");
   const [eventsVisited, setEventsVisited] = createSignal(false);
@@ -99,6 +100,7 @@ export function SessionChat(props: SessionChatProps) {
           streamState={stream.state()}
           fresh={fresh()}
           agentId={props.session.agent_id}
+          sendJump={sendJump()}
         />}</Show>
       </div>
       <Show when={eventsVisited()}>
@@ -117,10 +119,12 @@ export function SessionChat(props: SessionChatProps) {
         plan={plan()}
         taskCard={<TaskPanel tasks={projection().tasks} open={taskCard.open()} onToggle={taskCard.toggle} />}
         session={props.session}
+        events={stream.events()}
         activeRunId={projection().activeRunId}
         queueRevision={queueRevision()}
         hidden={view() === "events"}
         onSessionChanged={props.onSessionChanged}
+        onMessageSent={submissionId => setSendJump(value => ({ sequence: value.sequence + 1, submissionId }))}
         onSessionUpdated={props.onSessionUpdated}
         onSessionOpened={props.onSessionOpened}
         workspaceControl={fresh() ? (

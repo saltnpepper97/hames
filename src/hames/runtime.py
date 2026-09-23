@@ -2161,13 +2161,33 @@ class RunManager:
         except asyncio.CancelledError:
             await self._cancel_approvals(run_id)
             self._cancel_questions(run_id)
+            reason = "steered" if run_id in self._steered_runs else "stopped"
+            run_events = await asyncio.to_thread(self.ledger.list_run_events, run_id)
+            # A stopped turn can be returned to the composer only before the
+            # model produced content or the run launched work. Keep the user
+            # message in the ledger for audit, but retract it from conversation.
+            responded = any(
+                event.type in {
+                    "model.response.completed", "model.tool_call", "tool.requested",
+                    "delegation.requested",
+                }
+                or (
+                    event.type in {"assistant.message", "assistant.reasoning"}
+                    and bool(str(event.payload.get("content", "")).strip()))
+                for event in run_events
+            )
             await self._append(
                 session_id=session_id,
                 run_id=run_id,
                 event_type="run.cancelled",
                 payload={
-                    "reason": "steered" if run_id in self._steered_runs else "stopped",
+                    "reason": reason,
                     "children_preserved": not self._closing,
+                    "retracted_message_id": (
+                        user_event.id
+                        if reason == "stopped" and not self._closing and not responded
+                        else None
+                    ),
                 },
                 causation_id=user_event.id,
                 correlation_id=run_id,

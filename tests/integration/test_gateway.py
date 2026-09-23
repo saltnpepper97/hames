@@ -1203,6 +1203,8 @@ async def test_send_now_interrupts_and_runs_a_priority_turn_without_dropping_que
             users = _user_contents(events)
             assert users == ["active", "send now", "older queued"]
             assert len(provider.requests) == 3
+            steered = next(event for event in events if event["type"] == "run.cancelled")
+            assert JSON_OBJECT.validate_python(steered["payload"])["retracted_message_id"] is None
     finally:
         await state.runs.close()
 
@@ -3212,6 +3214,38 @@ class GatedToolProvider(FakeProvider):
 
 
 @pytest.mark.asyncio
+async def test_stop_before_model_output_retracts_the_user_message(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    provider = GatedToolProvider()
+    state = GatewayState.create(paths, providers={"fake": provider})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions", headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            accepted = await client.post(
+                f"/v1/sessions/{session_id}/messages", headers=headers,
+                json={"content": "Take this back"},
+            )
+            run_id = str(response_object(accepted)["run_id"])
+            await asyncio.wait_for(provider.started.wait(), timeout=1)
+            response = await client.post(f"/v1/runs/{run_id}/cancel", headers=headers)
+            assert response.status_code == 200
+            events = await _wait_for_event(client, headers, session_id, "run.cancelled")
+            user = next(event for event in events if event["type"] == "user.message")
+            cancelled = next(event for event in events if event["type"] == "run.cancelled")
+            cancelled_payload = JSON_OBJECT.validate_python(cancelled["payload"])
+            assert cancelled_payload["retracted_message_id"] == user["id"]
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
 async def test_mode_change_applies_at_next_tool_boundary_mid_flight(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     fake = GatedToolProvider()
@@ -3337,6 +3371,9 @@ async def test_explicit_cancellation_persists_partial_reasoning(tmp_path: Path) 
             assert isinstance(duration, (int, float))
             assert duration >= 0
             assert sum(event["type"] == "run.cancelled" for event in events) == 1
+            cancelled_event = next(event for event in events if event["type"] == "run.cancelled")
+            cancelled_payload = JSON_OBJECT.validate_python(cancelled_event["payload"])
+            assert cancelled_payload["retracted_message_id"] is None
             for _ in range(100):
                 if state.runs.active_run_count == 0:
                     break
