@@ -4,6 +4,13 @@
 
 Planned version: **v0.2.0**. These changes are in development and have not been released.
 
+### Added
+
+- A lightweight Web chat preview for local development sites. An agent can open
+  a loopback URL beside its chat; the preview opens immediately, then a globe
+  button lets the user hide or reopen it and navigate to other local pages.
+  It uses the existing browser without a separate install or browser automation.
+
 ### Removed
 
 - Playwright-specific MCP approval handling and built-in guidance preferences.

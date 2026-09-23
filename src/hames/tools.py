@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import ClassVar, Literal, Protocol, cast
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import (
     BaseModel,
@@ -472,6 +473,44 @@ class WebFetchArguments(ToolArguments):
     url: str = Field(min_length=1, max_length=4096)
 
 
+class SitePreviewArguments(ToolArguments):
+    url: str = Field(
+        min_length=1,
+        max_length=2048,
+        description="Local HTTP(S) development URL to show in this chat's site preview.",
+    )
+
+    @field_validator("url")
+    @classmethod
+    def local_url(cls, value: str) -> str:
+        raw = value.strip()
+        if any(character.isspace() or ord(character) < 32 for character in raw):
+            raise ValueError("preview URL must not contain whitespace or control characters")
+        try:
+            parsed = urlsplit(raw)
+            host = parsed.hostname
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("preview URL is invalid") from exc
+        if parsed.scheme not in {"http", "https"} or host not in {
+            "localhost", "127.0.0.1", "::1"
+        }:
+            raise ValueError("preview URL must use HTTP(S) on localhost")
+        if (
+            parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("preview URL cannot contain credentials, a query, or a fragment")
+        if port == 0:
+            raise ValueError("preview URL must use a reachable port")
+        authority = f"[{host}]" if host == "::1" else host
+        if port is not None:
+            authority += f":{port}"
+        return urlunsplit((parsed.scheme, authority, parsed.path or "/", "", ""))
+
+
 class McpResourceListArguments(ToolArguments):
     server: str | None = Field(default=None, min_length=1, max_length=63)
     cursor: str | None = Field(default=None, min_length=1, max_length=4096)
@@ -600,6 +639,20 @@ class AskUserTool(ToolBase):
     async def execute(self, context: ToolContext, arguments: ToolArguments) -> ToolResult:
         del context, arguments
         return ToolResult(status="failed", summary="ask_user requires the interactive runtime")
+
+
+class OpenSitePreviewTool(ToolBase):
+    name = "open_site_preview"
+    description = (
+        "Show a local web app that you built in this chat's Hames Web side preview. "
+        "Start its development server first, then provide its loopback HTTP(S) URL. "
+        "This displays the page to the user; it does not inspect or verify the page for you."
+    )
+    arguments_type: ClassVar[type[ToolArguments]] = SitePreviewArguments
+
+    async def execute(self, context: ToolContext, arguments: ToolArguments) -> ToolResult:
+        del context, arguments
+        return ToolResult(status="failed", summary="open_site_preview requires the chat runtime")
 
 
 class ReadFileTool(ToolBase):
@@ -1265,6 +1318,7 @@ class ToolRegistry:
     ) -> None:
         values: list[ToolBase] = [
             AskUserTool(),
+            OpenSitePreviewTool(),
             ReadFileTool(),
             ListDirTool(),
             WriteFileTool(),

@@ -4110,6 +4110,63 @@ async def test_automatic_compaction_honors_an_absolute_token_threshold(
 
 
 @pytest.mark.asyncio
+async def test_agent_opens_local_site_preview_for_its_chat(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    fake = FakeProvider(
+        [],
+        turns=[
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(
+                    kind=StreamEventKind.TOOL_CALL_DELTA,
+                    tool_call=ToolCallDelta(
+                        index=0,
+                        provider_call_id="preview-1",
+                        name="open_site_preview",
+                        arguments_delta='{"url":"http://127.0.0.1:5173"}',
+                    ),
+                ),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="tool_calls"),
+            ],
+            [
+                StreamEvent(kind=StreamEventKind.STARTED),
+                StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="Preview is open."),
+                StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
+            ],
+        ],
+    )
+    state = GatewayState.create(paths, providers={"fake": fake})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
+            )
+            session_id = str(response_object(created)["id"])
+            await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
+            await client.post(
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
+                json={"content": "Show the local site"},
+            )
+            events = await _wait_for_event(client, headers, session_id, "run.completed")
+            opened = next(event for event in events if event["type"] == "site.preview.opened")
+            assert opened["session_id"] == session_id
+            assert opened["payload"] == {"url": "http://127.0.0.1:5173/"}
+            assert any(
+                event["type"] == "tool.completed"
+                and isinstance(event["payload"], dict)
+                and event["payload"].get("name") == "open_site_preview"
+                for event in events
+            )
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
 async def test_model_can_title_the_active_session(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
     fake = FakeProvider(

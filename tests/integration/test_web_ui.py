@@ -37,6 +37,8 @@ async def test_gateway_owns_authenticated_web_shell(tmp_path: Path) -> None:
             assert shell.headers["cache-control"] == "no-store"
             assert "frame-ancestors 'none'" in shell.headers["content-security-policy"]
             assert "img-src 'self' data: blob:" in shell.headers["content-security-policy"]
+            csp = shell.headers["content-security-policy"]
+            assert "frame-src http://localhost:* http://127.0.0.1:* http://[::1]:*" in csp
 
             asset = await client.get("/assets/app-abc123.js")
             assert asset.status_code == 200

@@ -8,6 +8,7 @@ import { ChatFrame } from "./components/ChatFrame";
 import { ChatSessionBar } from "./components/ChatSessionBar";
 import type { ChatView } from "./components/ChatViewTabs";
 import { ConversationViewport } from "./components/ConversationViewport";
+import { SitePreview, validateSitePreviewUrl } from "./components/SitePreview";
 import { MessageComposer } from "./components/MessageComposer";
 import { EventsView } from "./events/EventsView";
 import { projectConversation, withLiveOutput } from "./projection";
@@ -23,6 +24,8 @@ interface SessionChatProps {
   onSessionOpened: (session: Session) => void;
 }
 
+const autoOpenedPreviewEvents = new Set<string>();
+
 export function SessionChat(props: SessionChatProps) {
   const workspace = useWorkspace();
   const sessionId = createMemo(() => props.session.id);
@@ -31,9 +34,16 @@ export function SessionChat(props: SessionChatProps) {
   const workerName = (id: string) => directory.agents().find(agent => agent.id === id)?.name ?? id;
   const [commandResult, setCommandResult] = createSignal<ConversationNode>();
   const [sendJump, setSendJump] = createSignal<{ sequence: number; submissionId?: string }>({ sequence: 0 });
-  createEffect(() => { sessionId(); setCommandResult(undefined); });
   const [view, setView] = createSignal<ChatView>("chat");
+  const [previewOpen, setPreviewOpen] = createSignal(false);
+  const [previewExpanded, setPreviewExpanded] = createSignal(false);
   const [eventsVisited, setEventsVisited] = createSignal(false);
+  createEffect(() => {
+    sessionId();
+    setCommandResult(undefined);
+    setPreviewOpen(false);
+    setPreviewExpanded(false);
+  });
   const stream = createSessionStream(() => props.session.id);
   // Dashboard polling replaces the session object every ten seconds. Only a
   // changed directory should invalidate projection and its measured DOM nodes.
@@ -51,6 +61,26 @@ export function SessionChat(props: SessionChatProps) {
     `${stream.state()}:${stream.events().filter(event => event.type.startsWith("queue.")).at(-1)?.id ?? ""}`,
   );
   const plan = createMemo(() => projectReviewPlan(stream.events()));
+  const sitePreviewRequest = createMemo(() => [...stream.events()]
+    .reverse()
+    .flatMap(event => {
+      if (event.type !== "site.preview.opened" || event.session_id !== props.session.id) return [];
+      const value = event.payload.url;
+      if (typeof value !== "string") return [];
+      const result = validateSitePreviewUrl(value);
+      return result.url ? [{ id: event.id, url: result.url }] : [];
+    })[0],
+  );
+  let appliedSitePreviewEventId = "";
+  createEffect(() => {
+    const request = sitePreviewRequest();
+    if (!request || request.id === appliedSitePreviewEventId) return;
+    appliedSitePreviewEventId = request.id;
+    if (autoOpenedPreviewEvents.has(request.id)) return;
+    autoOpenedPreviewEvents.add(request.id);
+    setPreviewOpen(true);
+    setPreviewExpanded(false);
+  });
   const taskCard = createTaskCardState(() => props.session.id);
   const fresh = createMemo(() =>
     !props.session.title?.trim() && projection().nodes.length === 0,
@@ -70,6 +100,18 @@ export function SessionChat(props: SessionChatProps) {
     if (next === "events") setEventsVisited(true);
     setView(next);
   };
+  const togglePreview = () => {
+    if (previewOpen()) {
+      setPreviewOpen(false);
+      setPreviewExpanded(false);
+    } else {
+      setPreviewOpen(true);
+    }
+  };
+  const closePreview = () => {
+    setPreviewOpen(false);
+    setPreviewExpanded(false);
+  };
   const openWorkspaceChat = async (workspaceId: string) => {
     if (workspaceId === workspace.selectedWorkspace()?.id) return;
     await workspace.selectWorkspace(workspaceId);
@@ -77,43 +119,64 @@ export function SessionChat(props: SessionChatProps) {
   };
 
   return (
-    <ChatFrame fresh={fresh() && view() === "chat"}>
+    <ChatFrame
+      fresh={fresh() && view() === "chat"}
+      previewOpen={previewOpen()}
+      previewExpanded={previewExpanded()}
+    >
       <ChatSessionBar
         session={props.session}
         view={view()}
         streamState={stream.state()}
         working={Boolean(projection().activeRunId)}
         workerLabel={projection().activeWorker ? `${workerName(projection().activeWorker!.agentId)} · ${projection().activeWorker!.status === "stopping" ? "Stopping" : "Working"}` : undefined}
+        previewAvailable={Boolean(sitePreviewRequest())}
+        previewOpen={previewOpen()}
         onViewChanged={changeView}
+        onPreviewToggle={togglePreview}
         onSessionUpdated={props.onSessionUpdated}
       />
-      <div
-        id="chat-view-panel"
-        class="chat-view-panel"
-        role="tabpanel"
-        aria-labelledby="chat-view-tab"
-        hidden={view() !== "chat"}
-      >
-        <Show when={props.session.id} keyed>{(sessionId) => <ConversationViewport
-          sessionId={sessionId}
-          nodes={commandResult() ? [...projection().nodes, commandResult()!] : projection().nodes}
-          streamState={stream.state()}
-          fresh={fresh()}
-          agentId={props.session.agent_id}
-          sendJump={sendJump()}
-        />}</Show>
-      </div>
-      <Show when={eventsVisited()}>
-        <div
-          id="events-view-panel"
-          class="chat-view-panel"
-          role="tabpanel"
-          aria-labelledby="events-view-tab"
-          hidden={view() !== "events"}
-        >
-          <EventsView events={stream.events()} streamState={stream.state()} />
+      <div class="chat-workspace">
+        <div class="chat-conversation" aria-hidden={previewExpanded() || undefined}>
+          <div
+            id="chat-view-panel"
+            class="chat-view-panel"
+            role="tabpanel"
+            aria-labelledby="chat-view-tab"
+            hidden={view() !== "chat"}
+          >
+            <Show when={props.session.id} keyed>{(sessionId) => <ConversationViewport
+              sessionId={sessionId}
+              nodes={commandResult() ? [...projection().nodes, commandResult()!] : projection().nodes}
+              streamState={stream.state()}
+              fresh={fresh()}
+              agentId={props.session.agent_id}
+              sendJump={sendJump()}
+            />}</Show>
+          </div>
+          <Show when={eventsVisited()}>
+            <div
+              id="events-view-panel"
+              class="chat-view-panel"
+              role="tabpanel"
+              aria-labelledby="events-view-tab"
+              hidden={view() !== "events"}
+            >
+              <EventsView events={stream.events()} streamState={stream.state()} />
+            </div>
+          </Show>
         </div>
-      </Show>
+        <Show when={sitePreviewRequest()}>
+          {(request) => <SitePreview
+            sessionId={props.session.id}
+            request={request()}
+            open={previewOpen()}
+            expanded={previewExpanded()}
+            onExpanded={(value) => setPreviewExpanded(value)}
+            onClose={closePreview}
+          />}
+        </Show>
+      </div>
       <MessageComposer
         onCommandResult={content => setCommandResult({ id: crypto.randomUUID(), kind: "notice", tone: "neutral", content })}
         plan={plan()}

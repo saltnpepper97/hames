@@ -5,6 +5,8 @@ import type { StreamState } from "../sessionStream";
 import { AgentPicker } from "./AgentPicker";
 import { ChatViewTabs } from "./ChatViewTabs";
 import type { ChatView } from "./ChatViewTabs";
+import globe from "@phosphor-icons/core/regular/globe.svg";
+import { Button } from "../../components/Button";
 
 interface ChatSessionBarProps {
   session: Session;
@@ -12,7 +14,10 @@ interface ChatSessionBarProps {
   streamState: StreamState;
   working: boolean;
   workerLabel?: string;
+  previewAvailable: boolean;
+  previewOpen: boolean;
   onViewChanged: (view: ChatView) => void;
+  onPreviewToggle: () => void;
   onSessionUpdated: (session: Session) => void;
 }
 
@@ -45,6 +50,22 @@ export function ChatSessionBar(props: ChatSessionBarProps) {
           disabled={props.working}
           onSessionUpdated={props.onSessionUpdated}
         />
+        <Show when={props.previewAvailable}>
+          <Button
+            variant="icon"
+            class="chat-preview-toggle"
+            aria-label={props.previewOpen ? "Hide site preview" : "Open site preview"}
+            aria-pressed={props.previewOpen}
+            title={props.previewOpen ? "Hide site preview" : "Preview a local site"}
+            onClick={props.onPreviewToggle}
+          >
+            <span
+              class="phosphor-icon"
+              style={{ "--hames-icon-source": `url("${globe}")`, width: "17px", height: "17px" }}
+              aria-hidden="true"
+            />
+          </Button>
+        </Show>
       </div>
     </header>
   );

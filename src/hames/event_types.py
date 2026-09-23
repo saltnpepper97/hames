@@ -922,6 +922,10 @@ class BrowserChangedPayload(EventPayload):
     action: str
 
 
+class SitePreviewOpenedPayload(EventPayload):
+    url: str = Field(min_length=1, max_length=2048)
+
+
 EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "flow.started": FlowStartedPayload,
     "delegation.control": DelegationControlPayload,
@@ -1003,6 +1007,7 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "runtime.error": FailurePayload,
     "runtime.notice": RuntimeNoticePayload,
     "browser.changed": BrowserChangedPayload,
+    "site.preview.opened": SitePreviewOpenedPayload,
     "terminal.started": TerminalStartedPayload,
     "terminal.completed": TerminalFinishedPayload,
     "terminal.failed": TerminalFinishedPayload,

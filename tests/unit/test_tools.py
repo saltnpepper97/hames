@@ -24,6 +24,7 @@ from hames.tools import (
     ScarControlArguments,
     ShellArguments,
     ShellTool,
+    SitePreviewArguments,
     SkillControlArguments,
     TaskUpdateArguments,
     TerminalStopArguments,
@@ -45,6 +46,26 @@ def tool_context(tmp_path: Path, **config: object) -> ToolContext:
         blobs=BlobStore(tmp_path / "blobs"),
         config=ToolsConfig.model_validate(config),
     )
+
+
+def test_site_preview_accepts_only_local_development_urls() -> None:
+    registry = ToolRegistry()
+    valid = registry.validate("open_site_preview", {"url": " http://localhost:5173/site "})
+    assert isinstance(valid, SitePreviewArguments)
+    assert valid.url == "http://localhost:5173/site"
+    assert registry.validate("open_site_preview", {"url": "http://[::1]:3000"}).url == (
+        "http://[::1]:3000/"
+    )
+    for url in (
+        "https://example.com",
+        "http://localhost.evil.com:5173",
+        "http://user@localhost:5173",
+        "http://localhost:5173/?token=secret",
+        "file:///tmp/site.html",
+        "http://localhost:0",
+    ):
+        with pytest.raises(ValueError, match="invalid open_site_preview arguments"):
+            registry.validate("open_site_preview", {"url": url})
 
 
 @pytest.mark.asyncio

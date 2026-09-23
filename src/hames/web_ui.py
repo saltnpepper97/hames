@@ -248,7 +248,9 @@ def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
 def _secure(response: Response) -> Response:
     response.headers["Content-Security-Policy"] = (
         "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; "
-        "connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+        "connect-src 'self'; frame-src http://localhost:* http://127.0.0.1:* http://[::1]:* "
+        "https://localhost:* https://127.0.0.1:* https://[::1]:*; "
+        "base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
     )
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"

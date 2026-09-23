@@ -3,6 +3,8 @@ import type { ParentProps } from "solid-js";
 
 interface ChatFrameProps extends ParentProps {
   fresh?: boolean;
+  previewOpen?: boolean;
+  previewExpanded?: boolean;
 }
 
 export function ChatFrame(props: ChatFrameProps) {
@@ -42,7 +44,15 @@ export function ChatFrame(props: ChatFrameProps) {
   });
 
   return (
-    <div class="session-chat" classList={{ fresh: props.fresh }} ref={frame}>
+    <div
+      class="session-chat"
+      classList={{
+        fresh: props.fresh,
+        "preview-open": props.previewOpen,
+        "preview-expanded": props.previewExpanded,
+      }}
+      ref={frame}
+    >
       {props.children}
     </div>
   );

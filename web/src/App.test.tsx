@@ -1961,6 +1961,33 @@ describe("Hames web shell", () => {
     expect(screen.getByText("Keep this reading position")).toBe(message);
   });
 
+  it("reveals and opens the local site preview only when the agent requests it", async () => {
+    vi.stubGlobal("fetch", successfulFetch());
+    render(() => <App />);
+    fireEvent.click(await screen.findByRole("link", { name: /Build the web foundation/ }));
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    expect(screen.queryByRole("button", { name: "Open site preview" })).not.toBeInTheDocument();
+
+    MockEventSource.instances[0]!.emit("site.preview.opened", durableEvent(
+      "site.preview.opened", 1, { url: "http://127.0.0.1:5173/" },
+    ));
+    const toggle = await screen.findByRole("button", { name: "Hide site preview" });
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTitle("Local site")).toHaveAttribute("src", "http://127.0.0.1:5173/");
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand preview" }));
+    expect(document.querySelector(".session-chat")).toHaveClass("preview-expanded");
+    fireEvent.click(screen.getByRole("button", { name: "Restore preview sidebar" }));
+    expect(document.querySelector(".session-chat")).not.toHaveClass("preview-expanded");
+
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: "Open site preview" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByTitle("Local site")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open site preview" }));
+    expect(screen.getByTitle("Local site")).toHaveAttribute("src", "http://127.0.0.1:5173/");
+  });
+
   it("replays live gateway events and submits messages", async () => {
     const fetchMock = successfulFetch();
     vi.stubGlobal("fetch", fetchMock);

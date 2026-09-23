@@ -30,6 +30,7 @@ _AVATAR_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
 READ_ONLY_TOOLS = frozenset(
     {
         "ask_user",
+        "open_site_preview",
         "spawn_agent",
         "agent_control",
         "read_file",

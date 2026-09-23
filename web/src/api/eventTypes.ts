@@ -80,6 +80,7 @@ trust.granted
 trust.revoked
 runtime.error
 browser.changed
+site.preview.opened
 runtime.notice
 terminal.started
 terminal.completed

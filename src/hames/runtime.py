@@ -95,6 +95,7 @@ from hames.tools import (
     ScarRecordArguments,
     SessionTitleArguments,
     ShellArguments,
+    SitePreviewArguments,
     SkillAuthorArguments,
     SkillCatalogArguments,
     SkillControlArguments,
@@ -4440,6 +4441,34 @@ class RunManager:
                     result = await self._request_question(
                         run_id, session, invocation, arguments, started.id
                     )
+            return await self._persist_tool_result(session, run_id, invocation, result, started.id)
+        if invocation.name == "open_site_preview":
+            started = await self._append(
+                session_id=session.id,
+                run_id=run_id,
+                agent_id=session.agent_id,
+                event_type="tool.started",
+                payload={"tool_call_id": invocation.tool_call_id, "name": invocation.name},
+                causation_id=policy_decided.id,
+                correlation_id=run_id,
+            )
+            if not isinstance(arguments, SitePreviewArguments):
+                result = ToolResult(status="failed", summary="invalid site preview URL")
+            else:
+                await self._append(
+                    session_id=session.id,
+                    run_id=run_id,
+                    agent_id=session.agent_id,
+                    event_type="site.preview.opened",
+                    payload={"url": arguments.url},
+                    causation_id=started.id,
+                    correlation_id=run_id,
+                )
+                result = ToolResult(
+                    status="completed",
+                    summary="Local site preview opened for this Hames Web chat",
+                    structured_data={"url": arguments.url},
+                )
             return await self._persist_tool_result(session, run_id, invocation, result, started.id)
         if invocation.name in {"skill_load", "skill_author", "skill_run"}:
             started = await self._append(
