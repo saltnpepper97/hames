@@ -1487,6 +1487,17 @@ pub struct App {
 
 impl App {
     pub fn new(session: Session, events: Vec<Event>, trusted: bool) -> Self {
+        let retracted_messages: HashSet<String> = events
+            .iter()
+            .filter(|event| event.event_type == "run.cancelled")
+            .filter_map(|event| {
+                event
+                    .payload
+                    .get("retracted_message_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .collect();
         let session_id = session.id.clone();
         let initial_model = (session.provider.clone(), session.model.clone());
         let initial_effort = session.reasoning_effort.clone();
@@ -1573,6 +1584,13 @@ impl App {
             fx_last_frame: Instant::now(),
         };
         for event in events {
+            if event.event_type == "user.message" && retracted_messages.contains(&event.id) {
+                // Keep recall history, but do not replay an unsent turn into the transcript.
+                app.seen_events.insert(event.id);
+                app.last_sequence = app.last_sequence.max(event.sequence);
+                app.message_history.push(string(&event.payload, "content"));
+                continue;
+            }
             app.ingest_durable(event, false);
         }
         app
@@ -4696,15 +4714,23 @@ mod tests {
     #[test]
     fn cancelled_waiting_turn_stays_out_of_replayed_transcript() {
         let run_id = "run-replayed-cancel";
+        let mut message = event(
+            1,
+            "user.message",
+            run_id,
+            json!({"content": "mistyped request", "purpose": "turn"}),
+        );
+        // The gateway records the user event before it creates the run.
+        message.run_id = None;
         let events = vec![
-            event(
-                1,
-                "user.message",
-                run_id,
-                json!({"content": "mistyped request", "purpose": "turn"}),
-            ),
+            message,
             event(2, "run.started", run_id, json!({})),
-            event(3, "run.cancelled", run_id, json!({})),
+            event(
+                3,
+                "run.cancelled",
+                run_id,
+                json!({"retracted_message_id": "event-1"}),
+            ),
         ];
 
         let app = App::new(session(), events, true);
@@ -4714,6 +4740,34 @@ mod tests {
         ));
         assert!(app.composer.is_empty());
         assert_eq!(app.message_history, ["mistyped request"]);
+    }
+
+    #[test]
+    fn replay_keeps_cancelled_turns_that_received_a_model_response() {
+        let run_id = "run-responded";
+        let mut message = event(1, "user.message", run_id, json!({"content": "answered"}));
+        message.run_id = None;
+        let events = vec![
+            message,
+            event(
+                2,
+                "assistant.message",
+                run_id,
+                json!({"content": "partial", "status": "interrupted"}),
+            ),
+            event(
+                3,
+                "run.cancelled",
+                run_id,
+                json!({"retracted_message_id": null}),
+            ),
+        ];
+
+        let app = App::new(session(), events, true);
+
+        assert!(app.transcript.iter().any(
+            |item| matches!(item, TranscriptItem::User { content, .. } if content == "answered")
+        ));
     }
 
     #[test]

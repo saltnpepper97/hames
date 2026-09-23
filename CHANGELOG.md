@@ -25,6 +25,9 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 
 ### Fixed
 
+- Reopening a TUI chat no longer replays a message taken back by stopping before
+  model output. Cancelled messages remain available in input history.
+
 - Sending a message from a scrolled-up Web chat now scrolls smoothly to that
   submitted message once it appears. Stopping a run before any model output returns its message
   and attachments to the composer, removes it from the transcript, and excludes
