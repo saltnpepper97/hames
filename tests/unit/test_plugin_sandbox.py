@@ -59,28 +59,31 @@ def test_sandbox_does_not_expose_real_home(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="requires native macOS sandbox")
-def test_macos_sandbox_runs_worker_but_denies_home_and_network(tmp_path: Path) -> None:
+def test_macos_sandbox_denies_home_network_and_external_signals(tmp_path: Path) -> None:
     assert macos_sandbox_path() is not None
     package = tmp_path / "pkg"
     package.mkdir()
     with tempfile.TemporaryDirectory(dir=Path.home()) as secret_dir:
+        outside = subprocess.Popen(["/bin/sleep", "10"])
         secret = Path(secret_dir) / "secret"
         secret.write_text("private", encoding="utf-8")
         (package / "probe.py").write_text(
             """import os
+import signal
 import socket
 from pathlib import Path
 print('HOME=' + os.environ.get('HOME', ''))
 for label, probe in (
     ('secret', lambda: Path(SECRET_PATH).read_text()),
     ('network', lambda: socket.socket().bind(('127.0.0.1', 0))),
+    ('signal', lambda: os.kill(OUTSIDE_PID, signal.SIGTERM)),
 ):
     try:
         probe()
         print(label + '=allowed')
     except OSError:
         print(label + '=denied')
-""".replace("SECRET_PATH", repr(str(secret))),
+""".replace("SECRET_PATH", repr(str(secret))).replace("OUTSIDE_PID", str(outside.pid)),
             encoding="utf-8",
         )
         scratch = tmp_path / "scratch"
@@ -91,15 +94,22 @@ for label, probe in (
             allow_unsandboxed=False,
             scratch=scratch,
         )
-        completed = subprocess.run(
-            command,
-            cwd=package,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=package,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            assert outside.poll() is None, "sandbox signaled an unrelated process"
+        finally:
+            if outside.poll() is None:
+                outside.terminate()
+            outside.wait(timeout=5)
     assert completed.returncode == 0, completed.stderr
     assert f"HOME={scratch.resolve()}" in completed.stdout
     assert "secret=denied" in completed.stdout
     assert "network=denied" in completed.stdout
+    assert "signal=denied" in completed.stdout

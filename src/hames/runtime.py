@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import signal
+import sys
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -5272,7 +5273,7 @@ class RunManager:
             ]
             if bwrap is not None
             else isolated_command(
-                executable=Path("/usr/bin/python3" if interpreter == "python" else "/bin/bash"),
+                executable=Path(sys.executable if interpreter == "python" else "/bin/bash"),
                 arguments=[str(Path(skill.package_path) / script_path), *args],
                 package=Path(skill.package_path),
                 scratch=scratch,

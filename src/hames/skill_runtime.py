@@ -6,6 +6,7 @@ import asyncio
 import json
 import py_compile
 import subprocess
+import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -736,9 +737,7 @@ class SkillManager:
                         if bwrap is not None
                         else isolated_command(
                             executable=Path(
-                                "/usr/bin/python3"
-                                if script.interpreter == "python"
-                                else "/bin/bash"
+                                sys.executable if script.interpreter == "python" else "/bin/bash"
                             ),
                             arguments=[str(path), "--self-test"],
                             package=Path(version.package_path),

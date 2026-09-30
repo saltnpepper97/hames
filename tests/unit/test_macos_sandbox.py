@@ -42,7 +42,7 @@ for label, path in (
         )
         scratch = tmp_path / "scratch"
         command = isolated_command(
-            executable=Path("/usr/bin/python3"),
+            executable=Path(sys.executable),
             arguments=[str(script)],
             package=package,
             scratch=scratch,

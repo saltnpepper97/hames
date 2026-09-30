@@ -70,7 +70,10 @@ def isolated_command(
             "(version 1)",
             "(deny default)",
             '(import "system.sb")',
-            "(allow process*)",
+            "(allow process-exec)",
+            "(allow process-fork)",
+            "(allow process-info* (target same-sandbox))",
+            "(allow signal (target same-sandbox))",
             "(allow sysctl-read)",
             "(allow file-read-metadata "
             + " ".join(f"(literal {json.dumps(str(path))})" for path in sorted(ancestors))
