@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Experimental macOS core support: portable gateway process discovery and ownership
+  checks, terminal sizing, a native workspace folder picker, installer platform checks,
+  and diagnostics that distinguish
+  core availability from unsupported isolation.
+- Mac Keychain path and credential-command protections, plus macOS absolute-path
+  recognition for Manual-mode workspace checks.
+- Linux, Apple Silicon, and Intel Mac CI coverage, including an installed-launcher
+  smoke check for gateway lifecycle, Web authentication, and bundled assets.
+
+### Platform limits
+
+- Isolated plugins and Skill script execution still require Linux and Bubblewrap.
+  macOS rejects these operations by default; instruction-only Skills remain available.
+  The existing explicit unsandboxed plugin override remains an opt-in developer setting.
+- Native automated checks pass on macOS 15 on Apple Silicon and Intel, including
+  installed gateway/Web startup. Interactive checks remain before removing the
+  experimental label; see [macOS setup](docs/macos.md).
+
 ## 0.2.0
 
 Hames brings its local Web workspace, broader provider support, and more reliable

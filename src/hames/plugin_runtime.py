@@ -16,6 +16,7 @@ from hames.config import HamesConfig
 from hames.context import PluginContextItem
 from hames.ledger import Event, Ledger, Session, new_id
 from hames.paths import HamesPaths
+from hames.platform_support import sandbox_unavailable_reason
 from hames.plugin_broker import Append, CapabilityBroker
 from hames.plugin_protocol import PluginProtocolError, PluginToolSpec, PluginWorker, spawn_worker
 from hames.plugin_sandbox import PluginSandboxError, bwrap_available, worker_command
@@ -546,8 +547,10 @@ class PluginManager:
         warning = ""
         if not bwrap_available():
             if not allow_unsandboxed:
-                raise PluginSandboxError("plugin isolation is unavailable (bwrap missing)")
-            warning = "running unsandboxed because bwrap is missing"
+                raise PluginSandboxError(sandbox_unavailable_reason())
+            warning = (
+                f"running unsandboxed by explicit configuration: {sandbox_unavailable_reason()}"
+            )
         env_root = self.paths.plugins / "env" / version.plugin_id / version.fingerprint[:12]
         command = worker_command(
             package=Path(version.package_path),

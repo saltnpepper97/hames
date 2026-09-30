@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import platform
-import shutil
 import sqlite3
 import sys
 import tomllib
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from hames import PROTOCOL_VERSION, __version__
 from hames.agent import load_agent
 from hames.config import is_legacy_config, load_config
 from hames.paths import HamesPaths
+from hames.platform_support import (
+    bubblewrap_path,
+    core_platform_supported,
+    sandbox_unavailable_reason,
+)
 from hames.search_service import SearchService, SearchStatus
 
 
@@ -28,6 +32,7 @@ class DoctorReport(BaseModel):
     sqlite_version: str
     sqlite_fts5: bool
     bubblewrap: bool
+    limitations: list[str] = Field(default_factory=list)
     default_agent_hash: str
     config_compatibility: str | None
     search: SearchStatus
@@ -50,7 +55,7 @@ def run_doctor(paths: HamesPaths) -> DoctorReport:
     agent = load_agent(paths.default_agent)
     fts5 = _has_fts5()
     supported_python = sys.version_info >= (3, 12)
-    supported_platform = sys.platform.startswith("linux")
+    supported_platform = core_platform_supported()
     return DoctorReport(
         healthy=supported_python and supported_platform and fts5,
         version=__version__,
@@ -61,7 +66,8 @@ def run_doctor(paths: HamesPaths) -> DoctorReport:
         database_path=str(paths.database),
         sqlite_version=sqlite3.sqlite_version,
         sqlite_fts5=fts5,
-        bubblewrap=shutil.which("bwrap") is not None,
+        bubblewrap=bubblewrap_path() is not None,
+        limitations=[] if bubblewrap_path() else [sandbox_unavailable_reason()],
         default_agent_hash=agent.content_hash,
         config_compatibility=_config_compatibility(paths),
         search=SearchService(paths).status(),

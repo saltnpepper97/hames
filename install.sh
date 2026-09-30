@@ -2,6 +2,18 @@
 
 set -Eeuo pipefail
 
+case "$(uname -s)" in
+  Linux) ;;
+  Darwin)
+    printf 'Installing Hames for macOS (experimental core support).\n'
+    printf 'Isolated plugins and Skill scripts require Linux and are unavailable on macOS.\n'
+    ;;
+  *)
+    printf 'error: Hames requires Linux or macOS\n' >&2
+    exit 1
+    ;;
+esac
+
 repository_url="${HAMES_REPOSITORY_URL:-https://github.com/saltnpepper97/hames.git}"
 repository_ref="${HAMES_VERSION:-${HAMES_REF:-}}"
 

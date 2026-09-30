@@ -92,3 +92,83 @@ def test_logging_redacts_sensitive_messages(tmp_path: Path) -> None:
     content = log_file.read_text(encoding="utf-8")
     assert "extremely-secret" not in content
     assert "[redacted]" in content
+
+
+def test_process_identity_requires_exact_invocation_and_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+    from unittest.mock import Mock
+
+    import psutil
+
+    from hames.daemon import is_owned_gateway_process
+
+    process = Mock()
+    process.uids.return_value.effective = os.geteuid()
+
+    def get_process(_pid: int) -> Mock:
+        return process
+
+    monkeypatch.setattr("hames.daemon.psutil.Process", get_process)
+    process.cmdline.return_value = ["/venv with spaces/bin/python", "-m", "hames.cli", "serve"]
+    assert is_owned_gateway_process(123)
+    process.cmdline.return_value = ["other", "hames.cli", "serve"]
+    assert not is_owned_gateway_process(123)
+    process.cmdline.return_value = ["python", "-c", "hames.cli", "serve"]
+    assert not is_owned_gateway_process(123)
+    process.cmdline.return_value = ["python", "-m", "hames.cli", "serve"]
+    process.uids.return_value.effective = os.geteuid() + 1
+    assert not is_owned_gateway_process(123)
+    process.uids.side_effect = psutil.AccessDenied(123)
+    assert not is_owned_gateway_process(123)
+    assert not is_owned_gateway_process(0)
+    assert not is_owned_gateway_process(-1)
+
+
+def test_listener_discovery_skips_denied_and_non_loopback_processes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+    from unittest.mock import Mock
+
+    import psutil
+
+    from hames.daemon import loopback_listener_pid
+
+    denied = Mock()
+    denied.uids.side_effect = psutil.AccessDenied(1)
+    public = Mock(pid=2)
+    public.uids.return_value.effective = os.geteuid()
+    public.net_connections.return_value = [
+        Mock(status=psutil.CONN_LISTEN, laddr=Mock(ip="0.0.0.0", port=7410))
+    ]
+    loopback = Mock(pid=3)
+    loopback.uids.return_value.effective = os.geteuid()
+    loopback.net_connections.return_value = [
+        Mock(status=psutil.CONN_LISTEN, laddr=Mock(ip="::1", port=7410))
+    ]
+    monkeypatch.setattr(
+        "hames.daemon.psutil.process_iter", lambda: iter([denied, public, loopback])
+    )
+    assert loopback_listener_pid(7410) == 3
+    assert loopback_listener_pid(7411) is None
+
+
+def test_gateway_can_be_recovered_without_pid_file(tmp_path: Path) -> None:
+    from hames.daemon import hames_listener_pid
+
+    port = _free_port()
+    first = _home_on_port(tmp_path / "first", port)
+    second = _home_on_port(tmp_path / "second", port)
+    started = start(first)
+    try:
+        assert started.pid is not None
+        assert hames_listener_pid(port) == started.pid
+        first.gateway_pid.unlink()
+        replaced = start(second)
+        assert replaced.healthy
+        assert replaced.pid != started.pid
+    finally:
+        stop(second)
+        stop(first)

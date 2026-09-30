@@ -1709,7 +1709,9 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             )
             assert markdown.status_code == 200
             assert "Derived view only" in markdown.text
-            assert "private" not in markdown.text
+            # macOS temporary workspace paths legitimately contain /private/var.
+            assert str(tmp_path) in markdown.text
+            assert state.token not in markdown.text
             assert "check " in markdown.text
             jsonl = await client.get(
                 f"/v1/sessions/{session_id}/transcript",
@@ -1748,11 +1750,13 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                 json={"content": "Continue"},
             )
             assert branch_accepted.status_code == 202
-            for _ in range(100):
-                if len(fake.requests) == 2:
-                    break
-                await asyncio.sleep(0.01)
-            assert [message.content for message in fake.requests[1].messages] == [
+            await _wait_for_event(client, headers, branch.id, "run.completed")
+            continuation = next(
+                request
+                for request in fake.requests
+                if request.messages and request.messages[-1].content == "Continue"
+            )
+            assert [message.content for message in continuation.messages] == [
                 "Hi",
                 "hello",
                 "Continue",
@@ -3681,6 +3685,9 @@ async def test_goal_runs_multiple_bounded_steps_until_evidence_backed_achievemen
     tmp_path: Path,
 ) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
+    # These four responses belong to goal turns, not background extraction.
+    paths.ensure_foundation()
+    paths.config_file.write_text("[memory]\nautomatic_extraction = false\n", encoding="utf-8")
     fake = FakeProvider(
         [],
         turns=[
@@ -3786,7 +3793,9 @@ async def test_goal_stall_guard_blocks_three_equivalent_unreported_steps(tmp_pat
         StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="I could not make progress."),
         StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
     ]
-    fake = FakeProvider([], turns=[repeated, repeated, repeated])
+    # Background maintenance shares the provider; it must not consume a finite
+    # goal-only response script and turn later goal steps into fixture errors.
+    fake = FakeProvider(repeated)
     state = GatewayState.create(paths, providers={"fake": fake})
     headers = {"Authorization": f"Bearer {state.token}"}
     transport = httpx.ASGITransport(app=create_app(state))

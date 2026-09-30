@@ -51,7 +51,11 @@ account connections.
 
 ## Install
 
-Hames currently targets Linux and requires:
+Hames supports Linux. Experimental macOS core support is available from the
+current checkout; see [macOS setup and limitations](docs/macos.md). The `0.2.0`
+tag predates these portability changes.
+
+Both platforms require:
 
 - Python 3.12 or newer
 - [uv](https://docs.astral.sh/uv/)

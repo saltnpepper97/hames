@@ -142,30 +142,11 @@ const WHITE: Rgb = Rgb {
 };
 
 pub fn columns() -> usize {
-    #[repr(C)]
-    struct WinSize {
-        row: u16,
-        col: u16,
-        x: u16,
-        y: u16,
-    }
-    unsafe extern "C" {
-        fn ioctl(fd: i32, op: u64, arg: *mut WinSize) -> i32;
-    }
-    const TIOCGWINSZ: u64 = 0x5413;
-    let mut size = WinSize {
-        row: 0,
-        col: 0,
-        x: 0,
-        y: 0,
-    };
-    // Linux TIOCGWINSZ on stdout; wrap-aware heading repaint needs the column count.
-    let ok = unsafe { ioctl(1, TIOCGWINSZ, &mut size) == 0 };
-    if ok && size.col > 8 {
-        usize::from(size.col)
-    } else {
-        80
-    }
+    crossterm::terminal::size()
+        .map(|(columns, _)| usize::from(columns))
+        .ok()
+        .filter(|columns| *columns > 8)
+        .unwrap_or(80)
 }
 
 impl Badge {

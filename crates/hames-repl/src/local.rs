@@ -376,7 +376,10 @@ pub fn run_gateway_action(action: &str) -> Result<()> {
 }
 
 fn gateway_service_available() -> bool {
-    if env::var_os("HAMES_HOME").is_some() || env::var_os("INVOCATION_ID").is_some() {
+    if !cfg!(target_os = "linux")
+        || env::var_os("HAMES_HOME").is_some()
+        || env::var_os("INVOCATION_ID").is_some()
+    {
         return false;
     }
     let config = env::var_os("XDG_CONFIG_HOME")

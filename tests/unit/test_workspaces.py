@@ -114,6 +114,7 @@ def test_native_picker_registers_selected_folder(
     def select_folder(args: list[str], **_: object) -> CompletedProcess[str]:
         return CompletedProcess(args, 0, f"{selected}\n", "")
 
+    monkeypatch.setattr("hames.workspaces.sys.platform", "linux")
     monkeypatch.setattr("hames.workspaces.shutil.which", find_zenity)
     monkeypatch.setattr(
         "hames.workspaces.subprocess.run",
@@ -140,6 +141,7 @@ def test_picker_refreshes_graphical_login_environment(monkeypatch: pytest.Monkey
             args, 0, "WAYLAND_DISPLAY=wayland-1\nDISPLAY=:0\nPATH=untrusted\n", ""
         )
 
+    monkeypatch.setattr("hames.workspaces.sys.platform", "linux")
     monkeypatch.setattr("hames.workspaces.shutil.which", find_systemctl)
     monkeypatch.setattr("hames.workspaces.subprocess.run", show_environment)
     environment = _picker_environment()
@@ -165,6 +167,7 @@ def test_picker_distinguishes_cancel_from_display_failure(
     def cancel_or_fail(args: list[str], **_: object) -> CompletedProcess[str]:
         return CompletedProcess(args, 1, "", stderr)
 
+    monkeypatch.setattr("hames.workspaces.sys.platform", "linux")
     monkeypatch.setattr("hames.workspaces.shutil.which", find_zenity)
     monkeypatch.setattr("hames.workspaces._picker_environment", empty_environment)
     monkeypatch.setattr("hames.workspaces.subprocess.run", cancel_or_fail)
@@ -174,3 +177,67 @@ def test_picker_distinguishes_cancel_from_display_failure(
     else:
         assert registry.pick_directory() is None
     assert registry.list() == []
+
+
+@pytest.mark.parametrize("outcome", ["selected", "cancel", "error"])
+def test_macos_picker_uses_native_dialog_and_preserves_error_semantics(
+    hames_paths: HamesPaths, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    database = Database(hames_paths.database)
+    database.migrate()
+    registry = WorkspaceRegistry(database)
+    initial = tmp_path / 'folder "with quotes"'
+    initial.mkdir()
+    selected = tmp_path / "chosen folder"
+    selected.mkdir()
+    monkeypatch.setattr("hames.workspaces.sys.platform", "darwin")
+
+    def dialog(args: list[str], **_: object) -> CompletedProcess[str]:
+        assert args[0] == "/usr/bin/osascript"
+        assert args[-2:] == ["--", str(initial)]
+        assert str(initial) not in args[2]
+        if outcome == "error":
+            return CompletedProcess(args, 1, "", "Automation permission denied")
+        return CompletedProcess(args, 0, f"{selected}\n" if outcome == "selected" else "", "")
+
+    monkeypatch.setattr("hames.workspaces.subprocess.run", dialog)
+    if outcome == "error":
+        with pytest.raises(RuntimeError, match="Automation permission denied"):
+            registry.pick_directory(initial)
+    elif outcome == "cancel":
+        assert registry.pick_directory(initial) is None
+    else:
+        workspace = registry.pick_directory(initial)
+        assert workspace is not None
+        assert workspace.path == str(selected)
+    assert len(registry.list()) == (1 if outcome == "selected" else 0)
+
+
+def test_native_macos_picker_script_compiles(
+    hames_paths: HamesPaths, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+    import sys
+
+    if sys.platform != "darwin":
+        pytest.skip("AppleScript compiler requires macOS")
+    database = Database(hames_paths.database)
+    database.migrate()
+    registry = WorkspaceRegistry(database)
+    captured: list[str] = []
+
+    def capture(args: list[str], **_: object) -> CompletedProcess[str]:
+        captured.append(args[2])
+        return CompletedProcess(args, 0, "", "")
+
+    with monkeypatch.context() as context:
+        context.setattr("hames.workspaces.subprocess.run", capture)
+        assert registry.pick_directory(tmp_path) is None
+    result = subprocess.run(
+        ["/usr/bin/osacompile", "-o", str(tmp_path / "picker.scpt"), "-e", captured[0]],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr

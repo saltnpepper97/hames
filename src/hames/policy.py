@@ -39,6 +39,10 @@ class PolicyDecision:
 
 
 _DENIED_SHELL = (
+    (
+        re.compile(r"(?:^|[/\s'\"])Library/Keychains(?:[/\s'\"]|$)", re.IGNORECASE),
+        "macOS Keychain access",
+    ),
     (re.compile(r"(?:^|[\s'\"])(?:~?/)?\.hames(?:[/\s'\"]|$)"), "Hames state access"),
     (
         re.compile(r"(?:^|[\s'\"])(?:~?/)?\.codex(?:[/\s'\"]|$)"),
@@ -64,7 +68,9 @@ _SECRET_NAMES = {
 
 _SECRET_DIRECTORIES = {".ssh", ".gnupg", ".aws", ".kube"}
 
-_OUTSIDE_PATH = re.compile(r"(?<![\w$])/(?:home|root|etc|var|opt|srv|mnt|media)/[^\s'\";&|]+")
+_OUTSIDE_PATH = re.compile(
+    r"(?<![\w$])/(?:home|root|etc|var|opt|srv|mnt|media|Users|Volumes|private|Library|System|Applications)/[^\s'\";&|]+"
+)
 
 _PLAN_DENIED_TOOLS = {
     "write_file",
@@ -269,6 +275,10 @@ class PolicyGate:
                         "generic tools cannot access provider-private Codex state",
                         "protected_state",
                     )
+                if target.name.lower().endswith((".keychain", ".keychain-db")):
+                    return PolicyDecision(
+                        PolicyDecisionKind.DENY, "macOS Keychain files are protected", "secret"
+                    )
                 if target.name in _SECRET_NAMES or (
                     target.name.startswith(".env.") and target.name != ".env.example"
                 ):
@@ -277,7 +287,11 @@ class PolicyGate:
                         "known secret files are not available to generic tools",
                         "secret",
                     )
-                if any(part in _SECRET_DIRECTORIES for part in target.parts):
+                keychain_directory = any(
+                    left.lower() == "library" and right.lower() == "keychains"
+                    for left, right in zip(target.parts, target.parts[1:], strict=False)
+                )
+                if keychain_directory or any(part in _SECRET_DIRECTORIES for part in target.parts):
                     return PolicyDecision(
                         PolicyDecisionKind.DENY,
                         "credential stores are not available to generic tools",
@@ -356,6 +370,14 @@ def _shell_command_risk(command: str, *, cleanup_root: Path | None = None) -> Po
     for words in commands:
         executable = Path(words[0]).name.lower()
         arguments = words[1:]
+        if executable == "security" and any(
+            argument
+            in {"dump-keychain", "find-generic-password", "find-internet-password", "export"}
+            for argument in arguments
+        ):
+            return PolicyDecision(
+                PolicyDecisionKind.DENY, "macOS Keychain credential access", "secret"
+            )
         if _controls_live_compositor(executable, arguments):
             return PolicyDecision(
                 PolicyDecisionKind.REQUIRE_CONFIRMATION,
