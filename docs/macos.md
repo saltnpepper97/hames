@@ -17,7 +17,7 @@ developer tools (`xcode-select --install`), Git, Python 3.12 or newer,
 the checkout includes its built assets.
 
 ```bash
-git clone --branch macos-core-support https://github.com/saltnpepper97/hames.git
+git clone https://github.com/saltnpepper97/hames.git
 cd hames
 HAMES_INSTALL_LOCAL=1 ./install.sh
 hames setup
@@ -25,8 +25,8 @@ hames doctor
 hames web
 ```
 
-The command above selects the preparation branch. The normal
-tagged installer still selects `0.2.0`, which does not contain macOS preparation.
+The command above builds the current `main` checkout. The normal tagged installer
+still selects `0.2.0`, which does not contain these macOS changes.
 The local installer keeps its Python environment in this checkout, so retain it.
 The launcher normally installs into `~/.local/bin`; add that directory to PATH
 if prompted. When updating an existing installation, finish active work and run
