@@ -32,10 +32,13 @@ def isolated_command(
         raise OSError(sandbox_unavailable_reason())
     scratch.mkdir(mode=0o700, parents=True, exist_ok=True)
     scratch = scratch.resolve()
+    requested_executable = executable.absolute()
     executable = executable.resolve()
     # Python installed by uv/Homebrew can live outside the sealed system tree.
     # Only its own runtime tree is readable, never the rest of the home folder.
     runtime_roots = {Path(sys.base_prefix).resolve(), executable.parent}
+    if requested_executable.parent.name == "bin":
+        runtime_roots.add(requested_executable.parent.parent)
     if executable.name.startswith("python") and executable.parent.name == "bin":
         runtime_roots.add(executable.parent.parent)
     read_roots = {
@@ -53,6 +56,7 @@ def isolated_command(
         read_roots.add(project.resolve())
     if env_root is not None:
         read_roots.add(env_root.resolve())
+    ancestors = {parent for root in read_roots for parent in root.parents}
     profile = "\n".join(
         [
             "(version 1)",
@@ -60,6 +64,10 @@ def isolated_command(
             '(import "system.sb")',
             "(allow process*)",
             "(allow sysctl-read)",
+            "(allow file-read-metadata "
+            + " ".join(f"(literal {json.dumps(str(path))})" for path in sorted(ancestors))
+            + ")",
+            '(allow file-read-data (literal "/"))',
             "(allow file-read* " + " ".join(sorted(map(_subpath, read_roots))) + ")",
             f"(allow file-write* {_subpath(scratch)})",
         ]
@@ -75,6 +83,6 @@ def isolated_command(
         sandbox,
         "-p",
         profile,
-        str(executable),
+        str(requested_executable),
         *arguments,
     ]

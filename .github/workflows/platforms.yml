@@ -34,6 +34,9 @@ jobs:
           cargo fmt --all --check
           cargo clippy --workspace --all-targets --locked -- -D warnings
           bash -n install.sh
+      - name: macOS isolation checks
+        if: runner.os == 'macOS'
+        run: uv run pytest -q tests/unit/test_plugin_sandbox.py tests/unit/test_plugin_runtime.py tests/unit/test_platform_support.py
       - name: Python and Rust tests
         run: |
           uv run pytest -q
