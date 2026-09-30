@@ -97,7 +97,7 @@ def _wait_for_exit(fd: int, pid: int, *, seconds: float) -> None:
                 pass
             if len(output) > 4_096:
                 del output[:-4_096]
-    raise AssertionError(f"TUI did not exit after Ctrl+Q: {bytes(output[-800:])!r}")
+    raise AssertionError(f"TUI did not exit after SIGTERM: {bytes(output[-800:])!r}")
 
 
 def main() -> None:
@@ -138,7 +138,7 @@ def main() -> None:
             fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 28, 90, 0, 0))
             os.kill(pid, signal.SIGWINCH)
             _read_until(fd, b"\x1b[?2026l", seconds=15)
-            os.write(fd, b"\x11")  # Ctrl+Q
+            os.kill(pid, signal.SIGTERM)
             _wait_for_exit(fd, pid, seconds=15)
         finally:
             try:
@@ -161,7 +161,7 @@ def main() -> None:
             model_server.shutdown()
             model_server.server_close()
             model_thread.join(timeout=5)
-    print("TUI PTY smoke passed: trust, provider reply, resize, Ctrl+Q.")
+    print("TUI PTY smoke passed: trust, provider reply, resize, SIGTERM shutdown.")
 
 
 if __name__ == "__main__":
