@@ -10,6 +10,7 @@ import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import cast
 
+from hames import __version__
 from hames.providers.base import (
     JSON_OBJECT,
     JsonValue,
@@ -56,7 +57,7 @@ class _CodexConnection:
         await self.request(
             "initialize",
             {
-                "clientInfo": {"name": "hames", "title": "Hames", "version": "0.0.0"},
+                "clientInfo": {"name": "hames", "title": "Hames", "version": __version__},
                 "capabilities": {"experimentalApi": True},
             },
         )

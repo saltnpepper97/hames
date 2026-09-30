@@ -104,20 +104,31 @@ def test_retracted_pre_response_message_is_not_sent_to_next_model(
 ) -> None:
     ledger, session, capsule = _fixture(hames_paths, tmp_path)
     retracted = ledger.append(
-        session_id=session.id, run_id="old-run", event_type="user.message",
+        session_id=session.id,
+        run_id="old-run",
+        event_type="user.message",
         payload={"content": "Cancel this before response"},
     )
     ledger.append(
-        session_id=session.id, run_id="old-run", event_type="run.cancelled",
+        session_id=session.id,
+        run_id="old-run",
+        event_type="run.cancelled",
         payload={"reason": "stopped", "retracted_message_id": retracted.id},
     )
     ledger.append(
-        session_id=session.id, run_id="new-run", event_type="user.message",
+        session_id=session.id,
+        run_id="new-run",
+        event_type="user.message",
         payload={"content": "Use this instead"},
     )
     compiled = compile_context(
-        session, ledger.replay(session.id), capsule, _tools(), "safe reads",
-        ContextConfig(), run_id="new-run",
+        session,
+        ledger.replay(session.id),
+        capsule,
+        _tools(),
+        "safe reads",
+        ContextConfig(),
+        run_id="new-run",
     )
     assert [message.content for message in compiled.messages if message.role == "user"] == [
         "Use this instead"

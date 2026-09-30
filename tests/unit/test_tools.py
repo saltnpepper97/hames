@@ -53,9 +53,9 @@ def test_site_preview_accepts_only_local_development_urls() -> None:
     valid = registry.validate("open_site_preview", {"url": " http://localhost:5173/site "})
     assert isinstance(valid, SitePreviewArguments)
     assert valid.url == "http://localhost:5173/site"
-    assert registry.validate("open_site_preview", {"url": "http://[::1]:3000"}).url == (
-        "http://[::1]:3000/"
-    )
+    ipv6 = registry.validate("open_site_preview", {"url": "http://[::1]:3000"})
+    assert isinstance(ipv6, SitePreviewArguments)
+    assert ipv6.url == "http://[::1]:3000/"
     for url in (
         "https://example.com",
         "http://localhost.evil.com:5173",

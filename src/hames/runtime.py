@@ -2168,13 +2168,17 @@ class RunManager:
             # model produced content or the run launched work. Keep the user
             # message in the ledger for audit, but retract it from conversation.
             responded = any(
-                event.type in {
-                    "model.response.completed", "model.tool_call", "tool.requested",
+                event.type
+                in {
+                    "model.response.completed",
+                    "model.tool_call",
+                    "tool.requested",
                     "delegation.requested",
                 }
                 or (
                     event.type in {"assistant.message", "assistant.reasoning"}
-                    and bool(str(event.payload.get("content", "")).strip()))
+                    and bool(str(event.payload.get("content", "")).strip())
+                )
                 for event in run_events
             )
             await self._append(

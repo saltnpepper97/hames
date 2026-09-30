@@ -7,7 +7,7 @@
 </h1>
 
 <p align="center">
-  A local-first agent harness for the Web and terminal, with durable context, scheduled work, and explicit control.
+  A local-first agent harness for the Web and terminal, with durable context, agent delegation, and explicit control.
 </p>
 
 <p align="center">
@@ -18,11 +18,11 @@
 </p>
 
 > [!NOTE]
-> Hames is under active development. This README describes `main`, including the Web UI
-> and other changes planned for **v0.2.0**, which is still unreleased. The tagged installer
-> currently installs **0.1.0**. See the [changelog](CHANGELOG.md) for what is coming next.
+> Hames is ready for everyday use on Linux and is still early in its life. It has
+> been used extensively in real work, with good results so far. Expect continued
+> refinement as more people use it. See the [changelog](CHANGELOG.md) for 0.2.0.
 
-Hames brings coding agents and scheduled tasks into one local workspace. Work in
+Hames brings coding agents and long-running work into one local workspace. Work in
 the browser or terminal, review plans before execution, and follow delegated work
 through its own conversations. A shared gateway keeps sessions, context, tools,
 and execution history durable across clients, with controls for approvals and
@@ -70,9 +70,9 @@ installs <code>hames</code> to uv's user tool bin directory (normally
 <code>~/.local/share/hames/source</code> so the Rust client can launch its matching
 gateway. Running the command again installs the latest stable version tag.
 The script is fetched from main, but the installed source comes exclusively from a tag.
-Set `HAMES_VERSION=0.1.0` to pin that version; branches and commit hashes are rejected.
+Set `HAMES_VERSION=0.2.0` to pin this release; branches and commit hashes are rejected.
 
-To use the unreleased Web UI and current features, review and build from `main`:
+To build from a reviewed local checkout instead:
 
 ~~~bash
 git clone https://github.com/saltnpepper97/hames.git
@@ -97,7 +97,7 @@ hames doctor
 Then choose your interface:
 
 ~~~bash
-hames web       # Open the Web UI (unreleased v0.2.0 / main)
+hames web       # Open the Web UI
 hames           # Open the terminal UI
 hames repl      # Open the classic REPL
 ~~~
@@ -170,6 +170,43 @@ evidence-backed reports advance or complete the goal. Portable
 <code>AGENT.md</code> capsules define an agent's role and authority separately
 from session settings; delegation creates a bounded child session rather than
 silently copying the parent conversation.
+
+Select a coordinator with the chat agent picker and describe your task directly.
+Its configured agents can handle delegated work, with activity and results
+recorded in the normal conversation transcript.
+
+### Long-running agent work
+
+Each run defaults to a 30-minute active-work budget. This includes model and
+foreground tool execution; waiting for delegated workers or human input does
+not use the coordinator's budget. Every worker has its own budget.
+
+For long builds and team workflows, set the following in `~/.hames/config.toml`
+under the existing `[runtime]` section, then restart the gateway once it is idle:
+
+```toml
+[runtime]
+max_active_seconds_per_run = 0
+```
+
+Zero disables the active-time cutoff for both coordinators and workers. Positive
+values retain a cutoff in seconds. Model-turn and tool-call limits, individual
+tool/provider timeouts, and user cancellation still apply. Running tasks keep
+the budget they started with; this setting takes effect after gateway reload.
+
+### Steering and stopping a team
+
+Stop affects only the selected agent. Its existing workers continue running and
+return their results to the parent chat. Stopping a worker reports the
+interruption to its parent without stopping siblings or automatically restarting
+the worker. Steer replaces only that agent's current turn; if a worker is
+steered, its parent waits for the replacement turn's result.
+
+The `agent_control` tool lets a lead inspect and wait for existing assignments.
+Stopping a named worker or the whole team requires an explicit user instruction;
+the lead must quote that instruction from its current user turn. Stop/Steer on
+the lead itself never authorizes a team stop. Gateway shutdown still ends all
+running work.
 
 ### Context, memory, and correction
 
@@ -308,45 +345,8 @@ milestones:
 - [Model evaluations](docs/model-evaluations/)
 - [GitHub repository](https://github.com/saltnpepper97/hames)
 
-See [Unreleased changes](CHANGELOG.md) and [custom command configuration](docs/commands.md) for current capabilities.
+See [Release notes](CHANGELOG.md) and [custom command configuration](docs/commands.md) for current capabilities.
 
 ## License
 
 Hames is available under the [MIT License](LICENSE).
-
-Custom slash commands: see [configuration and maintenance](docs/commands.md).
-
-Select a coordinator with the chat agent picker and describe your task directly. Its configured agents can handle delegated work, with activity and results recorded in the normal conversation transcript.
-
-### Long-running agent work
-
-Each run defaults to a 30-minute active-work budget. This includes model and
-foreground tool execution; waiting for delegated workers or human input does
-not use the coordinator's budget. Every worker has its own budget.
-
-For long builds and team workflows, set the following in `~/.hames/config.toml`
-under the existing `[runtime]` section, then restart the gateway once it is idle:
-
-```toml
-[runtime]
-max_active_seconds_per_run = 0
-```
-
-Zero disables the active-time cutoff for both coordinators and workers. Positive
-values retain a cutoff in seconds. Model-turn and tool-call limits, individual
-tool/provider timeouts, and user cancellation still apply. Running tasks keep
-the budget they started with; this setting takes effect after gateway reload.
-
-### Steering and stopping a team
-
-Stop affects only the selected agent. Its existing workers continue running and
-return their results to the parent chat. Stopping a worker reports the
-interruption to its parent without stopping siblings or automatically restarting
-the worker. Steer replaces only that agent's current turn; if a worker is
-steered, its parent waits for the replacement turn's result.
-
-The `agent_control` tool lets a lead inspect and wait for existing assignments.
-Stopping a named worker or the whole team requires an explicit user instruction;
-the lead must quote that instruction from its current user turn. Stop/Steer on
-the lead itself never authorizes a team stop. Gateway shutdown still ends all
-running work.

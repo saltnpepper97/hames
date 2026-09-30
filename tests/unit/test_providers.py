@@ -1366,9 +1366,7 @@ async def test_codex_mcp_alias_routes_back_to_original_tool(tmp_path: Path, inli
         tool_handler=handle if inline else None,
     )
     events = [event async for event in provider.stream(request)]
-    assert [event.tool_call.name for event in events if event.tool_call] == [
-        "mcp__fixture__close"
-    ]
+    assert [event.tool_call.name for event in events if event.tool_call] == ["mcp__fixture__close"]
     assert calls == (["mcp__fixture__close"] if inline else [])
 
 

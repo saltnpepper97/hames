@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
-Planned version: **v0.2.0**. These changes are in development and have not been released.
+Hames brings its local Web workspace, broader provider support, and more reliable
+long-running agent work to an early release shaped by extensive everyday use.
+Linux is the supported platform.
 
 ### Added
 
@@ -11,24 +13,67 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
   button lets the user hide or reopen it and navigate to other local pages.
   It uses the existing browser without a separate install or browser automation.
 
-### Removed
+- Xiaomi MiMo API and Token Plan connections across Web, TUI, and CLI, with model
+  discovery, context-window metadata, tool calls, and model-specific thinking controls.
+- `agent_control` for inspecting and waiting on existing workers. Stopping workers
+  through this tool requires an explicit instruction from the current user turn.
+- `runtime.max_active_seconds_per_run = 0` disables the active-work timeout for
+  long-running leads and workers; other execution limits remain in effect.
 
-- Playwright-specific MCP approval handling and built-in guidance preferences.
-  Browser automation is no longer integrated internally; generic external MCP
-  support remains available.
+- Atomic batch edits to one file through `edit_file`: related replacements can share one call
+  and one combined diff; a failed replacement leaves the entire file unchanged.
 
-- Deferred the experimental built-in browser: removed its chat panel, gateway APIs,
-  agent tool, prototype, obsolete implementation plans, and Python Playwright
-  dependency. Existing external browser MCP
-  connections and historical browser events remain compatible.
+- A SolidJS Web UI served by the local gateway, with live conversations, workspace
+  navigation, agent editing, settings, memory, skills, Scar lineage, and plugin management.
+- Chat controls for agent, model, reasoning effort, and mode; attachments, queued
+  messages, tool activity, approvals, questions, usage details, and searchable event inspection.
+- A plan review flow with explicit execution and revision actions, separate implementation
+  chats, delegation links, and durable tracking of approved plans.
+- Provider connections for DeepSeek, Z.ai API and Coding Plan, xAI Grok API, and
+  OpenAI API, alongside existing Codex and Grok Build integrations. Web and TUI connection
+  controls, automatic connection status, and provider model discovery.
+- Configurable personal and workspace slash commands, with a generic approved-plan execution
+  example.
+- Durable coordinator-built workflow graphs for delegated stages, with dependencies, attempt
+  history, automatic evidence handoff, exact child failure details, and child-chat follow-ups.
+  These support agent delegation; the experimental user-facing Flows recipes were removed.
+- A bounded read-only Git inspection tool for reviewers to inspect status, commits, and diffs
+  without shell access.
+- Agent model defaults, a model step during creation, additional avatar shapes including
+  a water drop, and more expressive eye and visor movement.
+- Rolling annual token activity with month labels, broader usage presentation, and
+  updated visual-verification guidance for launching apps and capturing compositor output,
+  including Halley.
 
-- Flows recipes, their editor/history pages, `/flow`, and recipe execution APIs.
-  Ordinary agent delegation and attached worker transcripts remain. Existing chats
-  and historical events are preserved. Obsolete flow templates were removed.
-- All Automation UI, scheduling runtime, APIs, notifications, and the automation creation
-  tool. Historical database records remain inert for upgrade compatibility.
-- The delegated-agent side panel, its top-bar button, transcript links, and private
-  handoff controls. Normal chat, agent switching, and native delegation remain.
+### Changed
+
+- Python, Rust, and Web package versions are aligned at `0.2.0`; provider and
+  search-server handshakes report the installed Hames version.
+
+- Removed routine started/queued success banners and persistent plan-attention badges
+  from the chat input. Resume remains available in the composer action menu; ready plans
+  retain explicit approval controls, and failed sends keep their error and draft.
+
+- Consecutive successful edits to the same file appear in one expandable transcript row,
+  preserving individual diffs and boundaries between runs, messages, and other actions.
+- Delegated worker chats remain accessible from the Web sidebar and delegation
+  activity, including while work is still in progress.
+
+- Chat composer shows one additional line by default while retaining automatic growth.
+
+- Installation defaults to the latest stable version tag rather than rolling `main`.
+  `HAMES_VERSION` pins a tag; `HAMES_REF` remains a tag-only compatibility alias.
+  Building the current checkout requires `HAMES_INSTALL_LOCAL=1`.
+- Refined Web navigation, dark appearance, forms, dialogs, dropdown hover and selection
+  feedback, connection labels, status colors, branding, and tab icon.
+- README logo now uses the tab icon’s rounded-square sage background at a smaller size.
+  Updated the overview and quick start for Web and terminal use, highlighting agent configuration,
+  provider connections, planning, and delegation, with installation and release guidance.
+- Improved event table layout and resizing, wide Markdown table scrolling, composer
+  menus, workspace and agent sidebar labels, and responsive chat layout.
+- Expanded architecture, provider, plugin, command and delegation documentation.
+- Updated builder and finisher workflow guidance to commit verified work and report
+  the actual execution models.
 
 ### Fixed
 
@@ -100,79 +145,13 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
   and context window even after the conversation has started. Agents without defaults
   preserve the chat's current model selection.
 
-- Chat agent picker displays current slugs instead of legacy internal IDs.
+- Chat agent picker displays current agent names instead of internal IDs.
 
 - Sidebar width follows the remaining navigation tabs, removing unused horizontal space.
-
-
-### Added
-
-- Xiaomi MiMo API and Token Plan connections across Web, TUI, and CLI, with model
-  discovery, context-window metadata, tool calls, and model-specific thinking controls.
-- `agent_control` for inspecting and waiting on existing workers. Stopping workers
-  through this tool requires an explicit instruction from the current user turn.
-- `runtime.max_active_seconds_per_run = 0` disables the active-work timeout for
-  long-running leads and workers; other execution limits remain in effect.
-
-- Atomic batch edits to one file through `edit_file`: related replacements can share one call
-  and one combined diff; a failed replacement leaves the entire file unchanged.
-
-- A SolidJS Web UI served by the local gateway, with live conversations, workspace
-  navigation, agent editing, settings, memory, skills, Scar lineage, and plugin management.
-- Chat controls for agent, model, reasoning effort, and mode; attachments, queued
-  messages, tool activity, approvals, questions, usage details, and searchable event inspection.
-- A plan review flow with explicit execution and revision actions, separate implementation
-  chats, delegation links, and durable tracking of approved plans.
-- Provider connections for DeepSeek, Z.ai API and Coding Plan, xAI Grok API, and
-  OpenAI API, alongside existing Codex and Grok Build integrations. Web and TUI connection
-  controls, automatic connection status, and provider model discovery.
-- Configurable personal and workspace slash commands, with a generic approved-plan execution
-  example.
-- Durable coordinator-built workflow graphs for delegated stages, with dependencies, attempt
-  history, automatic evidence handoff, exact child failure details, and child-chat follow-ups.
-- A bounded read-only Git inspection tool for reviewers to inspect status, commits, and diffs
-  without shell access.
-- Agent model defaults, a model step during creation, additional avatar shapes including
-  a water drop, and more expressive eye and visor movement.
-- Rolling annual token activity with month labels, broader usage presentation, and
-  updated visual-verification guidance for launching apps and capturing compositor output,
-  including Halley.
-
-### Changed
-
-- Removed routine started/queued success banners and persistent plan-attention badges
-  from the chat input. Resume remains available in the composer action menu; ready plans
-  retain explicit approval controls, and failed sends keep their error and draft.
-
-- Consecutive successful edits to the same file appear in one expandable transcript row,
-  preserving individual diffs and boundaries between runs, messages, and other actions.
-- Delegated worker chats remain accessible from the Web sidebar and delegation
-  activity, including while work is still in progress.
-
-- Chat composer shows one additional line by default while retaining automatic growth.
-
-- Installation defaults to the latest stable version tag rather than rolling `main`.
-  `HAMES_VERSION` pins a tag; `HAMES_REF` remains a tag-only compatibility alias.
-  Building the current checkout requires `HAMES_INSTALL_LOCAL=1`.
-- Refined Web navigation, dark appearance, forms, dialogs, dropdown hover and selection
-  feedback, connection labels, status colors, branding, and tab icon.
-- README logo now uses the tab icon’s rounded-square sage background at a smaller size.
-  Updated the overview and quick start for Web and terminal use, highlighting agent configuration,
-  provider connections, planning, and delegation, with explicit unreleased version guidance.
-- Improved event table layout and resizing, wide Markdown table scrolling, composer
-  menus, workspace and agent sidebar labels, and responsive chat layout.
-- Expanded architecture, provider, plugin, command and delegation documentation.
-- Updated builder and finisher workflow guidance to commit verified work and report
-  the actual execution models.
-
-### Fixed
 
 - Split-pane chat headers adapt to the available pane width without overlapping controls.
   Worker message inputs share the normal round Send button and borderless focus styling.
 
-- The worker drawer keeps the latest flow available after completion and ordinary
-  follow-up messages, resetting only when another flow starts. Its trigger waits for
-  a real worker transcript, and session polling no longer closes the drawer.
 - The task list remembers its expanded state per chat across navigation and reloads,
   with the disclosure arrow direction corrected.
 
@@ -193,13 +172,6 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
 - Accept memory extraction tool calls with nonzero indexes and multiple submissions.
   Background maintenance warnings explicitly leave the conversation outcome unchanged.
 
-- Resolve renamed agent slugs through the registry during execution and delegation,
-  preserving stable IDs instead of constructing nonexistent folders from display slugs.
-  Agent renames move their capsule folders to the new slug while existing session IDs
-  remain valid; the built-in default agent retains its reserved folder. Delegating agents
-  now see the current slug in their permitted targets and child results instead of a stale ID.
-
-
 - Long-running conversation context recovery, including active-turn input budget
   exhaustion, context compaction, and provider-specific recovery behavior.
 - Streaming transcript assembly and reconciliation when switching chats or pages,
@@ -212,6 +184,25 @@ Planned version: **v0.2.0**. These changes are in development and have not been 
   redundant or persistent chat status messages.
 - Avatar eye distortion, gaze timing, visor movement, and shape alignment.
 - Installer updates preserve dirty checkouts and reject branch or commit references.
+
+### Removed
+
+- Playwright-specific MCP approval handling and built-in guidance preferences.
+  Browser automation is no longer integrated internally; generic external MCP
+  support remains available.
+
+- Deferred the experimental built-in browser: removed its chat panel, gateway APIs,
+  agent tool, prototype, obsolete implementation plans, and Python Playwright
+  dependency. Existing external browser MCP
+  connections and historical browser events remain compatible.
+
+- Flows recipes, their editor/history pages, `/flow`, and recipe execution APIs.
+  Ordinary agent delegation and attached worker transcripts remain. Existing chats
+  and historical events are preserved. Obsolete flow templates were removed.
+- All Automation UI, scheduling runtime, APIs, notifications, and the automation creation
+  tool. Historical database records remain inert for upgrade compatibility.
+- The delegated-agent side panel, its top-bar button, transcript links, and private
+  handoff controls. Normal chat, agent switching, and native delegation remain.
 
 ### Verification
 

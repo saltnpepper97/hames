@@ -492,9 +492,7 @@ class SitePreviewArguments(ToolArguments):
             port = parsed.port
         except ValueError as exc:
             raise ValueError("preview URL is invalid") from exc
-        if parsed.scheme not in {"http", "https"} or host not in {
-            "localhost", "127.0.0.1", "::1"
-        }:
+        if parsed.scheme not in {"http", "https"} or host not in {"localhost", "127.0.0.1", "::1"}:
             raise ValueError("preview URL must use HTTP(S) on localhost")
         if (
             parsed.username is not None

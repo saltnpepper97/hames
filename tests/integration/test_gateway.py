@@ -3223,13 +3223,15 @@ async def test_stop_before_model_output_retracts_the_user_message(tmp_path: Path
     try:
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             created = await client.post(
-                "/v1/sessions", headers=headers,
+                "/v1/sessions",
+                headers=headers,
                 json={"working_directory": str(tmp_path), "provider": "fake", "model": "fixture"},
             )
             session_id = str(response_object(created)["id"])
             await client.put(f"/v1/sessions/{session_id}/trust", headers=headers)
             accepted = await client.post(
-                f"/v1/sessions/{session_id}/messages", headers=headers,
+                f"/v1/sessions/{session_id}/messages",
+                headers=headers,
                 json={"content": "Take this back"},
             )
             run_id = str(response_object(accepted)["run_id"])
@@ -4556,6 +4558,7 @@ async def test_runtime_delegates_with_an_explicit_task_card(tmp_path: Path) -> N
             assert len(fake.requests) == 3
             assert [tool.name for tool in fake.requests[1].tools] == [
                 "ask_user",
+                "open_site_preview",
                 "read_file",
                 "list_dir",
                 "vcs_inspect",
@@ -4642,6 +4645,7 @@ async def test_agent_selection_changes_only_future_turns(tmp_path: Path) -> None
             )
             assert [tool.name for tool in second_turn.tools] == [
                 "ask_user",
+                "open_site_preview",
                 "read_file",
                 "list_dir",
                 "vcs_inspect",
