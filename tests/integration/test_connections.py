@@ -194,3 +194,27 @@ async def test_connection_names_distinguish_api_and_subscription(tmp_path: Path)
             assert not rows["grok"]["can_connect"]
     finally:
         await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_subscription_setup_options_visible_without_profiles(tmp_path: Path) -> None:
+    state = GatewayState.create(
+        HamesPaths.resolve(root=tmp_path), providers={"fake": FakeProvider([])}
+    )
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(state)),
+            base_url="http://localhost",
+            headers={"Authorization": f"Bearer {state.token}"},
+        ) as client:
+            response = await client.get("/v1/connections")
+            rows = {row["id"]: row for row in response.json()}
+            for profile_id, name in (("codex", "Codex"), ("grok", "Grok Build")):
+                assert rows[profile_id]["name"] == name
+                assert rows[profile_id]["status"] == "not_connected"
+                assert not rows[profile_id]["configured"]
+                assert not rows[profile_id]["can_connect"]  # CLI sign-in, not an API key
+            assert "codex" not in state.providers
+            assert "grok" not in state.providers
+    finally:
+        await state.runs.close()

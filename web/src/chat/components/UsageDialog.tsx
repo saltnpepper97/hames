@@ -270,10 +270,11 @@ export function UsageDashboard() {
                   <p class="usage-inline-error" role="status">{error()}</p>
                 </Show>
 
+                <Show when={account()}>
                 <Show when={accountWindows().length > 0} fallback={
                   <section class="usage-section usage-account-error">
                     <span class="eyebrow">ChatGPT usage</span>
-                    <p>{currentUsage().account_rate_limits_error || "Connect a Codex / ChatGPT provider to see account limits."}</p>
+                    <p>{currentUsage().account_rate_limits_error || "ChatGPT did not provide account limits."}</p>
                   </section>
                 }>
                   <section class="usage-section" aria-labelledby="usage-account-title">
@@ -290,7 +291,9 @@ export function UsageDashboard() {
                   </section>
                 </Show>
 
-                <Show when={currentUsage().grok_account_configured}>
+                </Show>
+
+                <Show when={currentUsage().grok_account_usage}>
                   <section class="usage-section" aria-labelledby="usage-grok-title">
                     <div class="usage-section-heading">
                       <div>

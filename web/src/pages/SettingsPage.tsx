@@ -72,7 +72,7 @@ function SettingsContent(props: SettingsPageProps) {
           <header class="settings-page-section-heading">
             <span class="eyebrow">Account and activity</span>
             <h2 id="settings-usage-title">Usage</h2>
-            <p>Review ChatGPT and Grok account limits and pooled token activity from the past year.</p>
+            <p>Review connected account limits and pooled token activity from the past year.</p>
           </header>
           <UsageDashboard />
         </section>
