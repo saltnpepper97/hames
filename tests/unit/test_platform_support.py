@@ -18,6 +18,8 @@ def test_macos_core_is_healthy_but_missing_sandbox_is_unavailable(
         return "/opt/homebrew/bin/bwrap"
 
     monkeypatch.setattr("hames.platform_support.shutil.which", find_binary)
+    monkeypatch.setattr("hames.platform_support.macos_sandbox_path", lambda: None)
+    monkeypatch.setattr("hames.plugin_sandbox.macos_sandbox_path", lambda: None)
     assert core_platform_supported()
     assert bubblewrap_path() is None
     report = run_doctor(hames_paths)
@@ -77,6 +79,9 @@ async def test_macos_skill_validation_and_execution_do_not_run_scripts(
         causation_id=evidence.id,
     ).version
     monkeypatch.setattr("hames.platform_support.sys.platform", "darwin")
+    monkeypatch.setattr("hames.platform_support.macos_sandbox_path", lambda: None)
+    monkeypatch.setattr("hames.skill_runtime.macos_sandbox_path", lambda: None)
+    monkeypatch.setattr("hames.runtime.macos_sandbox_path", lambda: None)
     try:
         validation = state.skills._validate(version)  # pyright: ignore[reportPrivateUsage]
         assert not validation["passed"]

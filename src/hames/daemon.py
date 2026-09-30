@@ -21,6 +21,9 @@ import uvicorn
 from hames import PROTOCOL_VERSION, __version__
 from hames.config import HamesConfig, load_config
 from hames.gateway import GatewayState, create_app
+from hames.launchd import bootout as launchd_bootout
+from hames.launchd import bootstrap as launchd_bootstrap
+from hames.launchd import manages as launchd_manages
 from hames.logging import configure_logging
 from hames.paths import HamesPaths
 from hames.providers.base import JSON_OBJECT
@@ -235,6 +238,9 @@ def start(paths: HamesPaths, *, wait_seconds: float = 10.0) -> GatewayProcessSta
             raise RuntimeError("incompatible process is using the configured gateway port")
         _terminate_pid(occupier, wait_seconds)
         paths.gateway_pid.unlink(missing_ok=True)
+    if launchd_manages(paths):
+        launchd_bootstrap()
+        return _wait_for_gateway(paths, wait_seconds)
     log_handle = (paths.logs / "gateway-bootstrap.log").open("ab")
     child_env = os.environ.copy()
     child_env["HAMES_HOME"] = str(paths.root)
@@ -250,6 +256,10 @@ def start(paths: HamesPaths, *, wait_seconds: float = 10.0) -> GatewayProcessSta
         )
     finally:
         log_handle.close()
+    return _wait_for_gateway(paths, wait_seconds)
+
+
+def _wait_for_gateway(paths: HamesPaths, wait_seconds: float) -> GatewayProcessStatus:
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
         status = gateway_status(paths)
@@ -265,6 +275,8 @@ def start(paths: HamesPaths, *, wait_seconds: float = 10.0) -> GatewayProcessSta
 
 
 def stop(paths: HamesPaths, *, wait_seconds: float = 10.0) -> GatewayProcessStatus:
+    if launchd_manages(paths):
+        launchd_bootout()
     status = gateway_status(paths)
     if status.pid is None:
         paths.gateway_pid.unlink(missing_ok=True)

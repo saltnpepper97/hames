@@ -57,6 +57,7 @@ def isolated_command(
         [
             "(version 1)",
             "(deny default)",
+            '(import "system.sb")',
             "(allow process*)",
             "(allow sysctl-read)",
             "(allow file-read* " + " ".join(sorted(map(_subpath, read_roots))) + ")",

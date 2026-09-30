@@ -102,6 +102,18 @@ enum GatewayAction {
     Stop,
     Restart,
     Status,
+    /// Manage optional macOS login startup.
+    Service {
+        #[command(subcommand)]
+        action: GatewayServiceAction,
+    },
+}
+
+#[derive(Clone, Debug, Subcommand)]
+enum GatewayServiceAction {
+    Install,
+    Remove,
+    Status,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -443,6 +455,14 @@ async fn main() -> Result<()> {
         Some(Command::Web { no_open }) => web::run(no_open).await,
         Some(Command::Doctor) => local::run_backend(["doctor", "--json"]),
         Some(Command::Gateway { action }) => {
+            if let GatewayAction::Service { action } = action {
+                let action = match action {
+                    GatewayServiceAction::Install => "install",
+                    GatewayServiceAction::Remove => "remove",
+                    GatewayServiceAction::Status => "status",
+                };
+                return local::run_backend(["launchd", action]);
+            }
             let paths = LocalPaths::resolve()?;
             if matches!(action, GatewayAction::Start | GatewayAction::Restart) {
                 local::ensure_search_setup(&paths, false)?;
@@ -452,6 +472,7 @@ async fn main() -> Result<()> {
                 GatewayAction::Stop => "stop",
                 GatewayAction::Restart => "restart",
                 GatewayAction::Status => "status",
+                GatewayAction::Service { .. } => unreachable!(),
             };
             local::run_gateway_action(action)
         }
