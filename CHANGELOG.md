@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
+
+Hames adds early macOS support alongside Linux. The maintainer has exercised the
+Mac experience; automated checks cover macOS 15 and 26 on Apple Silicon and Intel.
+This release also improves Web startup and navigation when a workspace or provider
+is not ready.
 
 ### Added
 
@@ -17,13 +22,21 @@
 - Linux, Apple Silicon, and Intel Mac CI coverage, including an installed-launcher
   smoke check for gateway lifecycle, Web authentication, bundled assets, and
   TUI PTY input and resizing.
+- Global Web browsing for memory, Skills, and Scars without selecting a workspace,
+  and draft chats that can be created while a provider is offline.
+
+### Fixed
+
+- Keep the Web composer visible through workspace setup and connection errors,
+  preserve drafts while disconnected, and explain why a message cannot yet send.
+- Show setup guidance for disconnected Codex and Grok Build subscriptions, and hide
+  their usage cards until connected.
 
 ### Platform limits
 
 - Managed SearXNG search still needs validation with a Mac Docker or Podman
-  engine. Interactive browser, terminal, provider, and desktop-permission checks
-  remain before removing the
-  experimental label; see [macOS setup](docs/macos.md).
+  engine. macOS support is early and broader hardware, browser, and permission
+  combinations remain to be checked; see [macOS setup](docs/macos.md).
 
 ## 0.2.0
 

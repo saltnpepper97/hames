@@ -1,20 +1,29 @@
-# macOS (experimental)
+# macOS (early support)
 
-Hames now has a portability path for the Web UI, terminal UI and REPL, local
+Hames 0.3.0 supports the Web UI, terminal UI and REPL, local
 files and shell tools, native workspace folder selection, provider connections,
 sessions, memory, goals, delegation, isolated plugins and Skill scripts, and
-external MCP servers. These changes are newer than the `0.2.0` release.
-Interactive Mac verification and managed-search validation remain on the
-checklist below, so support is experimental.
+external MCP servers on macOS. The maintainer has exercised Hames on a Mac, and
+CI checks macOS 15 and 26 on Apple Silicon and Intel. Support remains early;
+managed search and wider Mac setups still need validation.
 
-## Install from the checkout
+## Install
 
 Use a native terminal for your Mac architecture. Install Apple's command-line
 developer tools (`xcode-select --install`), Git, Python 3.12 or newer,
 [uv](https://docs.astral.sh/uv/getting-started/installation/), and
 [Rust](https://www.rust-lang.org/tools/install) 1.85 or newer. Ensure `uv` and
 `cargo` are on your shell's PATH. Node is only needed to develop the Web frontend;
-the checkout includes its built assets.
+the release includes its built assets. Install the latest stable tag:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/saltnpepper97/hames/main/install.sh | bash
+hames setup
+hames doctor
+hames web
+```
+
+To build from the current checkout instead:
 
 ```bash
 git clone https://github.com/saltnpepper97/hames.git
@@ -25,8 +34,6 @@ hames doctor
 hames web
 ```
 
-The command above builds the current `main` checkout. The normal tagged installer
-still selects `0.2.0`, which does not contain these macOS changes.
 The local installer keeps its Python environment in this checkout, so retain it.
 The launcher normally installs into `~/.local/bin`; add that directory to PATH
 if prompted. When updating an existing installation, finish active work and run
@@ -42,12 +49,12 @@ API providers need their usual connection configuration.
 
 | Capability | macOS preparation |
 | --- | --- |
-| Gateway, Web, TUI, REPL, providers, sessions and delegation | Native automated checks pass; interactive checks remain |
+| Gateway, Web, TUI, REPL, providers, sessions and delegation | Native automated checks pass; the maintainer has exercised interactive Mac use |
 | Instruction-only Skills and external MCP | Available without a sandbox |
 | Isolated plugin workers and Skill scripts | Use macOS `sandbox-exec`; native tests check home, network, project-write, and scratch boundaries |
 | Managed SearXNG search | Optional; needs a working Docker or Podman engine; not validated on Mac |
 | Automatic login startup | Optional per-user LaunchAgent; gateway still starts on demand without it |
-| Desktop screenshots and GUI Skills | `macos-gui-testing` covers native capture and dialogs; interactive permission and visual checks remain |
+| Desktop screenshots and GUI Skills | `macos-gui-testing` covers native capture and dialogs; verify permission prompts on each Mac |
 
 `hames doctor` reports `macos_sandbox` separately from `bubblewrap`. Installing a
 command named `bwrap` on macOS does not enable Linux isolation. If
@@ -108,10 +115,9 @@ engine and remains a manual Mac check:
 HAMES_TEST_SEARXNG=1 uv run pytest -q tests/unit/test_web_search.py -k managed_searxng_container_smoke
 ```
 
-Before removing the experimental label, a real Mac should also
-verify the TUI's visible appearance after resizing, opening the Web UI and choosing a
-workspace folder in a browser, one provider-backed conversation, file edits and
-shell commands in a disposable workspace, cancellation of a running command,
-and a real Screen Recording or Accessibility permission flow when using desktop
-automation. Automated Web HTTP checks do not verify browser rendering or
-interactive terminal behavior.
+On a new Mac setup, verify the TUI's visible appearance after resizing, opening
+the Web UI and choosing a workspace folder in a browser, one provider-backed
+conversation, file edits and shell commands in a disposable workspace,
+cancellation of a running command, and a real Screen Recording or Accessibility
+permission flow when using desktop automation. Automated Web HTTP checks do not
+verify browser rendering or interactive terminal behavior.
