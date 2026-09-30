@@ -8,7 +8,7 @@ from hames.platform_support import bubblewrap_path, core_platform_supported
 from hames.plugin_sandbox import PluginSandboxError, worker_command
 
 
-def test_macos_core_is_healthy_but_sandbox_is_unavailable(
+def test_macos_core_is_healthy_but_missing_sandbox_is_unavailable(
     hames_paths: HamesPaths, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Even a binary named bwrap must not enable Linux isolation on macOS.
@@ -23,8 +23,8 @@ def test_macos_core_is_healthy_but_sandbox_is_unavailable(
     report = run_doctor(hames_paths)
     assert report.healthy
     assert not report.bubblewrap
-    assert "require Linux" in report.limitations[0]
-    with pytest.raises(PluginSandboxError, match="require Linux"):
+    assert "sandbox-exec missing" in report.limitations[0]
+    with pytest.raises(PluginSandboxError, match="sandbox-exec missing"):
         worker_command(
             package=Path("/unused"), entrypoint="worker.py", env_root=None, allow_unsandboxed=False
         )
@@ -80,7 +80,7 @@ async def test_macos_skill_validation_and_execution_do_not_run_scripts(
     try:
         validation = state.skills._validate(version)  # pyright: ignore[reportPrivateUsage]
         assert not validation["passed"]
-        assert "require Linux" in validation["script_checks"][0]["error"]
+        assert "sandbox-exec missing" in validation["script_checks"][0]["error"]
         result = await state.runs._execute_skill_script(  # pyright: ignore[reportPrivateUsage]
             version,
             script.path,
@@ -94,7 +94,7 @@ async def test_macos_skill_validation_and_execution_do_not_run_scripts(
             ),
         )
         assert result.status == "rejected"
-        assert "require Linux" in result.summary
+        assert "sandbox-exec missing" in result.summary
         assert not marker.exists()
     finally:
         await state.runs.close()

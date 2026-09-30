@@ -16,6 +16,8 @@ from hames.paths import HamesPaths
 from hames.platform_support import (
     bubblewrap_path,
     core_platform_supported,
+    isolation_available,
+    macos_sandbox_path,
     sandbox_unavailable_reason,
 )
 from hames.search_service import SearchService, SearchStatus
@@ -32,6 +34,7 @@ class DoctorReport(BaseModel):
     sqlite_version: str
     sqlite_fts5: bool
     bubblewrap: bool
+    macos_sandbox: bool = False
     limitations: list[str] = Field(default_factory=list)
     default_agent_hash: str
     config_compatibility: str | None
@@ -67,7 +70,8 @@ def run_doctor(paths: HamesPaths) -> DoctorReport:
         sqlite_version=sqlite3.sqlite_version,
         sqlite_fts5=fts5,
         bubblewrap=bubblewrap_path() is not None,
-        limitations=[] if bubblewrap_path() else [sandbox_unavailable_reason()],
+        macos_sandbox=macos_sandbox_path() is not None,
+        limitations=[] if isolation_available() else [sandbox_unavailable_reason()],
         default_agent_hash=agent.content_hash,
         config_compatibility=_config_compatibility(paths),
         search=SearchService(paths).status(),
