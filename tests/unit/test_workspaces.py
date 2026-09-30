@@ -211,3 +211,33 @@ def test_macos_picker_uses_native_dialog_and_preserves_error_semantics(
         assert workspace is not None
         assert workspace.path == str(selected)
     assert len(registry.list()) == (1 if outcome == "selected" else 0)
+
+
+def test_native_macos_picker_script_compiles(
+    hames_paths: HamesPaths, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+    import sys
+
+    if sys.platform != "darwin":
+        pytest.skip("AppleScript compiler requires macOS")
+    database = Database(hames_paths.database)
+    database.migrate()
+    registry = WorkspaceRegistry(database)
+    captured: list[str] = []
+
+    def capture(args: list[str], **_: object) -> CompletedProcess[str]:
+        captured.append(args[2])
+        return CompletedProcess(args, 0, "", "")
+
+    with monkeypatch.context() as context:
+        context.setattr("hames.workspaces.subprocess.run", capture)
+        assert registry.pick_directory(tmp_path) is None
+    result = subprocess.run(
+        ["/usr/bin/osacompile", "-o", str(tmp_path / "picker.scpt"), "-e", captured[0]],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr

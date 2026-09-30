@@ -1709,7 +1709,9 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             )
             assert markdown.status_code == 200
             assert "Derived view only" in markdown.text
-            assert "private" not in markdown.text
+            # macOS temporary workspace paths legitimately contain /private/var.
+            assert str(tmp_path) in markdown.text
+            assert state.token not in markdown.text
             assert "check " in markdown.text
             jsonl = await client.get(
                 f"/v1/sessions/{session_id}/transcript",
