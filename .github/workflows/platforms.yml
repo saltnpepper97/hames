@@ -1,0 +1,46 @@
+name: Platform checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - name: Prepare Rust
+        run: rustup update stable --no-self-update && rustup default stable
+      - name: Install locked Python dependencies
+        run: uv sync --locked
+      - name: Static checks
+        run: |
+          uv run ruff format --check .
+          uv run ruff check .
+          uv run pyright
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          bash -n install.sh
+      - name: Python and Rust tests
+        run: |
+          uv run pytest -q
+          cargo test --workspace --locked
+      - name: Install into a disposable bin directory
+        run: HAMES_INSTALL_LOCAL=1 HAMES_BIN_DIR="$RUNNER_TEMP/hames-bin" ./install.sh
+      - name: Installed launcher and Web smoke
+        run: uv run python scripts/smoke_install.py "$RUNNER_TEMP/hames-bin/hames"
+      - name: Build Python distributions
+        run: uv build

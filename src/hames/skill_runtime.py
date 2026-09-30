@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import py_compile
-import shutil
 import subprocess
 import tempfile
 from datetime import datetime
@@ -17,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from hames.broker import EventBroker
 from hames.config import HamesConfig
 from hames.ledger import Event, Ledger, Session
+from hames.platform_support import bubblewrap_path, sandbox_unavailable_reason
 from hames.providers import ModelRequest, Provider, ProviderError, StreamEventKind, ToolDefinition
 from hames.providers.base import JSON_OBJECT, JsonValue, ProviderMessage
 from hames.skills import SkillDraft, SkillJob, SkillRegistry, SkillScope, SkillVersion
@@ -671,10 +671,12 @@ class SkillManager:
 
     def _validate(self, version: SkillVersion) -> dict[str, Any]:
         checks: list[dict[str, Any]] = []
-        bwrap = shutil.which("bwrap")
+        bwrap = bubblewrap_path()
         for script in version.metadata.scripts:
             path = Path(version.package_path) / script.path
             try:
+                if bwrap is None:
+                    raise OSError(sandbox_unavailable_reason())
                 if script.interpreter == "python":
                     py_compile.compile(str(path), doraise=True)
                 else:
@@ -684,8 +686,6 @@ class SkillManager:
                         capture_output=True,
                         timeout=self.config.skills.script_timeout_seconds,
                     )
-                if bwrap is None:
-                    raise OSError("Skill script isolation is unavailable (bwrap missing)")
                 with tempfile.TemporaryDirectory(prefix="hames-skill-test-") as scratch:
                     command = [
                         bwrap,

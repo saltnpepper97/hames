@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import shutil
 import sys
 from pathlib import Path
+
+from hames.platform_support import bubblewrap_path, sandbox_unavailable_reason
 
 
 class PluginSandboxError(RuntimeError):
@@ -12,7 +13,7 @@ class PluginSandboxError(RuntimeError):
 
 
 def bwrap_available() -> bool:
-    return shutil.which("bwrap") is not None
+    return bubblewrap_path() is not None
 
 
 def _sandbox_python() -> str:
@@ -32,7 +33,7 @@ def worker_command(
     entry = package.joinpath(*Path(entrypoint).parts)
     if not bwrap_available():
         if not allow_unsandboxed:
-            raise PluginSandboxError("plugin isolation is unavailable (bwrap missing)")
+            raise PluginSandboxError(sandbox_unavailable_reason())
         interpreter = sys.executable
         if env_root is not None:
             candidate = env_root / "bin" / "python"
@@ -41,7 +42,7 @@ def worker_command(
         return [interpreter, "-u", str(entry)]
     python = _sandbox_python()
     command = [
-        shutil.which("bwrap") or "bwrap",
+        bubblewrap_path() or "bwrap",
         "--die-with-parent",
         "--new-session",
         "--unshare-all",

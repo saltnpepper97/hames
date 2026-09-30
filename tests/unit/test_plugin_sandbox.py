@@ -14,7 +14,8 @@ def test_missing_bwrap_refuses_untrusted_workers(
     def no_bwrap(_name: str) -> str | None:
         return None
 
-    monkeypatch.setattr("hames.plugin_sandbox.shutil.which", no_bwrap)
+    monkeypatch.setattr("hames.platform_support.sys.platform", "linux")
+    monkeypatch.setattr("hames.platform_support.shutil.which", no_bwrap)
     package = tmp_path / "pkg"
     package.mkdir()
     (package / "worker.py").write_text("print('x')\n", encoding="utf-8")

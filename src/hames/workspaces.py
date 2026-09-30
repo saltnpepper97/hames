@@ -6,6 +6,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import sys
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,7 +20,7 @@ from hames.database import Database
 def _picker_environment() -> dict[str, str]:
     """Refresh desktop variables for gateways started before graphical login."""
     environment = dict(os.environ)
-    systemctl = shutil.which("systemctl")
+    systemctl = shutil.which("systemctl") if sys.platform.startswith("linux") else None
     if systemctl:
         try:
             result = subprocess.run(
@@ -255,7 +256,25 @@ class WorkspaceRegistry:
         initial_directory = self._canonical(initial) if initial is not None else Path.home()
         zenity = shutil.which("zenity")
         kdialog = shutil.which("kdialog")
-        if zenity:
+        if sys.platform == "darwin":
+            # Pass paths as argv, never interpolate them into AppleScript source.
+            command = [
+                "/usr/bin/osascript",
+                "-e",
+                "on run argv\n"
+                "try\n"
+                'set chosen to choose folder with prompt "Choose a folder for Hames" '
+                "default location (POSIX file (item 1 of argv))\n"
+                "return POSIX path of chosen\n"
+                "on error messageText number errorNumber\n"
+                'if errorNumber is -128 then return ""\n'
+                "error messageText number errorNumber\n"
+                "end try\n"
+                "end run",
+                "--",
+                str(initial_directory),
+            ]
+        elif zenity:
             command = [
                 zenity,
                 "--file-selection",
@@ -289,7 +308,7 @@ class WorkspaceRegistry:
             raise NativeDirectoryPickerUnavailable(
                 "The native folder picker could not be opened."
             ) from exc
-        if completed.returncode == 1:
+        if completed.returncode == 1 and sys.platform != "darwin":
             # GTK also uses exit 1 when it cannot connect to the desktop.
             detail = completed.stderr.strip()
             if any(

@@ -63,6 +63,7 @@ from hames.message_queue import (
 )
 from hames.paths import HamesPaths
 from hames.plans import PLAN_READY_MARKER, PlanState, PlanStore, visible_plan_output
+from hames.platform_support import bubblewrap_path, sandbox_unavailable_reason
 from hames.plugin_runtime import PluginToolArguments
 from hames.plugins import is_plugin_tool
 from hames.policy import PolicyDecisionKind, PolicyGate, approval_request_hash
@@ -5218,11 +5219,9 @@ class RunManager:
         context: ToolContext,
     ) -> ToolResult:
         started = time.monotonic()
-        bwrap = shutil.which("bwrap")
+        bwrap = bubblewrap_path()
         if bwrap is None:
-            return ToolResult(
-                status="rejected", summary="Skill script isolation is unavailable (bwrap missing)"
-            )
+            return ToolResult(status="rejected", summary=sandbox_unavailable_reason())
         scratch = context.root_for("scratch")
         command = [
             bwrap,

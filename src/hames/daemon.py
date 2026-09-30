@@ -15,6 +15,7 @@ from types import TracebackType
 from typing import cast
 
 import httpx
+import psutil
 import uvicorn
 
 from hames import PROTOCOL_VERSION, __version__
@@ -96,6 +97,8 @@ def gateway_url(config: HamesConfig) -> str:
 def read_pid(paths: HamesPaths) -> int | None:
     try:
         value = int(paths.gateway_pid.read_text(encoding="utf-8").strip())
+        if value <= 0:
+            return None
         os.kill(value, 0)
         return value
     except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
@@ -103,76 +106,38 @@ def read_pid(paths: HamesPaths) -> int | None:
 
 
 def is_owned_gateway_process(pid: int) -> bool:
-    try:
-        command = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
-    except OSError:
+    """Identify our user's module-launched gateway without platform-specific /proc access."""
+    if pid <= 0:
         return False
-    return b"hames.cli" in command and b"serve" in command
-
-
-def _loopback_listen_inodes(port: int) -> set[int]:
-    inodes: set[int] = set()
-    tables = (
-        (Path("/proc/net/tcp"), {"0100007F"}),
-        (
-            Path("/proc/net/tcp6"),
-            {"00000000000000000000000001000000", "0000000000000000FFFF00000100007F"},
-        ),
-    )
-    port_hex = f"{port:04X}"
-    for table, loopbacks in tables:
-        try:
-            lines = table.read_text(encoding="utf-8").splitlines()[1:]
-        except OSError:
-            continue
-        for line in lines:
-            fields = line.split()
-            if len(fields) < 10:
-                continue
-            local = fields[1]
-            state = fields[3]
-            if state != "0A" or ":" not in local:
-                continue
-            ip_hex, port_field = local.split(":", 1)
-            if port_field.upper() != port_hex or ip_hex.upper() not in loopbacks:
-                continue
-            try:
-                inodes.add(int(fields[9]))
-            except ValueError:
-                continue
-    return inodes
+    try:
+        process = psutil.Process(pid)
+        if process.uids().effective != os.geteuid():
+            return False
+        command = process.cmdline()
+    except (psutil.Error, OSError):
+        return False
+    # Match the invocation, not arbitrary arguments containing these words.
+    return len(command) >= 4 and command[1:4] == ["-m", "hames.cli", "serve"]
 
 
 def loopback_listener_pid(port: int) -> int | None:
-    """Return the PID listening on loopback `port`, if it can be identified."""
-    inodes = _loopback_listen_inodes(port)
-    if not inodes:
-        return None
-    proc = Path("/proc")
-    try:
-        entries = list(proc.iterdir())
-    except OSError:
-        return None
-    for entry in entries:
-        if not entry.name.isdigit():
-            continue
-        fd_dir = entry / "fd"
+    """Find a same-user loopback listener on Linux or macOS without elevated access."""
+    for process in psutil.process_iter():
         try:
-            for handle in fd_dir.iterdir():
-                try:
-                    target = handle.readlink()
-                except OSError:
-                    continue
-                text = os.fspath(target)
-                if not text.startswith("socket:[") or not text.endswith("]"):
-                    continue
-                try:
-                    inode = int(text[8:-1])
-                except ValueError:
-                    continue
-                if inode in inodes:
-                    return int(entry.name)
-        except OSError:
+            if process.uids().effective != os.geteuid():
+                continue
+            # System-wide net_connections requires root on macOS. Per-process
+            # inspection works for accessible same-user processes.
+            for connection in process.net_connections(kind="tcp"):
+                if (
+                    connection.status == psutil.CONN_LISTEN
+                    and connection.laddr
+                    and connection.laddr.port == port
+                    and connection.laddr.ip in {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
+                ):
+                    return process.pid
+        except (psutil.Error, OSError):
+            # Processes may exit during inspection or deny access. Never guess.
             continue
     return None
 
