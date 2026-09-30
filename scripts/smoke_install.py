@@ -9,9 +9,52 @@ import socket
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
+
+from hames.paths import HamesPaths
+
+
+def _macos_picker_smoke(root: Path, port: int) -> None:
+    workspace = root / "picker-workspace"
+    workspace.mkdir()
+    token = HamesPaths(root).read_gateway_token()
+    url = f"http://127.0.0.1:{port}/v1/directories/select"
+    script = """
+tell application "System Events"
+    repeat 100 times
+        repeat with picker in (every process whose name is "osascript")
+            if (count of windows of picker) > 0 then
+                set frontmost of picker to true
+                key code 36
+                return "selected"
+            end if
+        end repeat
+        delay 0.1
+    end repeat
+end tell
+error "Hames folder picker did not appear"
+"""
+    with httpx.Client(timeout=30) as client, ThreadPoolExecutor(max_workers=1) as pool:
+        selected = pool.submit(
+            client.post,
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            json={"initial_path": str(workspace)},
+        )
+        driven = subprocess.run(
+            ["/usr/bin/osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=20,
+        )
+        assert driven.returncode == 0, driven.stderr
+        response = selected.result(timeout=30)
+    assert response.status_code == 200, response.text
+    assert response.json() == {"path": str(workspace)}
 
 
 def main() -> None:
@@ -64,6 +107,8 @@ def main() -> None:
                     assert client.get(f"http://127.0.0.1:{port}{asset}").status_code == 200
                 bootstrap = client.get(f"http://127.0.0.1:{port}/_hames/v1/bootstrap")
                 assert bootstrap.status_code == 200
+            if sys.platform == "darwin":
+                _macos_picker_smoke(root, port)
             run("gateway", "restart")
             restarted = json.loads(run("gateway", "status"))
             assert restarted["healthy"] and restarted["pid"] != status["pid"]
@@ -71,7 +116,10 @@ def main() -> None:
             run("gateway", "stop")
         stopped = json.loads(run("gateway", "status", expected_code=1))
         assert not stopped["running"] and not stopped["healthy"]
-    print("Install smoke passed: doctor, gateway start/restart/stop, Web auth and bundled assets.")
+    print(
+        "Install smoke passed: doctor, gateway start/restart/stop, Web auth and "
+        "bundled assets, and native Mac folder picker when available."
+    )
 
 
 if __name__ == "__main__":
