@@ -1750,11 +1750,13 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                 json={"content": "Continue"},
             )
             assert branch_accepted.status_code == 202
-            for _ in range(100):
-                if len(fake.requests) == 2:
-                    break
-                await asyncio.sleep(0.01)
-            assert [message.content for message in fake.requests[1].messages] == [
+            await _wait_for_event(client, headers, branch.id, "run.completed")
+            continuation = next(
+                request
+                for request in fake.requests
+                if request.messages and request.messages[-1].content == "Continue"
+            )
+            assert [message.content for message in continuation.messages] == [
                 "Hi",
                 "hello",
                 "Continue",
@@ -3683,6 +3685,9 @@ async def test_goal_runs_multiple_bounded_steps_until_evidence_backed_achievemen
     tmp_path: Path,
 ) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
+    # These four responses belong to goal turns, not background extraction.
+    paths.ensure_foundation()
+    paths.config_file.write_text("[memory]\nautomatic_extraction = false\n", encoding="utf-8")
     fake = FakeProvider(
         [],
         turns=[
