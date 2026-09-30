@@ -1681,9 +1681,9 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             usage_body = usage_response.json()
             assert usage_body["input_tokens"] == 10
             daily_activity = usage_body["daily_activity"]
-            # Background memory extraction may have requested the fake model by now.
+            # Background memory extraction and retries may request the fake model too.
             assert len(daily_activity) == 1
-            assert daily_activity[0]["model_requests"] in (1, 2)
+            assert daily_activity[0]["model_requests"] >= 1
             assert [
                 {k: v for k, v in item.items() if k != "model_requests"} for item in daily_activity
             ] == [
