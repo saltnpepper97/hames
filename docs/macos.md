@@ -84,7 +84,8 @@ credential-file configuration or configure the agent environment explicitly.
 
 The platform workflow targets Linux, macOS 15 on Apple Silicon, and macOS 15 on
 Intel. It runs Python and Rust tests, native isolation probes, static checks, a
-local source installation, and installed-launcher, TUI PTY, and launchd smoke checks. The
+local source installation, and installed-launcher, TUI PTY, and launchd smoke checks.
+The TUI smoke sends a message to a local fixture provider and checks its reply. The
 launcher smoke uses disposable state and a
 separate port to exercise diagnostics, start/restart/stop, authenticated Web
 launch, and serving bundled assets without touching your normal Hames gateway:

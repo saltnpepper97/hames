@@ -25,17 +25,40 @@ from hames.search_service import SearchService
 
 class _ModelHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
-        if self.path != "/v1/models":
+        if self.path == "/props?model=fixture":
+            body = b"{}"
+        elif self.path == "/v1/models":
+            body = json.dumps({"data": [{"id": "fixture", "status": "loaded"}]}).encode()
+        else:
             self.send_error(404)
             return
-        body = json.dumps({"data": [{"id": "fixture", "status": "unloaded"}]}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, _format: str, *_args: object) -> None:
+    def do_POST(self) -> None:
+        if self.path != "/v1/responses":
+            self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        request = json.loads(self.rfile.read(length))
+        assert request["model"] == "fixture"
+        assert "hello from PTY" in json.dumps(request["input"])
+        events: list[dict[str, object]] = [
+            {"type": "response.created", "response": {"id": "fixture-response"}},
+            {"type": "response.output_text.delta", "delta": "fixture reply"},
+            {"type": "response.completed", "response": {"output": []}},
+        ]
+        body = "\n\n".join(f"data: {json.dumps(event)}" for event in events).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
         return
 
 
@@ -90,7 +113,8 @@ def main() -> None:
         model_port = model_server.server_port
         (root / "config.toml").write_text(
             f"[gateway]\nport = {port}\n"
-            f"[providers.llama_cpp]\nbase_url = 'http://127.0.0.1:{model_port}'\n",
+            f"[providers.llama_cpp]\nbase_url = 'http://127.0.0.1:{model_port}'\n"
+            "model = 'fixture'\n[memory]\nautomatic_extraction = false\n",
             encoding="utf-8",
         )
         SearchService(HamesPaths(root)).setup(enabled=False)
@@ -109,6 +133,8 @@ def main() -> None:
             os.write(fd, b"y")
             startup = _read_until(fd, b"\x1b[?1049h", seconds=15)
             assert b"Trusted" in startup
+            os.write(fd, b"hello from PTY\r")
+            _read_until(fd, b"fixture reply", seconds=30)
             fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 28, 90, 0, 0))
             os.kill(pid, signal.SIGWINCH)
             os.write(fd, b"\x11")  # Ctrl+Q
@@ -134,7 +160,7 @@ def main() -> None:
             model_server.shutdown()
             model_server.server_close()
             model_thread.join(timeout=5)
-    print("TUI PTY smoke passed: trust, render, resize, Ctrl+Q.")
+    print("TUI PTY smoke passed: trust, provider reply, resize, Ctrl+Q.")
 
 
 if __name__ == "__main__":
