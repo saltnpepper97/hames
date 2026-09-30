@@ -6,6 +6,7 @@ import asyncio
 import json
 import py_compile
 import subprocess
+import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -16,7 +17,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from hames.broker import EventBroker
 from hames.config import HamesConfig
 from hames.ledger import Event, Ledger, Session
-from hames.platform_support import bubblewrap_path, sandbox_unavailable_reason
+from hames.macos_sandbox import isolated_command
+from hames.platform_support import (
+    bubblewrap_path,
+    macos_sandbox_path,
+    sandbox_unavailable_reason,
+)
 from hames.providers import ModelRequest, Provider, ProviderError, StreamEventKind, ToolDefinition
 from hames.providers.base import JSON_OBJECT, JsonValue, ProviderMessage
 from hames.skills import SkillDraft, SkillJob, SkillRegistry, SkillScope, SkillVersion
@@ -675,58 +681,72 @@ class SkillManager:
         for script in version.metadata.scripts:
             path = Path(version.package_path) / script.path
             try:
-                if bwrap is None:
+                if bwrap is None and macos_sandbox_path() is None:
                     raise OSError(sandbox_unavailable_reason())
                 if script.interpreter == "python":
                     py_compile.compile(str(path), doraise=True)
                 else:
                     subprocess.run(
-                        ["/usr/bin/bash", "-n", str(path)],
+                        ["/bin/bash", "-n", str(path)],
                         check=True,
                         capture_output=True,
                         timeout=self.config.skills.script_timeout_seconds,
                     )
                 with tempfile.TemporaryDirectory(prefix="hames-skill-test-") as scratch:
-                    command = [
-                        bwrap,
-                        "--die-with-parent",
-                        "--new-session",
-                        "--unshare-all",
-                        "--ro-bind",
-                        "/usr",
-                        "/usr",
-                        "--ro-bind",
-                        "/etc",
-                        "/etc",
-                        "--proc",
-                        "/proc",
-                        "--dev",
-                        "/dev",
-                        "--tmpfs",
-                        "/tmp",
-                        "--dir",
-                        "/home",
-                        "--ro-bind",
-                        version.package_path,
-                        "/skill",
-                        "--bind",
-                        scratch,
-                        "/workspace",
-                        "--chdir",
-                        "/workspace",
-                        "--clearenv",
-                        "--setenv",
-                        "PATH",
-                        "/usr/bin",
-                        "--setenv",
-                        "HOME",
-                        "/workspace",
-                        "/usr/bin/python3" if script.interpreter == "python" else "/usr/bin/bash",
-                        f"/skill/{script.path}",
-                        "--self-test",
-                    ]
+                    command = (
+                        [
+                            bwrap,
+                            "--die-with-parent",
+                            "--new-session",
+                            "--unshare-all",
+                            "--ro-bind",
+                            "/usr",
+                            "/usr",
+                            "--ro-bind",
+                            "/etc",
+                            "/etc",
+                            "--proc",
+                            "/proc",
+                            "--dev",
+                            "/dev",
+                            "--tmpfs",
+                            "/tmp",
+                            "--dir",
+                            "/home",
+                            "--ro-bind",
+                            version.package_path,
+                            "/skill",
+                            "--bind",
+                            scratch,
+                            "/workspace",
+                            "--chdir",
+                            "/workspace",
+                            "--clearenv",
+                            "--setenv",
+                            "PATH",
+                            "/usr/bin",
+                            "--setenv",
+                            "HOME",
+                            "/workspace",
+                            "/usr/bin/python3"
+                            if script.interpreter == "python"
+                            else "/usr/bin/bash",
+                            f"/skill/{script.path}",
+                            "--self-test",
+                        ]
+                        if bwrap is not None
+                        else isolated_command(
+                            executable=Path(
+                                sys.executable if script.interpreter == "python" else "/bin/bash"
+                            ),
+                            arguments=[str(path), "--self-test"],
+                            package=Path(version.package_path),
+                            scratch=Path(scratch),
+                        )
+                    )
                     completed = subprocess.run(
                         command,
+                        cwd=scratch,
                         capture_output=True,
                         text=True,
                         timeout=self.config.skills.script_timeout_seconds,

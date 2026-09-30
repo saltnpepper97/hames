@@ -35,9 +35,10 @@ Check in this order, subject to the tools allowed in the session:
    Check that browser's `--help` and use isolated task state. Static capture alone does not test
    hover, menus, authenticated flows, or compositor behavior. Do not fabricate a placeholder page
    or substitute manually assembled markup for the actual application.
-4. The existing GUI session and its compositor capture route. See `linux-capture.md`. Open the
-   target only through available/allowed controls. Prefer a known app window over capturing an
-   unrelated foreground terminal and calling it the application.
+4. The existing GUI session and its native capture route. On Linux, see `linux-capture.md`; on
+   macOS, load `macos-gui-testing`. Open the target only through available/allowed controls.
+   Prefer a known app window over capturing an unrelated foreground terminal and calling it the
+   application.
 
 If control is unavailable but the user can open the target state, request that one concrete action
 only after preparing the verified app URL and capture path. If image ingestion alone is missing,

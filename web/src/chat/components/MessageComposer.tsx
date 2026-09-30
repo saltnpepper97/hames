@@ -420,6 +420,13 @@ export function MessageComposer(props: MessageComposerProps) {
     })),
   );
 
+  const connectionNotice = () => {
+    if (workspace.connection() === "expired") return "Reopen Hames Web to reconnect.";
+    if (workspace.connection() !== "connected") return "Reconnect to Hames to send messages.";
+    if (!workspace.selectedWorkspace()) return "Select a workspace to send messages.";
+    return "";
+  };
+
   const submit = async () => {
     const content = draft().trim();
     if (content.toLowerCase() === "/connect") {
@@ -427,7 +434,7 @@ export function MessageComposer(props: MessageComposerProps) {
       navigate("/settings/connections");
       return;
     }
-    if ((!content && attachments().length === 0) || sending() || executingPlan()) return;
+    if (connectionNotice() || (!content && attachments().length === 0) || sending() || executingPlan()) return;
     if (reviewingPlan() && attachments().length) {
       setComposerError("Plan feedback supports text. Remove attachments before sending changes.");
       return;
@@ -795,7 +802,7 @@ export function MessageComposer(props: MessageComposerProps) {
               type="button"
               aria-label={props.activeRunId ? "Stop" : "Send message"}
               title={props.activeRunId ? "Stop" : "Send message"}
-              disabled={props.activeRunId ? cancelling() : (!draft().trim() && attachments().length === 0) || sending() || executingPlan()}
+              disabled={props.activeRunId ? cancelling() : !!connectionNotice() || (!draft().trim() && attachments().length === 0) || sending() || executingPlan()}
               onClick={() => void (props.activeRunId ? cancel() : submit())}
             >
               <Show when={props.activeRunId} fallback={<Icon name="action.send" size={18} />}>
@@ -805,6 +812,9 @@ export function MessageComposer(props: MessageComposerProps) {
           </div>
         </div>
       </div>
+      <Show when={connectionNotice()}>
+        <p class="composer-start-guidance" role="status">{connectionNotice()}</p>
+      </Show>
       <Show when={props.showStats !== false}>
         <ComposerStatsLine
           session={props.session}

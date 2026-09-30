@@ -32,3 +32,17 @@ it("refreshes Grok after rollover and keeps a labeled stale reading visible", as
   fireEvent(window, new Event("focus"));
   expect(getPooledUsage).toHaveBeenCalledTimes(3);
 });
+
+it("hides disconnected subscription cards while keeping local token activity", async () => {
+  vi.mocked(getPooledUsage).mockResolvedValue({
+    estimated_input_tokens: 0, input_tokens: 0, output_tokens: 0, cached_input_tokens: 0,
+    reasoning_tokens: 0, provider_reported_cost: 0, model_requests: 0,
+    latest_context: null, account_rate_limits: null, account_rate_limits_error: "Not signed in",
+    grok_account_configured: true, grok_account_usage: null, grok_account_usage_error: "Not signed in",
+  });
+  render(() => <UsageDashboard />);
+  await screen.findByRole("heading", { name: "Tokens over the past year" });
+  expect(screen.queryByText("ChatGPT usage")).not.toBeInTheDocument();
+  expect(screen.queryByText("Grok usage")).not.toBeInTheDocument();
+  expect(screen.queryByText("Not signed in")).not.toBeInTheDocument();
+});

@@ -14,6 +14,7 @@ interface ConversationViewportProps {
   nodes: readonly ConversationNode[];
   streamState: StreamState;
   fresh?: boolean;
+  modelRequired?: boolean;
   agentId: string;
   sendJump?: { sequence: number; submissionId?: string };
 }
@@ -230,6 +231,9 @@ export function ConversationViewport(props: ConversationViewportProps) {
         </Show>
         <Show when={props.nodes.length === 0 && props.fresh}>
           <FreshChatHero agentId={props.agentId} />
+          <Show when={props.modelRequired}>
+            <p>Connect a provider in <a href="/settings/connections">Settings</a>, then choose a model to send messages.</p>
+          </Show>
         </Show>
         <Show when={props.nodes.length === 0 && !props.fresh}>
           <div class="conversation-empty compact">

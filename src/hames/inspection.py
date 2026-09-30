@@ -299,12 +299,14 @@ def inspect_scar(
     store: Any,
     session_id: str,
     scar_id: str,
+    *,
+    context: Session | None = None,
 ) -> ScarInspection:
     """Full lineage of one scar: evidence, transitions, repairs, evaluations."""
     from hames.evolution import Scar, ScarStore  # local import avoids module cycles
 
     assert isinstance(store, ScarStore)
-    session = ledger.get_session(session_id)
+    session = context if context is not None else ledger.get_session(session_id)
     scar = store.get_visible(session, scar_id)
     assert isinstance(scar, Scar)
     evidence: list[TimelineItem] = []
@@ -316,7 +318,7 @@ def inspect_scar(
         evidence.append(_timeline(event))
     scar_events = [
         event
-        for event in ledger.list_events(session.id)
+        for event in ledger.list_events(session.id or scar.source_session_id)
         if event.type.startswith("scar.") and event.payload.get("scar_id") == scar_id
     ]
     transitions = [

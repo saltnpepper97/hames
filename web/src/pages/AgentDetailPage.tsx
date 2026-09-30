@@ -134,7 +134,7 @@ export function AgentDetailPage(props: AgentDetailPageProps) {
 
   createEffect(() => {
     const target = loadTarget();
-    if (!target.workingDirectory) return;
+    if (props.ready === false) return;
     void load(target.agentId, target.workingDirectory);
   });
 

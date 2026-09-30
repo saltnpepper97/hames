@@ -49,7 +49,8 @@ existence support this loop; none independently proves appearance.
   Where host tools are allowed, try the relevant installed fallback before declaring a blocker.
 - For startup, browser fallbacks, app identity, and Hames delivery, read
   `references/run-and-inspect.md`. For Linux capture/backend selection, especially Halley, read
-  `references/linux-capture.md`. Resolve these paths relative to this skill's package directory.
+  `references/linux-capture.md`. On macOS, load `macos-gui-testing` for native capture and
+  privacy-permission handling. Resolve these paths relative to this skill's package directory.
 
 ## Run and reproduce
 
@@ -100,5 +101,6 @@ and visual evidence. If blocked, state which stage failed and the observed error
 fallback was attempted, and the smallest remaining action. Never stop at "browser unavailable"
 without checking an allowed applicable fallback; never label uninspected output visually verified.
 
-Use `web-app-debugging` for browser flows and `linux-gui-testing` when display/backend behavior
-matters. These are companions, not prerequisites that prevent the basic verification loop.
+Use `web-app-debugging` for browser flows, `linux-gui-testing` for Linux display/backend behavior,
+and `macos-gui-testing` for native Mac behavior. These are companions, not prerequisites that
+prevent the basic verification loop.

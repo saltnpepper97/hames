@@ -18,9 +18,9 @@
 </p>
 
 > [!NOTE]
-> Hames is ready for everyday use on Linux and is still early in its life. It has
+> Hames is ready for everyday use on Linux and now has early macOS support. It has
 > been used extensively in real work, with good results so far. Expect continued
-> refinement as more people use it. See the [changelog](CHANGELOG.md) for 0.2.0.
+> refinement as more people use it. See the [changelog](CHANGELOG.md) for 0.3.0.
 
 Hames brings coding agents and long-running work into one local workspace. Work in
 the browser or terminal, review plans before execution, and follow delegated work
@@ -51,9 +51,9 @@ account connections.
 
 ## Install
 
-Hames supports Linux. Experimental macOS core support is available from the
-current checkout; see [macOS setup and limitations](docs/macos.md). The `0.2.0`
-tag predates these portability changes.
+Hames supports Linux and macOS. Mac support is newer and has been exercised by
+the maintainer; see [macOS setup and limitations](docs/macos.md) for its current
+scope.
 
 Both platforms require:
 
@@ -74,7 +74,7 @@ installs <code>hames</code> to uv's user tool bin directory (normally
 <code>~/.local/share/hames/source</code> so the Rust client can launch its matching
 gateway. Running the command again installs the latest stable version tag.
 The script is fetched from main, but the installed source comes exclusively from a tag.
-Set `HAMES_VERSION=0.2.0` to pin this release; branches and commit hashes are rejected.
+Set `HAMES_VERSION=0.3.0` to pin this release; branches and commit hashes are rejected.
 
 To build from a reviewed local checkout instead:
 
@@ -235,7 +235,8 @@ evaluates it, and guards later runs for healing or regression.
 Hames discovers Skills from project <code>.agents/skills</code>, global
 <code>~/.agents/skills</code>, and its built-in catalog. Repeated successful
 workflows can become evaluated, versioned procedures; Skill scripts run offline
-inside Bubblewrap with a read-only project and disposable writable scratch.
+inside Bubblewrap on Linux or `sandbox-exec` on macOS, with a read-only project
+and disposable writable scratch.
 
 Optional private web search runs through a digest-pinned, loopback-only SearXNG
 container and a bundled MCP server. Hames can also connect to user-configured
@@ -298,6 +299,8 @@ hames gateway restart
 An optional systemd user unit is available at
 [contrib/systemd/hames.service](contrib/systemd/hames.service). Installing or
 enabling it is intentionally left to the user.
+On macOS, `hames gateway service install` enables an optional per-user
+LaunchAgent for login startup; see [macOS setup](docs/macos.md).
 
 ## Development
 

@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import signal
+import sys
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -47,6 +48,7 @@ from hames.evolution import ScarStore
 from hames.evolution_runtime import MODEL_BEHAVIOR_REPAIR_LAYERS
 from hames.goals import Goal, GoalStore, project_goals
 from hames.ledger import Event, Ledger, Session, new_id
+from hames.macos_sandbox import isolated_command
 from hames.mcp_runtime import McpManager
 from hames.memory import (
     MemoryCandidate,
@@ -63,7 +65,11 @@ from hames.message_queue import (
 )
 from hames.paths import HamesPaths
 from hames.plans import PLAN_READY_MARKER, PlanState, PlanStore, visible_plan_output
-from hames.platform_support import bubblewrap_path, sandbox_unavailable_reason
+from hames.platform_support import (
+    bubblewrap_path,
+    macos_sandbox_path,
+    sandbox_unavailable_reason,
+)
 from hames.plugin_runtime import PluginToolArguments
 from hames.plugins import is_plugin_tool
 from hames.policy import PolicyDecisionKind, PolicyGate, approval_request_hash
@@ -5220,56 +5226,67 @@ class RunManager:
     ) -> ToolResult:
         started = time.monotonic()
         bwrap = bubblewrap_path()
-        if bwrap is None:
+        if bwrap is None and macos_sandbox_path() is None:
             return ToolResult(status="rejected", summary=sandbox_unavailable_reason())
         scratch = context.root_for("scratch")
-        command = [
-            bwrap,
-            "--die-with-parent",
-            "--new-session",
-            "--unshare-all",
-            "--ro-bind",
-            "/usr",
-            "/usr",
-            "--ro-bind",
-            "/etc",
-            "/etc",
-            "--proc",
-            "/proc",
-            "--dev",
-            "/dev",
-            "--tmpfs",
-            "/tmp",
-            "--dir",
-            "/home",
-            "--ro-bind",
-            str(Path(skill.package_path)),
-            "/skill",
-            "--ro-bind",
-            str(context.project_root),
-            "/project",
-            "--bind",
-            str(scratch),
-            "/workspace",
-            "--chdir",
-            "/workspace",
-            "--clearenv",
-            "--setenv",
-            "PATH",
-            "/usr/bin",
-            "--setenv",
-            "HOME",
-            "/workspace",
-            "/usr/bin/python3" if interpreter == "python" else "/usr/bin/bash",
-            f"/skill/{script_path}",
-            *args,
-        ]
+        command = (
+            [
+                bwrap,
+                "--die-with-parent",
+                "--new-session",
+                "--unshare-all",
+                "--ro-bind",
+                "/usr",
+                "/usr",
+                "--ro-bind",
+                "/etc",
+                "/etc",
+                "--proc",
+                "/proc",
+                "--dev",
+                "/dev",
+                "--tmpfs",
+                "/tmp",
+                "--dir",
+                "/home",
+                "--ro-bind",
+                str(Path(skill.package_path)),
+                "/skill",
+                "--ro-bind",
+                str(context.project_root),
+                "/project",
+                "--bind",
+                str(scratch),
+                "/workspace",
+                "--chdir",
+                "/workspace",
+                "--clearenv",
+                "--setenv",
+                "PATH",
+                "/usr/bin",
+                "--setenv",
+                "HOME",
+                "/workspace",
+                "/usr/bin/python3" if interpreter == "python" else "/usr/bin/bash",
+                f"/skill/{script_path}",
+                *args,
+            ]
+            if bwrap is not None
+            else isolated_command(
+                executable=Path(sys.executable if interpreter == "python" else "/bin/bash"),
+                arguments=[str(Path(skill.package_path) / script_path), *args],
+                package=Path(skill.package_path),
+                scratch=scratch,
+                project=context.project_root,
+            )
+        )
         process: asyncio.subprocess.Process | None = None
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=scratch if bwrap is None else None,
             )
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(), timeout=self.config.skills.script_timeout_seconds

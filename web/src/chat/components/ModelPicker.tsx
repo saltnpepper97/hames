@@ -223,14 +223,14 @@ export function ModelPicker(props: ModelPickerProps) {
         variant="bare"
         class="model-trigger"
         type="button"
-        aria-label={`Model and thinking: ${props.session.model}, ${reasoningEffortLabel(props.session.reasoning_effort)}`}
+        aria-label={`Model and thinking: ${props.session.model || "Choose model"}, ${reasoningEffortLabel(props.session.reasoning_effort)}`}
         aria-haspopup="menu"
         aria-expanded={open()}
         title={`${props.session.provider} / ${props.session.model} · ${reasoningEffortLabel(props.session.reasoning_effort)}`}
         disabled={props.disabled || saving()}
         onClick={toggle}
       >
-        <span class="model-trigger-label">{props.session.model}</span>
+        <span class="model-trigger-label">{props.session.model || "Choose model"}</span>
         <span class="model-trigger-effort">{reasoningEffortLabel(props.session.reasoning_effort)}</span>
         <Icon name="action.expand" size={13} />
       </Button>
@@ -256,7 +256,7 @@ export function ModelPicker(props: ModelPickerProps) {
               }}
             >
               <span>Model</span>
-              <span>{props.session.model}</span>
+              <span>{props.session.model || "Choose model"}</span>
               <Icon name="action.next" size={14} />
             </Button>
             <Show when={loadingCatalog() || effortChoices().length > 0}>

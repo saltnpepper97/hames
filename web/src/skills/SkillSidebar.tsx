@@ -1,3 +1,4 @@
+import { CATALOG_SCOPE } from "../api/client";
 import { canDeleteSkill } from "./eligibility";
 import { deleteSkill } from "../api/client";
 import { DeletableSidebarRow } from "../components/DeletableSidebarRow";
@@ -88,7 +89,7 @@ export function SkillSidebar() {
               >
                 <For each={skills()} fallback={<p class="skill-group-empty">No Skills found</p>}>
                   {(skill) => (
-                    <DeletableSidebarRow name={skill.name} kind="Skill" eligible={canDeleteSkill(skill)}
+                    <DeletableSidebarRow name={skill.name} kind="Skill" eligible={directory.sessionId() !== CATALOG_SCOPE && canDeleteSkill(skill)}
                       description={<p>This removes the Hames-created Skill from the active catalog. Its immutable versions and audit evidence remain stored locally.</p>}
                       onDelete={async () => {
                         const sessionId = directory.sessionId();
@@ -132,7 +133,7 @@ export function SkillSidebarAction() {
         class="sidebar-context-action sidebar-create-action sidebar-icon-action"
         aria-label="Create Skill"
         title="Create Skill"
-        disabled={workspace.connection() !== "connected"}
+        disabled={workspace.connection() !== "connected" || !workspace.selectedWorkspace()}
         onClick={() => setCreating(true)}
       >
         <Icon name="action.add" size={15} />

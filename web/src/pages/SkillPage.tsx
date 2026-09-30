@@ -1,3 +1,4 @@
+import { CATALOG_SCOPE } from "../api/client";
 import { canDeleteSkill } from "../skills/eligibility";
 import { useNavigate } from "@solidjs/router";
 import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
@@ -95,7 +96,7 @@ export function SkillPage(props: SkillPageProps) {
               <h1 id="skill-title">{skill.name}</h1>
               <p>{skill.description}</p>
             </div>
-            <Show when={canDeleteSkill(summary())}>
+            <Show when={directory.sessionId() !== CATALOG_SCOPE && canDeleteSkill(summary())}>
               <Button
                 variant="icon"
                 class="detail-delete-action"

@@ -550,7 +550,7 @@ async def test_inline_coordinator_does_not_timeout_while_worker_has_budget(tmp_p
             first_user = next(m.content for m in request.messages if m.role == "user")
             if first_user == "Review these files":
                 yield StreamEvent(kind=StreamEventKind.STARTED)
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(1.2)
                 assert request.tool_handler is not None
                 result = await request.tool_handler(
                     "spawn_agent", {"task": "Inspect child 0"}, "inline"
@@ -564,14 +564,16 @@ async def test_inline_coordinator_does_not_timeout_while_worker_has_budget(tmp_p
 
     provider = InlineProvider(children=1)
     state, _session_id, run_id = await start_parent(
-        tmp_path, provider, limits="max_active_seconds_per_run = 0.35"
+        tmp_path, provider, limits="max_active_seconds_per_run = 3.0"
     )
     try:
         parent = state.runs._tasks[run_id]
-        await asyncio.wait_for(provider.children_entered.wait(), 3)
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(provider.children_entered.wait(), 10)
+        # Parent and child each stay within their budget, but their combined
+        # time exceeds it if inline child time is charged to the parent.
+        await asyncio.sleep(2.2)
         provider.release.set()
-        await asyncio.wait_for(asyncio.shield(parent), 3)
+        await asyncio.wait_for(asyncio.shield(parent), 10)
         events = state.ledger.list_run_events(run_id)
         assert any(event.type == "run.completed" for event in events)
         assert not any(event.type == "run.failed" for event in events)

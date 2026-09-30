@@ -1,3 +1,4 @@
+import { CATALOG_SCOPE } from "../api/client";
 import { useNavigate } from "@solidjs/router";
 import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
 import { deleteScar, inspectScar } from "../api/client";
@@ -35,7 +36,7 @@ function protectionCopy(scar: ScarInspection): string {
   }
 }
 
-function ScarDetail(props: { scar: Scar; inspection: ScarInspection; onDelete: () => void }) {
+function ScarDetail(props: { scar: Scar; inspection: ScarInspection; onDelete: () => void; readOnly?: boolean }) {
   const repair = () => props.inspection.repair_layer
     ? scarLabel(props.inspection.repair_layer)
     : "No repair attached";
@@ -56,7 +57,8 @@ function ScarDetail(props: { scar: Scar; inspection: ScarInspection; onDelete: (
             variant="icon"
             class="detail-delete-action"
             aria-label={`Delete ${props.inspection.title}`}
-            title="Delete Scar"
+            title="Choose a workspace to delete this Scar"
+            disabled={props.readOnly}
             onClick={props.onDelete}
           >
             <Icon name="action.delete" size={17} />
@@ -205,7 +207,7 @@ export function ScarPage(props: ScarPageProps) {
             </Show>
           </section>
         }>
-          {(details) => <ScarDetail scar={selected} inspection={details} onDelete={() => setConfirmingDelete(true)} />}
+          {(details) => <ScarDetail readOnly={directory.sessionId() === CATALOG_SCOPE} scar={selected} inspection={details} onDelete={() => setConfirmingDelete(true)} />}
         </Show>
       )}
     </Show>

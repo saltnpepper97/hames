@@ -1518,8 +1518,9 @@ class SkillRegistry:
         sources: list[tuple[Path, SkillScope, str | None]] = [
             (root, "global", None) for root in self.portable_global_roots
         ]
-        workspace = Path(session.working_directory).resolve(strict=False)
-        sources.append((workspace / ".agents" / "skills", "workspace", str(workspace)))
+        if session.working_directory:
+            workspace = Path(session.working_directory).resolve(strict=False)
+            sources.append((workspace / ".agents" / "skills", "workspace", str(workspace)))
         discovered: dict[str, SkillVersion] = {}
         for source_root, scope, scope_key in sources:
             if not source_root.is_dir():

@@ -118,7 +118,9 @@ export function Connections(props: { ready?: boolean } = {}) {
                 </details>
               </Show>
               <Show when={!connection.can_connect && !connection.can_disconnect && connection.source !== "environment"}>
-                <small>Managed through Hames setup</small>
+                <small>{connection.id === "codex" || connection.id === "grok"
+                  ? <>Set up with <code>hames setup {connection.id}</code> in your terminal.</>
+                  : "Managed through Hames setup"}</small>
               </Show>
             </div>
             <div class="connection-actions">

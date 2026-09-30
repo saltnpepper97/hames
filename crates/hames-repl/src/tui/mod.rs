@@ -3832,6 +3832,18 @@ mod tests {
     }
 
     #[test]
+    fn control_q_quits_from_the_composer() {
+        let mut app = App::new(session(), Vec::new(), true);
+        assert!(matches!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)
+            ),
+            Some(Effect::Quit)
+        ));
+    }
+
+    #[test]
     fn sse_decoder_handles_fragmented_frames() {
         let mut decoder = SseDecoder::default();
         assert!(decoder.push(b"data: {\"dur").unwrap().is_empty());

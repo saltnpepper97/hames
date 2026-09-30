@@ -1,26 +1,42 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
+
+Hames adds early macOS support alongside Linux. The maintainer has exercised the
+Mac experience; automated checks cover macOS 15 and 26 on Apple Silicon and Intel.
+This release also improves Web startup and navigation when a workspace or provider
+is not ready.
 
 ### Added
 
-- Experimental macOS core support: portable gateway process discovery and ownership
+- Experimental macOS support: portable gateway process discovery and ownership
   checks, terminal sizing, a native workspace folder picker, installer platform checks,
   and diagnostics that distinguish
-  core availability from unsupported isolation.
+  core availability from isolation support.
+- macOS sandboxed plugin workers and Skill scripts, with native file and network
+  boundary tests, and optional launchd login startup with lifecycle checks.
+- A built-in macOS GUI testing Skill for native screenshots, dialogs, and
+  privacy-permission handling.
 - Mac Keychain path and credential-command protections, plus macOS absolute-path
   recognition for Manual-mode workspace checks.
 - Linux, Apple Silicon, and Intel Mac CI coverage, including an installed-launcher
-  smoke check for gateway lifecycle, Web authentication, and bundled assets.
+  smoke check for gateway lifecycle, Web authentication, bundled assets, and
+  TUI PTY input and resizing.
+- Global Web browsing for memory, Skills, and Scars without selecting a workspace,
+  and draft chats that can be created while a provider is offline.
+
+### Fixed
+
+- Keep the Web composer visible through workspace setup and connection errors,
+  preserve drafts while disconnected, and explain why a message cannot yet send.
+- Show setup guidance for disconnected Codex and Grok Build subscriptions, and hide
+  their usage cards until connected.
 
 ### Platform limits
 
-- Isolated plugins and Skill script execution still require Linux and Bubblewrap.
-  macOS rejects these operations by default; instruction-only Skills remain available.
-  The existing explicit unsandboxed plugin override remains an opt-in developer setting.
-- Native automated checks pass on macOS 15 on Apple Silicon and Intel, including
-  installed gateway/Web startup. Interactive checks remain before removing the
-  experimental label; see [macOS setup](docs/macos.md).
+- Managed SearXNG search still needs validation with a Mac Docker or Podman
+  engine. macOS support is early and broader hardware, browser, and permission
+  combinations remain to be checked; see [macOS setup](docs/macos.md).
 
 ## 0.2.0
 

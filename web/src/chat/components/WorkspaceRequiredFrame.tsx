@@ -10,6 +10,13 @@ import { ChatFrame } from "./ChatFrame";
 import { FreshChatHero } from "./FreshChatHero";
 
 interface WorkspaceRequiredFrameProps {
+  workspaceRequired?: boolean;
+  notice?: string;
+  error?: string;
+  retryLabel?: string;
+  onRetry?: () => void;
+  busy?: boolean;
+  canSelectWorkspace?: boolean;
   onSessionOpened: (session: Session) => void;
 }
 
@@ -31,37 +38,63 @@ export function WorkspaceRequiredFrame(props: WorkspaceRequiredFrameProps) {
           <div class="transcript-scroll">
             <div class="transcript-column">
               <FreshChatHero />
+              <Show when={props.error}>
+                <div class="chat-start-notice" role="alert">
+                  <p>{props.error}</p>
+                  <Show when={props.onRetry}>
+                    <Button variant="quiet" loading={props.busy} onClick={props.onRetry}>{props.retryLabel || "Try again"}</Button>
+                  </Show>
+                </div>
+              </Show>
             </div>
           </div>
         </div>
         <div class="composer-dock" data-chat-region="composer">
-          <div class="composer-workspace-control">
+          <div class="composer-workspace-control composer-setup-row">
             <WorkspaceSwitcher
-              workspaces={[]}
+              workspaces={workspace.workspaces()}
+              selected={workspace.selectedWorkspace()}
+              disabled={props.canSelectWorkspace === false}
               adding={picking()}
-              onSelect={async () => undefined}
+              onSelect={async (id) => {
+                await workspace.selectWorkspace(id);
+                props.onSessionOpened(await workspace.createChat());
+              }}
               onAdd={() => void chooseWorkspace()}
             />
+            <p id="chat-start-guidance" class="workspace-setup-note" role="status">
+              <Show when={props.workspaceRequired && props.canSelectWorkspace !== false}>
+                <svg class="workspace-note-arrow" viewBox="0 0 56 30" fill="none" aria-hidden="true">
+                  <path d="M53 6C37 3 35 24 8 18M8 18l10-8M8 18l12 7" />
+                </svg>
+              </Show>
+              <span>{props.notice || (props.workspaceRequired !== false
+                ? "Choose a workspace to start."
+                : "Preparing your chat…")}</span>
+            </p>
           </div>
-          <div class="composer-shell pending-composer">
-            <TextArea
-              rows={1}
-              resize="none"
-              placeholder="Choose a workspace first"
-              aria-label="Message Hames"
-              disabled
-            />
-            <div class="composer-toolbar">
-              <div class="composer-toolbar-spacer" />
-              <Button
-                variant="bare"
-                class="composer-round send"
-                type="button"
-                aria-label="Send message"
+          <div class="composer-stack pending-composer">
+            <div class="composer-shell">
+              <TextArea
+                rows={1}
+                resize="none"
+                placeholder="Message Hames…"
+                aria-describedby="chat-start-guidance"
+                aria-label="Message Hames"
                 disabled
-              >
-                <Icon name="action.send" size={18} />
-              </Button>
+              />
+              <div class="composer-toolbar">
+                <div class="composer-toolbar-spacer" />
+                <Button
+                  variant="bare"
+                  class="composer-round send"
+                  type="button"
+                  aria-label="Send message"
+                  disabled
+                >
+                  <Icon name="action.send" size={18} />
+                </Button>
+              </div>
             </div>
           </div>
         </div>

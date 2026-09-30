@@ -1,11 +1,8 @@
-import { Match, Show, Switch } from "solid-js";
+import { Show } from "solid-js";
 import type { ConnectionState } from "../components/ConnectionStatus";
 import type { Session } from "../api/types";
 import { SessionChat } from "../chat/SessionChat";
-import { PendingChatFrame } from "../chat/components/PendingChatFrame";
 import { WorkspaceRequiredFrame } from "../chat/components/WorkspaceRequiredFrame";
-import { Button } from "../components/Button";
-import { ChatLoading } from "../components/ChatLoading";
 
 interface ChatPageProps {
   connection: ConnectionState;
@@ -22,61 +19,37 @@ interface ChatPageProps {
 }
 
 export function ChatPage(props: ChatPageProps) {
+  const unavailable = () => props.connection === "offline" || props.connection === "expired";
+  const connected = () => props.connection === "connected" || props.connection === "reconnecting";
+  const notice = () => {
+    if (props.connection === "expired") return "Reopen Hames Web to reconnect.";
+    if (props.connection === "offline") return "Reconnect to Hames to send messages.";
+    if (props.connection === "connecting") return "Connecting to Hames…";
+    if (props.workspaceRequired) return "Choose a workspace to start.";
+    if (props.startError) return "Retry starting your chat to send messages.";
+    return "Preparing your chat…";
+  };
   return (
-    <section class="page chat-page" aria-labelledby="chat-title">
-      <Show when={props.connection === "connecting"}>
-        <ChatLoading />
-      </Show>
-
-      <Show when={props.connection === "offline" || props.connection === "expired"}>
-        <div class="error-state" role="alert">
-          <div>
-            <span class="eyebrow">
-              {props.connection === "expired" ? "Session expired" : "Gateway unavailable"}
-            </span>
-            <h2>
-              {props.connection === "expired"
-                ? "Reopen Hames Web to continue"
-                : "Hames Web lost its local connection"}
-            </h2>
-            <p>{props.error || "The local gateway did not respond."}</p>
-          </div>
-          <Show when={props.connection !== "expired"}>
-            <Button onClick={props.onRetry}>
-              Retry connection
-            </Button>
-          </Show>
-        </div>
-      </Show>
-
-      <Show when={props.connection === "connected" || props.connection === "reconnecting"}>
-        <Switch>
-          <Match when={props.selectedSession}>
-            {(session) => (
-              <SessionChat
-                session={session()}
-                onSessionChanged={props.onSessionChanged}
-                onSessionUpdated={props.onSessionUpdated}
-                onSessionOpened={props.onSessionOpened}
-              />
-            )}
-          </Match>
-          <Match when={!props.selectedSession}>
-            <Show
-              when={!props.workspaceRequired}
-              fallback={<WorkspaceRequiredFrame onSessionOpened={props.onSessionOpened} />}
-            >
-              <Show when={props.startError} fallback={<PendingChatFrame />}>
-                <div class="conversation-empty">
-                  <h1 id="chat-title">New chat could not start</h1>
-                  <p>{props.startError}</p>
-                  <Button loading={props.startingSession} onClick={props.onStartFresh}>Try again</Button>
-                </div>
-              </Show>
-            </Show>
-          </Match>
-        </Switch>
-      </Show>
+    <section class="page chat-page" aria-label="Chat">
+      <Show when={props.selectedSession} fallback={
+        <WorkspaceRequiredFrame
+          onSessionOpened={props.onSessionOpened}
+          workspaceRequired={props.workspaceRequired}
+          notice={notice()}
+          error={unavailable() ? props.error || "The local gateway did not respond." : props.startError}
+          canSelectWorkspace={connected()}
+          busy={props.startingSession}
+          onRetry={props.connection === "expired" ? undefined : unavailable() ? props.onRetry : props.startError ? props.onStartFresh : undefined}
+          retryLabel={unavailable() ? "Retry connection" : "Try again"}
+        />
+      }>{(session) => (
+        <SessionChat
+          session={session()}
+          onSessionChanged={props.onSessionChanged}
+          onSessionUpdated={props.onSessionUpdated}
+          onSessionOpened={props.onSessionOpened}
+        />
+      )}</Show>
     </section>
   );
 }

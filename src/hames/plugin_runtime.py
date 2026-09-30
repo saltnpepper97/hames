@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ from hames.paths import HamesPaths
 from hames.platform_support import sandbox_unavailable_reason
 from hames.plugin_broker import Append, CapabilityBroker
 from hames.plugin_protocol import PluginProtocolError, PluginToolSpec, PluginWorker, spawn_worker
-from hames.plugin_sandbox import PluginSandboxError, bwrap_available, worker_command
+from hames.plugin_sandbox import PluginSandboxError, sandbox_available, worker_command
 from hames.plugins import (
     TOOL_SUFFIX,
     InspectedPlugin,
@@ -144,6 +145,7 @@ class RunningPlugin:
     warning: str = ""
     broker: CapabilityBroker | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    scratch: tempfile.TemporaryDirectory[str] | None = None
 
     async def on_broker(self, method: str, arguments: dict[str, JsonValue]) -> dict[str, JsonValue]:
         if self.broker is None:
@@ -429,6 +431,8 @@ class PluginManager:
                 handle = self._handles.pop(plugin_id, None)
                 if handle is not None:
                     await handle.worker.shutdown()
+                    if handle.scratch is not None:
+                        handle.scratch.cleanup()
 
     async def execute_tool(
         self,
@@ -545,19 +549,26 @@ class PluginManager:
     async def _start_worker(self, version: PluginVersionRecord, session: Session) -> None:
         allow_unsandboxed = self.config.plugins.allow_unsandboxed_user_plugins
         warning = ""
-        if not bwrap_available():
+        if not sandbox_available():
             if not allow_unsandboxed:
                 raise PluginSandboxError(sandbox_unavailable_reason())
             warning = (
                 f"running unsandboxed by explicit configuration: {sandbox_unavailable_reason()}"
             )
         env_root = self.paths.plugins / "env" / version.plugin_id / version.fingerprint[:12]
-        command = worker_command(
-            package=Path(version.package_path),
-            entrypoint=version.manifest.entrypoint,
-            env_root=env_root if env_root.is_dir() else None,
-            allow_unsandboxed=allow_unsandboxed,
-        )
+        scratch = tempfile.TemporaryDirectory(prefix="hames-plugin-")
+        package = Path(version.package_path)
+        try:
+            command = worker_command(
+                package=package,
+                entrypoint=version.manifest.entrypoint,
+                env_root=env_root if env_root.is_dir() else None,
+                allow_unsandboxed=allow_unsandboxed,
+                scratch=Path(scratch.name),
+            )
+        except Exception:
+            scratch.cleanup()
+            raise
         cell: list[RunningPlugin] = []
 
         async def on_broker(method: str, arguments: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -565,12 +576,19 @@ class PluginManager:
                 raise PermissionError("capability broker is not attached")
             return await cell[0].on_broker(method, arguments)
 
-        worker = await spawn_worker(
-            command,
-            timeout_seconds=self.config.plugins.worker_timeout_seconds,
-            on_broker=on_broker,
+        try:
+            worker = await spawn_worker(
+                command,
+                timeout_seconds=self.config.plugins.worker_timeout_seconds,
+                on_broker=on_broker,
+                cwd=package,
+            )
+        except Exception:
+            scratch.cleanup()
+            raise
+        handle = RunningPlugin(
+            version=version, worker=worker, tools=[], warning=warning, scratch=scratch
         )
-        handle = RunningPlugin(version=version, worker=worker, tools=[], warning=warning)
         cell.append(handle)
         try:
             init = await worker.initialize(version.plugin_id, version.version)
@@ -588,6 +606,7 @@ class PluginManager:
             handle.event_filters = list(init.event_filters)
         except Exception as exc:
             await worker.shutdown()
+            scratch.cleanup()
             await self._append(
                 session_id=session.id,
                 agent_id=session.agent_id,
@@ -628,6 +647,8 @@ class PluginManager:
         if handle is None:
             return
         await handle.worker.shutdown()
+        if handle.scratch is not None:
+            handle.scratch.cleanup()
         if session is None:
             return
         await self._append(

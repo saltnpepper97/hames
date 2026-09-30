@@ -955,6 +955,33 @@ def create_app(state: GatewayState) -> FastAPI:
             raise ApiError(404, "unknown_provider", f"unknown provider: {profile_id}")
         return await _probe(profile_id, provider)
 
+    def catalog_context() -> Session:
+        """Read-only global/agent scope: no project path, trust grant, or durable session."""
+        return Session(
+            id="",
+            created_at="1970-01-01T00:00:00+00:00",
+            closed_at=None,
+            status="open",
+            title=None,
+            working_directory="",
+            agent_id=state.config.runtime.default_agent,
+            provider="",
+            model="",
+            reasoning_effort="",
+            context_window_tokens=0,
+            context_window_source="catalog",
+            parent_session_id=None,
+            fork_event_id=None,
+            lineage_kind="root",
+            delegation_depth=0,
+            interaction_mode="manual",
+        )
+
+    async def read_context(session_id: str) -> Session:
+        if not session_id:
+            return catalog_context()
+        return await asyncio.to_thread(state.ledger.get_session, session_id)
+
     async def resolve_selection(
         profile_id: str,
         requested_model: str,
@@ -963,6 +990,7 @@ def create_app(state: GatewayState) -> FastAPI:
         default_model: str = "",
         default_effort: str = "",
         conditional_default_effort: bool = False,
+        allow_offline_draft: bool = False,
     ) -> tuple[str, str, int, str]:
         provider = state.providers.get(profile_id)
         if provider is None:
@@ -975,10 +1003,23 @@ def create_app(state: GatewayState) -> FastAPI:
         try:
             models = await provider.list_models()
         except ProviderError as exc:
+            if allow_offline_draft and exc.code == "provider_unavailable":
+                # Creating a draft must not require a running model server. Explicit
+                # model changes and actual execution still validate against the provider.
+                return (
+                    selected_model_id,
+                    requested_effort
+                    or default_effort
+                    or (configured.reasoning_effort if configured else ""),
+                    (configured.context_window_tokens if configured else None)
+                    or state.config.context.fallback_window_tokens,
+                    "profile" if configured and configured.context_window_tokens else "fallback",
+                )
             raise ApiError(
                 503,
                 exc.code,
-                str(exc),
+                f"Provider {profile_id!r} is unavailable. "
+                f"Configure or connect it in Settings. {exc}",
                 retryable=exc.retryable,
                 details=dict(exc.details),
             ) from exc
@@ -1199,7 +1240,10 @@ def create_app(state: GatewayState) -> FastAPI:
                     context_window_tokens,
                     context_window_source,
                 ) = await resolve_agent_execution(
-                    capsule.metadata.execution, state.providers, state.config
+                    capsule.metadata.execution,
+                    state.providers,
+                    state.config,
+                    allow_offline_draft=True,
                 )
             except (ValueError, ProviderError) as exc:
                 raise ApiError(400, "invalid_agent_default_model", str(exc)) from exc
@@ -1213,6 +1257,7 @@ def create_app(state: GatewayState) -> FastAPI:
                 default_model=state.config.runtime.default_model,
                 default_effort=state.config.runtime.default_reasoning_effort,
                 conditional_default_effort=True,
+                allow_offline_draft=True,
             )
             model, reasoning_effort, context_window_tokens, context_window_source = selection
             interaction_mode = state.config.runtime.default_interaction_mode
@@ -1298,7 +1343,7 @@ def create_app(state: GatewayState) -> FastAPI:
     )
     async def get_agent_capabilities(
         agent_id: str,
-        working_directory: Annotated[str, Query(min_length=1)],
+        working_directory: str = "",
     ) -> AgentCapabilities:
         try:
             capsule = await asyncio.to_thread(state.agents.load, agent_id)
@@ -1306,7 +1351,11 @@ def create_app(state: GatewayState) -> FastAPI:
         except (FileNotFoundError, ValueError) as exc:
             raise ApiError(404, "agent_not_found", str(exc)) from exc
         workspace = await asyncio.to_thread(
-            lambda: str(Path(working_directory).expanduser().resolve(strict=False))
+            lambda: (
+                str(Path(working_directory).expanduser().resolve(strict=False))
+                if working_directory
+                else ""
+            )
         )
         editor_session = Session(
             id="agent-editor",
@@ -1824,8 +1873,9 @@ def create_app(state: GatewayState) -> FastAPI:
         dependencies=auth,
         response_model=list[MemoryRecord],
     )
+    @app.get("/v1/catalog/memories", dependencies=auth, response_model=list[MemoryRecord])
     async def list_memories(
-        session_id: str,
+        session_id: str = "",
         query: str = "",
         status: str = "active",
         layer: MemoryLayer | None = None,
@@ -1833,7 +1883,7 @@ def create_app(state: GatewayState) -> FastAPI:
         offset: int = Query(default=0, ge=0),
     ) -> list[MemoryRecord]:
         try:
-            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            session = await read_context(session_id)
             selected_status: MemoryStatus | None
             if status == "all":
                 selected_status = None
@@ -2100,10 +2150,11 @@ def create_app(state: GatewayState) -> FastAPI:
         dependencies=auth,
         response_model=list[SkillSummary],
     )
-    async def list_available_skills(session_id: str) -> list[SkillSummary]:
+    @app.get("/v1/catalog/skills/available", dependencies=auth, response_model=list[SkillSummary])
+    async def list_available_skills(session_id: str = "") -> list[SkillSummary]:
         """List workspace-visible Skills before applying the active agent's policy."""
         try:
-            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            session = await read_context(session_id)
             return await asyncio.to_thread(state.runs.skills.catalog, session, limit=200)
         except KeyError as exc:
             raise ApiError(404, "session_not_found", f"unknown session: {session_id}") from exc
@@ -2113,10 +2164,11 @@ def create_app(state: GatewayState) -> FastAPI:
         dependencies=auth,
         response_model=SkillVersion,
     )
-    async def get_available_skill(session_id: str, slug: str) -> SkillVersion:
+    @app.get("/v1/catalog/skills/available/{slug}", dependencies=auth, response_model=SkillVersion)
+    async def get_available_skill(slug: str, session_id: str = "") -> SkillVersion:
         """Inspect a workspace-visible Skill without applying one agent's catalog policy."""
         try:
-            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            session = await read_context(session_id)
             return await asyncio.to_thread(state.runs.skills.latest_visible, session, slug)
         except KeyError as exc:
             raise ApiError(404, "skill_not_found", f"unknown visible Skill: {slug}") from exc
@@ -2357,13 +2409,14 @@ def create_app(state: GatewayState) -> FastAPI:
             raise ApiError(400, "invalid_correction", str(exc)) from exc
 
     @app.get("/v1/sessions/{session_id}/scars", dependencies=auth, response_model=list[Scar])
+    @app.get("/v1/catalog/scars", dependencies=auth, response_model=list[Scar])
     async def list_scars(
-        session_id: str,
+        session_id: str = "",
         status: ScarStatus | None = None,
         limit: int = Query(default=100, ge=1, le=200),
     ) -> list[Scar]:
         try:
-            session = await asyncio.to_thread(state.ledger.get_session, session_id)
+            session = await read_context(session_id)
             return await asyncio.to_thread(
                 state.evolution.store.list_scars, session, status=status, limit=limit
             )
@@ -2475,10 +2528,18 @@ def create_app(state: GatewayState) -> FastAPI:
         dependencies=auth,
         response_model=ScarInspection,
     )
-    async def inspect_scar_lineage(session_id: str, scar_id: str) -> ScarInspection:
+    @app.get(
+        "/v1/catalog/scars/{scar_id}/inspection", dependencies=auth, response_model=ScarInspection
+    )
+    async def inspect_scar_lineage(scar_id: str, session_id: str = "") -> ScarInspection:
         try:
             return await asyncio.to_thread(
-                inspect_scar, state.ledger, state.evolution.store, session_id, scar_id
+                inspect_scar,
+                state.ledger,
+                state.evolution.store,
+                session_id,
+                scar_id,
+                context=await read_context(session_id),
             )
         except KeyError as exc:
             raise ApiError(404, "scar_not_found", f"unknown visible Scar: {scar_id}") from exc

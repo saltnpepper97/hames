@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -208,6 +209,7 @@ async def spawn_worker(
     *,
     timeout_seconds: float,
     on_broker: BrokerHandler | None = None,
+    cwd: Path | None = None,
 ) -> PluginWorker:
     process = await asyncio.create_subprocess_exec(
         *command,
@@ -215,5 +217,6 @@ async def spawn_worker(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         limit=JSONL_LINE_LIMIT,
+        cwd=cwd,
     )
     return PluginWorker(process, timeout_seconds=timeout_seconds, on_broker=on_broker)

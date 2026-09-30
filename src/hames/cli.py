@@ -9,6 +9,11 @@ from collections.abc import Sequence
 from hames import __version__
 from hames.daemon import gateway_status, serve, start, stop
 from hames.doctor import run_doctor
+from hames.launchd import agent_path
+from hames.launchd import install as install_launchd
+from hames.launchd import installed as launchd_installed
+from hames.launchd import loaded as launchd_loaded
+from hames.launchd import remove as remove_launchd
 from hames.paths import HamesPaths
 from hames.search_service import SearchService
 
@@ -28,6 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
     restart_parser.add_argument("--json", action="store_true", dest="as_json")
     status_parser = subcommands.add_parser("status", help="inspect the persistent gateway")
     status_parser.add_argument("--json", action="store_true", dest="as_json")
+    launchd_parser = subcommands.add_parser("launchd", help="manage macOS login startup")
+    launchd_parser.add_argument("action", choices=("install", "remove", "status"))
     search_parser = subcommands.add_parser("search", help="manage private web search")
     search_commands = search_parser.add_subparsers(dest="search_action", required=True)
     setup = search_commands.add_parser("setup", help="persist consent and provision SearXNG")
@@ -52,6 +59,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"{key}: {value}")
         return 0 if report.healthy else 1
     paths = HamesPaths.resolve()
+    if args.command == "launchd":
+        if args.action == "install":
+            if gateway_status(paths).running:
+                raise RuntimeError("stop the gateway before enabling launchd supervision")
+            print(f"LaunchAgent installed: {install_launchd(paths)}")
+        elif args.action == "remove":
+            remove_launchd()
+            print("LaunchAgent removed")
+        else:
+            print(
+                f"LaunchAgent: {'installed' if launchd_installed() else 'absent'}, "
+                f"{'loaded' if launchd_loaded() else 'not loaded'} ({agent_path()})"
+            )
+        return 0
     if args.command == "search":
         service = SearchService(paths)
         if args.search_action == "setup":

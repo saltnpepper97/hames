@@ -5,7 +5,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from hames.platform_support import bubblewrap_path, sandbox_unavailable_reason
+from hames.macos_sandbox import isolated_command
+from hames.platform_support import (
+    bubblewrap_path,
+    macos_sandbox_path,
+    sandbox_unavailable_reason,
+)
 
 
 class PluginSandboxError(RuntimeError):
@@ -14,6 +19,10 @@ class PluginSandboxError(RuntimeError):
 
 def bwrap_available() -> bool:
     return bubblewrap_path() is not None
+
+
+def sandbox_available() -> bool:
+    return bwrap_available() or macos_sandbox_path() is not None
 
 
 def _sandbox_python() -> str:
@@ -29,8 +38,20 @@ def worker_command(
     entrypoint: str,
     env_root: Path | None,
     allow_unsandboxed: bool,
+    scratch: Path | None = None,
 ) -> list[str]:
     entry = package.joinpath(*Path(entrypoint).parts)
+    if macos_sandbox_path() is not None:
+        if scratch is None:
+            raise PluginSandboxError("macOS plugin isolation requires a private scratch directory")
+        interpreter = env_root / "bin" / "python" if env_root is not None else Path(sys.executable)
+        return isolated_command(
+            executable=interpreter,
+            arguments=["-u", str(entry)],
+            package=package,
+            scratch=scratch,
+            env_root=env_root,
+        )
     if not bwrap_available():
         if not allow_unsandboxed:
             raise PluginSandboxError(sandbox_unavailable_reason())

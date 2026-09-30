@@ -12,6 +12,19 @@ const row: ProviderConnection = { id: "deepseek", name: "DeepSeek", status: "not
 beforeEach(() => { vi.resetAllMocks(); api.listConnections.mockResolvedValue([row]); });
 
 describe("Connections", () => {
+  it("shows terminal setup guidance for disconnected subscription providers", async () => {
+    api.listConnections.mockResolvedValue(["codex", "grok"].map(id => ({
+      ...row, id, name: id === "codex" ? "Codex" : "Grok Build", can_connect: false,
+    })));
+    render(() => <IconProvider pack={hamesIconPack}><Connections /></IconProvider>);
+    expect(await screen.findByText("Codex")).toBeInTheDocument();
+    expect(screen.getByText("Grok Build")).toBeInTheDocument();
+    expect(screen.getByText("hames setup codex")).toBeInTheDocument();
+    expect(screen.getByText("hames setup grok")).toBeInTheDocument();
+    expect(api.testConnection).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();
+  });
+
   it("verifies a hidden key and clears it after connecting", async () => {
     api.connectProvider.mockResolvedValue([{ ...row, status: "connected", models: ["deepseek-flash"], model_source: "discovered", can_disconnect: true, configured: true, source: "saved" }]);
     render(() => <IconProvider pack={hamesIconPack}><Connections /></IconProvider>);

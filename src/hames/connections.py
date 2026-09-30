@@ -131,9 +131,11 @@ def install_connections(app: FastAPI, state: GatewayState, auth: list[Any]) -> N
     def key_path(profile_id: str) -> Path:
         return state.paths.root / "credentials" / f"{profile_id}.key"
 
+    setup_providers = {"codex": "Codex", "grok": "Grok Build"}
+
     def rows() -> list[dict[str, object]]:
         entries: list[dict[str, object]] = []
-        for profile_id in sorted(set(state.providers) | set(PRESETS)):
+        for profile_id in sorted(set(state.providers) | set(PRESETS) | set(setup_providers)):
             preset = PRESETS.get(profile_id)
             profile = state.config.providers.get(profile_id)
             env_name = profile.api_key_env if profile else preset[3] if preset else ""
@@ -159,10 +161,7 @@ def install_connections(app: FastAPI, state: GatewayState, auth: list[Any]) -> N
                     "id": profile_id,
                     "name": preset[0]
                     if preset
-                    else {
-                        "codex": "Codex",
-                        "grok": "Grok Build",
-                    }.get(profile_id, profile_id.replace("_", " ")),
+                    else setup_providers.get(profile_id, profile_id.replace("_", " ")),
                     "status": connected.get(
                         "status",
                         "not_checked"

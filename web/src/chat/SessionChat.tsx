@@ -150,6 +150,7 @@ export function SessionChat(props: SessionChatProps) {
               nodes={commandResult() ? [...projection().nodes, commandResult()!] : projection().nodes}
               streamState={stream.state()}
               fresh={fresh()}
+              modelRequired={!props.session.model}
               agentId={props.session.agent_id}
               sendJump={sendJump()}
             />}</Show>

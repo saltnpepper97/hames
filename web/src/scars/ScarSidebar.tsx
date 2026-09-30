@@ -1,3 +1,4 @@
+import { CATALOG_SCOPE } from "../api/client";
 import { deleteScar } from "../api/client";
 import { DeletableSidebarRow } from "../components/DeletableSidebarRow";
 import { A, useLocation, useNavigate } from "@solidjs/router";
@@ -79,7 +80,7 @@ export function ScarSidebar() {
               >
                 <For each={scars()} fallback={<p class="scar-group-empty">No Scars</p>}>
                   {(scar) => (
-                    <DeletableSidebarRow name={scar.title} kind="Scar"
+                    <DeletableSidebarRow name={scar.title} kind="Scar" eligible={directory.sessionId() !== CATALOG_SCOPE}
                       description={<p>This permanently removes the Scar and its repair records from active storage. Its audit history remains in the local ledger.</p>}
                       onDelete={async () => {
                         const sessionId = directory.sessionId();
@@ -150,7 +151,7 @@ export function ScarSidebarAction() {
         class="sidebar-context-action sidebar-create-action sidebar-icon-action"
         aria-label="Create Scar"
         loading={preparing()}
-        disabled={workspace.connection() !== "connected"}
+        disabled={workspace.connection() !== "connected" || !workspace.selectedWorkspace()}
         title={error() || "Create Scar"}
         onClick={() => void open()}
       >

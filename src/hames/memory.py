@@ -1092,7 +1092,7 @@ class MemoryStore:
             return record.owner_agent_id == session.agent_id
         if record.visibility == "workspace":
             return record.workspace_path == session.working_directory
-        return record.lineage_root_session_id == self.lineage_root(session.id)
+        return bool(session.id) and record.lineage_root_session_id == self.lineage_root(session.id)
 
     def lineage_root(self, session_id: str) -> str:
         current = self.ledger.get_session(session_id)
