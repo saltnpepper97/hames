@@ -65,7 +65,12 @@ def test_builtin_skills_are_discovered_loadable_and_read_only(
     )
     registry = _registry(hames_paths, ledger)
 
-    expected = {"linux-gui-testing", "visual-verification", "web-app-debugging"}
+    expected = {
+        "linux-gui-testing",
+        "macos-gui-testing",
+        "visual-verification",
+        "web-app-debugging",
+    }
     catalog = registry.visible(session)
     assert expected <= {item.slug for item in catalog}
 

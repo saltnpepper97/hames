@@ -4,10 +4,14 @@
 
 ### Added
 
-- Experimental macOS core support: portable gateway process discovery and ownership
+- Experimental macOS support: portable gateway process discovery and ownership
   checks, terminal sizing, a native workspace folder picker, installer platform checks,
   and diagnostics that distinguish
-  core availability from unsupported isolation.
+  core availability from isolation support.
+- macOS sandboxed plugin workers and Skill scripts, with native file and network
+  boundary tests, and optional launchd login startup with lifecycle checks.
+- A built-in macOS GUI testing Skill for native screenshots, dialogs, and
+  privacy-permission handling.
 - Mac Keychain path and credential-command protections, plus macOS absolute-path
   recognition for Manual-mode workspace checks.
 - Linux, Apple Silicon, and Intel Mac CI coverage, including an installed-launcher
@@ -15,11 +19,9 @@
 
 ### Platform limits
 
-- Isolated plugins and Skill script execution still require Linux and Bubblewrap.
-  macOS rejects these operations by default; instruction-only Skills remain available.
-  The existing explicit unsandboxed plugin override remains an opt-in developer setting.
-- Native automated checks pass on macOS 15 on Apple Silicon and Intel, including
-  installed gateway/Web startup. Interactive checks remain before removing the
+- Managed SearXNG search still needs validation with a Mac Docker or Podman
+  engine. Interactive browser, terminal, provider, and desktop-permission checks
+  remain before removing the
   experimental label; see [macOS setup](docs/macos.md).
 
 ## 0.2.0

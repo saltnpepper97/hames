@@ -51,7 +51,7 @@ account connections.
 
 ## Install
 
-Hames supports Linux. Experimental macOS core support is available from the
+Hames supports Linux. Experimental macOS support is available from the
 current checkout; see [macOS setup and limitations](docs/macos.md). The `0.2.0`
 tag predates these portability changes.
 
@@ -298,6 +298,8 @@ hames gateway restart
 An optional systemd user unit is available at
 [contrib/systemd/hames.service](contrib/systemd/hames.service). Installing or
 enabling it is intentionally left to the user.
+On macOS, `hames gateway service install` enables an optional per-user
+LaunchAgent for login startup; see [macOS setup](docs/macos.md).
 
 ## Development
 

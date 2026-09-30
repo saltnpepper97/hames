@@ -43,7 +43,8 @@ def main() -> None:
             assert doctor["healthy"], doctor
             if sys.platform == "darwin":
                 assert not doctor["bubblewrap"]
-                assert doctor["limitations"]
+                assert doctor["macos_sandbox"]
+                assert not doctor["limitations"]
             run("gateway", "start")
             status = json.loads(run("gateway", "status"))
             assert status["healthy"] and status["pid"]

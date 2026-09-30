@@ -5,8 +5,10 @@ set -Eeuo pipefail
 case "$(uname -s)" in
   Linux) ;;
   Darwin)
-    printf 'Installing Hames for macOS (experimental core support).\n'
-    printf 'Isolated plugins and Skill scripts require Linux and are unavailable on macOS.\n'
+    printf 'Installing Hames for macOS (experimental support).\n'
+    if [[ ! -x /usr/bin/sandbox-exec ]]; then
+      printf 'Warning: macOS sandbox-exec is unavailable; isolated plugins and Skill scripts will be disabled.\n' >&2
+    fi
     ;;
   *)
     printf 'error: Hames requires Linux or macOS\n' >&2

@@ -36,10 +36,18 @@ def isolated_command(
     executable = executable.resolve()
     # Python installed by uv/Homebrew can live outside the sealed system tree.
     # Only its own runtime tree is readable, never the rest of the home folder.
-    runtime_roots = {Path(sys.base_prefix).resolve(), executable.parent}
-    if requested_executable.parent.name == "bin":
+    runtime_roots = {
+        Path(sys.base_prefix).resolve(),
+        executable.parent,
+        requested_executable.parent,
+    }
+    if (requested_executable.parent.parent / "pyvenv.cfg").is_file():
         runtime_roots.add(requested_executable.parent.parent)
-    if executable.name.startswith("python") and executable.parent.name == "bin":
+    if (
+        executable.name.startswith("python")
+        and executable.parent.name == "bin"
+        and executable.parent.parent not in {Path("/usr"), Path("/usr/local")}
+    ):
         runtime_roots.add(executable.parent.parent)
     read_roots = {
         Path("/System"),
