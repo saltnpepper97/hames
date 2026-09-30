@@ -82,7 +82,7 @@ credential-file configuration or configure the agent environment explicitly.
 
 ## Verification
 
-The platform workflow targets Linux, macOS 15 on Apple Silicon, and macOS 15 on
+The platform workflow targets Linux and macOS 15 and 26 on Apple Silicon and
 Intel. It runs Python and Rust tests, native isolation probes, static checks, a
 local source installation, and installed-launcher, TUI PTY, and launchd smoke checks.
 The TUI smoke sends a message to a local fixture provider and checks its reply. The
