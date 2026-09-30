@@ -3788,7 +3788,9 @@ async def test_goal_stall_guard_blocks_three_equivalent_unreported_steps(tmp_pat
         StreamEvent(kind=StreamEventKind.TEXT_DELTA, text="I could not make progress."),
         StreamEvent(kind=StreamEventKind.COMPLETED, finish_reason="stop"),
     ]
-    fake = FakeProvider([], turns=[repeated, repeated, repeated])
+    # Background maintenance shares the provider; it must not consume a finite
+    # goal-only response script and turn later goal steps into fixture errors.
+    fake = FakeProvider(repeated)
     state = GatewayState.create(paths, providers={"fake": fake})
     headers = {"Authorization": f"Bearer {state.token}"}
     transport = httpx.ASGITransport(app=create_app(state))
