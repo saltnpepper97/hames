@@ -5,7 +5,7 @@ import { SessionChat } from "../chat/SessionChat";
 import { PendingChatFrame } from "../chat/components/PendingChatFrame";
 import { WorkspaceRequiredFrame } from "../chat/components/WorkspaceRequiredFrame";
 import { Button } from "../components/Button";
-import { LoadingState } from "../components/LoadingState";
+import { ChatLoading } from "../components/ChatLoading";
 
 interface ChatPageProps {
   connection: ConnectionState;
@@ -25,7 +25,7 @@ export function ChatPage(props: ChatPageProps) {
   return (
     <section class="page chat-page" aria-labelledby="chat-title">
       <Show when={props.connection === "connecting"}>
-        <LoadingState variant="chat" label="Loading chats" />
+        <ChatLoading />
       </Show>
 
       <Show when={props.connection === "offline" || props.connection === "expired"}>
