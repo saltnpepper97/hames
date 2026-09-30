@@ -412,3 +412,28 @@ async def test_coordinator_only_rejects_direct_file_mutation(tmp_path: Path) -> 
         assert "coordinator-only" in results[0].payload["summary"]
     finally:
         await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_offline_agent_defaults_only_allowed_for_drafts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hames.agent import AgentExecution
+    from hames.agent_execution import resolve_agent_execution
+    from hames.config import HamesConfig
+    from hames.providers import ProviderError
+
+    provider = StageProvider()
+
+    async def unavailable() -> list[ProviderModel]:
+        raise ProviderError("provider_unavailable", "offline", retryable=True)
+
+    monkeypatch.setattr(provider, "list_models", unavailable)
+    execution = AgentExecution(provider="worker", model="stage-model", reasoning_effort="xhigh")
+    config = HamesConfig()
+    selection = await resolve_agent_execution(
+        execution, {"worker": provider}, config, allow_offline_draft=True
+    )
+    assert selection[:3] == ("worker", "stage-model", "xhigh")
+    with pytest.raises(ProviderError):
+        await resolve_agent_execution(execution, {"worker": provider}, config)

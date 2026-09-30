@@ -1,3 +1,4 @@
+import { CATALOG_SCOPE } from "../api/client";
 import { createContext, createSignal, useContext } from "solid-js";
 import type { Accessor, ParentProps } from "solid-js";
 import { listMemories, recentSession } from "../api/client";
@@ -55,13 +56,15 @@ export function MemoryDirectoryProvider(props: ParentProps) {
 
   const refresh = (): Promise<void> => {
     if (pending) return pending;
-    const workingDirectory = workspace.workingDirectory();
-    if (!workingDirectory) return Promise.resolve();
+    const workingDirectory = workspace.workingDirectory() || CATALOG_SCOPE;
+    if (workspace.connection() !== "connected") return Promise.resolve();
 
     setLoading(true);
     setError("");
     pending = (async () => {
-      const session = workspace.sessions()[0] ?? await recentSession(workingDirectory);
+      const session = workingDirectory === CATALOG_SCOPE
+        ? { id: CATALOG_SCOPE }
+        : workspace.sessions()[0] ?? await recentSession(workingDirectory);
       if (!session) {
         setRecords([]);
         setSessionId("");
@@ -84,7 +87,7 @@ export function MemoryDirectoryProvider(props: ParentProps) {
   };
 
   const ensureLoaded = () => {
-    const workingDirectory = workspace.workingDirectory();
+    const workingDirectory = workspace.workingDirectory() || CATALOG_SCOPE;
     return workingDirectory && loadedPath() === workingDirectory ? Promise.resolve() : refresh();
   };
 

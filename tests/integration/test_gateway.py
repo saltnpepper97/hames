@@ -6049,3 +6049,106 @@ async def test_orphaned_approval_is_cancelled_after_failure_or_recovery(
         assert not (tmp_path / "never-written").exists()
     finally:
         await state.runs.close()
+
+
+@pytest.mark.asyncio
+async def test_global_catalog_needs_no_workspace_or_provider(tmp_path: Path) -> None:
+    paths = HamesPaths.resolve(root=tmp_path / "home")
+    state = GatewayState.create(paths, providers={"fake": FakeProvider([])})
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            capabilities = await client.get("/v1/agents/default/capabilities", headers=headers)
+            assert capabilities.status_code == 200
+            skills = await client.get("/v1/catalog/skills/available", headers=headers)
+            assert skills.status_code == 200
+            assert skills.json()
+            assert all(item["scope"] != "workspace" for item in skills.json())
+            slug = skills.json()[0]["slug"]
+            detail = await client.get(f"/v1/catalog/skills/available/{slug}", headers=headers)
+            assert detail.status_code == 200
+            for resource in ("memories", "scars"):
+                response = await client.get(f"/v1/catalog/{resource}", headers=headers)
+                assert response.status_code == 200
+                assert response.json() == []
+            assert (await client.get("/v1/workspaces", headers=headers)).json() == []
+            assert (await client.get("/v1/sessions", headers=headers)).json() == []
+            created = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": "fixture",
+                },
+            )
+            session_id = created.json()["id"]
+            for visibility in ("global", "workspace", "session_team"):
+                memory = await client.post(
+                    f"/v1/sessions/{session_id}/memories",
+                    headers=headers,
+                    json={
+                        "layer": "semantic",
+                        "visibility": visibility,
+                        "subject": "test",
+                        "predicate": "fact",
+                        "value": visibility,
+                        "summary": visibility,
+                    },
+                )
+                assert memory.status_code == 201
+            visible = await client.get("/v1/catalog/memories", headers=headers)
+            assert visible.status_code == 200
+            assert [item["visibility"] for item in visible.json()] == ["global"]
+            assert (await client.get("/v1/catalog/memories")).status_code == 401
+            assert (
+                await client.post("/v1/catalog/memories", headers=headers, json={})
+            ).status_code == 405
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["", "fixture"])
+async def test_draft_chat_survives_unavailable_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    from hames.providers import ProviderError
+
+    provider = FakeProvider([])
+
+    async def unavailable() -> list[ProviderModel]:
+        raise ProviderError(
+            "provider_unavailable", "All connection attempts failed", retryable=True
+        )
+
+    monkeypatch.setattr(provider, "list_models", unavailable)
+    state = GatewayState.create(
+        HamesPaths.resolve(root=tmp_path / "home"), providers={"fake": provider}
+    )
+    headers = {"Authorization": f"Bearer {state.token}"}
+    transport = httpx.ASGITransport(app=create_app(state))
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/v1/sessions",
+                headers=headers,
+                json={
+                    "working_directory": str(tmp_path),
+                    "provider": "fake",
+                    "model": model,
+                },
+            )
+            assert response.status_code == 201
+            assert response.json()["model"] == model
+            # Choosing/changing a model still validates the provider, unlike creating a draft.
+            changed = await client.patch(
+                f"/v1/sessions/{response.json()['id']}",
+                headers=headers,
+                json={"provider": "fake", "model": "fixture", "reasoning_effort": "off"},
+            )
+            assert changed.status_code == 503
+            assert "Settings" in changed.json()["error"]["message"]
+    finally:
+        await state.runs.close()

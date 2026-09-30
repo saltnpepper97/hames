@@ -31,6 +31,7 @@ export function WorkspaceRequiredFrame(props: WorkspaceRequiredFrameProps) {
           <div class="transcript-scroll">
             <div class="transcript-column">
               <FreshChatHero />
+              <p>Select a project folder with “Choose workspace” below to enable chat.</p>
             </div>
           </div>
         </div>

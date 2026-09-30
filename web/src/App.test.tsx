@@ -655,7 +655,7 @@ function successfulFetch(options: { plugins?: PluginView[]; workspaces?: typeof 
   let currentWorkspaces = (options.workspaces ?? workspaces).map((workspace) => ({ ...workspace }));
   let createdSessionCount = 0;
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const path = String(input);
+    const path = String(input).replace(/^\/v1\/catalog\//, "/v1/sessions/session-current/");
     if (path === "/_hames/v1/bootstrap") return jsonResponse(bootstrap);
     if (path === "/v1/health") return jsonResponse(health);
     if (path === "/v1/workspaces" && !init?.method) return jsonResponse(currentWorkspaces);
@@ -803,7 +803,7 @@ function successfulFetch(options: { plugins?: PluginView[]; workspaces?: typeof 
       currentAgents = currentAgents.filter((agent) => agent.id !== "reviewer");
       return jsonResponse({ retired_to: "/home/.hames/agents/retired/reviewer" });
     }
-    if (path === "/v1/agents/default/capabilities?working_directory=%2Fwork%2Fhames") {
+    if (path === "/v1/agents/default/capabilities?working_directory=%2Fwork%2Fhames" || path === "/v1/agents/default/capabilities?") {
       return jsonResponse({
         tools: ["read_file", "shell", "write_file"],
         skills: [{
@@ -1221,6 +1221,39 @@ describe("Hames web shell", () => {
     const chatFrame = chatScroll?.closest(".session-chat");
     expect(chatFrame).toBeInTheDocument();
     expect(chatFrame?.querySelector(".composer-dock")).toBeInTheDocument();
+  });
+
+  it.each(["/memory", "/skills", "/scars"])("browses the global catalog without a workspace on %s", async (route) => {
+    window.history.replaceState({}, "", route);
+    const fetchMock = successfulFetch({ workspaces: [] });
+    vi.stubGlobal("fetch", fetchMock);
+    render(() => <App />);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).startsWith("/v1/catalog/"))).toBe(true));
+    expect(screen.queryByText("Choose a workspace to continue")).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input) === "/v1/sessions" && init?.method === "POST")).toBe(false);
+  });
+
+  it("explains provider setup when a draft has no selected model", async () => {
+    const fetchMock = successfulFetch();
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await fetchMock(input, init);
+      if (String(input).startsWith("/v1/sessions?")) {
+        return jsonResponse([{ ...sessions[0], model: "", title: null }]);
+      }
+      if (String(input) === "/v1/sessions/session-current") {
+        return jsonResponse({ ...sessions[0], model: "", title: null });
+      }
+      return response;
+    });
+    render(() => <App />);
+    expect(await screen.findByRole("button", { name: /^Model and thinking: Choose model/ })).toBeInTheDocument();
+  });
+
+  it("loads agents without a workspace", async () => {
+    window.history.replaceState({}, "", "/agents/default");
+    vi.stubGlobal("fetch", successfulFetch({ workspaces: [] }));
+    render(() => <App />);
+    expect(await screen.findByRole("heading", { name: "Identity" })).toBeInTheDocument();
   });
 
   it("starts without inheriting a launch directory when no workspace is authorized", async () => {

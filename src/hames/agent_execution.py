@@ -2,22 +2,36 @@
 
 from hames.agent import AgentExecution
 from hames.config import HamesConfig
-from hames.providers import Provider
+from hames.providers import Provider, ProviderError
 
 
 async def resolve_agent_execution(
     execution: AgentExecution,
     providers: dict[str, Provider],
     config: HamesConfig,
+    *,
+    allow_offline_draft: bool = False,
 ) -> tuple[str, str, str, int, str]:
     provider = providers.get(execution.provider)
     if provider is None:
         raise ValueError(f"unknown agent provider: {execution.provider}")
-    models = await provider.list_models()
+    profile = config.providers.get(execution.provider)
+    try:
+        models = await provider.list_models()
+    except ProviderError as exc:
+        if not allow_offline_draft or exc.code != "provider_unavailable":
+            raise
+        window = profile.context_window_tokens if profile else None
+        return (
+            execution.provider,
+            execution.model,
+            execution.reasoning_effort,
+            window or config.context.fallback_window_tokens,
+            "profile" if window else "fallback",
+        )
     model = next((item for item in models if item.id == execution.model), None)
     if model is None:
         raise ValueError(f"unknown agent model: {execution.provider}/{execution.model}")
-    profile = config.providers.get(execution.provider)
     efforts = model.reasoning_efforts
     if not efforts and profile and profile.model == model.id:
         efforts = profile.supported_reasoning_efforts

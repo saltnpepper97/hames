@@ -1,3 +1,8 @@
+export const CATALOG_SCOPE = "catalog";
+function readScope(sessionId: string): string {
+  return sessionId === CATALOG_SCOPE ? "/v1/catalog" : `/v1/sessions/${encodeURIComponent(sessionId)}`;
+}
+
 import type {
   AgentAvatarConfig,
   AgentCapabilities,
@@ -336,7 +341,7 @@ export function listMemories(
     offset: String(offset),
   });
   return request<MemoryRecord[]>(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/memories?${parameters.toString()}`,
+    `${readScope(sessionId)}/memories?${parameters.toString()}`,
   );
 }
 
@@ -375,7 +380,7 @@ export function deleteScar(
 
 export function listAvailableSkills(sessionId: string): Promise<SkillCatalogEntry[]> {
   return request<SkillCatalogEntry[]>(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/skills/available`,
+    `${readScope(sessionId)}/skills/available`,
   );
 }
 
@@ -411,7 +416,7 @@ export function listSkillJobs(sessionId: string): Promise<SkillJob[]> {
 
 export function listScars(sessionId: string): Promise<Scar[]> {
   return request<Scar[]>(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/scars?limit=200`,
+    `${readScope(sessionId)}/scars?limit=200`,
   );
 }
 
@@ -479,13 +484,13 @@ export function removePlugin(pluginId: string): Promise<{ removed: boolean }> {
 
 export function inspectScar(sessionId: string, scarId: string): Promise<ScarInspection> {
   return request<ScarInspection>(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/scars/${encodeURIComponent(scarId)}/inspection`,
+    `${readScope(sessionId)}/scars/${encodeURIComponent(scarId)}/inspection`,
   );
 }
 
 export function getAvailableSkill(sessionId: string, slug: string): Promise<SkillVersion> {
   return request<SkillVersion>(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/skills/available/${encodeURIComponent(slug)}`,
+    `${readScope(sessionId)}/skills/available/${encodeURIComponent(slug)}`,
   );
 }
 
@@ -497,7 +502,7 @@ export function getAgentCapabilities(
   agentId: string,
   workingDirectory: string,
 ): Promise<AgentCapabilities> {
-  const parameters = new URLSearchParams({ working_directory: workingDirectory });
+  const parameters = new URLSearchParams(workingDirectory ? { working_directory: workingDirectory } : {});
   return request<AgentCapabilities>(
     `/v1/agents/${encodeURIComponent(agentId)}/capabilities?${parameters.toString()}`,
   );

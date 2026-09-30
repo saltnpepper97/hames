@@ -1,3 +1,4 @@
+import { CATALOG_SCOPE } from "../api/client";
 import { deleteMemory } from "../api/client";
 import { DeletableSidebarRow } from "../components/DeletableSidebarRow";
 import { A, useLocation, useNavigate } from "@solidjs/router";
@@ -77,7 +78,7 @@ export function MemorySidebar() {
               >
                 <For each={records()} fallback={<p class="memory-group-empty">No active records</p>}>
                   {(record) => (
-                    <DeletableSidebarRow name={record.summary} kind="memory"
+                    <DeletableSidebarRow name={record.summary} kind="memory" eligible={directory.sessionId() !== CATALOG_SCOPE}
                       description={<p>This permanently removes the memory from Hames retrieval. The audit event recording this deletion remains in the local ledger.</p>}
                       onDelete={async () => {
                         const sessionId = directory.sessionId();
@@ -145,7 +146,7 @@ export function MemorySidebarAction() {
         class="sidebar-context-action sidebar-create-action sidebar-icon-action"
         aria-label="Add Memory"
         loading={preparing()}
-        disabled={workspace.connection() !== "connected"}
+        disabled={workspace.connection() !== "connected" || !workspace.selectedWorkspace()}
         title={error() || "Add memory"}
         onClick={() => void open()}
       >

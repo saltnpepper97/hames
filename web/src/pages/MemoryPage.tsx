@@ -1,3 +1,4 @@
+import { CATALOG_SCOPE } from "../api/client";
 import { useNavigate } from "@solidjs/router";
 import { For, Show, createSignal } from "solid-js";
 import { deleteMemory } from "../api/client";
@@ -45,7 +46,7 @@ function MemoryValueView(props: { value: MemoryValue }) {
     : <pre class="memory-json-value">{valueText(props.value)}</pre>;
 }
 
-function MemoryDetail(props: { record: MemoryRecord; onDelete: () => void }) {
+function MemoryDetail(props: { record: MemoryRecord; onDelete: () => void; readOnly?: boolean }) {
   const record = () => props.record;
   return (
     <section class="page memory-page" aria-labelledby="memory-title">
@@ -61,7 +62,8 @@ function MemoryDetail(props: { record: MemoryRecord; onDelete: () => void }) {
             variant="icon"
             class="detail-delete-action"
             aria-label={`Delete ${record().summary}`}
-            title="Delete memory"
+            title="Choose a workspace to delete memory"
+            disabled={props.readOnly}
             onClick={props.onDelete}
           >
             <Icon name="action.delete" size={17} />
@@ -150,7 +152,7 @@ export function MemoryPage(props: MemoryPageProps) {
           </section>
         }
       >
-        {(selected) => <MemoryDetail record={selected} onDelete={() => setConfirmingDelete(true)} />}
+        {(selected) => <MemoryDetail readOnly={directory.sessionId() === CATALOG_SCOPE} record={selected} onDelete={() => setConfirmingDelete(true)} />}
       </Show>
       <Show when={confirmingDelete() && record()} keyed>
         {(selected) => (
