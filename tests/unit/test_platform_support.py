@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import pytest
@@ -101,5 +102,67 @@ async def test_macos_skill_validation_and_execution_do_not_run_scripts(
         assert result.status == "rejected"
         assert "sandbox-exec missing" in result.summary
         assert not marker.exists()
+    finally:
+        await state.runs.close()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires native macOS sandbox")
+@pytest.mark.asyncio
+async def test_macos_skill_validation_and_runtime_execute_inside_sandbox(
+    hames_paths: HamesPaths, tmp_path: Path
+) -> None:
+    from hames.blobs import BlobStore
+    from hames.config import ToolsConfig
+    from hames.gateway import GatewayState
+    from hames.skills import SkillDraft, SkillScript
+    from hames.tools import ToolContext
+
+    state = GatewayState.create(hames_paths, providers={})
+    session = state.ledger.create_session(
+        working_directory=tmp_path, agent_id="default", provider="fake", model="fixture"
+    )
+    evidence = state.ledger.append(
+        session_id=session.id, event_type="user.message", payload={"content": "test Skill"}
+    )
+    script = SkillScript(
+        id="probe", path="scripts/probe.py", interpreter="python", description="Sandbox probe"
+    )
+    version = state.skills.registry.create_draft(
+        session=session,
+        draft=SkillDraft(
+            id="mac-sandbox-probe",
+            name="Mac sandbox probe",
+            description="Exercise native Skill isolation",
+            instructions="Run the probe in isolation.",
+            scripts=[script],
+            files={
+                "scripts/probe.py": """from pathlib import Path
+Path('result.txt').write_text('isolated')
+""",
+            },
+        ),
+        evidence_event_ids=[evidence.id],
+        created_by="user",
+        run_id=None,
+        causation_id=evidence.id,
+    ).version
+    try:
+        validation = state.skills._validate(version)  # pyright: ignore[reportPrivateUsage]
+        assert validation["passed"], validation
+        scratch = tmp_path / "scratch"
+        result = await state.runs._execute_skill_script(  # pyright: ignore[reportPrivateUsage]
+            version,
+            script.path,
+            script.interpreter,
+            [],
+            ToolContext(
+                project_root=tmp_path,
+                scratch_root=scratch,
+                blobs=BlobStore(tmp_path / "blobs"),
+                config=ToolsConfig(),
+            ),
+        )
+        assert result.status == "completed", result
+        assert (scratch / "result.txt").read_text(encoding="utf-8") == "isolated"
     finally:
         await state.runs.close()

@@ -687,7 +687,7 @@ class SkillManager:
                     py_compile.compile(str(path), doraise=True)
                 else:
                     subprocess.run(
-                        ["/usr/bin/bash", "-n", str(path)],
+                        ["/bin/bash", "-n", str(path)],
                         check=True,
                         capture_output=True,
                         timeout=self.config.skills.script_timeout_seconds,

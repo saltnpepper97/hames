@@ -57,3 +57,41 @@ for label, path in (
     assert "home_read=denied" in completed.stdout
     assert (scratch / "output.txt").read_text(encoding="utf-8") == "scratch data"
     assert not (project / "blocked.txt").exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires native macOS sandbox")
+def test_bash_skill_sandbox_reads_project_and_writes_scratch(tmp_path: Path) -> None:
+    package = tmp_path / "skill"
+    package.mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "input.txt").write_text("project data", encoding="utf-8")
+    script = package / "probe.sh"
+    script.write_text(
+        f"""#!/bin/bash
+cat {str(project / "input.txt")!r}
+printf 'scratch data' > output.txt
+if printf 'blocked' > {str(project / "blocked.txt")!r} 2>/dev/null; then
+  echo project_write=allowed
+else
+  echo project_write=denied
+fi
+""",
+        encoding="utf-8",
+    )
+    scratch = tmp_path / "scratch"
+    command = isolated_command(
+        executable=Path("/bin/bash"),
+        arguments=[str(script)],
+        package=package,
+        scratch=scratch,
+        project=project,
+    )
+    completed = subprocess.run(
+        command, cwd=scratch, capture_output=True, text=True, check=False, timeout=15
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "project data" in completed.stdout
+    assert "project_write=denied" in completed.stdout
+    assert (scratch / "output.txt").read_text(encoding="utf-8") == "scratch data"
+    assert not (project / "blocked.txt").exists()
