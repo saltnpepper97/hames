@@ -24,18 +24,28 @@ def _macos_picker_smoke(root: Path, port: int) -> None:
     url = f"http://127.0.0.1:{port}/v1/directories/select"
     script = """
 tell application "System Events"
+    set seenWindows to ""
     repeat 100 times
         repeat with picker in (every process whose name is "osascript")
             if (count of windows of picker) > 0 then
-                set frontmost of picker to true
-                key code 36
-                return "selected"
+                set pickerWindow to window 1 of picker
+                set pickerTitle to name of pickerWindow
+                set seenWindows to seenWindows & pickerTitle & "; "
+                if pickerTitle contains "Choose a folder for Hames" then
+                    set frontmost of picker to true
+                    if exists button "Choose" of pickerWindow then
+                        click button "Choose" of pickerWindow
+                        return "clicked Choose"
+                    end if
+                    set buttonNames to name of every button of pickerWindow
+                    error "Choose button missing in " & pickerTitle & ": " & buttonNames
+                end if
             end if
         end repeat
         delay 0.1
     end repeat
 end tell
-error "Hames folder picker did not appear"
+error "Hames folder picker did not appear; saw " & seenWindows
 """
     with httpx.Client(timeout=30) as client, ThreadPoolExecutor(max_workers=1) as pool:
         selected = pool.submit(
@@ -51,7 +61,8 @@ error "Hames folder picker did not appear"
             check=False,
             timeout=20,
         )
-        assert driven.returncode == 0, driven.stderr
+        assert driven.returncode == 0, (driven.stdout, driven.stderr)
+        print(f"Mac picker driver: {driven.stdout.strip()}")
         response = selected.result(timeout=30)
     assert response.status_code == 200, response.text
     assert response.json() == {"path": str(workspace)}

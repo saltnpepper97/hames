@@ -137,6 +137,7 @@ def main() -> None:
             _read_until(fd, b"fixture reply", seconds=30)
             fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 28, 90, 0, 0))
             os.kill(pid, signal.SIGWINCH)
+            _read_until(fd, b"\x1b[?2026l", seconds=15)
             os.write(fd, b"\x11")  # Ctrl+Q
             _wait_for_exit(fd, pid, seconds=15)
         finally:
