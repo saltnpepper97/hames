@@ -1680,7 +1680,13 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
             usage_response = await client.get(f"/v1/sessions/{session_id}/usage", headers=headers)
             usage_body = usage_response.json()
             assert usage_body["input_tokens"] == 10
-            assert usage_body["daily_activity"] == [
+            daily_activity = usage_body["daily_activity"]
+            # Background memory extraction may have requested the fake model by now.
+            assert len(daily_activity) == 1
+            assert daily_activity[0]["model_requests"] in (1, 2)
+            assert [
+                {k: v for k, v in item.items() if k != "model_requests"} for item in daily_activity
+            ] == [
                 {
                     "date": str(
                         next(event for event in events if event["type"] == "model.usage")[
@@ -1692,7 +1698,6 @@ async def test_gateway_runs_fake_conversation_with_durable_output(tmp_path: Path
                     "cached_input_tokens": 0,
                     "reasoning_tokens": 0,
                     "provider_reported_cost": 0.0,
-                    "model_requests": 1,
                 }
             ]
             assert usage_body["latest_context"] == {
@@ -4597,6 +4602,8 @@ async def test_runtime_delegates_with_an_explicit_task_card(tmp_path: Path) -> N
 @pytest.mark.asyncio
 async def test_agent_selection_changes_only_future_turns(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text("[memory]\nautomatic_extraction = false\n", encoding="utf-8")
     fake = FakeProvider(
         [],
         turns=[
