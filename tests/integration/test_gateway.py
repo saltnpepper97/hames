@@ -1158,6 +1158,8 @@ async def test_send_now_interrupts_and_runs_a_priority_turn_without_dropping_que
     tmp_path: Path,
 ) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text("[memory]\nautomatic_extraction = false\n", encoding="utf-8")
     provider = QueueProvider()
     state = GatewayState.create(paths, providers={"fake": provider})
     headers = {"Authorization": f"Bearer {state.token}"}
@@ -2835,6 +2837,8 @@ async def test_planning_only_run_still_runs_wrap_up_observers(tmp_path: Path) ->
 @pytest.mark.asyncio
 async def test_plan_notes_wait_for_draft_then_coalesce_in_order(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text("[memory]\nautomatic_extraction = false\n", encoding="utf-8")
     provider = PlanRevisionProvider()
     state = GatewayState.create(paths, providers={"fake": provider})
     headers = {"Authorization": f"Bearer {state.token}"}
@@ -4471,6 +4475,8 @@ async def test_plan_mode_rejects_writes_in_the_gateway(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_runtime_delegates_with_an_explicit_task_card(tmp_path: Path) -> None:
     paths = HamesPaths.resolve(root=tmp_path / "home")
+    paths.ensure_foundation()
+    paths.config_file.write_text("[memory]\nautomatic_extraction = false\n", encoding="utf-8")
     fake = FakeProvider(
         [],
         turns=[

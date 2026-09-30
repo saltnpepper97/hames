@@ -21,16 +21,20 @@ def test_skill_sandbox_reads_project_and_writes_only_scratch(tmp_path: Path) -> 
         secret = Path(secret_dir) / "secret.txt"
         secret.write_text("private", encoding="utf-8")
         script = package / "probe.py"
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        (scratch / "redirect").symlink_to(project / "blocked.txt")
         script.write_text(
             f"""from pathlib import Path
 print('project=' + Path({str(project / "input.txt")!r}).read_text())
 Path('output.txt').write_text('scratch data')
 for label, path in (
     ('project_write', Path({str(project / "blocked.txt")!r})),
+    ('project_symlink_write', Path('redirect')),
     ('home_read', Path({str(secret)!r})),
 ):
     try:
-        if label == 'project_write':
+        if label in ('project_write', 'project_symlink_write'):
             path.write_text('blocked')
         else:
             path.read_text()
@@ -40,7 +44,6 @@ for label, path in (
 """,
             encoding="utf-8",
         )
-        scratch = tmp_path / "scratch"
         command = isolated_command(
             executable=Path(sys.executable),
             arguments=[str(script)],
@@ -54,6 +57,7 @@ for label, path in (
     assert completed.returncode == 0, completed.stderr
     assert "project=project data" in completed.stdout
     assert "project_write=denied" in completed.stdout
+    assert "project_symlink_write=denied" in completed.stdout
     assert "home_read=denied" in completed.stdout
     assert (scratch / "output.txt").read_text(encoding="utf-8") == "scratch data"
     assert not (project / "blocked.txt").exists()
