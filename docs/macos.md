@@ -84,13 +84,14 @@ credential-file configuration or configure the agent environment explicitly.
 
 The platform workflow targets Linux, macOS 15 on Apple Silicon, and macOS 15 on
 Intel. It runs Python and Rust tests, native isolation probes, static checks, a
-local source installation, and installed-launcher and launchd smoke checks. The
+local source installation, and installed-launcher, TUI PTY, and launchd smoke checks. The
 launcher smoke uses disposable state and a
 separate port to exercise diagnostics, start/restart/stop, authenticated Web
 launch, and serving bundled assets without touching your normal Hames gateway:
 
 ```bash
 uv run python scripts/smoke_install.py "$(command -v hames)"
+uv run python scripts/smoke_tui.py "$(command -v hames)"
 ```
 
 [Platform CI](https://github.com/saltnpepper97/hames/actions) contains the
@@ -104,7 +105,7 @@ HAMES_TEST_SEARXNG=1 uv run pytest -q tests/unit/test_web_search.py -k managed_s
 ```
 
 Before removing the experimental label, a real Mac should also
-verify interactive TUI resizing/input, opening the Web UI and choosing a
+verify the TUI's visible appearance after resizing, opening the Web UI and choosing a
 workspace folder in a browser, one provider-backed conversation, file edits and
 shell commands in a disposable workspace, cancellation of a running command,
 and a real Screen Recording or Accessibility permission flow when using desktop

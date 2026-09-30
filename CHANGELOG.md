@@ -15,7 +15,8 @@
 - Mac Keychain path and credential-command protections, plus macOS absolute-path
   recognition for Manual-mode workspace checks.
 - Linux, Apple Silicon, and Intel Mac CI coverage, including an installed-launcher
-  smoke check for gateway lifecycle, Web authentication, and bundled assets.
+  smoke check for gateway lifecycle, Web authentication, bundled assets, and
+  TUI PTY input and resizing.
 
 ### Platform limits
 

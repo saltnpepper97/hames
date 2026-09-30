@@ -45,6 +45,8 @@ jobs:
         run: HAMES_INSTALL_LOCAL=1 HAMES_BIN_DIR="$RUNNER_TEMP/hames-bin" ./install.sh
       - name: Installed launcher and Web smoke
         run: uv run python scripts/smoke_install.py "$RUNNER_TEMP/hames-bin/hames"
+      - name: Installed TUI PTY smoke
+        run: uv run python scripts/smoke_tui.py "$RUNNER_TEMP/hames-bin/hames"
       - name: macOS launchd smoke
         if: runner.os == 'macOS'
         run: uv run python scripts/smoke_launchd.py
