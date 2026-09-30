@@ -857,3 +857,52 @@ def test_auto_allows_scoped_cleanup_but_keeps_broad_deletion_confirmation(
         ).decision
         is PolicyDecisionKind.REQUIRE_CONFIRMATION
     )
+
+
+@pytest.mark.parametrize("mode", ["manual", "auto", "plan"])
+def test_macos_keychains_are_protected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: Literal["manual", "auto", "plan"]
+) -> None:
+    user_home = tmp_path / "user-home"
+    keychains = user_home / "Library" / "Keychains"
+    keychains.mkdir(parents=True)
+    (keychains / "login.keychain-db").write_text("test credentials", encoding="utf-8")
+    (keychains / "metadata").write_text("test metadata", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(user_home))
+    context = tool_context(tmp_path)
+    gate = PolicyGate(tmp_path / "hames-home")
+    for path in ["~/Library/Keychains/login.keychain-db", "~/Library/Keychains/metadata"]:
+        result = gate.decide(
+            "read_file", ReadFileArguments(path=path), context, interaction_mode=mode
+        )
+        assert result.decision is PolicyDecisionKind.DENY
+        assert result.risk == "secret"
+    for command in [
+        "cat ~/Library/Keychains/login.keychain-db",
+        "cat /Users/example/Library/Keychains/login.keychain-db",
+        "security find-generic-password -w -s fixture",
+        "/usr/bin/security -v find-internet-password -w -s fixture",
+        "security dump-keychain",
+        "security export -o output.pem",
+    ]:
+        assert (
+            gate.decide(
+                "shell", ShellArguments(command=command), context, interaction_mode=mode
+            ).decision
+            is PolicyDecisionKind.DENY
+        )
+
+
+def test_manual_shell_recognizes_macos_absolute_paths(tmp_path: Path) -> None:
+    context = tool_context(tmp_path)
+    gate = PolicyGate(tmp_path / "hames-home")
+    for path in ["/Users/example/file", "/Volumes/External/file", "/private/var/file"]:
+        decision = gate.decide(
+            "shell",
+            ShellArguments(command=f"cat {path}"),
+            context,
+            interaction_mode="manual",
+            session_tool_granted=True,
+        )
+        assert decision.decision is PolicyDecisionKind.REQUIRE_CONFIRMATION
+        assert decision.risk == "outside_workspace"

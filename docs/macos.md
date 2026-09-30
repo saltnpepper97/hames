@@ -16,7 +16,7 @@ developer tools (`xcode-select --install`), Git, Python 3.12 or newer,
 the checkout includes its built assets.
 
 ```bash
-git clone https://github.com/saltnpepper97/hames.git
+git clone --branch macos-core-support https://github.com/saltnpepper97/hames.git
 cd hames
 HAMES_INSTALL_LOCAL=1 ./install.sh
 hames setup
@@ -24,7 +24,7 @@ hames doctor
 hames web
 ```
 
-Until the macOS changes are merged, use the branch containing them. The normal
+The command above selects the preparation branch. The normal
 tagged installer still selects `0.2.0`, which does not contain macOS preparation.
 The local installer keeps its Python environment in this checkout, so retain it.
 The launcher normally installs into `~/.local/bin`; add that directory to PATH
@@ -52,7 +52,8 @@ enable Linux isolation. Skill script execution and validation stop before
 running scripts when isolation is unavailable. Plugin workers are rejected by
 default. The existing `plugins.allow_unsandboxed_user_plugins` developer override
 still permits explicitly trusted workers without isolation; the installer does
-not enable it.
+not enable it. Generic tools also protect Mac Keychain paths and common
+credential-export commands.
 
 The gateway survives closing the client. Use `hames gateway status`,
 `hames gateway stop`, and `hames gateway restart` to manage it. Quit active work
@@ -71,7 +72,7 @@ uv run python scripts/smoke_install.py "$(command -v hames)"
 ```
 
 Before claiming Mac support, both Mac CI jobs must pass. A real Mac should also
-verify interactive TUI resizing/input, opening the Web UI and choosing a workspace folder in a browser, one
-provider-backed conversation, file edits and shell commands in a disposable
+verify interactive TUI resizing/input, opening the Web UI and choosing a
+workspace folder in a browser, one provider-backed conversation, file edits and shell commands in a disposable
 workspace, and cancellation of a running command. Automated Web HTTP checks do
 not verify browser rendering or interactive terminal behavior.

@@ -8,6 +8,8 @@
   checks, terminal sizing, a native workspace folder picker, installer platform checks,
   and diagnostics that distinguish
   core availability from unsupported isolation.
+- Mac Keychain path and credential-command protections, plus macOS absolute-path
+  recognition for Manual-mode workspace checks.
 - Linux, Apple Silicon, and Intel Mac CI coverage, including an installed-launcher
   smoke check for gateway lifecycle, Web authentication, and bundled assets.
 
