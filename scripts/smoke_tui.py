@@ -58,6 +58,25 @@ def _read_until(fd: int, needle: bytes, *, seconds: float) -> bytes:
     raise AssertionError(f"TUI output did not contain {needle!r}: {bytes(output[-800:])!r}")
 
 
+def _wait_for_exit(fd: int, pid: int, *, seconds: float) -> None:
+    output = bytearray()
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        finished, status = os.waitpid(pid, os.WNOHANG)
+        if finished:
+            assert os.waitstatus_to_exitcode(status) == 0, (status, bytes(output[-800:]))
+            return
+        ready, _, _ = select.select([fd], [], [], 0.1)
+        if ready:
+            try:
+                output.extend(os.read(fd, 65_536))
+            except OSError:
+                pass
+            if len(output) > 4_096:
+                del output[:-4_096]
+    raise AssertionError(f"TUI did not exit after Ctrl+Q: {bytes(output[-800:])!r}")
+
+
 def main() -> None:
     binary = Path(sys.argv[1]).resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix="hames-tui-smoke-") as directory:
@@ -93,15 +112,7 @@ def main() -> None:
             fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 28, 90, 0, 0))
             os.kill(pid, signal.SIGWINCH)
             os.write(fd, b"\x11")  # Ctrl+Q
-            deadline = time.monotonic() + 15
-            while time.monotonic() < deadline:
-                finished, status = os.waitpid(pid, os.WNOHANG)
-                if finished:
-                    assert os.waitstatus_to_exitcode(status) == 0, status
-                    break
-                time.sleep(0.1)
-            else:
-                raise AssertionError("TUI did not exit after Ctrl+Q")
+            _wait_for_exit(fd, pid, seconds=15)
         finally:
             try:
                 os.kill(pid, signal.SIGTERM)

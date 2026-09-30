@@ -80,7 +80,10 @@ def isolated_command(
             + ")",
             '(allow file-read-data (literal "/"))',
             "(allow file-read* " + " ".join(sorted(map(_subpath, read_roots))) + ")",
+            '(allow file-read* (literal "/dev/null") (literal "/dev/zero") '
+            '(literal "/dev/random") (literal "/dev/urandom"))',
             f"(allow file-write* {_subpath(scratch)})",
+            '(allow file-write* (literal "/dev/null"))',
         ]
     )
     return [

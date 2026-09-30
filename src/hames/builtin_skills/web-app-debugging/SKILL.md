@@ -99,7 +99,8 @@ Use this loop:
 - Fallback: another existing browser runner or a documented manual verification handoff. Static
   source inspection alone is not a visual or behavioral test.
 - Load `visual-verification` as a companion for visible changes. For Tauri or Electron on Linux,
-  also load `linux-gui-testing` when native-window or desktop-session behavior matters.
+  also load `linux-gui-testing` when native-window or desktop-session behavior matters. On macOS,
+  load `macos-gui-testing` for native windows, dialogs, and desktop capture.
 
 Keep logs, screenshots, traces, and temporary profiles together under a task-specific scratch
 location. Preserve only artifacts useful as evidence and remove disposable runtime state.
