@@ -4,7 +4,8 @@ Hames now has a portability path for the Web UI, terminal UI and REPL, local
 files and shell tools, native workspace folder selection, provider connections,
 sessions, memory, goals, delegation,
 and external MCP servers. These changes are newer than the `0.2.0` release.
-Native macOS validation is pending; this is not yet a claim of tested Mac support.
+Automated core checks pass on macOS 15 on Apple Silicon and Intel. Interactive
+Mac verification remains on the checklist below, so support is experimental.
 
 ## Install from the checkout
 
@@ -28,7 +29,9 @@ The command above selects the preparation branch. The normal
 tagged installer still selects `0.2.0`, which does not contain macOS preparation.
 The local installer keeps its Python environment in this checkout, so retain it.
 The launcher normally installs into `~/.local/bin`; add that directory to PATH
-if prompted. Hames state remains in `~/.hames`, or the directory set by
+if prompted. When updating an existing installation, finish active work and run
+`hames gateway restart` after installation to load the new backend.
+Hames state remains in `~/.hames`, or the directory set by
 `HAMES_HOME`.
 
 `hames` starts the TUI; `hames repl` starts the line-oriented interface.
@@ -39,7 +42,7 @@ API providers need their usual connection configuration.
 
 | Capability | macOS preparation |
 | --- | --- |
-| Gateway, Web, TUI, REPL, providers, sessions and delegation | Portable implementation; native checks pending |
+| Gateway, Web, TUI, REPL, providers, sessions and delegation | Native automated checks pass; interactive checks remain |
 | Instruction-only Skills and external MCP | Available without Bubblewrap |
 | Isolated plugin workers and Skill scripts | Unavailable; require Linux Bubblewrap |
 | Managed SearXNG search | Optional; needs a working Docker or Podman engine; not validated on Mac |
@@ -71,7 +74,14 @@ launch, and serving bundled assets without touching your normal Hames gateway:
 uv run python scripts/smoke_install.py "$(command -v hames)"
 ```
 
-Before claiming Mac support, both Mac CI jobs must pass. A real Mac should also
+[Platform CI](https://github.com/saltnpepper97/hames/actions/runs/36711166877)
+passed on Linux, Apple Silicon, and Intel for code commit `0676294`. Both Macs
+passed 503 Python tests (two optional/Linux-only skips), 246 Rust tests, static
+checks, package builds, and the installed-launcher smoke. AppleScript compilation
+is checked natively; folder selection and cancellation also have mocked regression
+coverage.
+
+Before removing the experimental label, a real Mac should also
 verify interactive TUI resizing/input, opening the Web UI and choosing a
 workspace folder in a browser, one provider-backed conversation, file edits and shell commands in a disposable
 workspace, and cancellation of a running command. Automated Web HTTP checks do

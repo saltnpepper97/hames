@@ -18,7 +18,9 @@
 - Isolated plugins and Skill script execution still require Linux and Bubblewrap.
   macOS rejects these operations by default; instruction-only Skills remain available.
   The existing explicit unsandboxed plugin override remains an opt-in developer setting.
-- Native macOS validation is pending; see [macOS setup](docs/macos.md).
+- Native automated checks pass on macOS 15 on Apple Silicon and Intel, including
+  installed gateway/Web startup. Interactive checks remain before removing the
+  experimental label; see [macOS setup](docs/macos.md).
 
 ## 0.2.0
 
