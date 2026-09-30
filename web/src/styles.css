@@ -8290,7 +8290,7 @@ a {
 
 .plugin-empty-icon {
   display: grid;
-  width: 3.25rem;
+  width: 2.5rem;
   height: 3.25rem;
   margin-bottom: 1.4rem;
   place-items: center;
@@ -8635,7 +8635,7 @@ a {
 
 .plugin-folder-picker-icon {
   display: grid;
-  width: 3.25rem;
+  width: 2.5rem;
   height: 3.25rem;
   border-radius: 1rem;
   background: var(--background);
@@ -10851,9 +10851,9 @@ a {
 /* Keep the composer recognizable before a chat can send. */
 .pending-composer textarea:disabled {
   opacity: 1;
-  color: var(--text);
-  -webkit-text-fill-color: var(--text);
-  cursor: default;
+  color: var(--muted);
+  -webkit-text-fill-color: var(--muted);
+  cursor: not-allowed;
 }
 
 .composer-start-guidance {
@@ -10872,4 +10872,52 @@ a {
 
 .chat-start-notice p {
   margin: 0 0 0.5rem;
+}
+
+@font-face {
+  font-family: "Caveat";
+  src: url("./assets/fonts/caveat.ttf") format("truetype");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+.composer-setup-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.55rem;
+}
+
+.composer-setup-row .workspace-switcher-block {
+  width: auto;
+}
+
+.workspace-setup-note {
+  flex: 1;
+  min-width: 10rem;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0;
+  color: var(--text-soft);
+  font-family: "Caveat", cursive;
+  font-size: 1rem;
+  line-height: 1.2;
+}
+
+.workspace-note-arrow {
+  width: 1.7rem;
+  height: 1.3rem;
+  flex: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+@media (max-width: 540px) {
+  .workspace-setup-note {
+    font-size: 0.95rem;
+  }
 }

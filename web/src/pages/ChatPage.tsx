@@ -25,7 +25,7 @@ export function ChatPage(props: ChatPageProps) {
     if (props.connection === "expired") return "Reopen Hames Web to reconnect.";
     if (props.connection === "offline") return "Reconnect to Hames to send messages.";
     if (props.connection === "connecting") return "Connecting to Hames…";
-    if (props.workspaceRequired) return "Select a workspace to start chatting.";
+    if (props.workspaceRequired) return "Choose a workspace to start.";
     if (props.startError) return "Retry starting your chat to send messages.";
     return "Preparing your chat…";
   };

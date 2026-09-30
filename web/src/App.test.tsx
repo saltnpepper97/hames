@@ -1275,7 +1275,7 @@ describe("Hames web shell", () => {
       .not.toBeInTheDocument();
     const input = screen.getByRole("textbox", { name: "Message Hames" });
     expect(input.closest(".composer-stack")).toBeInTheDocument();
-    expect(input).toHaveAccessibleDescription("Select a workspace to start chatting.");
+    expect(input).toHaveAccessibleDescription("Choose a workspace to start.");
     expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
     const chooseWorkspace = screen.getByRole("button", { name: "Choose a workspace" });
     expect(chooseWorkspace).toHaveTextContent("Choose workspace");

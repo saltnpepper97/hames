@@ -50,7 +50,7 @@ export function WorkspaceRequiredFrame(props: WorkspaceRequiredFrameProps) {
           </div>
         </div>
         <div class="composer-dock" data-chat-region="composer">
-          <div class="composer-workspace-control">
+          <div class="composer-workspace-control composer-setup-row">
             <WorkspaceSwitcher
               workspaces={workspace.workspaces()}
               selected={workspace.selectedWorkspace()}
@@ -62,6 +62,16 @@ export function WorkspaceRequiredFrame(props: WorkspaceRequiredFrameProps) {
               }}
               onAdd={() => void chooseWorkspace()}
             />
+            <p id="chat-start-guidance" class="workspace-setup-note" role="status">
+              <Show when={props.workspaceRequired && props.canSelectWorkspace !== false}>
+                <svg class="workspace-note-arrow" viewBox="0 0 56 30" fill="none" aria-hidden="true">
+                  <path d="M53 6C37 3 35 24 8 18M8 18l10-8M8 18l12 7" />
+                </svg>
+              </Show>
+              <span>{props.notice || (props.workspaceRequired !== false
+                ? "Choose a workspace to start."
+                : "Preparing your chat…")}</span>
+            </p>
           </div>
           <div class="composer-stack pending-composer">
             <div class="composer-shell">
@@ -74,11 +84,7 @@ export function WorkspaceRequiredFrame(props: WorkspaceRequiredFrameProps) {
                 disabled
               />
               <div class="composer-toolbar">
-                <p id="chat-start-guidance" class="composer-start-guidance" role="status">
-                  {props.notice || (props.workspaceRequired !== false
-                    ? "Select a workspace to start chatting."
-                    : "Preparing your chat…")}
-                </p>
+                <div class="composer-toolbar-spacer" />
                 <Button
                   variant="bare"
                   class="composer-round send"
