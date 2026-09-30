@@ -6,7 +6,7 @@ import { MessageComposer } from "./MessageComposer";
 
 vi.mock("@solidjs/router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("../../api/client", () => ({ cancelRun: vi.fn(async () => ({ cancelled: true })) }));
-vi.mock("../../shell/workspace", () => ({ useWorkspace: () => ({}) }));
+vi.mock("../../shell/workspace", () => ({ useWorkspace: () => ({ connection: () => "connected", selectedWorkspace: () => ({ id: "workspace-one" }) }) }));
 vi.mock("../../shell/pluginContext", () => ({
   useWebPlugins: () => ({ composerControls: new Map(), composerActions: [] }),
 }));

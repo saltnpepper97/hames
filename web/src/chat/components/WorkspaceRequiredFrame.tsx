@@ -10,6 +10,13 @@ import { ChatFrame } from "./ChatFrame";
 import { FreshChatHero } from "./FreshChatHero";
 
 interface WorkspaceRequiredFrameProps {
+  workspaceRequired?: boolean;
+  notice?: string;
+  error?: string;
+  retryLabel?: string;
+  onRetry?: () => void;
+  busy?: boolean;
+  canSelectWorkspace?: boolean;
   onSessionOpened: (session: Session) => void;
 }
 
@@ -31,38 +38,57 @@ export function WorkspaceRequiredFrame(props: WorkspaceRequiredFrameProps) {
           <div class="transcript-scroll">
             <div class="transcript-column">
               <FreshChatHero />
-              <p>Select a project folder with “Choose workspace” below to enable chat.</p>
+              <Show when={props.error}>
+                <div class="chat-start-notice" role="alert">
+                  <p>{props.error}</p>
+                  <Show when={props.onRetry}>
+                    <Button variant="quiet" loading={props.busy} onClick={props.onRetry}>{props.retryLabel || "Try again"}</Button>
+                  </Show>
+                </div>
+              </Show>
             </div>
           </div>
         </div>
         <div class="composer-dock" data-chat-region="composer">
           <div class="composer-workspace-control">
             <WorkspaceSwitcher
-              workspaces={[]}
+              workspaces={workspace.workspaces()}
+              selected={workspace.selectedWorkspace()}
+              disabled={props.canSelectWorkspace === false}
               adding={picking()}
-              onSelect={async () => undefined}
+              onSelect={async (id) => {
+                await workspace.selectWorkspace(id);
+                props.onSessionOpened(await workspace.createChat());
+              }}
               onAdd={() => void chooseWorkspace()}
             />
           </div>
-          <div class="composer-shell pending-composer">
-            <TextArea
-              rows={1}
-              resize="none"
-              placeholder="Choose a workspace first"
-              aria-label="Message Hames"
-              disabled
-            />
-            <div class="composer-toolbar">
-              <div class="composer-toolbar-spacer" />
-              <Button
-                variant="bare"
-                class="composer-round send"
-                type="button"
-                aria-label="Send message"
+          <div class="composer-stack pending-composer">
+            <div class="composer-shell">
+              <TextArea
+                rows={1}
+                resize="none"
+                placeholder="Message Hames…"
+                aria-describedby="chat-start-guidance"
+                aria-label="Message Hames"
                 disabled
-              >
-                <Icon name="action.send" size={18} />
-              </Button>
+              />
+              <div class="composer-toolbar">
+                <p id="chat-start-guidance" class="composer-start-guidance" role="status">
+                  {props.notice || (props.workspaceRequired !== false
+                    ? "Select a workspace to start chatting."
+                    : "Preparing your chat…")}
+                </p>
+                <Button
+                  variant="bare"
+                  class="composer-round send"
+                  type="button"
+                  aria-label="Send message"
+                  disabled
+                >
+                  <Icon name="action.send" size={18} />
+                </Button>
+              </div>
             </div>
           </div>
         </div>

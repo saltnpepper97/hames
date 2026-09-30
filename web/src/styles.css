@@ -10847,3 +10847,29 @@ a {
 .decision-card h2 { overflow-wrap: anywhere; }
 .decision-actions, .custom-answer { flex-wrap: wrap; }
 .delegation-transcript-link { display: block; margin-top: .25rem; font-size: .78rem; }
+
+/* Keep the composer recognizable before a chat can send. */
+.pending-composer textarea:disabled {
+  opacity: 1;
+  color: var(--text);
+  -webkit-text-fill-color: var(--text);
+  cursor: default;
+}
+
+.composer-start-guidance {
+  flex: 1;
+  margin: 0;
+  padding: 0 0.55rem;
+  color: var(--text-soft);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.chat-start-notice {
+  margin: 1rem 0;
+  color: var(--text-soft);
+}
+
+.chat-start-notice p {
+  margin: 0 0 0.5rem;
+}

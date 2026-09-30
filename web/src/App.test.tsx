@@ -1117,6 +1117,12 @@ function durableEvent(
   };
 }
 
+async function readyComposer() {
+  // The input is visible during setup/loading too; interaction needs the live composer.
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message Hames" })).toBeEnabled());
+  return screen.getByRole("textbox", { name: "Message Hames" });
+}
+
 describe("Hames web shell", () => {
   beforeEach(() => {
     window.history.replaceState({}, "", "/chat/session-current");
@@ -1267,6 +1273,10 @@ describe("Hames web shell", () => {
     expect(freshHeading.closest(".chat-view-panel")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Add a workspace to begin" }))
       .not.toBeInTheDocument();
+    const input = screen.getByRole("textbox", { name: "Message Hames" });
+    expect(input.closest(".composer-stack")).toBeInTheDocument();
+    expect(input).toHaveAccessibleDescription("Select a workspace to start chatting.");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
     const chooseWorkspace = screen.getByRole("button", { name: "Choose a workspace" });
     expect(chooseWorkspace).toHaveTextContent("Choose workspace");
     expect(fetchMock.mock.calls.some(([input, init]) =>
@@ -2349,7 +2359,7 @@ describe("Hames web shell", () => {
 
     firstView.unmount();
     render(() => <App />);
-    const restored = await screen.findByRole("textbox", { name: "Message Hames" });
+    const restored = await readyComposer();
     expect(restored).toHaveValue("Keep this after refresh");
 
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
@@ -2373,7 +2383,7 @@ describe("Hames web shell", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     const first = render(() => <App />);
-    await screen.findByRole("textbox", { name: "Message Hames" });
+    await readyComposer();
     fireEvent.click(screen.getByRole("button", { name: "Interaction mode" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Plan" }));
     await waitFor(() => expect(document.querySelector('[data-icon="mode.plan"]')).toBeInTheDocument());
@@ -2383,7 +2393,7 @@ describe("Hames web shell", () => {
     expect(document.querySelector('[data-chat-region="composer"] .plan-review')).toBeInTheDocument();
     first.unmount();
     render(() => <App />);
-    await screen.findByRole("textbox", { name: "Message Hames" });
+    await readyComposer();
     const source = MockEventSource.instances.at(-1)!;
     source.emit("plan.proposed", proposal);
     expect(await screen.findByText("Plan ready for review")).toBeInTheDocument();
@@ -2876,7 +2886,7 @@ describe("Hames web shell", () => {
         url === "/v1/sessions" && init?.method === "POST"
       )).toHaveLength(1);
     });
-    expect(await screen.findByRole("textbox", { name: "Message Hames" })).not.toBeDisabled();
+    expect(await readyComposer()).not.toBeDisabled();
   });
 
   it("keeps one New chat row without management actions until it has a title", async () => {
@@ -2989,7 +2999,7 @@ describe("Hames web shell", () => {
       return baseFetch(input, init);
     }));
     render(() => <App />);
-    const composer = await screen.findByRole("textbox", { name: "Message Hames" });
+    const composer = await readyComposer();
     fireEvent.input(composer, { target: { value: "Fourth pending message" } });
     fireEvent.keyDown(composer, { key: "Enter" });
     await screen.findByText("Queue is full (3 pending messages). Remove a message or wait for a slot.");
@@ -3019,7 +3029,7 @@ describe("Hames web shell", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     render(() => <App />);
-    const composer = await screen.findByRole("textbox", { name: "Message Hames" });
+    const composer = await readyComposer();
     fireEvent.input(composer, { target: { value: "Use this newly added workspace" } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
     expect(await screen.findByText("working directory is not trusted")).toBeInTheDocument();
@@ -3541,6 +3551,45 @@ describe("Hames web shell", () => {
     expect(screen.queryByRole("button", { name: "Delete Hames" })).not.toBeInTheDocument();
   });
 
+  it("keeps an existing draft visible and blocks sending while disconnected", async () => {
+    const base = successfulFetch();
+    let offline = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (offline && String(input) === "/_hames/v1/bootstrap") throw new TypeError("connection refused");
+      return base(input, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(() => <App />);
+    const input = await readyComposer();
+    fireEvent.input(input, { target: { value: "Keep my draft" } });
+    offline = true;
+    fireEvent(window, new Event("online"));
+    await screen.findByText("Reconnect to Hames to send messages.");
+    expect(screen.getByRole("textbox", { name: "Message Hames" })).toBe(input);
+    expect(input).toHaveValue("Keep my draft");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/messages") && init?.method === "POST")).toBe(false);
+  });
+
+  it("keeps the composer visible when creating a chat fails", async () => {
+    window.history.replaceState({}, "", "/chat");
+    const fetchMock = successfulFetch({ emptyWorkspace: true });
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/v1/sessions" && init?.method === "POST") {
+        return jsonResponse({ error: { code: "provider_unavailable", message: "Provider offline", retryable: true } }, 503);
+      }
+      return fetchMock(input, init);
+    });
+    render(() => <App />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Provider offline");
+    const input = screen.getByRole("textbox", { name: "Message Hames" });
+    expect(input.closest(".composer-stack")).toBeInTheDocument();
+    expect(input).toHaveAccessibleDescription("Retry starting your chat to send messages.");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
+
   it("surfaces a retryable offline state", async () => {
     const fetchMock = vi
       .fn()
@@ -3550,6 +3599,8 @@ describe("Hames web shell", () => {
     render(() => <App />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("connection refused");
+    expect(screen.getByRole("textbox", { name: "Message Hames" }).closest(".composer-stack")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Retry connection" }));
     await waitFor(() => expect(screen.getAllByText("Connected").length).toBeGreaterThan(0));
   });
