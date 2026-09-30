@@ -118,7 +118,7 @@ def main() -> None:
                     assert client.get(f"http://127.0.0.1:{port}{asset}").status_code == 200
                 bootstrap = client.get(f"http://127.0.0.1:{port}/_hames/v1/bootstrap")
                 assert bootstrap.status_code == 200
-            if sys.platform == "darwin":
+            if sys.platform == "darwin" and os.environ.get("HAMES_TEST_INTERACTIVE_PICKER") == "1":
                 _macos_picker_smoke(root, port)
             run("gateway", "restart")
             restarted = json.loads(run("gateway", "status"))
@@ -129,7 +129,7 @@ def main() -> None:
         assert not stopped["running"] and not stopped["healthy"]
     print(
         "Install smoke passed: doctor, gateway start/restart/stop, Web auth and "
-        "bundled assets, and native Mac folder picker when available."
+        "bundled assets, and the native Mac folder picker when opted in."
     )
 
 

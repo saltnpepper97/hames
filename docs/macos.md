@@ -86,9 +86,9 @@ The platform workflow targets Linux and macOS 15 and 26 on Apple Silicon and
 Intel. It runs Python and Rust tests, native isolation probes, static checks, a
 local source installation, and installed-launcher, TUI PTY, and launchd smoke checks.
 The TUI smoke sends a message to a local fixture provider and checks its reply. The
-launcher smoke uses disposable state and a
-separate port to exercise diagnostics, start/restart/stop, authenticated Web
-launch, and serving bundled assets without touching your normal Hames gateway:
+launcher smoke uses disposable state and a separate port to exercise diagnostics,
+start/restart/stop, authenticated Web launch, and serving bundled assets without
+touching your normal Hames gateway:
 
 ```bash
 uv run python scripts/smoke_install.py "$(command -v hames)"
@@ -97,9 +97,12 @@ uv run python scripts/smoke_tui.py "$(command -v hames)"
 
 [Platform CI](https://github.com/saltnpepper97/hames/actions) contains the
 latest matrix results. AppleScript compilation is checked natively; folder
-selection and cancellation also have mocked regression coverage. The optional
-SearXNG smoke requires a working Docker or Podman engine and remains a manual
-Mac check:
+selection and cancellation also have mocked regression coverage. The interactive
+folder-picker smoke needs an unlocked GUI session with Accessibility permission
+for UI automation. It is not run in CI; on a Mac, run
+`HAMES_TEST_INTERACTIVE_PICKER=1 uv run python scripts/smoke_install.py "$(command -v hames)"`
+to exercise it. The optional SearXNG smoke requires a working Docker or Podman
+engine and remains a manual Mac check:
 
 ```bash
 HAMES_TEST_SEARXNG=1 uv run pytest -q tests/unit/test_web_search.py -k managed_searxng_container_smoke
