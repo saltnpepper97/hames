@@ -20,7 +20,8 @@
 > [!NOTE]
 > Hames is ready for everyday use on Linux and now has early macOS support. It has
 > been used extensively in real work, with good results so far. Expect continued
-> refinement as more people use it. See the [changelog](CHANGELOG.md) for 0.3.0.
+> refinement as more people use it. See the changelog for
+> [0.3.0](CHANGELOG.md#030) and [0.2.0](CHANGELOG.md#020).
 
 Hames brings coding agents and long-running work into one local workspace. Work in
 the browser or terminal, review plans before execution, and follow delegated work

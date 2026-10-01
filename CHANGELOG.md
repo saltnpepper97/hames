@@ -1,5 +1,7 @@
 # Changelog
 
+Releases: [0.3.0](#030) · [0.2.0](#020)
+
 ## 0.3.0
 
 Hames adds early macOS support alongside Linux. The maintainer has exercised the
