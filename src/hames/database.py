@@ -6,6 +6,8 @@ import hashlib
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from types import TracebackType
+from typing import Literal
 
 
 class MigrationError(RuntimeError):
@@ -817,6 +819,21 @@ MIGRATIONS = (
 )
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """Finish the transaction and release SQLite files when leaving a context."""
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> Literal[False]:
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 class Database:
     """Own connection policy and monotonic migrations for one Hames database."""
 
@@ -825,7 +842,9 @@ class Database:
         self.migrations = migrations
 
     def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=10, isolation_level=None)
+        connection = sqlite3.connect(
+            self.path, timeout=10, isolation_level=None, factory=_ClosingConnection
+        )
         connection.row_factory = sqlite3.Row
         connection.create_function(
             "sha256",

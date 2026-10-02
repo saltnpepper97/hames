@@ -449,6 +449,7 @@ async fn main() -> Result<()> {
                 }),
                 fresh,
             )
+            .await
         }
         Some(Command::Tui) => tui::run().await,
         Some(Command::Repl) => repl::run().await,

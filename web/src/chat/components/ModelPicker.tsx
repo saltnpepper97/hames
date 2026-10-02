@@ -124,6 +124,10 @@ export function ModelPicker(props: ModelPickerProps) {
       setGroups(results
         .filter((result) => result.models.length > 0)
         .map(({ profile, models }) => ({ profile, models })));
+      setPickerError(results
+        .filter((result) => result.error)
+        .map((result) => `${providerLabel(result.profile)}: ${result.error}`)
+        .join("\n"));
     } catch (error) {
       if (request === catalogRequest) fail(error);
     } finally {

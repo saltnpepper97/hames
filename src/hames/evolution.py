@@ -501,10 +501,10 @@ class ScarStore:
                 "AND status != 'dismissed' ORDER BY created_at DESC",
                 (signature_hash,),
             ).fetchall()
-        for row in rows:
-            scar = self._scar_from_row(connection, row)
-            if self.is_visible(session, scar):
-                return scar
+            for row in rows:
+                scar = self._scar_from_row(connection, row)
+                if self.is_visible(session, scar):
+                    return scar
         return None
 
     def open(self, *, session: Session, scar_id: str, reason: str) -> ScarMutation:
@@ -894,9 +894,9 @@ class ScarStore:
     def get(self, scar_id: str) -> Scar:
         with self.database.connect() as connection:
             row = connection.execute("SELECT * FROM scars WHERE id = ?", (scar_id,)).fetchone()
-        if row is None:
-            raise KeyError(scar_id)
-        return self._scar_from_row(connection, row)
+            if row is None:
+                raise KeyError(scar_id)
+            return self._scar_from_row(connection, row)
 
     def append_evaluation_event(
         self,

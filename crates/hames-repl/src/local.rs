@@ -388,7 +388,7 @@ fn gateway_service_available() -> bool {
     config.is_some_and(|root| root.join("systemd/user/hames.service").is_file())
 }
 
-pub fn run_setup(
+pub async fn run_setup(
     paths: &LocalPaths,
     requested_provider: Option<ProviderBackend>,
     fresh: bool,
@@ -416,6 +416,7 @@ pub fn run_setup(
             web_search: None,
         }
     };
+    let changed = wizard.reset || !wizard.providers.is_empty() || wizard.web_search.is_some();
     if wizard.reset {
         write_config(paths, &toml::Value::Table(toml::map::Map::new()))?;
         println!("─ Started with a fresh Hames config");
@@ -453,7 +454,9 @@ pub fn run_setup(
             },
             ProviderBackend::Codex => match ensure_codex_login(interactive)? {
                 CodexLogin::Existing => {
-                    println!("  ✓ Codex / ChatGPT subscription · using existing sign-in");
+                    println!(
+                        "  ✓ Codex / ChatGPT subscription · using existing sign-in (model access not yet tested)"
+                    );
                 }
                 CodexLogin::Completed => {
                     println!("  ✓ Codex / ChatGPT subscription · sign-in completed");
@@ -474,8 +477,34 @@ pub fn run_setup(
             "--json",
         ])?;
     }
-    println!("✓ Hames setup complete");
+    if !changed || apply_setup_to_gateway(paths).await? {
+        println!("✓ Hames setup complete · choose a model in Hames to test access");
+    } else {
+        println!("✓ Hames setup saved · gateway restart required to apply changes");
+        println!("  Finish active work, then run `hames gateway restart` and reopen Hames.");
+    }
     Ok(())
+}
+
+async fn apply_setup_to_gateway(paths: &LocalPaths) -> Result<bool> {
+    if !paths.token.exists() {
+        return Ok(true);
+    }
+    let client = GatewayClient::from_paths(paths)?;
+    let health = match client.health().await {
+        Ok(health) => health,
+        Err(_) => return Ok(!paths.root.join("runtime/gateway.pid").exists()),
+    };
+    if health.protocol_version != PROTOCOL_VERSION
+        || !client.token_accepted().await?
+        || health.active_runs > 0
+        || health.active_terminals > 0
+    {
+        return Ok(false);
+    }
+    run_gateway_action("restart")?;
+    println!("  ✓ Restarted the idle Hames gateway to load setup changes");
+    Ok(true)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1011,6 +1040,14 @@ fn configure_provider(paths: &LocalPaths, provider: ProviderBackend) -> Result<(
                 )
             });
     }
+    // A first setup should use the selected backend, rather than the implicit
+    // llama.cpp default. Adding another backend preserves an explicit choice.
+    root.entry("runtime")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .context("Hames runtime config must be a TOML table")?
+        .entry("default_provider")
+        .or_insert_with(|| toml::Value::String(provider.profile_id().to_owned()));
     write_config(paths, &config)
 }
 
@@ -1438,6 +1475,10 @@ mod tests {
         configure_provider(&paths, ProviderBackend::Xai).unwrap();
         let config = paths.config_toml().unwrap();
         assert_eq!(
+            config["runtime"]["default_provider"].as_str(),
+            Some("llama_cpp")
+        );
+        assert_eq!(
             config["providers"]["llama_cpp"]["base_url"].as_str(),
             Some("http://router:8080")
         );
@@ -1461,5 +1502,65 @@ mod tests {
         );
         assert!(config["providers"]["grok"].get("api_key_env").is_none());
         fs::remove_dir_all(&paths.root).unwrap();
+    }
+
+    #[test]
+    fn first_codex_setup_selects_codex_as_the_default() {
+        let paths = temporary_paths("codex-setup");
+        fs::create_dir_all(&paths.root).unwrap();
+        configure_provider(&paths, ProviderBackend::Codex).unwrap();
+        assert_eq!(paths.configured_provider().unwrap(), "codex");
+        configure_provider(&paths, ProviderBackend::Ollama).unwrap();
+        assert_eq!(paths.configured_provider().unwrap(), "codex");
+        let config = paths.config_toml().unwrap();
+        assert_eq!(
+            config["providers"]["codex"]["base_url"].as_str(),
+            Some("app-server://codex")
+        );
+        fs::remove_dir_all(&paths.root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn setup_does_not_restart_active_runs_or_terminals() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        for (active_runs, active_terminals) in [(1, 0), (0, 1)] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let paths = temporary_paths("active-setup");
+            fs::create_dir_all(paths.root.join("runtime")).unwrap();
+            fs::write(&paths.token, "fixture-token").unwrap();
+            fs::write(&paths.config, format!("[gateway]\nport = {port}\n")).unwrap();
+            let server = tokio::spawn(async move {
+                for body in [
+                    serde_json::json!({
+                        "status": "ok", "version": "0.2.0",
+                        "protocol_version": super::PROTOCOL_VERSION, "database_ready": true,
+                        "provider_profiles": ["codex"], "default_provider": "codex",
+                        "active_runs": active_runs, "active_terminals": active_terminals,
+                    })
+                    .to_string(),
+                    "[]".to_owned(),
+                ] {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut request = Vec::new();
+                    while !request.ends_with(b"\r\n\r\n") {
+                        let mut buffer = [0; 1024];
+                        let received = stream.read(&mut buffer).await.unwrap();
+                        assert!(received > 0, "request ended before its headers");
+                        request.extend_from_slice(&buffer[..received]);
+                    }
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+            });
+            assert!(!super::apply_setup_to_gateway(&paths).await.unwrap());
+            server.await.unwrap();
+            fs::remove_dir_all(paths.root).unwrap();
+        }
     }
 }

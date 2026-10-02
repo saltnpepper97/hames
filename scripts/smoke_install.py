@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import resource
 import socket
 import subprocess
 import sys
@@ -70,6 +71,9 @@ error "Hames folder picker did not appear; saw " & seenWindows
 
 def main() -> None:
     binary = Path(sys.argv[1]).resolve(strict=True)
+    # Gateways inherit this limit, matching the Mac terminal that exposed the leak.
+    soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (min(soft_limit, 256), hard_limit))
     with tempfile.TemporaryDirectory(prefix="hames-install-smoke-") as directory:
         root = Path(directory)
         with socket.socket() as listener:
@@ -77,6 +81,14 @@ def main() -> None:
             port = listener.getsockname()[1]
         (root / "config.toml").write_text(f"[gateway]\nport = {port}\n", encoding="utf-8")
         environment = {**os.environ, "HAMES_HOME": str(root)}
+        fixture_bin = root / "bin"
+        fixture_bin.mkdir()
+        codex = fixture_bin / "codex"
+        codex.write_text(
+            '#!/bin/sh\n[ "$1" = login ] && [ "$2" = status ]\n', encoding="utf-8"
+        )
+        codex.chmod(0o755)
+        environment["PATH"] = str(fixture_bin) + os.pathsep + environment["PATH"]
 
         def run(*arguments: str, expected_code: int = 0) -> str:
             result = subprocess.run(
@@ -102,6 +114,20 @@ def main() -> None:
             run("gateway", "start")
             status = json.loads(run("gateway", "status"))
             assert status["healthy"] and status["pid"]
+            setup = run("setup", "codex")
+            assert "model access not yet tested" in setup
+            assert "Restarted the idle Hames gateway" in setup
+            configured = json.loads(run("gateway", "status"))
+            assert configured["pid"] != status["pid"]
+            health = httpx.get(f"http://127.0.0.1:{port}/v1/health", timeout=10).json()
+            assert "codex" in health["provider_profiles"]
+            assert health["default_provider"] == "codex"
+            status = configured
+            # Retain a low-descriptor daemon long enough to catch SQLite handles
+            # accumulating during the same polling used by the Web UI.
+            with httpx.Client(timeout=10) as polling:
+                for _ in range(150):
+                    assert polling.get(f"http://127.0.0.1:{port}/v1/health").status_code == 200
             launch = run("web", "--no-open")
             url = next(
                 line.removeprefix("Open ")
@@ -128,7 +154,8 @@ def main() -> None:
         stopped = json.loads(run("gateway", "status", expected_code=1))
         assert not stopped["running"] and not stopped["healthy"]
     print(
-        "Install smoke passed: doctor, gateway start/restart/stop, Web auth and "
+        "Install smoke passed: doctor, setup applies Codex to a running gateway, "
+        "gateway start/restart/stop, Web auth and "
         "bundled assets, and the native Mac folder picker when opted in."
     )
 

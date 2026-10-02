@@ -172,3 +172,30 @@ def test_gateway_can_be_recovered_without_pid_file(tmp_path: Path) -> None:
     finally:
         stop(second)
         stop(first)
+
+
+def test_start_recovers_a_running_gateway_with_failed_health(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hames.daemon as daemon
+
+    paths = _home_on_port(tmp_path / "unhealthy", _free_port())
+    started = start(paths)
+    assert started.pid is not None
+    original_status = daemon.gateway_status
+
+    def failing_status(home: HamesPaths) -> daemon.GatewayProcessStatus:
+        status = original_status(home)
+        if status.pid == started.pid:
+            return daemon.GatewayProcessStatus(
+                running=True, pid=started.pid, healthy=False, url=status.url
+            )
+        return status
+
+    monkeypatch.setattr(daemon, "gateway_status", failing_status)
+    try:
+        recovered = start(paths)
+        assert recovered.healthy
+        assert recovered.pid != started.pid
+    finally:
+        stop(paths)

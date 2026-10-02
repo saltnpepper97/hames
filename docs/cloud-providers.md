@@ -30,8 +30,11 @@ saved under `~/.hames/credentials/` (or your selected Hames home), in files read
 only by your user. They are not written to the conversation or `config.toml`.
 These are local credential files, not an encrypted OS keychain.
 
-After changing provider configuration through `hames setup`, restart the gateway when its active work
-has finished. Then use the Web or TUI model picker to probe the provider and
+After changing provider configuration through `hames setup`, an idle gateway is
+restarted automatically to load the changes. If active work, background terminals,
+or a failed health check prevent this, setup reports that the settings are saved
+and asks you to run `hames gateway restart` after active work finishes.
+Then reopen Web or TUI and use the model picker to probe the provider and
 select a model. Saving a key does not itself prove the account can access a model.
 Environment variables remain available for advanced/headless setups and take
 precedence over the saved key: `DEEPSEEK_API_KEY`, `ZAI_API_KEY`, `MIMO_API_KEY`, and `MIMO_TOKEN_PLAN_API_KEY`. A profile's

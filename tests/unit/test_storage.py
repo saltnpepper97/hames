@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from hames.blobs import BlobIntegrityError, BlobStore
+from hames.database import Database
 from hames.ledger import EventIntegrityError, Ledger
 from hames.paths import HamesPaths
 
@@ -15,6 +16,69 @@ def open_ledger(paths: HamesPaths, *, threshold: int = 64) -> Ledger:
     ledger = Ledger.open(paths.database)
     ledger.blob_threshold_bytes = threshold
     return ledger
+
+
+def test_database_context_releases_files_without_waiting_for_gc(tmp_path: Path) -> None:
+    import psutil
+
+    database = Database(tmp_path / "connections.db")
+    retained: list[sqlite3.Connection] = []
+    process = psutil.Process()
+    initial_files = process.num_fds()
+    for _ in range(400):
+        with database.connect() as connection:
+            connection.execute("SELECT 1").fetchone()
+        retained.append(connection)
+    assert process.num_fds() <= initial_files + 2
+    for connection in retained:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            connection.execute("SELECT 1")
+
+
+def test_database_context_commits_and_closes(tmp_path: Path) -> None:
+    database = Database(tmp_path / "transactions.db")
+    with database.connect() as connection:
+        connection.execute("CREATE TABLE example(value TEXT)")
+        connection.execute("BEGIN")
+        connection.execute("INSERT INTO example VALUES ('committed')")
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        connection.execute("SELECT 1")
+    with database.connect() as reopened:
+        assert reopened.execute("SELECT value FROM example").fetchone()[0] == "committed"
+
+
+def test_database_context_rolls_back_and_closes_on_error(tmp_path: Path) -> None:
+    database = Database(tmp_path / "transactions.db")
+    with database.connect() as connection:
+        connection.execute("CREATE TABLE example(value TEXT)")
+    failed = database.connect()
+    with pytest.raises(ValueError, match="failed transaction"):
+        with failed:
+            failed.execute("BEGIN")
+            failed.execute("INSERT INTO example VALUES ('rolled back')")
+            raise ValueError("failed transaction")
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        failed.execute("SELECT 1")
+    with database.connect() as reopened:
+        assert reopened.execute("SELECT COUNT(*) FROM example").fetchone()[0] == 0
+
+
+def test_database_context_closes_when_commit_fails(tmp_path: Path) -> None:
+    database = Database(tmp_path / "transactions.db")
+    with database.connect() as connection:
+        connection.execute("CREATE TABLE parent(id INTEGER PRIMARY KEY)")
+        connection.execute(
+            "CREATE TABLE child(parent_id REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED)"
+        )
+    failed = database.connect()
+    with pytest.raises(sqlite3.IntegrityError):
+        with failed:
+            failed.execute("BEGIN")
+            failed.execute("INSERT INTO child VALUES (1)")
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        failed.execute("SELECT 1")
+    with database.connect() as reopened:
+        assert reopened.execute("SELECT COUNT(*) FROM child").fetchone()[0] == 0
 
 
 def test_blob_store_deduplicates_and_detects_corruption(tmp_path: Path) -> None:

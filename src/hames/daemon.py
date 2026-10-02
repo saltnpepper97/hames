@@ -230,7 +230,7 @@ def start(paths: HamesPaths, *, wait_seconds: float = 10.0) -> GatewayProcessSta
     current = gateway_status(paths)
     if current.healthy and _compatible_gateway(current) and _token_accepted(paths, current.url):
         return current
-    if current.healthy:
+    if current.healthy or current.running:
         occupier = current.pid
         if occupier is None:
             occupier = hames_listener_pid(config.gateway.port)
