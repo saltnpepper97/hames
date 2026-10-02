@@ -10652,9 +10652,12 @@ a {
   display: flex;
   min-width: 0;
   min-height: 0;
-  flex: 1 1 0%;
+  flex: 0 0 100%;
   flex-direction: column;
   overflow: hidden;
+  transition:
+    flex-basis 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s;
 }
 
 .chat-conversation > .chat-view-panel {
@@ -10667,6 +10670,10 @@ a {
 
 .session-chat.preview-open:not(.preview-expanded) .composer-dock {
   right: calc(var(--preview-panel-width) + 0.5rem);
+}
+
+.session-chat.preview-open:not(.preview-expanded) .chat-conversation {
+  flex-basis: calc(100% - var(--preview-panel-width));
 }
 
 .session-chat.fresh.preview-open {
@@ -10714,11 +10721,13 @@ a {
 }
 
 .session-chat.preview-expanded .chat-conversation {
-  display: none;
+  flex-basis: 0;
+  visibility: hidden;
+  transition-delay: 0s, 220ms;
 }
 
 .session-chat.preview-expanded .site-preview {
-  flex: 1 1 100%;
+  flex-basis: 100%;
   border-left-color: transparent;
 }
 
@@ -10830,11 +10839,13 @@ a {
 
 @container chat-pane (max-width: 680px) {
   .session-chat.preview-open:not(.preview-expanded) .chat-conversation {
-    display: none;
+    flex-basis: 0;
+    visibility: hidden;
+    transition-delay: 0s, 220ms;
   }
 
   .session-chat.preview-open:not(.preview-expanded) .site-preview {
-    flex: 1 1 100%;
+    flex-basis: 100%;
     border-left-color: transparent;
   }
 

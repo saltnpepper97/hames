@@ -2016,12 +2016,15 @@ describe("Hames web shell", () => {
     ));
     const toggle = await screen.findByRole("button", { name: "Hide site preview" });
     expect(toggle).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByTitle("Local site")).toHaveAttribute("src", "http://127.0.0.1:5173/");
+    const previewFrame = screen.getByTitle("Local site");
+    expect(previewFrame).toHaveAttribute("src", "http://127.0.0.1:5173/");
 
     fireEvent.click(screen.getByRole("button", { name: "Expand preview" }));
     expect(document.querySelector(".session-chat")).toHaveClass("preview-expanded");
+    expect(screen.getByTitle("Local site")).toBe(previewFrame);
     fireEvent.click(screen.getByRole("button", { name: "Restore preview sidebar" }));
     expect(document.querySelector(".session-chat")).not.toHaveClass("preview-expanded");
+    expect(screen.getByTitle("Local site")).toBe(previewFrame);
 
     fireEvent.click(toggle);
     expect(screen.getByRole("button", { name: "Open site preview" })).toHaveAttribute("aria-pressed", "false");
